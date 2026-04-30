@@ -62,29 +62,27 @@ router.get('/sum-by-pv', async (req, res) => {
         if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
             return res.status(400).json({ success: false, error: 'Paramètre date YYYY-MM-DD requis.' });
         }
-        console.log(`[sum-by-pv] requête pour date=${dateStr}`);
-        // Diagnostic: lister tout pour voir ce qu'on a en table
-        const allRows = await sequelize.query(
-            `SELECT id, point_vente, montant_total, created_at, DATE(created_at) AS day
-             FROM decoupe_order_logs
-             ORDER BY created_at DESC LIMIT 20`,
-            { type: sequelize.QueryTypes.SELECT }
-        );
-        console.log('[sum-by-pv] 20 dernières lignes en table:', allRows);
         const rows = await sequelize.query(
-            `SELECT point_vente, COALESCE(SUM(montant_total), 0) AS total
+            `SELECT point_vente, point_vente_executant, COALESCE(SUM(montant_total), 0) AS total
              FROM decoupe_order_logs
              WHERE DATE(created_at) = :d
-             GROUP BY point_vente`,
+             GROUP BY point_vente, point_vente_executant`,
             { replacements: { d: dateStr }, type: sequelize.QueryTypes.SELECT }
         );
-        console.log(`[sum-by-pv] résultat agrégé pour ${dateStr}:`, rows);
+
+        // La DB est schema-per-tenant: TOUTES les lignes appartiennent à ce
+        // tenant. Si point_vente est vide OU matche un nom de centre (bug
+        // historique avant le fix de pointVenteSelect), on les ré-attribue
+        // au tenant. Sinon on garde la valeur stockée.
+        const centresConnus = new Set(parseCentres());
+        const tenantPV = tenant.name || tenant.slug || 'Inconnu';
         const sums = {};
         for (const r of rows) {
-            const pv = r.point_vente || 'Inconnu';
-            sums[pv] = Number(r.total) || 0;
+            const pvBrut = r.point_vente || '';
+            const pv = (!pvBrut || centresConnus.has(pvBrut)) ? tenantPV : pvBrut;
+            sums[pv] = (sums[pv] || 0) + (Number(r.total) || 0);
         }
-        console.log('[sum-by-pv] réponse:', sums);
+        console.log(`[sum-by-pv] date=${dateStr} → sums=${JSON.stringify(sums)} (rows=${rows.length})`);
         res.json({ success: true, date: dateStr, sums });
     } catch (error) {
         console.error('[decoupe-forward] /sum-by-pv error', error);
@@ -183,7 +181,13 @@ router.post('/send', async (req, res) => {
         // Pour le journal local on garde la PV envoyée par le POS (vérité côté
         // maas), pas cmd.pointVente qui dépend du binding de la clé côté Mata
         // — souvent mal renseigné et hors de notre contrôle.
-        const pointVenteResolu = point_vente || cmd.pointVente || '';
+        // Filet de sécurité: si la PV envoyée est vide OU correspond à un
+        // centre (bug historique observé), on retombe sur le nom du tenant.
+        const centresConnusSet = new Set(centresAutorises);
+        let pointVenteResolu = point_vente || cmd.pointVente || '';
+        if (!pointVenteResolu || centresConnusSet.has(pointVenteResolu)) {
+            pointVenteResolu = tenant.name || tenant.slug || 'Inconnu';
+        }
         const montantTotal = Number(cmd.montantTotal != null ? cmd.montantTotal : (montant_total || 0)) || 0;
         const username = req.session && req.session.user ? req.session.user.username : null;
         console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${pointVenteResolu}`);
