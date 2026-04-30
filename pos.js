@@ -9915,7 +9915,7 @@ async function envoyerCommandeDecoupe(event) {
         return;
     }
 
-    const pointVente = (document.getElementById('pointVenteSelector') || {}).value || (window.currentUser && window.currentUser.pointVente) || '';
+    const pointVente = (document.getElementById('pointVenteSelect') || {}).value || (window.currentUser && window.currentUser.pointVente) || '';
     const centre = (document.getElementById('decoupeCentreSelect') || {}).value || '';
     if (!centre) {
         showToast('Sélectionne un centre de découpe.', 'warning');
