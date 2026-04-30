@@ -1883,12 +1883,22 @@ async function chargerResume() {
         const dateInput = document.getElementById('summaryDate');
         const date = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
         const pointVente = document.getElementById('pointVenteSelect').value;
-        
+
         console.log('📊 Chargement résumé - Date:', date, 'Point de vente:', pointVente);
-        
+
         if (!date || !pointVente) {
             console.warn('⚠️ Date ou point de vente manquant');
             return;
+        }
+
+        // Rafraîchir le badge inter-PV en parallèle (fire-and-forget)
+        if (typeof rafraichirBadgeInterPV === 'function') {
+            rafraichirBadgeInterPV();
+            // Si le panneau est déjà ouvert, recharger son contenu pour matcher la date
+            const panel = document.getElementById('interPVPanel');
+            if (panel && panel.style.display !== 'none' && typeof chargerInterPVPanel === 'function') {
+                chargerInterPVPanel();
+            }
         }
 
         // Mettre à jour le bouton Faire la caisse (label + état)
@@ -10093,6 +10103,134 @@ function afficherDetailsDecoupe(id) {
         </div>
     `;
     document.body.insertAdjacentHTML('beforeend', html);
+}
+
+// ============================================================================
+// Panneau "Commandes inter-PV" dans le Résumé du jour
+// ============================================================================
+
+let interPVPanelLoaded = false;
+
+function toggleInterPVPanel() {
+    const panel = document.getElementById('interPVPanel');
+    if (!panel) return;
+    if (panel.style.display === 'none') {
+        panel.style.display = '';
+        chargerInterPVPanel();
+    } else {
+        panel.style.display = 'none';
+    }
+}
+
+async function chargerInterPVPanel() {
+    const tbody = document.getElementById('interPVTableBody');
+    const totalSpan = document.getElementById('interPVTotal');
+    const badge = document.getElementById('interPVBadge');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Chargement…</td></tr>';
+    try {
+        // Filtrer sur la date sélectionnée dans le Résumé du jour
+        const dateInput = document.getElementById('summaryDate');
+        const dateStr = dateInput ? dateInput.value : '';
+        const resp = await fetch('/api/decoupe/mine?limit=200', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            return;
+        }
+        let rows = data.commandes || [];
+        if (dateStr) {
+            rows = rows.filter((r) => {
+                if (!r.created_at) return false;
+                const isoDay = new Date(r.created_at).toISOString().slice(0, 10);
+                return isoDay === dateStr;
+            });
+        }
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Aucune commande pour cette date.</td></tr>';
+            if (badge) badge.style.display = 'none';
+            if (totalSpan) totalSpan.textContent = '0';
+            return;
+        }
+        if (badge) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        }
+        let total = 0;
+        let html = '';
+        for (const row of rows) {
+            const montant = Number(row.montant_total) || 0;
+            total += montant;
+            const produitsList = Array.isArray(row.produits)
+                ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
+                : '';
+            html += `
+                <tr>
+                    <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
+                    <td>${escapeDecoupe(row.point_vente_executant || '—')}</td>
+                    <td><small>${escapeDecoupe(produitsList)}</small></td>
+                    <td class="text-end">${formatNumberDecoupe(montant)} F</td>
+                    <td><span class="badge bg-secondary">Reçu</span></td>
+                </tr>
+            `;
+        }
+        tbody.innerHTML = html;
+        if (totalSpan) totalSpan.textContent = formatNumberDecoupe(total);
+    } catch (e) {
+        console.error('chargerInterPVPanel:', e);
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Erreur réseau</td></tr>';
+    }
+}
+
+// Met à jour le badge sur le bouton inter-PV même quand le panneau est fermé,
+// pour signaler à l'admin qu'il y a des commandes du jour. Appelé par chargerResume.
+async function rafraichirBadgeInterPV() {
+    const badge = document.getElementById('interPVBadge');
+    if (!badge) return;
+    try {
+        const dateInput = document.getElementById('summaryDate');
+        const dateStr = dateInput ? dateInput.value : '';
+        const resp = await fetch('/api/decoupe/mine?limit=200', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) return;
+        let rows = data.commandes || [];
+        if (dateStr) {
+            rows = rows.filter((r) => {
+                if (!r.created_at) return false;
+                return new Date(r.created_at).toISOString().slice(0, 10) === dateStr;
+            });
+        }
+        if (rows.length > 0) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+        }
+    } catch (e) {
+        // silencieux — un échec ne doit pas casser le résumé
+    }
+}
+
+function ouvrirCentreDecoupeExterne(event) {
+    if (event) event.preventDefault();
+    // Ouvre l'app Mata centre-decoupe.html dans un nouvel onglet.
+    // L'URL Mata est lue côté serveur (MATA_DECOUPE_BASE_URL); on la récupère
+    // via /api/decoupe/centres en interrogeant aussi pour l'URL si exposée,
+    // sinon on tape directement le base-url qui n'est pas exposé au client —
+    // donc on fait un fallback sur '/centre-decoupe.html' au cas où Mata
+    // serait derrière un reverse-proxy commun.
+    fetch('/api/decoupe/external-url', { credentials: 'include' })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+            if (data && data.url) {
+                window.open(data.url, '_blank');
+            } else {
+                showToast('URL du centre de découpe non disponible.', 'warning');
+            }
+        })
+        .catch(() => {
+            showToast('Impossible d\'ouvrir le centre de découpe.', 'danger');
+        });
 }
 
 function escapeDecoupe(s) {

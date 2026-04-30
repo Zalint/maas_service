@@ -264,6 +264,10 @@
                     <button class="btn-toggle-summary-cards" onclick="toggleSummaryCards()" title="Masquer/Afficher les statistiques" id="btnToggleSummaryCards">
                         <i class="fas fa-eye-slash" id="iconToggleSummaryCards"></i>
                     </button>
+                    <button class="btn-inter-pv" onclick="toggleInterPVPanel()" title="Commandes inter-PV (centre de découpe)" id="btnInterPV" style="position: relative;">
+                        <i class="fas fa-industry"></i>
+                        <span class="badge bg-danger" id="interPVBadge" style="position: absolute; top: -4px; right: -4px; display: none; padding: 2px 6px; border-radius: 10px; font-size: 0.7rem;">0</span>
+                    </button>
                 </div>
 
                 <div class="date-selector">
@@ -338,6 +342,39 @@
                             <div class="card-value" id="totalArticles">0</div>
                             <div class="card-label">ARTICLES VENDUS</div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Panneau Commandes inter-PV (centre de découpe) -->
+                <div id="interPVPanel" style="display: none; border: 1px solid #f5c6cb; background: #fff5f5; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-industry text-danger"></i>
+                            <strong>Commandes envoyées (inter-PV)</strong>
+                            <a href="#" onclick="ouvrirCentreDecoupeExterne(event)" class="text-decoration-none" style="font-size: 0.9rem;">
+                                <i class="fas fa-external-link-alt"></i> Ouvrir dans Centre de Découpe
+                            </a>
+                        </div>
+                        <button type="button" class="btn-close" onclick="toggleInterPVPanel()" aria-label="Fermer"></button>
+                    </div>
+                    <div class="text-danger fw-bold mt-1" style="font-size: 0.95rem;">
+                        Total : <span id="interPVTotal">0</span> FCFA
+                    </div>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Réf</th>
+                                    <th>Centre</th>
+                                    <th>Produits</th>
+                                    <th class="text-end">Montant</th>
+                                    <th>Statut</th>
+                                </tr>
+                            </thead>
+                            <tbody id="interPVTableBody">
+                                <tr><td colspan="5" class="text-center text-muted">Chargement…</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 

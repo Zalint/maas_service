@@ -40,6 +40,17 @@ router.get('/centres', (req, res) => {
     res.json({ success: true, centres: parseCentres() });
 });
 
+// Expose l'URL externe du centre de découpe (sans la clé API) pour que le
+// front puisse ouvrir l'app Mata dans un nouvel onglet. Si MATA_DECOUPE_BASE_URL
+// est vide, retourne url=null.
+router.get('/external-url', (req, res) => {
+    const base = process.env.MATA_DECOUPE_BASE_URL;
+    res.json({
+        success: true,
+        url: base ? `${base.replace(/\/$/, '')}/centre-decoupe.html` : null
+    });
+});
+
 router.post('/send', async (req, res) => {
     try {
         const baseUrl = process.env.MATA_DECOUPE_BASE_URL;
