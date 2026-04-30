@@ -20,6 +20,7 @@
 const express = require('express');
 const router = express.Router();
 const tenant = require('../config/tenant');
+const { sequelize } = require('../db');
 const { DecoupeOrderLog } = require('../db/models');
 
 // Centres connus de Mata, utilisés en fallback si MATA_DECOUPE_CENTRE n'est
@@ -49,6 +50,40 @@ router.get('/external-url', (req, res) => {
         success: true,
         url: base ? `${base.replace(/\/$/, '')}/centre-decoupe.html` : null
     });
+});
+
+// Somme des commandes de découpe envoyées un jour donné, agrégée par
+// point_vente. Format de retour: { "Mbao": 11700, "Sacre Coeur": 4500 }.
+// Utilisée par l'écran Réconciliation pour afficher les commandes inter-PV
+// à côté des ventes saisies.
+router.get('/sum-by-pv', async (req, res) => {
+    try {
+        const dateStr = req.query.date; // YYYY-MM-DD
+        if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            return res.status(400).json({ success: false, error: 'Paramètre date YYYY-MM-DD requis.' });
+        }
+        // Group côté SQL (cheap) — DATE() côté Postgres tronque le timestamp
+        // dans la timezone du serveur. Pour aligner avec la date locale du
+        // navigateur on fait DATE(created_at AT TIME ZONE 'UTC') puis on
+        // ajuste si besoin. Pour l'instant on prend la timezone serveur:
+        // mêmes hôte/user → c'est la même que le navigateur.
+        const rows = await sequelize.query(
+            `SELECT point_vente, COALESCE(SUM(montant_total), 0) AS total
+             FROM decoupe_order_logs
+             WHERE DATE(created_at) = :d
+             GROUP BY point_vente`,
+            { replacements: { d: dateStr }, type: sequelize.QueryTypes.SELECT }
+        );
+        const sums = {};
+        for (const r of rows) {
+            const pv = r.point_vente || 'Inconnu';
+            sums[pv] = Number(r.total) || 0;
+        }
+        res.json({ success: true, date: dateStr, sums });
+    } catch (error) {
+        console.error('[decoupe-forward] /sum-by-pv error', error);
+        res.status(500).json({ success: false, error: error.message, sums: {} });
+    }
 });
 
 router.post('/send', async (req, res) => {

@@ -19,6 +19,8 @@ const ReconciliationManager = (function() {
         { id: 'transferts', label: 'Transferts', isNumeric: true },
         { id: 'ventesTheoriques', label: 'Ventes Théoriques', isNumeric: true },
         { id: 'ventesSaisies', label: 'Ventes Saisies', isNumeric: true },
+        { id: 'commandesInterPV', label: 'Commandes inter-PV', isNumeric: true },
+        { id: 'ventesTotales', label: 'Ventes Totales', isNumeric: true },
         { id: 'creances', label: 'Créances', isNumeric: true },
         { id: 'ecart', label: 'Écart', isNumeric: true },
         { id: 'cashPayment', label: 'Montant Total Cash', isNumeric: true },
@@ -26,6 +28,10 @@ const ReconciliationManager = (function() {
         { id: 'ecartCash', label: 'Ecart Cash', isNumeric: true },
         { id: 'commentaire', label: 'Commentaire', isInput: true }
     ];
+
+    // Cache module: somme des commandes inter-PV par PV pour la date courante.
+    // Rempli par chargerSommeDecoupeInterPV(date) avant le rendu du tableau.
+    let decoupeInterPVByPV = {};
     
     // Mapping des références de paiement aux points de vente - chargé depuis l'API
     let PAYMENT_REF_MAPPING = {};
@@ -458,7 +464,32 @@ const ReconciliationManager = (function() {
                     cell.classList.add('currency');
                     totals.ventesSaisies += data.ventesSaisies;
                     break;
-                    
+
+                case 'commandesInterPV': {
+                    // Somme des commandes envoyées au centre de découpe par
+                    // ce PV pour la date affichée. Source: cache rempli par
+                    // chargerSommeDecoupeInterPV avant le rendu.
+                    const interPV = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
+                    cell.textContent = formatMonetaire(interPV);
+                    cell.classList.add('currency');
+                    if (interPV > 0) {
+                        cell.style.color = '#0d6efd'; // bleu pour distinguer
+                    }
+                    totals.commandesInterPV = (totals.commandesInterPV || 0) + interPV;
+                    break;
+                }
+
+                case 'ventesTotales': {
+                    // Ventes Saisies + Commandes inter-PV pour ce PV
+                    const interPV = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
+                    const ventesTotales = (Number(data.ventesSaisies) || 0) + interPV;
+                    cell.textContent = formatMonetaire(ventesTotales);
+                    cell.classList.add('currency');
+                    cell.style.fontWeight = 'bold';
+                    totals.ventesTotales = (totals.ventesTotales || 0) + ventesTotales;
+                    break;
+                }
+
                 case 'creances':
                     const creancesValue = data.creances || 0;
                     cell.textContent = formatMonetaire(creancesValue);
@@ -920,6 +951,30 @@ const ReconciliationManager = (function() {
         }
     }
     
+    // Charge la somme des commandes inter-PV pour la date donnée et alimente
+    // le cache module decoupeInterPVByPV. La date attendue est au format
+    // DD-MM-YYYY (utilisé par l'écran reconciliation); on la convertit en
+    // YYYY-MM-DD pour l'API.
+    async function chargerSommeDecoupeInterPV(date) {
+        try {
+            decoupeInterPVByPV = {};
+            // Convertit DD-MM-YYYY -> YYYY-MM-DD si besoin
+            let iso = date;
+            const m = String(date).match(/^(\d{2})-(\d{2})-(\d{4})$/);
+            if (m) iso = `${m[3]}-${m[2]}-${m[1]}`;
+            const resp = await fetch(`/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`, { credentials: 'include' });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (data && data.success && data.sums) {
+                decoupeInterPVByPV = data.sums;
+                console.log('[reconciliation] commandes inter-PV par PV:', decoupeInterPVByPV);
+            }
+        } catch (e) {
+            console.warn('[reconciliation] échec chargement sum-by-pv:', e.message);
+            decoupeInterPVByPV = {};
+        }
+    }
+
     // Charger une réconciliation (sauvegardée ou calculée)
     async function chargerReconciliation(date) {
         try {
@@ -928,8 +983,13 @@ const ReconciliationManager = (function() {
             if (loadingIndicator) {
                 loadingIndicator.style.display = 'block';
             }
-            
+
             console.log(`Chargement de la réconciliation pour ${date}`);
+
+            // Charger en parallèle la somme des commandes inter-PV pour ce jour
+            // (alimente le cache utilisé par les colonnes commandesInterPV /
+            // ventesTotales lors du rendu du tableau).
+            await chargerSommeDecoupeInterPV(date);
             
             // Mettre à jour l'affichage de la date
             const dateDisplay = document.getElementById('date-reconciliation-display');
