@@ -10173,6 +10173,10 @@ async function chargerInterPVPanel() {
         let total = 0;
         let html = '';
         for (const row of rows) {
+            // Mémoriser dans le même cache que la tab Mes commandes pour
+            // que afficherDetailsDecoupe(id) trouve la ligne quel que soit
+            // le point d'entrée.
+            decoupeMineCache[row.id] = row;
             const montant = Number(row.montant_total) || 0;
             total += montant;
             const produitsList = Array.isArray(row.produits)
@@ -10180,7 +10184,7 @@ async function chargerInterPVPanel() {
                 : '';
             const date = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
             html += `
-                <tr>
+                <tr style="cursor: pointer;" onclick="afficherDetailsDecoupe(${row.id})" title="Voir détails (envoyé vs réponse Mata)">
                     <td><small>${escapeDecoupe(date)}</small></td>
                     <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
                     <td>${escapeDecoupe(row.point_vente_executant || '—')}</td>
