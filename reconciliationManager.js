@@ -489,6 +489,7 @@ const ReconciliationManager = (function() {
                     const interPV = (data.commandesInterPV != null)
                         ? Number(data.commandesInterPV) || 0
                         : ((decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0);
+                    console.log(`[interPV] rendu cellule pour PV="${pointVente}": data.commandesInterPV=${data.commandesInterPV}, cache[${pointVente}]=${decoupeInterPVByPV ? decoupeInterPVByPV[pointVente] : 'null'}, valeur affichée=${interPV}`);
                     cell.textContent = formatMonetaire(interPV);
                     cell.classList.add('currency');
                     if (interPV > 0) {
@@ -979,6 +980,7 @@ const ReconciliationManager = (function() {
     // DD-MM-YYYY (utilisé par l'écran reconciliation); on la convertit en
     // YYYY-MM-DD pour l'API.
     async function chargerSommeDecoupeInterPV(date) {
+        console.log('[interPV] chargerSommeDecoupeInterPV appelée avec date =', JSON.stringify(date));
         try {
             decoupeInterPVByPV = {};
             // Accepte DD-MM-YYYY ou DD/MM/YYYY ou YYYY-MM-DD; convertit en
@@ -988,15 +990,25 @@ const ReconciliationManager = (function() {
             const m2 = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
             if (m1) iso = `${m1[3]}-${m1[2]}-${m1[1]}`;
             else if (m2) iso = `${m2[1]}-${m2[2]}-${m2[3]}`;
-            const resp = await fetch(`/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`, { credentials: 'include' });
-            if (!resp.ok) return;
+            console.log('[interPV] date convertie en ISO =', iso);
+            const url = `/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`;
+            console.log('[interPV] fetch', url);
+            const resp = await fetch(url, { credentials: 'include' });
+            console.log('[interPV] HTTP', resp.status);
+            if (!resp.ok) {
+                console.warn('[interPV] réponse non OK, on abandonne');
+                return;
+            }
             const data = await resp.json();
+            console.log('[interPV] payload reçu:', data);
             if (data && data.success && data.sums) {
                 decoupeInterPVByPV = data.sums;
-                console.log('[reconciliation] commandes inter-PV par PV:', decoupeInterPVByPV);
+                console.log('[interPV] cache rempli:', decoupeInterPVByPV);
+            } else {
+                console.warn('[interPV] réponse OK mais sums absent ou success=false');
             }
         } catch (e) {
-            console.warn('[reconciliation] échec chargement sum-by-pv:', e.message);
+            console.warn('[interPV] erreur fetch:', e);
             decoupeInterPVByPV = {};
         }
     }

@@ -62,11 +62,15 @@ router.get('/sum-by-pv', async (req, res) => {
         if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
             return res.status(400).json({ success: false, error: 'Paramètre date YYYY-MM-DD requis.' });
         }
-        // Group côté SQL (cheap) — DATE() côté Postgres tronque le timestamp
-        // dans la timezone du serveur. Pour aligner avec la date locale du
-        // navigateur on fait DATE(created_at AT TIME ZONE 'UTC') puis on
-        // ajuste si besoin. Pour l'instant on prend la timezone serveur:
-        // mêmes hôte/user → c'est la même que le navigateur.
+        console.log(`[sum-by-pv] requête pour date=${dateStr}`);
+        // Diagnostic: lister tout pour voir ce qu'on a en table
+        const allRows = await sequelize.query(
+            `SELECT id, point_vente, montant_total, created_at, DATE(created_at) AS day
+             FROM decoupe_order_logs
+             ORDER BY created_at DESC LIMIT 20`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        console.log('[sum-by-pv] 20 dernières lignes en table:', allRows);
         const rows = await sequelize.query(
             `SELECT point_vente, COALESCE(SUM(montant_total), 0) AS total
              FROM decoupe_order_logs
@@ -74,11 +78,13 @@ router.get('/sum-by-pv', async (req, res) => {
              GROUP BY point_vente`,
             { replacements: { d: dateStr }, type: sequelize.QueryTypes.SELECT }
         );
+        console.log(`[sum-by-pv] résultat agrégé pour ${dateStr}:`, rows);
         const sums = {};
         for (const r of rows) {
             const pv = r.point_vente || 'Inconnu';
             sums[pv] = Number(r.total) || 0;
         }
+        console.log('[sum-by-pv] réponse:', sums);
         res.json({ success: true, date: dateStr, sums });
     } catch (error) {
         console.error('[decoupe-forward] /sum-by-pv error', error);
