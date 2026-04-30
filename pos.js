@@ -9828,9 +9828,35 @@ function ouvrirModalDecoupe() {
         return;
     }
     rendrePanierDecoupe();
+    chargerCentresDecoupe();
     switchDecoupeTab('new');
     const modal = document.getElementById('modalCentreDecoupe');
     if (modal) modal.style.display = 'flex';
+}
+
+async function chargerCentresDecoupe() {
+    const select = document.getElementById('decoupeCentreSelect');
+    if (!select) return;
+    try {
+        const resp = await fetch('/api/decoupe/centres', { credentials: 'include' });
+        const data = await resp.json();
+        const centres = (data && Array.isArray(data.centres)) ? data.centres : [];
+        if (centres.length === 0) {
+            select.innerHTML = '<option value="">Aucun centre configuré (MATA_DECOUPE_CENTRE)</option>';
+            return;
+        }
+        // Préserver le choix précédent si possible
+        const previous = select.value;
+        select.innerHTML = centres
+            .map((c) => `<option value="${escapeDecoupe(c)}">${escapeDecoupe(c)}</option>`)
+            .join('');
+        if (previous && centres.includes(previous)) {
+            select.value = previous;
+        }
+    } catch (e) {
+        console.error('chargerCentresDecoupe:', e);
+        select.innerHTML = '<option value="">Erreur de chargement</option>';
+    }
 }
 
 function fermerModalDecoupe() {
@@ -9890,6 +9916,11 @@ async function envoyerCommandeDecoupe(event) {
     }
 
     const pointVente = (document.getElementById('pointVenteSelector') || {}).value || (window.currentUser && window.currentUser.pointVente) || '';
+    const centre = (document.getElementById('decoupeCentreSelect') || {}).value || '';
+    if (!centre) {
+        showToast('Sélectionne un centre de découpe.', 'warning');
+        return;
+    }
     const total = cart.reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
     const btn = event && event.target ? event.target.closest('button') : null;
     const original = btn ? btn.innerHTML : '';
@@ -9904,6 +9935,7 @@ async function envoyerCommandeDecoupe(event) {
             credentials: 'include',
             body: JSON.stringify({
                 point_vente: pointVente,
+                point_vente_executant: centre,
                 produits: cart.map((item) => ({
                     categorie: item.category,
                     produit: item.name,
@@ -9924,7 +9956,7 @@ async function envoyerCommandeDecoupe(event) {
             return;
         }
         const ref = data.commande_ref || data.ref || '';
-        showToast(`🔪 Commande envoyée${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
+        showToast(`🔪 Commande envoyée à ${centre}${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
         // Reset les champs client + bascule sur la liste pour montrer la nouvelle commande
         ['decoupeNomClient', 'decoupeNumClient', 'decoupeAdrClient', 'decoupeInstructions'].forEach((id) => {
             const el = document.getElementById(id);

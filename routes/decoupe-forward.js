@@ -22,11 +22,24 @@ const router = express.Router();
 const tenant = require('../config/tenant');
 const { DecoupeOrderLog } = require('../db/models');
 
+// MATA_DECOUPE_CENTRE peut contenir une liste séparée par ';' pour permettre à
+// l'admin de choisir un centre par commande. La 1ère entrée sert de défaut si
+// le client ne précise rien. Espaces autour du ';' ignorés.
+function parseCentres() {
+    const raw = process.env.MATA_DECOUPE_CENTRE || 'Centre de découpe';
+    return raw.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+router.get('/centres', (req, res) => {
+    res.json({ success: true, centres: parseCentres() });
+});
+
 router.post('/send', async (req, res) => {
     try {
         const baseUrl = process.env.MATA_DECOUPE_BASE_URL;
         const apiKey = process.env.MATA_DECOUPE_API_KEY;
-        const centre = process.env.MATA_DECOUPE_CENTRE || 'Centre de découpe';
+        const centresAutorises = parseCentres();
+        const centreParDefaut = centresAutorises[0] || 'Centre de découpe';
 
         if (!baseUrl || !apiKey) {
             return res.status(503).json({
@@ -43,8 +56,22 @@ router.post('/send', async (req, res) => {
             numero_client,
             adresse_client,
             instructions_client,
-            notes
+            notes,
+            point_vente_executant: centreSouhaite
         } = req.body || {};
+
+        // Valider le centre choisi: doit être dans la liste configurée pour
+        // éviter qu'un client envoie n'importe quoi à Mata.
+        let centre = centreParDefaut;
+        if (centreSouhaite) {
+            if (!centresAutorises.includes(centreSouhaite)) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Centre "${centreSouhaite}" non autorisé. Valeurs acceptées: ${centresAutorises.join(', ')}`
+                });
+            }
+            centre = centreSouhaite;
+        }
 
         if (!Array.isArray(produits) || produits.length === 0) {
             return res.status(400).json({ success: false, error: 'Liste de produits vide.' });
