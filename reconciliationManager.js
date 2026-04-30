@@ -210,13 +210,28 @@ const ReconciliationManager = (function() {
     // SECTION: AFFICHAGE DU TABLEAU DE RÉCONCILIATION
     
     // Fonction principale pour afficher les données dans le tableau
-    function afficherReconciliation(reconciliationData, debugInfo) {
+    async function afficherReconciliation(reconciliationData, debugInfo) {
         console.log('Affichage des données de réconciliation:', reconciliationData);
-        
+
         if (debugInfo) {
             currentDebugInfo = debugInfo;
         }
-        
+
+        // S'assurer que le cache des commandes inter-PV est à jour pour la date
+        // affichée. On couvre les deux chemins (calcul direct via le bouton
+        // "Calculer" et chargement depuis sauvegarde) en faisant le fetch ici.
+        // Date attendue côté reconciliation = DD/MM/YYYY ou DD-MM-YYYY.
+        try {
+            const date = currentReconciliation && currentReconciliation.date
+                ? currentReconciliation.date
+                : null;
+            if (date) {
+                await chargerSommeDecoupeInterPV(date);
+            }
+        } catch (e) {
+            console.warn('[reconciliation] échec pré-fetch inter-PV:', e.message);
+        }
+
         const table = document.getElementById('reconciliation-table');
         if (!table) {
             console.error('Table de réconciliation non trouvée dans le DOM');
@@ -966,10 +981,13 @@ const ReconciliationManager = (function() {
     async function chargerSommeDecoupeInterPV(date) {
         try {
             decoupeInterPVByPV = {};
-            // Convertit DD-MM-YYYY -> YYYY-MM-DD si besoin
+            // Accepte DD-MM-YYYY ou DD/MM/YYYY ou YYYY-MM-DD; convertit en
+            // YYYY-MM-DD pour l'API.
             let iso = date;
-            const m = String(date).match(/^(\d{2})-(\d{2})-(\d{4})$/);
-            if (m) iso = `${m[3]}-${m[2]}-${m[1]}`;
+            const m1 = String(date).match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+            const m2 = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (m1) iso = `${m1[3]}-${m1[2]}-${m1[1]}`;
+            else if (m2) iso = `${m2[1]}-${m2[2]}-${m2[3]}`;
             const resp = await fetch(`/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`, { credentials: 'include' });
             if (!resp.ok) return;
             const data = await resp.json();
