@@ -1727,8 +1727,8 @@ function modifierPrixSpeciaux(categorie, produit) {
     // Récupérer la configuration actuelle du produit
     const config = currentProduitsConfig[categorie][produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['default', 'alternatives'].includes(key));
-    
+        .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key));
+
     // Créer le modal dynamiquement
     let modalHtml = `
         <div class="modal fade" id="prixSpeciauxModal" tabindex="-1" aria-labelledby="prixSpeciauxModalLabel" aria-hidden="true">
@@ -1844,7 +1844,7 @@ function modifierPrixSpecialExistant(categorie, produit, pointVente, nouveauPrix
 function refreshPrixSpeciauxTable(categorie, produit) {
     const config = currentProduitsConfig[categorie][produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['default', 'alternatives'].includes(key));
+        .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key));
     
     const tbody = document.getElementById('prixSpeciauxTableBody');
     if (!tbody) return;
@@ -2048,7 +2048,7 @@ function modifierPrixSpeciauxInventaire(produit) {
     // Récupérer la configuration actuelle du produit
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key));
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
     
     // Créer le modal dynamiquement
     let modalHtml = `
@@ -2123,7 +2123,7 @@ function modifierPrixSpeciauxInventaire(produit) {
 function refreshPrixSpeciauxInventaireTable(produit) {
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key));
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
     
     const tbody = document.getElementById('prixSpeciauxInventaireTableBody');
     if (!tbody) return;
