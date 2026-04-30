@@ -7946,11 +7946,13 @@ function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
-    const exclureAutoEl = document.getElementById('exclure-produits-automatiques');
-    const exclureAuto = exclureAutoEl ? exclureAutoEl.checked : false;
+    // Nouveau toggle: par défaut décoché → cache les produits automatiques.
+    // Cocher pour les afficher.
+    const afficherAutoEl = document.getElementById('afficher-produits-automatiques');
+    const afficherAuto = afficherAutoEl ? afficherAutoEl.checked : true;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage du stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Exclure auto: ${exclureAuto}`);
+    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Afficher auto: ${afficherAuto}`);
 
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
@@ -7963,9 +7965,10 @@ function filtrerStock() {
 
         const quantiteInput = row.querySelector('td:nth-child(3) input');
 
-        // Détection mode auto: pas de <select> sur la cellule produit, et le
-        // badge "Auto" est visible dans la cellule.
-        const isAuto = !produitSelect && produitCell && /\bAuto\b/.test(produitCell.textContent);
+        // Détection mode auto: présence du badge ⚡ (badge.bg-primary avec
+        // textContent="⚡") inséré par le rendu de la cellule produit pour les
+        // produits dont mode_stock='automatique'.
+        const isAuto = !!(produitCell && produitCell.querySelector('.badge.bg-primary'));
 
         // Récupérer la valeur du point de vente (select ou texte)
         let pointVente = '';
@@ -7989,7 +7992,7 @@ function filtrerStock() {
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
-        const matchAuto = !exclureAuto || !isAuto;
+        const matchAuto = afficherAuto || !isAuto;
 
         if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
             row.style.display = '';
@@ -8047,10 +8050,11 @@ function initFilterStock() {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }
 
-    const exclureAuto = document.getElementById('exclure-produits-automatiques');
-    if (exclureAuto) {
-        exclureAuto.addEventListener('change', filtrerStock);
-        // Appliquer le filtre dès l'init pour respecter le default checked
+    const afficherAuto = document.getElementById('afficher-produits-automatiques');
+    if (afficherAuto) {
+        afficherAuto.addEventListener('change', filtrerStock);
+        // Appliquer le filtre dès l'init pour respecter le default unchecked
+        // (cacher les auto par défaut).
         filtrerStock();
     }
 
