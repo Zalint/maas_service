@@ -1300,22 +1300,40 @@ function genererLignesProduits(categorie) {
         if (typeof config === 'object' && config.default !== undefined) {
             const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
             const prixSpeciaux = Object.keys(config)
-                .filter(key => !['default', 'alternatives'].includes(key))
+                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key))
                 .map(key => `${key}: ${config[key]}`)
                 .join(', ');
-            
+
+            // Indicateurs de liaison à un produit d'inventaire parent.
+            // - inventaire_parent: nom du produit inventaire dont les `ventes` listent ce produit (calculé côté serveur).
+            // - prix_personnalise: true si l'admin a déjà modifié le prix manuellement -> stoppe la propagation.
+            const parent = config.inventaire_parent || null;
+            const detache = !!config.prix_personnalise;
+            const escapedProduit = produit.replace(/'/g, "\\'");
+            let lienBadge = '';
+            let reattachBtn = '';
+            if (parent) {
+                if (detache) {
+                    lienBadge = `<span class="badge bg-warning text-dark" title="Prix modifié manuellement — la propagation depuis '${parent}' est désactivée. Réattachez pour resynchroniser.">🔒 détaché de ${parent}</span>`;
+                    reattachBtn = `<button class="btn btn-sm btn-outline-success ms-1" title="Réattacher à ${parent} et resynchroniser le prix" onclick="reattacherProduitVente('${escapedProduit}')">🔗 Réattacher</button>`;
+                } else {
+                    lienBadge = `<span class="badge bg-info text-dark" title="Prix hérité de '${parent}'. Modifier le prix ici détachera automatiquement.">🔗 ${parent}</span>`;
+                }
+            }
+
             html += `
                 <tr>
                     <td>
-                        <input type="text" class="form-control form-control-sm" value="${produit}" 
+                        <input type="text" class="form-control form-control-sm" value="${produit}"
                                onchange="modifierNomProduit('${categorie}', '${produit}', this.value)">
+                        ${lienBadge ? `<div class="mt-1">${lienBadge}</div>` : ''}
                     </td>
                     <td>
-                        <input type="number" class="form-control form-control-sm" value="${config.default}" 
+                        <input type="number" class="form-control form-control-sm" value="${config.default}"
                                onchange="modifierPrixDefaut('${categorie}', '${produit}', this.value)">
                     </td>
                     <td>
-                        <input type="text" class="form-control form-control-sm" value="${alternatives}" 
+                        <input type="text" class="form-control form-control-sm" value="${alternatives}"
                                placeholder="Ex: 3500,3600,3700"
                                onchange="modifierAlternatives('${categorie}', '${produit}', this.value)">
                     </td>
@@ -1326,6 +1344,7 @@ function genererLignesProduits(categorie) {
                         </button>
                     </td>
                     <td>
+                        ${reattachBtn}
                         <button class="btn btn-sm btn-danger" onclick="supprimerProduit('${categorie}', '${produit}')">
                             <i class="fas fa-trash"></i>
                         </button>
@@ -1474,6 +1493,7 @@ function afficherInventaireConfig() {
                                         <th>Prix Défaut</th>
                                         <th>Alternatives</th>
                                         <th>Mode Stock</th>
+                                        <th>Ventes liées</th>
                                         <th>Prix Spéciaux</th>
                                         <th>Actions</th>
                                     </tr>
@@ -1504,41 +1524,50 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const config = produits[produit];
         const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
         const prixSpeciaux = Object.keys(config)
-            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key))
+            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key))
             .map(key => `${key}: ${config[key]}`)
             .join(', ');
-        
+
         const modeStock = config.mode_stock || 'manuel';
         const uniteStock = config.unite_stock || 'unite';
-        
+        const ventes = Array.isArray(config.ventes) ? config.ventes.join(', ') : '';
+        const ventesCount = Array.isArray(config.ventes) ? config.ventes.length : 0;
+
         html += `
             <tr>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${produit}" 
+                    <input type="text" class="form-control form-control-sm" value="${produit}"
                            onchange="modifierNomProduitInventaire('${produit}', this.value, ${catParam})">
                 </td>
                 <td>
-                    <input type="number" class="form-control form-control-sm" value="${config.prixDefault}" 
+                    <input type="number" class="form-control form-control-sm" value="${config.prixDefault}"
                            onchange="modifierPrixInventaire('${produit}', 'prixDefault', this.value, ${catParam})">
                 </td>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${alternatives}" 
+                    <input type="text" class="form-control form-control-sm" value="${alternatives}"
                            placeholder="Ex: 3500,3600"
                            onchange="modifierAlternativesInventaire('${produit}', this.value, ${catParam})">
                 </td>
                 <td>
                     <div class="d-flex align-items-center gap-2">
-                        <select class="form-select form-select-sm" style="width: 100px;" 
+                        <select class="form-select form-select-sm" style="width: 100px;"
                                 onchange="modifierModeStockInventaire('${produit}', this.value, ${catParam})">
                             <option value="manuel" ${modeStock === 'manuel' ? 'selected' : ''}>Manuel</option>
                             <option value="automatique" ${modeStock === 'automatique' ? 'selected' : ''}>Auto</option>
                         </select>
-                        <select class="form-select form-select-sm" style="width: 80px;" 
+                        <select class="form-select form-select-sm" style="width: 80px;"
                                 onchange="modifierUniteStockInventaire('${produit}', this.value, ${catParam})">
                             <option value="unite" ${uniteStock === 'unite' ? 'selected' : ''}>Unité</option>
                             <option value="kilo" ${uniteStock === 'kilo' ? 'selected' : ''}>Kilo</option>
                         </select>
                     </div>
+                </td>
+                <td>
+                    <input type="text" class="form-control form-control-sm" value="${ventes}"
+                           placeholder="Ex: Boeuf en gros, Boeuf en détail"
+                           title="Noms exacts des produits Généraux alimentés par cet item d'inventaire. Le prix sera propagé vers ces produits tant qu'ils ne sont pas détachés."
+                           onchange="modifierVentesInventaire('${produit}', this.value, ${catParam})">
+                    ${ventesCount > 0 ? `<small class="text-success">🔗 ${ventesCount} lien${ventesCount > 1 ? 's' : ''}</small>` : ''}
                 </td>
                 <td>
                     <small class="text-muted">${prixSpeciaux}</small>
@@ -2259,6 +2288,45 @@ function modifierAlternativesInventaire(produit, alternativesStr, categorie = nu
         } else {
             config.alternatives = [];
         }
+    }
+}
+
+// Réattache un produit de vente à son parent inventaire et resynchronise le prix.
+// Appelle POST /api/admin/config/produits/:nom/reattach puis recharge la table.
+async function reattacherProduitVente(produit) {
+    if (!confirm(`Réattacher "${produit}" à son parent inventaire ?\n\nLe prix sera resynchronisé depuis le parent et les futures mises à jour du parent se propageront à nouveau.`)) {
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/produits/${encodeURIComponent(produit)}/reattach`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (data.success) {
+            alert(data.message || 'Réattachement réussi.');
+            await chargerConfigProduits();
+        } else {
+            alert(`Erreur: ${data.error || 'échec du réattachement'}`);
+        }
+    } catch (error) {
+        console.error('Erreur réattachement:', error);
+        alert('Erreur réseau lors du réattachement.');
+    }
+}
+
+// Met à jour la liste des produits vente alimentés par ce produit d'inventaire.
+// Format saisi: noms séparés par virgules (ex: "Boeuf en gros, Boeuf en détail").
+// Le serveur déclenchera la propagation du prix lors du Sauvegarder.
+function modifierVentesInventaire(produit, ventesStr, categorie = null) {
+    const config = trouverConfigProduitInventaire(produit, categorie);
+    if (config) {
+        const noms = (ventesStr || '')
+            .split(',')
+            .map((n) => n.trim())
+            .filter((n) => n.length > 0);
+        config.ventes = noms;
     }
 }
 
