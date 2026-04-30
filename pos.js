@@ -9845,13 +9845,20 @@ async function chargerCentresDecoupe() {
             select.innerHTML = '<option value="">Aucun centre configuré (MATA_DECOUPE_CENTRE)</option>';
             return;
         }
-        // Préserver le choix précédent si possible
+        // Garde le choix précédent s'il existe pour ne pas déranger une saisie en cours.
+        // Sur première ouverture, on force "-- Choisir le centre --" (value vide)
+        // pour que l'admin doive cliquer consciemment plutôt que d'envoyer
+        // par accident sur le 1er centre de la liste.
         const previous = select.value;
-        select.innerHTML = centres
+        const placeholderHtml = '<option value="">-- Choisir le centre --</option>';
+        const optionsHtml = centres
             .map((c) => `<option value="${escapeDecoupe(c)}">${escapeDecoupe(c)}</option>`)
             .join('');
+        select.innerHTML = placeholderHtml + optionsHtml;
         if (previous && centres.includes(previous)) {
             select.value = previous;
+        } else {
+            select.value = '';
         }
     } catch (e) {
         console.error('chargerCentresDecoupe:', e);
@@ -9921,6 +9928,7 @@ async function envoyerCommandeDecoupe(event) {
         showToast('Sélectionne un centre de découpe.', 'warning');
         return;
     }
+    console.log('[decoupe] envoi vers centre =', JSON.stringify(centre));
     const total = cart.reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
     const btn = event && event.target ? event.target.closest('button') : null;
     const original = btn ? btn.innerHTML : '';
