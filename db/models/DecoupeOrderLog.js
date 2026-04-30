@@ -39,7 +39,12 @@ const DecoupeOrderLog = sequelize.define('DecoupeOrderLog', {
   numero_client: { type: DataTypes.STRING(50), allowNull: true },
   adresse_client: { type: DataTypes.STRING(255), allowNull: true },
   instructions_client: { type: DataTypes.TEXT, allowNull: true },
-  cree_par: { type: DataTypes.STRING(150), allowNull: true }
+  cree_par: { type: DataTypes.STRING(150), allowNull: true },
+  mata_response: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    comment: 'Réponse complète de Mata (data.commande). Permet de voir ce que Mata a stocké vs ce qu\'on a envoyé.'
+  }
 }, {
   tableName: 'decoupe_order_logs',
   timestamps: true,

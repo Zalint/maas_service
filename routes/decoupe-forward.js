@@ -128,7 +128,10 @@ router.post('/send', async (req, res) => {
         // Mata renvoie { success, commande: {commandeRef, pointVente, ...} }
         const cmd = (data && data.commande) || {};
         const ref = cmd.commandeRef || data.commandeRef || data.commande_ref || data.ref || null;
-        const pointVenteResolu = cmd.pointVente || point_vente || '';
+        // Pour le journal local on garde la PV envoyée par le POS (vérité côté
+        // maas), pas cmd.pointVente qui dépend du binding de la clé côté Mata
+        // — souvent mal renseigné et hors de notre contrôle.
+        const pointVenteResolu = point_vente || cmd.pointVente || '';
         const montantTotal = Number(cmd.montantTotal != null ? cmd.montantTotal : (montant_total || 0)) || 0;
         const username = req.session && req.session.user ? req.session.user.username : null;
         console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${pointVenteResolu}`);
@@ -147,7 +150,8 @@ router.post('/send', async (req, res) => {
                 numero_client: payload.numeroClient || null,
                 adresse_client: payload.adresseClient || null,
                 instructions_client: payload.instructionsClient || null,
-                cree_par: username ? `${tenant.slug || 'maas'}:${username}` : (cmd.creePar || null)
+                cree_par: username ? `${tenant.slug || 'maas'}:${username}` : (cmd.creePar || null),
+                mata_response: cmd
             });
         } catch (logErr) {
             console.error('[decoupe-forward] échec journalisation locale:', logErr.message);

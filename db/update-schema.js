@@ -125,6 +125,7 @@ async function updateSchema() {
                     adresse_client VARCHAR(255),
                     instructions_client TEXT,
                     cree_par VARCHAR(150),
+                    mata_response JSONB,
                     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
@@ -132,6 +133,12 @@ async function updateSchema() {
             await sequelize.query(`CREATE INDEX idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`);
             await sequelize.query(`CREATE INDEX idx_decoupe_log_created_at ON decoupe_order_logs(created_at DESC)`);
             console.log('Table decoupe_order_logs créée');
+        } else {
+            // Migration sur table existante: ajouter mata_response si absent
+            await sequelize.query(`
+                ALTER TABLE decoupe_order_logs
+                ADD COLUMN IF NOT EXISTS mata_response JSONB
+            `);
         }
 
         // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).

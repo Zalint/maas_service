@@ -9982,21 +9982,26 @@ async function envoyerCommandeDecoupe(event) {
     }
 }
 
+// Cache local des lignes affichées dans "Mes commandes" pour pouvoir afficher
+// les détails (payload envoyé vs réponse Mata) sans refaire un fetch.
+let decoupeMineCache = {};
+
 async function chargerMesCommandesDecoupe() {
     const tbody = document.getElementById('decoupeMineBody');
     const badge = document.getElementById('decoupeMineBadge');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Chargement…</td></tr>';
+    decoupeMineCache = {};
     try {
         const resp = await fetch('/api/decoupe/mine?limit=100', { credentials: 'include' });
         const data = await resp.json();
         if (!data.success) {
-            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
             return;
         }
         const rows = data.commandes || [];
         if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Aucune commande envoyée.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Aucune commande envoyée.</td></tr>';
             if (badge) badge.style.display = 'none';
             return;
         }
@@ -10006,6 +10011,7 @@ async function chargerMesCommandesDecoupe() {
         }
         let html = '';
         for (const row of rows) {
+            decoupeMineCache[row.id] = row;
             const date = row.created_at ? new Date(row.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
             const produitsList = Array.isArray(row.produits)
                 ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
@@ -10013,7 +10019,13 @@ async function chargerMesCommandesDecoupe() {
             html += `
                 <tr>
                     <td>${escapeDecoupe(date)}</td>
-                    <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
+                    <td>
+                        <span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span>
+                        <button class="btn btn-sm btn-link p-0 ms-1" title="Voir détails (envoyé vs Mata)" onclick="afficherDetailsDecoupe(${row.id})">
+                            <i class="fas fa-info-circle"></i>
+                        </button>
+                    </td>
+                    <td><span class="badge bg-info text-dark">${escapeDecoupe(row.point_vente_executant || '—')}</span></td>
                     <td>${escapeDecoupe(row.point_vente || '')}</td>
                     <td><small>${escapeDecoupe(produitsList)}</small></td>
                     <td>${escapeDecoupe(row.nom_client || '')}<br><small class="text-muted">${escapeDecoupe(row.numero_client || '')}</small></td>
@@ -10024,8 +10036,63 @@ async function chargerMesCommandesDecoupe() {
         tbody.innerHTML = html;
     } catch (e) {
         console.error('chargerMesCommandesDecoupe:', e);
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Erreur réseau</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Erreur réseau</td></tr>';
     }
+}
+
+// Modal de détail: side-by-side de ce qui a été envoyé à Mata et ce que Mata
+// a renvoyé. Utile pour diagnostiquer les écarts (ex: pointVente côté Mata
+// vient du binding de la clé API, pas de notre payload).
+function afficherDetailsDecoupe(id) {
+    const row = decoupeMineCache[id];
+    if (!row) {
+        showToast('Ligne introuvable.', 'warning');
+        return;
+    }
+    const envoye = {
+        produits: row.produits,
+        pointVenteExecutant: row.point_vente_executant,
+        nomClient: row.nom_client,
+        numeroClient: row.numero_client,
+        adresseClient: row.adresse_client,
+        instructionsClient: row.instructions_client,
+        // Le maas connaît son propre PV demandeur et l'enregistre tel quel
+        // (Mata ne l'utilise pas — il dérive pointVente de la clé API).
+        _maasPointVente: row.point_vente
+    };
+    const recu = row.mata_response || null;
+
+    const old = document.getElementById('decoupeDetailsModal');
+    if (old) old.remove();
+    const html = `
+        <div class="modal-overlay" id="decoupeDetailsModal" style="display: flex; z-index: 9000;">
+            <div class="modal-content" style="max-width: 1100px; max-height: 90vh; overflow: auto;">
+                <div class="modal-header" style="background: #6c757d; color: white;">
+                    <h4 style="margin: 0;">Détails commande <span class="text-warning">${escapeDecoupe(row.commande_ref || '?')}</span></h4>
+                    <button type="button" onclick="document.getElementById('decoupeDetailsModal').remove()" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
+                </div>
+                <div class="modal-body" style="padding: 20px;">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5><i class="fas fa-paper-plane"></i> Envoyé par le POS</h5>
+                            <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; white-space: pre-wrap; font-size: 0.85rem;">${escapeDecoupe(JSON.stringify(envoye, null, 2))}</pre>
+                        </div>
+                        <div class="col-md-6">
+                            <h5><i class="fas fa-cloud-download-alt"></i> Renvoyé par Mata</h5>
+                            ${recu
+                                ? `<pre style="background: #fff3cd; padding: 10px; border-radius: 4px; white-space: pre-wrap; font-size: 0.85rem;">${escapeDecoupe(JSON.stringify(recu, null, 2))}</pre>`
+                                : `<div class="text-muted">Aucune réponse stockée (commande envoyée avant l'ajout du champ mata_response — refais un envoi pour voir le diff).</div>`
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer" style="padding: 12px 20px;">
+                    <button class="btn btn-secondary" onclick="document.getElementById('decoupeDetailsModal').remove()">Fermer</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
 }
 
 function escapeDecoupe(s) {
