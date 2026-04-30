@@ -56,6 +56,51 @@ router.get('/external-url', (req, res) => {
 // point_vente. Format de retour: { "Mbao": 11700, "Sacre Coeur": 4500 }.
 // Utilisée par l'écran Réconciliation pour afficher les commandes inter-PV
 // à côté des ventes saisies.
+// Total des commandes découpe sur une plage de dates, optionnellement
+// filtrée par point_vente. Utilisé par l'écran Visualisation pour afficher
+// le total des commandes découpe en parallèle des ventes saisies.
+router.get('/sum-range', async (req, res) => {
+    try {
+        const dateDebut = req.query.dateDebut;
+        const dateFin = req.query.dateFin || dateDebut;
+        const pointVente = req.query.pointVente && req.query.pointVente !== 'tous' ? req.query.pointVente : null;
+        if (!dateDebut || !/^\d{4}-\d{2}-\d{2}$/.test(dateDebut)) {
+            return res.status(400).json({ success: false, error: 'dateDebut YYYY-MM-DD requis.' });
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFin)) {
+            return res.status(400).json({ success: false, error: 'dateFin YYYY-MM-DD invalide.' });
+        }
+        const replacements = { d1: dateDebut, d2: dateFin };
+        let where = `DATE(created_at) >= :d1 AND DATE(created_at) <= :d2`;
+        // Si un PV est demandé et qu'il s'agit du tenant, on accepte aussi
+        // les lignes legacy avec point_vente = nom de centre (rétro-compat
+        // avec le bug d'avant le fix).
+        const tenantPV = tenant.name || tenant.slug || '';
+        const isTenantPV = pointVente && (pointVente === tenantPV);
+        if (pointVente && !isTenantPV) {
+            where += ` AND point_vente = :pv`;
+            replacements.pv = pointVente;
+        } else if (isTenantPV) {
+            // tenant PV: inclure point_vente=tenantPV OU centres connus
+            const centresList = parseCentres();
+            const placeholders = centresList.map((_, i) => `:c${i}`).join(',');
+            centresList.forEach((c, i) => { replacements[`c${i}`] = c; });
+            where += ` AND (point_vente = :tpv${centresList.length ? ` OR point_vente IN (${placeholders})` : ''})`;
+            replacements.tpv = tenantPV;
+        }
+        const rows = await sequelize.query(
+            `SELECT COALESCE(SUM(montant_total), 0) AS total FROM decoupe_order_logs WHERE ${where}`,
+            { replacements, type: sequelize.QueryTypes.SELECT }
+        );
+        const total = rows && rows[0] ? Number(rows[0].total) || 0 : 0;
+        console.log(`[sum-range] ${dateDebut}→${dateFin} pv=${pointVente || 'tous'} → ${total}`);
+        res.json({ success: true, total });
+    } catch (error) {
+        console.error('[decoupe-forward] /sum-range error', error);
+        res.status(500).json({ success: false, error: error.message, total: 0 });
+    }
+});
+
 router.get('/sum-by-pv', async (req, res) => {
     try {
         const dateStr = req.query.date; // YYYY-MM-DD

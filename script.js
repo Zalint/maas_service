@@ -3769,6 +3769,31 @@ async function chargerVentes() {
             if (montantTotalElement) {
                 montantTotalElement.textContent = `${montantTotal.toLocaleString('fr-FR')} FCFA`;
             }
+
+            // Charger le total commandes découpe sur la même plage / PV.
+            // Best-effort: si l'endpoint échoue, on affiche 0 sans bloquer.
+            try {
+                const params = new URLSearchParams();
+                if (debut) params.append('dateDebut', debut);
+                params.append('dateFin', fin || debut);
+                if (pointVente && pointVente !== 'tous') params.append('pointVente', pointVente);
+                const respDecoupe = await fetch(`/api/decoupe/sum-range?${params.toString()}`, { credentials: 'include' });
+                let totalDecoupe = 0;
+                if (respDecoupe.ok) {
+                    const dataD = await respDecoupe.json();
+                    totalDecoupe = (dataD && dataD.success) ? Number(dataD.total) || 0 : 0;
+                }
+                const elD = document.getElementById('montant-total-decoupe');
+                if (elD) elD.textContent = `${totalDecoupe.toLocaleString('fr-FR')} FCFA`;
+                const elC = document.getElementById('montant-total-combine');
+                if (elC) elC.textContent = `${(montantTotal + totalDecoupe).toLocaleString('fr-FR')} FCFA`;
+            } catch (e) {
+                console.warn('Échec chargement total découpe:', e);
+                const elD = document.getElementById('montant-total-decoupe');
+                if (elD) elD.textContent = '0 FCFA';
+                const elC = document.getElementById('montant-total-combine');
+                if (elC) elC.textContent = `${montantTotal.toLocaleString('fr-FR')} FCFA`;
+            }
             
             // Afficher la première page
             afficherPageVentes(1);
@@ -3803,6 +3828,10 @@ async function chargerVentes() {
         if (montantTotalElement) {
             montantTotalElement.textContent = '0 FCFA';
         }
+        const elD = document.getElementById('montant-total-decoupe');
+        if (elD) elD.textContent = '0 FCFA';
+        const elC = document.getElementById('montant-total-combine');
+        if (elC) elC.textContent = '0 FCFA';
     } finally {
         // Nettoyer la référence à la requête courante
         if (currentVentesRequest) {
