@@ -12,6 +12,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
 const configService = require('../db/config-service');
+const { sequelize } = require('../db');
 const { User, PointVente, Category, Produit, PrixPointVente, PrixHistorique } = require('../db/models');
 const { Op } = require('sequelize');
 
@@ -654,13 +655,14 @@ router.post('/produits', requireAdmin, async (req, res) => {
               prix_defaut: prixDefaut,
               prix_alternatifs: alternatives
             };
-            const hasParent = await Produit.findOne({
-              where: {
-                type_catalogue: 'inventaire',
-                ventes: { [Op.contains]: [produitName] }
-              },
-              attributes: ['id']
-            }).catch(() => null);
+            // Requête brute pour éviter les soucis de cast TEXT[] vs VARCHAR[]
+            // que Sequelize peut rencontrer avec Op.contains. La requête est
+            // paramétrée donc safe.
+            const parentRows = await sequelize.query(
+              `SELECT id FROM produits WHERE type_catalogue = 'inventaire' AND :nom = ANY(ventes) LIMIT 1`,
+              { replacements: { nom: produitName }, type: sequelize.QueryTypes.SELECT }
+            );
+            const hasParent = parentRows && parentRows.length > 0;
             if (hasParent && !produit.prix_personnalise) {
               updatePayload.prix_personnalise = true;
               console.log(`  🔒 ${produitName}: prix détaché du parent inventaire`);
@@ -746,10 +748,14 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
         console.log(`  ✅ Produit créé: ${produitName}${categorieAffichage ? ` (catégorie: ${categorieAffichage})` : ''}`);
       } else {
         const oldPrix = parseFloat(produit.prix_defaut);
-        const oldAlternatives = produit.prix_alternatifs || [];
+        // DECIMAL[] revient de Postgres comme tableau de strings.
+        // On normalise en numbers avant comparaison sinon JSON.stringify(["3700.00"]) !== JSON.stringify([3700])
+        // déclenche faussement priceChanged à chaque save.
+        const oldAlternatives = (produit.prix_alternatifs || []).map((p) => parseFloat(p));
+        const newAlternatives = (alternatives || []).map((p) => parseFloat(p));
         const oldVentes = Array.isArray(produit.ventes) ? produit.ventes : [];
         const needsUpdate = oldPrix !== prixDefaut ||
-          JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives) ||
+          JSON.stringify(oldAlternatives) !== JSON.stringify(newAlternatives) ||
           produit.mode_stock !== modeStock ||
           produit.unite_stock !== uniteStock ||
           produit.categorie_affichage !== categorieAffichage ||
@@ -765,7 +771,7 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
             });
             priceChanged = true;
           }
-          if (JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives)) {
+          if (JSON.stringify(oldAlternatives) !== JSON.stringify(newAlternatives)) {
             priceChanged = true;
           }
 
@@ -877,12 +883,14 @@ router.post('/produits/:nom/reattach', requireAdmin, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Produit vente introuvable' });
     }
 
-    const parent = await Produit.findOne({
-      where: {
-        type_catalogue: 'inventaire',
-        ventes: { [Op.contains]: [nom] }
-      }
-    });
+    // Requête brute pour éviter le souci de cast TEXT[] avec Op.contains.
+    const parentRows = await sequelize.query(
+      `SELECT id FROM produits WHERE type_catalogue = 'inventaire' AND :nom = ANY(ventes) LIMIT 1`,
+      { replacements: { nom }, type: sequelize.QueryTypes.SELECT }
+    );
+    const parent = parentRows && parentRows.length > 0
+      ? await Produit.findByPk(parentRows[0].id)
+      : null;
     if (!parent) {
       return res.status(400).json({
         success: false,
