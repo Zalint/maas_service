@@ -18,6 +18,7 @@ const UserPointVente = require('./UserPointVente');
 const Category = require('./Category');
 const InventaireCategory = require('./InventaireCategory');
 const Produit = require('./Produit');
+const DecoupeOrderLog = require('./DecoupeOrderLog');
 const PrixPointVente = require('./PrixPointVente');
 const PrixHistorique = require('./PrixHistorique');
 
@@ -193,6 +194,7 @@ module.exports = {
   Category,
   InventaireCategory,
   Produit,
+  DecoupeOrderLog,
   PrixPointVente,
   PrixHistorique,
   

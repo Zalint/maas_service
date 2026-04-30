@@ -20,6 +20,7 @@
 const express = require('express');
 const router = express.Router();
 const tenant = require('../config/tenant');
+const { DecoupeOrderLog } = require('../db/models');
 
 router.post('/send', async (req, res) => {
     try {
@@ -94,11 +95,53 @@ router.post('/send', async (req, res) => {
             });
         }
 
-        console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${data.commande_ref || data.ref || '?'} pour ${point_vente}`);
-        res.json({ success: true, ...data });
+        const ref = data.commande_ref || data.ref || (data.data && data.data.commande_ref) || null;
+        console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${point_vente}`);
+
+        // Journal local pour la tab "Mes commandes". Best-effort: si l'insert
+        // échoue, la commande est quand même envoyée à Mata avec succès, on
+        // log juste l'incident.
+        try {
+            await DecoupeOrderLog.create({
+                commande_ref: ref,
+                point_vente,
+                point_vente_executant: centre,
+                produits: payload.produits,
+                montant_total: payload.montant_total,
+                nom_client: payload.nom_client || null,
+                numero_client: payload.numero_client || null,
+                adresse_client: payload.adresse_client || null,
+                instructions_client: payload.instructions_client || null,
+                cree_par: payload.cree_par
+            });
+        } catch (logErr) {
+            console.error('[decoupe-forward] échec journalisation locale:', logErr.message);
+        }
+
+        res.json({ success: true, ...data, commande_ref: ref });
     } catch (error) {
         console.error('[decoupe-forward] error', error);
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/decoupe/mine
+ * Liste les commandes envoyées par ce tenant. Pas de filtrage par utilisateur,
+ * juste par tenant (la table est déjà scopée par schéma Postgres en multi-tenant).
+ * Retourne les 100 dernières par défaut.
+ */
+router.get('/mine', async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+        const rows = await DecoupeOrderLog.findAll({
+            order: [['created_at', 'DESC']],
+            limit
+        });
+        res.json({ success: true, commandes: rows });
+    } catch (error) {
+        console.error('[decoupe-forward] /mine error', error);
+        res.status(500).json({ success: false, error: error.message, commandes: [] });
     }
 });
 

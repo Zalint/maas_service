@@ -1710,44 +1710,6 @@ async function confirmerPaiement(event) {
         // Success
         console.log('✅ Ventes enregistrées avec succès');
 
-        // 🔪 Envoi au centre de découpe Mata si l'utilisateur l'a coché.
-        // Best-effort: une erreur n'annule pas la vente déjà enregistrée localement.
-        const envoyerDecoupeCheckbox = document.getElementById('envoyerCentreDecoupe');
-        if (envoyerDecoupeCheckbox && envoyerDecoupeCheckbox.checked) {
-            try {
-                const decoupeResp = await fetch('/api/decoupe/send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({
-                        point_vente: pointVente,
-                        produits: cart.map((item) => ({
-                            categorie: item.category,
-                            produit: item.name,
-                            prixUnit: item.price,
-                            nombre: item.quantity,
-                            montant: item.price * item.quantity
-                        })),
-                        montant_total: total,
-                        nom_client: clientInfo.nom,
-                        numero_client: clientInfo.numero,
-                        adresse_client: clientInfo.adresse,
-                        instructions_client: clientInfo.instructions
-                    })
-                });
-                const decoupeData = await decoupeResp.json();
-                if (decoupeData.success) {
-                    const ref = decoupeData.commande_ref || decoupeData.ref || '';
-                    showToast(`🔪 Commande envoyée au centre de découpe${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
-                } else {
-                    showToast(`⚠️ Vente enregistrée, mais l'envoi au centre de découpe a échoué: ${decoupeData.error || ''}`, 'warning', 8000);
-                }
-            } catch (e) {
-                console.error('Envoi centre de découpe:', e);
-                showToast('⚠️ Vente enregistrée, mais l\'envoi au centre de découpe a échoué (réseau).', 'warning', 8000);
-            }
-        }
-
         // 🆕 Appliquer le crédit client si demandé (synchrone avec attente)
         const useCreditCheckbox = document.getElementById('useCredit');
         if (useCreditCheckbox && useCreditCheckbox.checked && clientInfo.numero) {
@@ -1803,11 +1765,6 @@ async function confirmerPaiement(event) {
         const surPlaceCheckbox = document.getElementById('commandeSurPlace');
         if (surPlaceCheckbox) {
             surPlaceCheckbox.checked = false;
-        }
-        // Reset checkbox "Envoyer au centre de découpe"
-        const envoyerCheckbox = document.getElementById('envoyerCentreDecoupe');
-        if (envoyerCheckbox) {
-            envoyerCheckbox.checked = false;
         }
         
         // Show success feedback
@@ -9859,5 +9816,186 @@ function startPrecommandesCheck() {
     checkPrecommandesInterval = setInterval(() => {
         loadPrecommandes();
     }, 5 * 60 * 1000); // 5 minutes
+}
+
+// ============================================================================
+// Centre de Découpe — modal POS
+// ============================================================================
+
+function ouvrirModalDecoupe() {
+    if (!Array.isArray(cart) || cart.length === 0) {
+        showToast('Le panier est vide. Ajoutez des produits avant d\'envoyer au centre de découpe.', 'warning');
+        return;
+    }
+    rendrePanierDecoupe();
+    switchDecoupeTab('new');
+    const modal = document.getElementById('modalCentreDecoupe');
+    if (modal) modal.style.display = 'flex';
+}
+
+function fermerModalDecoupe() {
+    const modal = document.getElementById('modalCentreDecoupe');
+    if (modal) modal.style.display = 'none';
+}
+
+function switchDecoupeTab(name) {
+    const tabs = { new: 'tab-decoupe-new', mine: 'tab-decoupe-mine' };
+    const panes = { new: 'decoupePane-new', mine: 'decoupePane-mine' };
+    Object.entries(tabs).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('active', k === name);
+    });
+    Object.entries(panes).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = k === name ? '' : 'none';
+    });
+    if (name === 'mine') chargerMesCommandesDecoupe();
+}
+
+function rendrePanierDecoupe() {
+    const tbody = document.getElementById('decoupePanierBody');
+    const totalSpan = document.getElementById('decoupePanierTotal');
+    if (!tbody || !totalSpan) return;
+    let total = 0;
+    let html = '';
+    for (const item of cart) {
+        const montant = (item.price || 0) * (item.quantity || 0);
+        total += montant;
+        html += `
+            <tr>
+                <td>${escapeDecoupe(item.name)}</td>
+                <td class="text-end">${formatNumberDecoupe(item.price)}</td>
+                <td class="text-center">${item.quantity}</td>
+                <td class="text-end">${formatNumberDecoupe(montant)}</td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html || '<tr><td colspan="4" class="text-center text-muted">Panier vide</td></tr>';
+    totalSpan.textContent = formatNumberDecoupe(total);
+}
+
+async function envoyerCommandeDecoupe(event) {
+    if (!Array.isArray(cart) || cart.length === 0) {
+        showToast('Panier vide.', 'warning');
+        return;
+    }
+    const nom = (document.getElementById('decoupeNomClient') || {}).value || '';
+    const numero = (document.getElementById('decoupeNumClient') || {}).value || '';
+    const adresse = (document.getElementById('decoupeAdrClient') || {}).value || '';
+    const instructions = (document.getElementById('decoupeInstructions') || {}).value || '';
+
+    if (!nom.trim() || !numero.trim()) {
+        showToast('Nom et téléphone du client sont requis.', 'warning');
+        return;
+    }
+
+    const pointVente = (document.getElementById('pointVenteSelector') || {}).value || (window.currentUser && window.currentUser.pointVente) || '';
+    const total = cart.reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
+    const btn = event && event.target ? event.target.closest('button') : null;
+    const original = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Envoi...';
+    }
+    try {
+        const resp = await fetch('/api/decoupe/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                point_vente: pointVente,
+                produits: cart.map((item) => ({
+                    categorie: item.category,
+                    produit: item.name,
+                    prixUnit: item.price,
+                    nombre: item.quantity,
+                    montant: (item.price || 0) * (item.quantity || 0)
+                })),
+                montant_total: total,
+                nom_client: nom,
+                numero_client: numero,
+                adresse_client: adresse,
+                instructions_client: instructions
+            })
+        });
+        const data = await resp.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'envoi échoué'}`, 'danger', 8000);
+            return;
+        }
+        const ref = data.commande_ref || data.ref || '';
+        showToast(`🔪 Commande envoyée${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
+        // Reset les champs client + bascule sur la liste pour montrer la nouvelle commande
+        ['decoupeNomClient', 'decoupeNumClient', 'decoupeAdrClient', 'decoupeInstructions'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        switchDecoupeTab('mine');
+    } catch (e) {
+        console.error('envoyerCommandeDecoupe:', e);
+        showToast('Erreur réseau lors de l\'envoi.', 'danger', 8000);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+}
+
+async function chargerMesCommandesDecoupe() {
+    const tbody = document.getElementById('decoupeMineBody');
+    const badge = document.getElementById('decoupeMineBadge');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>';
+    try {
+        const resp = await fetch('/api/decoupe/mine?limit=100', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            return;
+        }
+        const rows = data.commandes || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Aucune commande envoyée.</td></tr>';
+            if (badge) badge.style.display = 'none';
+            return;
+        }
+        if (badge) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        }
+        let html = '';
+        for (const row of rows) {
+            const date = row.created_at ? new Date(row.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+            const produitsList = Array.isArray(row.produits)
+                ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
+                : '';
+            html += `
+                <tr>
+                    <td>${escapeDecoupe(date)}</td>
+                    <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
+                    <td>${escapeDecoupe(row.point_vente || '')}</td>
+                    <td><small>${escapeDecoupe(produitsList)}</small></td>
+                    <td>${escapeDecoupe(row.nom_client || '')}<br><small class="text-muted">${escapeDecoupe(row.numero_client || '')}</small></td>
+                    <td class="text-end">${formatNumberDecoupe(row.montant_total)} F</td>
+                </tr>
+            `;
+        }
+        tbody.innerHTML = html;
+    } catch (e) {
+        console.error('chargerMesCommandesDecoupe:', e);
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Erreur réseau</td></tr>';
+    }
+}
+
+function escapeDecoupe(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+function formatNumberDecoupe(n) {
+    const num = Number(n) || 0;
+    return num.toLocaleString('fr-FR');
 }
 

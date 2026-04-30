@@ -107,6 +107,33 @@ async function updateSchema() {
             console.log('Table inventaire_categories créée et pré-remplie');
         }
 
+        // Journal local des commandes envoyées au centre de découpe Mata.
+        // Sequelize.sync ne tournera pas sur cette table en prod (initiale via
+        // tenant:init), donc on la crée idempotemment ici.
+        const decoupeLogTableExists = await checkTableExists('decoupe_order_logs');
+        if (!decoupeLogTableExists) {
+            await sequelize.query(`
+                CREATE TABLE decoupe_order_logs (
+                    id SERIAL PRIMARY KEY,
+                    commande_ref VARCHAR(50),
+                    point_vente VARCHAR(100) NOT NULL,
+                    point_vente_executant VARCHAR(100),
+                    produits JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    montant_total NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                    nom_client VARCHAR(150),
+                    numero_client VARCHAR(50),
+                    adresse_client VARCHAR(255),
+                    instructions_client TEXT,
+                    cree_par VARCHAR(150),
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            `);
+            await sequelize.query(`CREATE INDEX idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`);
+            await sequelize.query(`CREATE INDEX idx_decoupe_log_created_at ON decoupe_order_logs(created_at DESC)`);
+            console.log('Table decoupe_order_logs créée');
+        }
+
         // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).
         // Default 'Autres'; on pré-remplit les noms connus pour éviter à l'admin de tout
         // reclasser à la main au premier déploiement. Les nouvelles catégories créées

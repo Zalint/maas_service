@@ -114,9 +114,14 @@
         <div class="pos-main">
             <!-- Left Panel - Products -->
             <div class="pos-products">
-                <div class="products-header">
-                    <i class="fas fa-box"></i>
-                    <h2>Produits</h2>
+                <div class="products-header" style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-box"></i>
+                        <h2 style="margin: 0;">Produits</h2>
+                    </div>
+                    <button type="button" id="btnOuvrirDecoupe" class="btn btn-danger btn-sm" onclick="ouvrirModalDecoupe()" title="Centre de découpe — envoyer le panier comme commande à préparer">
+                        <i class="fas fa-cut"></i> Découpe
+                    </button>
                 </div>
                 
                 <!-- Search -->
@@ -561,19 +566,6 @@
                         </div>
                     </div>
 
-                    <!-- Checkbox Envoi au centre de découpe -->
-                    <div style="margin-bottom: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffe69c; border-radius: 8px;">
-                        <div>
-                            <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
-                                <input type="checkbox" id="envoyerCentreDecoupe" style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
-                                <span>🔪 Envoyer au centre de découpe</span>
-                            </label>
-                            <small style="color: #856404; margin-left: 28px; display: block; margin-top: 5px; font-size: 0.875rem;">
-                                Une commande sera créée dans le système Mata pour préparation au centre de découpe.
-                            </small>
-                        </div>
-                    </div>
-                    
                     <div class="row">
                         <div class="col-6">
                             <input type="text" id="clientName" class="form-control" placeholder="Nom du client (optionnel)">
@@ -1222,6 +1214,101 @@
     </div>
 
     <!-- Modal Commandes Web (Sans backdrop, déplaçable et redimensionnable) -->
+    <!-- Modal Centre de Découpe -->
+    <div class="modal-overlay" id="modalCentreDecoupe" style="display: none;">
+        <div class="modal-content" style="max-width: 1100px; max-height: 90vh; overflow: auto;">
+            <div class="modal-header" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%); color: white;">
+                <h3 style="margin: 0; display: flex; align-items: center; gap: 10px;">
+                    <i class="fas fa-industry"></i> Centre de Découpe
+                </h3>
+                <button type="button" class="btn-close-modal" onclick="fermerModalDecoupe()" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
+            </div>
+
+            <ul class="nav nav-tabs" id="decoupeTabs" role="tablist" style="padding: 0 20px; margin-top: 8px;">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="tab-decoupe-new" type="button" onclick="switchDecoupeTab('new')">
+                        <i class="fas fa-plus-circle"></i> Nouvelle commande
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="tab-decoupe-mine" type="button" onclick="switchDecoupeTab('mine')">
+                        <i class="fas fa-list-ul"></i> Mes commandes <span class="badge bg-danger ms-1" id="decoupeMineBadge" style="display: none;">0</span>
+                    </button>
+                </li>
+            </ul>
+
+            <div class="modal-body" style="padding: 20px;">
+                <!-- Onglet Nouvelle commande -->
+                <div id="decoupePane-new">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h4><i class="fas fa-shopping-basket"></i> Produits du panier</h4>
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Produit</th>
+                                        <th class="text-end">PU</th>
+                                        <th class="text-center">Qté</th>
+                                        <th class="text-end">Montant</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="decoupePanierBody"></tbody>
+                            </table>
+                            <div class="text-end" style="font-size: 1.15rem; color: #6f42c1; font-weight: 700;">
+                                Total : <span id="decoupePanierTotal">0</span> FCFA
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h4><i class="fas fa-user"></i> Informations client</h4>
+                            <div class="mb-2">
+                                <input type="text" id="decoupeNomClient" class="form-control" placeholder="Nom du client *">
+                            </div>
+                            <div class="mb-2">
+                                <input type="text" id="decoupeNumClient" class="form-control" placeholder="Téléphone *">
+                            </div>
+                            <div class="mb-2">
+                                <input type="text" id="decoupeAdrClient" class="form-control" placeholder="Adresse de livraison">
+                            </div>
+                            <div class="mb-2">
+                                <textarea id="decoupeInstructions" class="form-control" rows="3" placeholder="Instructions spéciales..."></textarea>
+                            </div>
+                            <button class="btn btn-danger w-100" onclick="envoyerCommandeDecoupe(event)">
+                                <i class="fas fa-paper-plane"></i> Envoyer au Centre de Découpe
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Onglet Mes commandes -->
+                <div id="decoupePane-mine" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h4 class="mb-0"><i class="fas fa-list"></i> Commandes envoyées</h4>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="chargerMesCommandesDecoupe()">
+                            <i class="fas fa-sync"></i> Rafraîchir
+                        </button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Réf</th>
+                                    <th>Point de vente</th>
+                                    <th>Produits</th>
+                                    <th>Client</th>
+                                    <th class="text-end">Montant</th>
+                                </tr>
+                            </thead>
+                            <tbody id="decoupeMineBody">
+                                <tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal Clôture de Caisse -->
     <div class="modal fade" id="clotureCaisseModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
