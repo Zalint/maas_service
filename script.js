@@ -5831,6 +5831,13 @@ function initTableauStock() {
     }
     
     console.log('%c=== Fin initTableauStock ===', 'background: #222; color: #bada55;');
+
+    // Appliquer immédiatement les filtres (incl. masquer les produits auto par
+    // défaut). Sans ça, les lignes que ce render vient d'ajouter ignorent le
+    // dernier filtrerStock() qui a tourné avant qu'elles existent.
+    if (typeof filtrerStock === 'function') {
+        try { filtrerStock(); } catch (e) { console.warn('filtrerStock post-init:', e); }
+    }
 }
 
 // Configuration pour l'inventaire to refac point de vente
