@@ -75,6 +75,38 @@ async function updateSchema() {
             console.log('Colonnes ventes / prix_personnalise vérifiées/ajoutées dans la table produits');
         }
 
+        // Table inventaire_categories: persistance par tenant du mapping
+        // nom de catégorie d'inventaire -> famille (Boucherie/Epicerie/Autres).
+        // Les catégories d'inventaire elles-mêmes restent dérivées du champ
+        // categorie_affichage côté Produit; cette table sert uniquement à
+        // stocker le regroupement haut niveau partagé entre admins.
+        const invCatTableExists = await checkTableExists('inventaire_categories');
+        if (!invCatTableExists) {
+            await sequelize.query(`
+                CREATE TABLE inventaire_categories (
+                    nom VARCHAR(100) PRIMARY KEY,
+                    famille VARCHAR(20) NOT NULL DEFAULT 'Autres',
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            `);
+            // Pré-remplir avec les 6 catégories logiques standard pour matcher
+            // les défauts hardcodés du frontend. Les catégories personnalisées
+            // tomberont sur 'Autres' lors de leur première classification via
+            // l'UI (PUT inventaire-categories/:nom).
+            await sequelize.query(`
+                INSERT INTO inventaire_categories (nom, famille) VALUES
+                  ('Viandes', 'Boucherie'),
+                  ('Abats et Sous-produits', 'Boucherie'),
+                  ('Produits sur Pieds', 'Boucherie'),
+                  ('Œufs et Produits Laitiers', 'Epicerie'),
+                  ('Déchets', 'Autres'),
+                  ('Autres', 'Autres')
+                ON CONFLICT (nom) DO NOTHING
+            `);
+            console.log('Table inventaire_categories créée et pré-remplie');
+        }
+
         // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).
         // Default 'Autres'; on pré-remplit les noms connus pour éviter à l'admin de tout
         // reclasser à la main au premier déploiement. Les nouvelles catégories créées

@@ -13,7 +13,7 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const configService = require('../db/config-service');
 const { sequelize } = require('../db');
-const { User, PointVente, Category, Produit, PrixPointVente, PrixHistorique } = require('../db/models');
+const { User, PointVente, Category, InventaireCategory, Produit, PrixPointVente, PrixHistorique } = require('../db/models');
 const { Op } = require('sequelize');
 
 // Middleware pour vérifier que l'utilisateur est admin
@@ -389,6 +389,49 @@ router.put('/categories/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, data: category });
   } catch (error) {
     console.error('Erreur mise à jour catégorie:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =====================================================
+// CATEGORIES D'INVENTAIRE (famille mapping)
+// =====================================================
+
+/**
+ * GET /api/admin/config/inventaire-categories
+ * Renvoie la liste des familles par catégorie d'inventaire
+ * (table inventaire_categories). Format: { "Viandes": "Boucherie", ... }
+ */
+router.get('/inventaire-categories', requireAdminOrSupervisor, async (req, res) => {
+  try {
+    const rows = await InventaireCategory.findAll();
+    const map = {};
+    for (const r of rows) {
+      map[r.nom] = r.famille;
+    }
+    res.json({ success: true, familles: map });
+  } catch (error) {
+    console.error('Erreur récupération inventaire-categories:', error);
+    res.status(500).json({ success: false, error: error.message, familles: {} });
+  }
+});
+
+/**
+ * PUT /api/admin/config/inventaire-categories/:nom
+ * Upsert: stocke ou met à jour la famille d'une catégorie d'inventaire.
+ * Body: { famille: 'Boucherie' | 'Epicerie' | 'Autres' }
+ */
+router.put('/inventaire-categories/:nom', requireAdmin, async (req, res) => {
+  try {
+    const { nom } = req.params;
+    const { famille } = req.body;
+    if (!['Boucherie', 'Epicerie', 'Autres'].includes(famille)) {
+      return res.status(400).json({ success: false, error: 'Famille invalide (attendu: Boucherie, Epicerie, Autres)' });
+    }
+    const [row] = await InventaireCategory.upsert({ nom, famille });
+    res.json({ success: true, data: row });
+  } catch (error) {
+    console.error('Erreur upsert inventaire-categories:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

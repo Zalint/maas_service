@@ -1235,13 +1235,17 @@ async function chargerConfigInventaire() {
         
         if (data.success) {
             currentInventaireConfig = data.produitsInventaire;
-            
+
             // Mettre à jour les catégories personnalisées depuis le serveur
             if (data.categoriesPersonnalisees && data.categoriesPersonnalisees.length > 0) {
                 localStorage.setItem('inventaireCategoriesPersonnalisees', JSON.stringify(data.categoriesPersonnalisees));
                 console.log('📁 Catégories personnalisées chargées:', data.categoriesPersonnalisees);
             }
-            
+
+            // Charger le mapping famille depuis la table inventaire_categories
+            // avant le premier rendu pour éviter un flash 'Autres' partout.
+            await chargerInventaireFamilleMap();
+
             afficherInventaireConfig();
         } else {
             console.error('Erreur lors du chargement de la configuration d\'inventaire:', data.message);
@@ -1592,25 +1596,58 @@ function getCategorieInventaireDeleteButton(categorie) {
     }
 }
 
-// Helpers famille pour l'inventaire (persistance localStorage).
-function chargerInventaireFamilleMap() {
+// Helpers famille pour l'inventaire (persistance DB via inventaire_categories).
+// Cache en mémoire chargé au premier rendu de l'onglet, rafraîchi à chaque save.
+let inventaireFamilleMap = null;
+
+async function chargerInventaireFamilleMap() {
     try {
-        return JSON.parse(localStorage.getItem('inventaireCategoriesFamille') || '{}');
+        const response = await fetch('/api/admin/config/inventaire-categories', {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (data.success) {
+            inventaireFamilleMap = data.familles || {};
+        } else {
+            console.warn('Echec chargement inventaire-categories:', data.error);
+            inventaireFamilleMap = {};
+        }
     } catch (e) {
-        return {};
+        console.error('chargerInventaireFamilleMap:', e);
+        inventaireFamilleMap = {};
     }
+    return inventaireFamilleMap;
 }
+
 function familleDeCategorieInventaire(nomCategorie) {
-    const overrides = chargerInventaireFamilleMap();
-    if (overrides[nomCategorie]) return overrides[nomCategorie];
+    if (inventaireFamilleMap && inventaireFamilleMap[nomCategorie]) {
+        return inventaireFamilleMap[nomCategorie];
+    }
     return inventaireFamilleDefauts[nomCategorie] || 'Autres';
 }
-function changerFamilleCategorieInventaire(nomCategorie, nouvelleFamille) {
-    const map = chargerInventaireFamilleMap();
-    map[nomCategorie] = nouvelleFamille;
-    localStorage.setItem('inventaireCategoriesFamille', JSON.stringify(map));
-    afficherInventaireConfig();
+
+async function changerFamilleCategorieInventaire(nomCategorie, nouvelleFamille) {
+    try {
+        const response = await fetch(`/api/admin/config/inventaire-categories/${encodeURIComponent(nomCategorie)}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ famille: nouvelleFamille })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        if (!inventaireFamilleMap) inventaireFamilleMap = {};
+        inventaireFamilleMap[nomCategorie] = nouvelleFamille;
+        afficherInventaireConfig();
+    } catch (e) {
+        console.error('changerFamilleCategorieInventaire:', e);
+        showToast('Erreur réseau lors du changement de famille.');
+    }
 }
+
 function setFamilleFilterInventaire(famille) {
     currentInventaireFamilleFilter = famille;
     afficherInventaireConfig();
