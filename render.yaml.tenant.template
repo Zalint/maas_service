@@ -10,11 +10,17 @@
 # Tenant data isolation is enforced via Postgres schemas — db/index.js
 # runs `SET search_path TO "<DB_SCHEMA>"` on every connection.
 #
-# preDeployCommand runs `npm run tenant:init` on every deploy. The
+# tenant:init is chained into startCommand on every restart. The
 # script is idempotent: it creates the schema if missing, syncs
 # tables (no-op if already in sync), seeds catalog/admin/POS only on
 # first run. Safe to run on every deploy; means a brand new tenant
-# gets a working DB without any manual Render-shell step.
+# gets a working DB without any manual Render-shell step. We chain
+# into startCommand instead of preDeployCommand because Render
+# Starter plans don't expose preDeployCommand in the dashboard UI.
+# If your plan does expose it (Standard+), you can split:
+#   preDeployCommand: npm run tenant:init
+#   startCommand:     npm start
+# for cleaner deploy logs.
 #
 # To onboard a new tenant:
 #   1. Run: npm run tenant:create -- --slug=<slug> --name="<Display Name>"
@@ -32,10 +38,9 @@ services:
     name: maas-TENANT_SLUG          # e.g. maas-mbao
     env: node
     plan: starter
-    branch: maas-app
+    branch: maas_service
     buildCommand: npm install && npm run tenant:apply
-    preDeployCommand: npm run tenant:init    # idempotent; runs every deploy
-    startCommand: npm start
+    startCommand: npm run tenant:init && npm start    # init is idempotent
     envVars:
       - key: TENANT_SLUG
         value: TENANT_SLUG          # e.g. mbao
@@ -72,7 +77,7 @@ services:
     name: maas-TENANT_SLUG-stock-copy
     env: node
     plan: starter
-    branch: maas-app
+    branch: maas_service
     buildCommand: npm install && npm run tenant:apply
     schedule: "0 5 * * *"           # daily 5am UTC
     startCommand: node scripts/copy-stock-cron.js

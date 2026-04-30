@@ -75,20 +75,25 @@ async function updateSchema() {
  */
 async function checkTableExists(tableName) {
     try {
+        // Use current_schema() so this works correctly under
+        // schema-per-tenant (Variant A). Hardcoding 'public' would
+        // always return false for non-public tenants and force a
+        // re-sync on every boot — harmless but wrong, and would also
+        // mask whether the table genuinely exists in this tenant.
         const query = `
             SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'public'
+                SELECT FROM information_schema.tables
+                WHERE table_schema = current_schema()
                 AND table_name = :tableName
             )
         `;
-        
+
         const result = await sequelize.query(query, {
             replacements: { tableName },
             type: sequelize.QueryTypes.SELECT,
             plain: true
         });
-        
+
         return result.exists;
     } catch (error) {
         console.error(`Erreur lors de la vérification de l'existence de la table ${tableName}:`, error);
@@ -109,10 +114,14 @@ async function checkColumnsExist(tableName, columnNames) {
         });
         replacements.tableName = tableName;
         
+        // Constrain to current_schema() — without it, this would match
+        // columns in any schema named the same way, which under
+        // schema-per-tenant could give false positives across tenants.
         const query = `
             SELECT COUNT(*) as count
             FROM information_schema.columns
-            WHERE table_name = :tableName
+            WHERE table_schema = current_schema()
+            AND table_name = :tableName
             AND column_name IN (${placeholders})
         `;
         

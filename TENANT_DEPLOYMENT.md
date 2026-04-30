@@ -54,29 +54,34 @@ For **each** of `mbao`, `keur-massar`, `sacre-coeur` (or any new tenant):
 ### 1. Create a Render Web Service
 
 - Dashboard → New → Web Service
-- Connect this Git repo and pick branch `maas-app`
+- Connect this Git repo and pick branch `maas_service`
 - Name: `maas-<slug>` (e.g. `maas-mbao`)
 - Runtime: Node
 - Build command:
   ```
   npm install && npm run tenant:apply
   ```
-- **Pre-deploy command** *(this is what makes new tenants self-bootstrap — see step 3 below for what it does)*:
-  ```
-  npm run tenant:init
-  ```
 - Start command:
   ```
-  npm start
+  npm run tenant:init && npm start
   ```
 
-The pre-deploy command runs after the build and before traffic flips
-to the new instance, on **every deploy**. `tenant:init` is idempotent:
-on first deploy it creates the schema, syncs models, seeds catalog
-and ADMIN; on subsequent deploys it's a no-op (schema already exists,
-sync finds nothing to add, seeds skip because rows exist). So a brand
-new tenant doesn't need a manual `npm run tenant:init` step in the
-Render shell — the first successful deploy bootstraps everything.
+> **Why `tenant:init && npm start` instead of a separate Pre-Deploy
+> Command?** Render Starter plans don't expose a Pre-Deploy Command
+> field in the dashboard UI. Chaining init into the start command
+> works on every plan and is functionally equivalent: `tenant:init`
+> is idempotent (creates the schema if missing, syncs tables,
+> seeds catalog/admin/POS only on first run; ~2s no-op on
+> subsequent restarts) and `&&` ensures init failures block server
+> startup so a misconfigured tenant fails loudly instead of serving
+> traffic against a missing schema.
+>
+> If your plan does expose Pre-Deploy Command (Standard+), you can
+> split for cleaner deploy logs:
+> ```
+> Pre-Deploy Command: npm run tenant:init
+> Start Command:      npm start
+> ```
 
 ### 2. Set the env vars on the web service
 
@@ -114,11 +119,12 @@ Optional, only if the corresponding module is enabled for that tenant:
 > on every tenant — otherwise the Render service crashes on boot before
 > it even gets to the rest of the env.
 
-### 3. (Reference) What `tenant:init` does on every deploy
+### 3. (Reference) What `tenant:init` does on every restart
 
-You don't run this by hand — the `preDeployCommand` from step 1 runs
-it automatically. This section documents what it does so you can
-predict what shows up on first boot.
+You don't run this by hand — the chained `tenant:init` in the start
+command from step 1 runs it automatically before the server boots.
+This section documents what it does so you can predict what shows
+up on first boot.
 
 ```
 npm run tenant:init
