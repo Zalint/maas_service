@@ -210,37 +210,11 @@ const ReconciliationManager = (function() {
     // SECTION: AFFICHAGE DU TABLEAU DE RÉCONCILIATION
     
     // Fonction principale pour afficher les données dans le tableau
-    async function afficherReconciliation(reconciliationData, debugInfo) {
+    function afficherReconciliation(reconciliationData, debugInfo) {
         console.log('Affichage des données de réconciliation:', reconciliationData);
 
         if (debugInfo) {
             currentDebugInfo = debugInfo;
-        }
-
-        // S'assurer que le cache des commandes inter-PV est à jour pour la date
-        // affichée. On lit la date depuis plusieurs sources possibles parce que
-        // currentReconciliation peut ne pas être encore peuplé sur le chemin
-        // "Calculer" direct.
-        try {
-            const dateInput = document.getElementById('date-reconciliation');
-            const dateDisplay = document.getElementById('date-reconciliation-display');
-            const date =
-                (currentReconciliation && currentReconciliation.date) ||
-                (dateInput && dateInput.value) ||
-                (dateDisplay && dateDisplay.textContent) ||
-                null;
-            console.log('[interPV] date détectée pour pré-fetch =', JSON.stringify(date), {
-                fromCurrent: currentReconciliation && currentReconciliation.date,
-                fromInput: dateInput && dateInput.value,
-                fromDisplay: dateDisplay && dateDisplay.textContent
-            });
-            if (date) {
-                await chargerSommeDecoupeInterPV(date);
-            } else {
-                console.warn('[interPV] aucune date trouvée — fetch sauté');
-            }
-        } catch (e) {
-            console.warn('[reconciliation] échec pré-fetch inter-PV:', e.message);
         }
 
         const table = document.getElementById('reconciliation-table');
@@ -492,31 +466,22 @@ const ReconciliationManager = (function() {
                     break;
 
                 case 'commandesInterPV': {
-                    // Priorité 1: valeur persistée dans la réconciliation
-                    // sauvegardée (data.commandesInterPV). Priorité 2: live
-                    // depuis /api/decoupe/sum-by-pv (cache decoupeInterPVByPV).
-                    // Cette priorité fige la valeur affichée pour les jours
-                    // déjà sauvegardés, même si decoupe_order_logs change après.
-                    const interPV = (data.commandesInterPV != null)
-                        ? Number(data.commandesInterPV) || 0
-                        : ((decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0);
-                    console.log(`[interPV] rendu cellule pour PV="${pointVente}": data.commandesInterPV=${data.commandesInterPV}, cache[${pointVente}]=${decoupeInterPVByPV ? decoupeInterPVByPV[pointVente] : 'null'}, valeur affichée=${interPV}`);
+                    // commandesInterPV est calculé dans script.js calcReconPV
+                    // au moment du fetch, et persisté lors du save dans le
+                    // data JSONB de la réconciliation. Plus de fetch async ni
+                    // de cache module — tout vient du même flux que ventesSaisies.
+                    const interPV = Number(data.commandesInterPV) || 0;
                     cell.textContent = formatMonetaire(interPV);
                     cell.classList.add('currency');
                     if (interPV > 0) {
-                        cell.style.color = '#0d6efd'; // bleu pour distinguer
+                        cell.style.color = '#0d6efd';
                     }
                     totals.commandesInterPV = (totals.commandesInterPV || 0) + interPV;
                     break;
                 }
 
                 case 'ventesTotales': {
-                    // Recalculé à partir des ventes saisies + commandes inter-PV
-                    // (saved si présent, live sinon). Pas persisté en propre car
-                    // entièrement dérivé.
-                    const interPV = (data.commandesInterPV != null)
-                        ? Number(data.commandesInterPV) || 0
-                        : ((decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0);
+                    const interPV = Number(data.commandesInterPV) || 0;
                     const ventesTotales = (Number(data.ventesSaisies) || 0) + interPV;
                     cell.textContent = formatMonetaire(ventesTotales);
                     cell.classList.add('currency');
@@ -1265,16 +1230,11 @@ const ReconciliationManager = (function() {
                 }
             });
             
-            // Ajouter les commentaires aux données
+            // Ajouter les commentaires aux données. commandesInterPV est déjà
+            // dans reconciliationData[pv] depuis calcReconPV, on n'a rien à
+            // ajouter — il sera persisté tel quel dans le JSONB.
             Object.keys(reconciliationData).forEach(pointVente => {
                 reconciliationData[pointVente].commentaire = commentaires[pointVente] || '';
-                // Snapshot des commandes inter-PV au moment de la sauvegarde.
-                // Une fois persisté, ce nombre fige même si la table
-                // decoupe_order_logs change ensuite (ex: nettoyage, archivage).
-                // ventesTotales se recalcule à l'affichage à partir de
-                // ventesSaisies + commandesInterPV.
-                const interPVPersist = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
-                reconciliationData[pointVente].commandesInterPV = interPVPersist;
             });
             
             // Préparer les données pour la sauvegarde

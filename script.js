@@ -6609,6 +6609,30 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
     }
     console.log('[DEBUG calcReconPV] Ventes Saisies (Internal Fetch):', ventesSaisies);
     console.log('[DEBUG calcReconPV] Créances par Point de Vente:', creancesParPointVente);
+
+    // Fetch des commandes envoyées au centre de découpe pour ce jour, agrégées
+    // par point de vente. On embarque le résultat directement dans l'objet
+    // reconciliation[pointVente].commandesInterPV — pas de cache global ni
+    // de race entre fetch async et rendu sync.
+    let commandesInterPV = {};
+    try {
+        // dateSelectionnee est en format DD/MM/YYYY ; convertir en YYYY-MM-DD
+        const m = String(dateSelectionnee).match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+        const iso = m ? `${m[3]}-${m[2]}-${m[1]}` : dateSelectionnee;
+        const respCD = await fetch(`/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`, {
+            method: 'GET',
+            credentials: 'include'
+        });
+        if (respCD.ok) {
+            const cdData = await respCD.json();
+            if (cdData && cdData.success && cdData.sums) {
+                commandesInterPV = cdData.sums;
+            }
+        }
+    } catch (e) {
+        console.warn('[DEBUG calcReconPV] échec fetch decoupe sum-by-pv:', e);
+    }
+    console.log('[DEBUG calcReconPV] Commandes inter-PV (découpe):', commandesInterPV);
     
     // Initialiser les totaux pour chaque point de vente
     POINTS_VENTE_PHYSIQUES.forEach(pointVente => {
@@ -6620,6 +6644,7 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
             transferts: 0,
             ventes: 0,
             ventesSaisies: ventesSaisies[pointVente] || 0, // Use internal fetch result
+            commandesInterPV: commandesInterPV[pointVente] || 0, // Découpe envoyé ce jour
             creances: creancesParPointVente[pointVente] || 0, // Total des créances pour ce point de vente
             difference: 0,
             pourcentageEcart: 0,
