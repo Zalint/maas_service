@@ -192,13 +192,22 @@ router.post('/send', async (req, res) => {
         // ces champs (l'utilisateur Mata "Keur Bally" est associé à la clé
         // par exemple).
         const payload = {
-            produits: produits.map((p) => ({
-                categorie: p.categorie || p.category || '',
-                produit: p.produit || p.name || '',
-                prixUnit: Number(p.prixUnit != null ? p.prixUnit : p.price) || 0,
-                nombre: Number(p.nombre != null ? p.nombre : p.quantity) || 0,
-                montant: Number(p.montant != null ? p.montant : (p.price * p.quantity)) || 0
-            })),
+            produits: produits.map((p) => {
+                // Normaliser d'abord prixUnit / nombre, puis recalculer montant
+                // à partir de ces valeurs si l'appelant ne l'a pas fourni.
+                // L'ancien fallback p.price * p.quantity tombait en NaN→0
+                // pour les payloads en français (prixUnit/nombre).
+                const prixUnit = Number(p.prixUnit != null ? p.prixUnit : p.price) || 0;
+                const nombre = Number(p.nombre != null ? p.nombre : p.quantity) || 0;
+                const montant = Number(p.montant != null ? p.montant : (prixUnit * nombre)) || 0;
+                return {
+                    categorie: p.categorie || p.category || '',
+                    produit: p.produit || p.name || '',
+                    prixUnit,
+                    nombre,
+                    montant
+                };
+            }),
             pointVenteExecutant: centre,
             nomClient: nom_client || '',
             numeroClient: numero_client || '',
@@ -208,14 +217,39 @@ router.post('/send', async (req, res) => {
         if (notes) payload.notes = notes;
 
         const url = `${baseUrl.replace(/\/$/, '')}/api/commandes-decoupe/external`;
-        const upstream = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey
-            },
-            body: JSON.stringify(payload)
-        });
+        // Timeout dur sur l'appel Mata pour ne pas bloquer une requête POS si
+        // l'API distante traîne. 10s est suffisant pour un upstream sain;
+        // au-delà on renvoie 504 Gateway Timeout au client.
+        const TIMEOUT_MS = Number(process.env.MATA_DECOUPE_TIMEOUT_MS) || 10000;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        let upstream;
+        try {
+            upstream = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey
+                },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+        } catch (fetchErr) {
+            clearTimeout(timeoutId);
+            if (fetchErr && fetchErr.name === 'AbortError') {
+                console.error(`[decoupe-forward] timeout après ${TIMEOUT_MS}ms vers ${url}`);
+                return res.status(504).json({
+                    success: false,
+                    error: `Le centre de découpe Mata n'a pas répondu en moins de ${TIMEOUT_MS}ms.`
+                });
+            }
+            console.error('[decoupe-forward] erreur réseau vers Mata:', fetchErr);
+            return res.status(502).json({
+                success: false,
+                error: 'Erreur réseau lors de l\'appel au centre de découpe Mata.'
+            });
+        }
+        clearTimeout(timeoutId);
 
         const data = await upstream.json().catch(() => ({}));
         if (!upstream.ok) {
@@ -280,7 +314,10 @@ router.post('/send', async (req, res) => {
  */
 router.get('/mine', async (req, res) => {
     try {
-        const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+        // Clamp dur: parseInt accepte les négatifs, et `||` garde -5 puisque
+        // c'est truthy → on passerait limit=-5 à Sequelize. On force entre 1 et 500.
+        const parsed = parseInt(req.query.limit, 10);
+        const limit = Math.max(1, Math.min(Number.isFinite(parsed) ? parsed : 100, 500));
         const rows = await DecoupeOrderLog.findAll({
             order: [['created_at', 'DESC']],
             limit

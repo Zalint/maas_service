@@ -90,22 +90,23 @@ async function updateSchema() {
                     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             `);
-            // Pré-remplir avec les 6 catégories logiques standard pour matcher
-            // les défauts hardcodés du frontend. Les catégories personnalisées
-            // tomberont sur 'Autres' lors de leur première classification via
-            // l'UI (PUT inventaire-categories/:nom).
-            await sequelize.query(`
-                INSERT INTO inventaire_categories (nom, famille) VALUES
-                  ('Viandes', 'Boucherie'),
-                  ('Abats et Sous-produits', 'Boucherie'),
-                  ('Produits sur Pieds', 'Boucherie'),
-                  ('Œufs et Produits Laitiers', 'Epicerie'),
-                  ('Déchets', 'Autres'),
-                  ('Autres', 'Autres')
-                ON CONFLICT (nom) DO NOTHING
-            `);
-            console.log('Table inventaire_categories créée et pré-remplie');
+            console.log('Table inventaire_categories créée');
         }
+        // Pré-remplir / re-pré-remplir les 6 catégories logiques standard.
+        // ON CONFLICT DO NOTHING garantit l'idempotence: lignes existantes
+        // (avec d'éventuelles personnalisations admin) ne sont pas écrasées,
+        // et les manquantes sont ajoutées même sur des bases déjà créées
+        // avant cette commit.
+        await sequelize.query(`
+            INSERT INTO inventaire_categories (nom, famille) VALUES
+              ('Viandes', 'Boucherie'),
+              ('Abats et Sous-produits', 'Boucherie'),
+              ('Produits sur Pieds', 'Boucherie'),
+              ('Œufs et Produits Laitiers', 'Epicerie'),
+              ('Déchets', 'Autres'),
+              ('Autres', 'Autres')
+            ON CONFLICT (nom) DO NOTHING
+        `);
 
         // Journal local des commandes envoyées au centre de découpe Mata.
         // Sequelize.sync ne tournera pas sur cette table en prod (initiale via
@@ -130,8 +131,6 @@ async function updateSchema() {
                     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             `);
-            await sequelize.query(`CREATE INDEX idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`);
-            await sequelize.query(`CREATE INDEX idx_decoupe_log_created_at ON decoupe_order_logs(created_at DESC)`);
             console.log('Table decoupe_order_logs créée');
         } else {
             // Migration sur table existante: ajouter mata_response si absent
@@ -140,6 +139,11 @@ async function updateSchema() {
                 ADD COLUMN IF NOT EXISTS mata_response JSONB
             `);
         }
+        // Indices idempotents — garantissent leur présence aussi bien sur
+        // tables nouvelles que pré-existantes (cas où la table avait été
+        // créée avant l'ajout des indices, ou via un autre chemin).
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_decoupe_log_created_at ON decoupe_order_logs(created_at DESC)`);
 
         // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).
         // Default 'Autres'; on pré-remplit les noms connus pour éviter à l'admin de tout

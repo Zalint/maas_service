@@ -95,6 +95,21 @@ if (apply.status !== 0) {
 // legacy single-DB local setups).
 const dbSchema = process.env.DB_SCHEMA || slug.replace(/-/g, '_');
 
+// Charger les deux couches dans le parent — .env (defaults) puis .env.local
+// (overrides) — pour que process.env soit déjà complet avant le spawn.
+// Sans ça, dotenv/config dans le child ne lit qu'un seul fichier et perdait
+// soit les defaults soit les overrides.
+const envPath = path.join(__dirname, '..', '.env');
+const envLocalPath = path.join(__dirname, '..', '.env.local');
+if (fs.existsSync(envPath)) {
+    require('dotenv').config({ path: envPath });
+}
+if (fs.existsSync(envLocalPath)) {
+    // override:true → .env.local prend précédence sur .env (et sur les
+    // valeurs déjà définies dans l'env du shell).
+    require('dotenv').config({ path: envLocalPath, override: true });
+}
+
 const env = {
     ...process.env,
     TENANT_SLUG: slug,
@@ -109,13 +124,12 @@ console.log(`[tenant:dev] DB_SCHEMA=${dbSchema}`);
 const nodemonBin = path.join(__dirname, '..', 'node_modules', '.bin', process.platform === 'win32' ? 'nodemon.cmd' : 'nodemon');
 const useNodemon = fs.existsSync(nodemonBin);
 const cmd = useNodemon ? nodemonBin : process.execPath;
-// Charge .env.local en priorité (avec fallback sur .env). Sans ça,
-// dotenv/config ne lit que .env et les variables tenant-spécifiques
-// (DB_NAME, MATA_DECOUPE_*, etc.) sont ignorées.
-const envLocalPath = path.join(__dirname, '..', '.env.local');
-const envFile = fs.existsSync(envLocalPath) ? '.env.local' : '.env';
-const args = ['-r', 'dotenv/config', 'server.js', `dotenv_config_path=${envFile}`];
-console.log(`[tenant:dev] env file: ${envFile}`);
+// Le child reçoit l'env déjà mergé via spawn { env } ci-dessous (.env +
+// .env.local chargés dans le parent). On ne passe plus dotenv_config_path
+// puisque les variables sont déjà résolues — server.js peut faire un
+// dotenv.config supplémentaire en interne, ce sera un no-op.
+const args = ['server.js'];
+console.log(`[tenant:dev] env layers: .env${fs.existsSync(envLocalPath) ? ' + .env.local (override)' : ' (only)'}`);
 
 // shell:true is needed on Windows ONLY when running a .cmd file
 // (nodemon.cmd needs cmd.exe to resolve). For plain node.exe we must

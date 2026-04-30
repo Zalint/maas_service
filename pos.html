@@ -1250,13 +1250,13 @@
 
     <!-- Modal Commandes Web (Sans backdrop, déplaçable et redimensionnable) -->
     <!-- Modal Centre de Découpe -->
-    <div class="modal-overlay" id="modalCentreDecoupe" style="display: none;">
+    <div class="modal-overlay" id="modalCentreDecoupe" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="modalCentreDecoupeTitle">
         <div class="modal-content" style="max-width: 1100px; max-height: 90vh; overflow: auto;">
             <div class="modal-header" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%); color: white;">
-                <h3 style="margin: 0; display: flex; align-items: center; gap: 10px;">
-                    <i class="fas fa-industry"></i> Centre de Découpe
+                <h3 id="modalCentreDecoupeTitle" style="margin: 0; display: flex; align-items: center; gap: 10px;">
+                    <i class="fas fa-industry" aria-hidden="true"></i> Centre de Découpe
                 </h3>
-                <button type="button" class="btn-close-modal" onclick="fermerModalDecoupe()" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
+                <button type="button" class="btn-close-modal" onclick="fermerModalDecoupe()" aria-label="Fermer la fenêtre Centre de Découpe" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
             </div>
 
             <ul class="nav nav-tabs" id="decoupeTabs" role="tablist" style="padding: 0 20px; margin-top: 8px;">
@@ -1294,29 +1294,34 @@
                             </div>
                         </div>
                         <div class="col-md-6">
-                            <h4><i class="fas fa-industry"></i> Centre de découpe</h4>
+                            <h4><i class="fas fa-industry" aria-hidden="true"></i> Centre de découpe</h4>
                             <div class="mb-3">
-                                <select id="decoupeCentreSelect" class="form-select">
+                                <label for="decoupeCentreSelect" class="form-label">Centre exécutant <span aria-hidden="true">*</span></label>
+                                <select id="decoupeCentreSelect" class="form-select" aria-required="true">
                                     <option value="">Chargement…</option>
                                 </select>
                                 <small class="text-muted">Choisis le centre qui exécutera la commande.</small>
                             </div>
 
-                            <h4><i class="fas fa-user"></i> Informations client</h4>
+                            <h4><i class="fas fa-user" aria-hidden="true"></i> Informations client</h4>
                             <div class="mb-2">
-                                <input type="text" id="decoupeNomClient" class="form-control" placeholder="Nom du client *">
+                                <label for="decoupeNomClient" class="form-label">Nom du client <span aria-hidden="true">*</span></label>
+                                <input type="text" id="decoupeNomClient" class="form-control" placeholder="Nom du client" aria-required="true" required>
                             </div>
                             <div class="mb-2">
-                                <input type="text" id="decoupeNumClient" class="form-control" placeholder="Téléphone *">
+                                <label for="decoupeNumClient" class="form-label">Téléphone <span aria-hidden="true">*</span></label>
+                                <input type="tel" id="decoupeNumClient" class="form-control" placeholder="Téléphone" aria-required="true" required>
                             </div>
                             <div class="mb-2">
+                                <label for="decoupeAdrClient" class="form-label">Adresse de livraison</label>
                                 <input type="text" id="decoupeAdrClient" class="form-control" placeholder="Adresse de livraison">
                             </div>
                             <div class="mb-2">
+                                <label for="decoupeInstructions" class="form-label">Instructions spéciales</label>
                                 <textarea id="decoupeInstructions" class="form-control" rows="3" placeholder="Instructions spéciales..."></textarea>
                             </div>
                             <button class="btn btn-danger w-100" onclick="envoyerCommandeDecoupe(event)">
-                                <i class="fas fa-paper-plane"></i> Envoyer au Centre de Découpe
+                                <i class="fas fa-paper-plane" aria-hidden="true"></i> Envoyer au Centre de Découpe
                             </button>
                         </div>
                     </div>
