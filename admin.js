@@ -1,3 +1,44 @@
+// Toast UI minimal basé sur Bootstrap 5. Remplace les alert() natifs.
+// Usage: showToast('msg'), showToast('msg', 'danger'), showToast('msg', 'success', 5000)
+// Si type n'est pas fourni, devine d'après le texte: erreur/échec -> danger,
+// attention/veuillez -> warning, sinon success.
+function showToast(message, type = null, durationMs = 4000) {
+    const text = String(message == null ? '' : message);
+    if (!type) {
+        type = /erreur|error|échec|echec|impossible|invalide/i.test(text) ? 'danger'
+             : /attention|warning|veuillez|prudent/i.test(text) ? 'warning'
+             : 'success';
+    }
+    let container = document.getElementById('appToastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'appToastContainer';
+        container.className = 'toast-container position-fixed top-0 end-0 p-3';
+        container.style.zIndex = '1100';
+        document.body.appendChild(container);
+    }
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const toastEl = document.createElement('div');
+    toastEl.className = `toast align-items-center text-bg-${type} border-0`;
+    toastEl.setAttribute('role', 'alert');
+    toastEl.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body" style="white-space: pre-line;">${safe}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    `;
+    container.appendChild(toastEl);
+    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
+        const t = new bootstrap.Toast(toastEl, { delay: durationMs });
+        t.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    } else {
+        // Fallback si Bootstrap n'est pas chargé: timeout manuel
+        toastEl.classList.add('show');
+        setTimeout(() => toastEl.remove(), durationMs);
+    }
+}
+
 // Fonction pour obtenir le nom d'affichage du rôle utilisateur
 function getUserRoleDisplayName(user) {
     if (!user || !user.role) {
@@ -243,7 +284,7 @@ function afficherListePointsVente(pointsVente) {
 // Mettre à jour la référence de paiement d'un point de vente
 async function updatePaymentRef(id, nom, paymentRef) {
     if (!id) {
-        alert('ID du point de vente non trouvé');
+        showToast('ID du point de vente non trouvé');
         return;
     }
     
@@ -258,15 +299,15 @@ async function updatePaymentRef(id, nom, paymentRef) {
         const data = await response.json();
         
         if (data.success) {
-            alert(`Référence "${paymentRef}" sauvegardée pour ${nom}`);
+            showToast(`Référence "${paymentRef}" sauvegardée pour ${nom}`);
             console.log(`Référence de paiement mise à jour pour ${nom}: ${paymentRef}`);
         } else {
-            alert(data.error || 'Erreur lors de la mise à jour');
+            showToast(data.error || 'Erreur lors de la mise à jour');
             chargerPointsVente();
         }
     } catch (error) {
         console.error('Erreur:', error);
-        alert('Erreur lors de la mise à jour de la référence');
+        showToast('Erreur lors de la mise à jour de la référence');
         chargerPointsVente();
     }
 }
@@ -277,7 +318,7 @@ async function ajouterPointVente() {
     const nom = nomInput.value.trim();
     
     if (!nom) {
-        alert('Veuillez saisir un nom pour le point de vente');
+        showToast('Veuillez saisir un nom pour le point de vente');
         return;
     }
     
@@ -299,13 +340,13 @@ async function ajouterPointVente() {
         if (data.success) {
             nomInput.value = '';
             chargerPointsVente();
-            alert('Point de vente ajouté avec succès');
+            showToast('Point de vente ajouté avec succès');
         } else {
-            alert(data.message || 'Erreur lors de l\'ajout du point de vente');
+            showToast(data.message || 'Erreur lors de l\'ajout du point de vente');
         }
     } catch (error) {
         console.error('Erreur lors de l\'ajout du point de vente:', error);
-        alert('Erreur lors de l\'ajout du point de vente');
+        showToast('Erreur lors de l\'ajout du point de vente');
     }
 }
 
@@ -329,11 +370,11 @@ async function togglePointVente(nom) {
         if (data.success) {
             chargerPointsVente();
         } else {
-            alert(data.message);
+            showToast(data.message);
         }
     } catch (error) {
         console.error('Erreur lors de la modification du point de vente:', error);
-        alert('Erreur lors de la modification du point de vente');
+        showToast('Erreur lors de la modification du point de vente');
     }
 }
 
@@ -443,7 +484,7 @@ function initPrixEventListeners() {
             const nouveauPrix = document.getElementById('nouveau-prix')?.value;
             
             if (!categorie || !produit || !nouveauPrix) {
-                alert('Veuillez remplir tous les champs');
+                showToast('Veuillez remplir tous les champs');
                 return;
             }
             
@@ -464,14 +505,14 @@ function initPrixEventListeners() {
                 const data = await response.json();
                 if (data.success) {
                     document.getElementById('nouveau-prix').value = '';
-                    alert('Prix modifié avec succès');
+                    showToast('Prix modifié avec succès');
                     chargerProduits(); // Recharger les produits pour mettre à jour les menus
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de la modification du prix:', error);
-                alert('Erreur lors de la modification du prix');
+                showToast('Erreur lors de la modification du prix');
             }
         });
     }
@@ -514,7 +555,7 @@ function initCorrectionsEventListeners() {
             const nouveauTotal = document.getElementById('nouveau-total')?.value;
             
             if (!date || !pointVente || !categorie || !produit || !nouveauTotal) {
-                alert('Veuillez remplir tous les champs');
+                showToast('Veuillez remplir tous les champs');
                 return;
             }
             
@@ -537,13 +578,13 @@ function initCorrectionsEventListeners() {
                 const data = await response.json();
                 if (data.success) {
                     document.getElementById('nouveau-total').value = '';
-                    alert('Total corrigé avec succès');
+                    showToast('Total corrigé avec succès');
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de la correction du total:', error);
-                alert('Erreur lors de la correction du total');
+                showToast('Erreur lors de la correction du total');
             }
         });
     }
@@ -559,7 +600,7 @@ function initPointsVenteEventListeners() {
             const nom = document.getElementById('newPointVente')?.value;
             
             if (!nom) {
-                alert('Veuillez saisir un nom de point de vente');
+                showToast('Veuillez saisir un nom de point de vente');
                 return;
             }
             
@@ -581,13 +622,13 @@ function initPointsVenteEventListeners() {
                 if (data.success) {
                     document.getElementById('newPointVente').value = '';
                     chargerPointsVente();
-                    alert('Point de vente ajouté avec succès');
+                    showToast('Point de vente ajouté avec succès');
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de l\'ajout du point de vente:', error);
-                alert('Erreur lors de l\'ajout du point de vente');
+                showToast('Erreur lors de l\'ajout du point de vente');
             }
         });
     }
@@ -740,7 +781,7 @@ async function rechercherStocks() {
     const produit = document.getElementById('produit-filter')?.value;
     
     if (!dateDebut || !dateFin) {
-        alert('Veuillez sélectionner une période de dates');
+        showToast('Veuillez sélectionner une période de dates');
         return;
     }
     
@@ -782,7 +823,7 @@ async function rechercherStocks() {
         
     } catch (error) {
         console.error('Erreur lors de la recherche:', error);
-        alert('Erreur lors de la récupération des données');
+        showToast('Erreur lors de la récupération des données');
     } finally {
         hideLoading();
     }
@@ -1018,7 +1059,7 @@ function filterTransfertsData(data, pointVente, produit) {
 // Exporter les données en Excel
 function exportToExcel() {
     if (typeof XLSX === 'undefined') {
-        alert('Bibliothèque Excel non disponible');
+        showToast('Bibliothèque Excel non disponible');
         return;
     }
     
@@ -1028,7 +1069,7 @@ function exportToExcel() {
     const produit = document.getElementById('produit-filter')?.value;
     
     if (consolidatedData.length === 0) {
-        alert('Aucune donnée à exporter');
+        showToast('Aucune donnée à exporter');
         return;
     }
     
@@ -1068,7 +1109,7 @@ function exportToExcel() {
     // Télécharger le fichier
     XLSX.writeFile(workbook, filename);
     
-    alert(`Export Excel réussi : ${filename}`);
+    showToast(`Export Excel réussi : ${filename}`);
 }
 
 // Utilitaires
@@ -1204,11 +1245,11 @@ async function chargerConfigInventaire() {
             afficherInventaireConfig();
         } else {
             console.error('Erreur lors du chargement de la configuration d\'inventaire:', data.message);
-            alert('Erreur lors du chargement de la configuration d\'inventaire');
+            showToast('Erreur lors du chargement de la configuration d\'inventaire');
         }
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'inventaire:', error);
-        alert('Erreur lors du chargement de la configuration d\'inventaire');
+        showToast('Erreur lors du chargement de la configuration d\'inventaire');
     }
 }
 
@@ -1225,11 +1266,11 @@ async function chargerConfigAbonnement() {
             afficherAbonnementConfig();
         } else {
             console.error('Erreur lors du chargement de la configuration d\'abonnement:', data.message);
-            alert('Erreur lors du chargement de la configuration d\'abonnement');
+            showToast('Erreur lors du chargement de la configuration d\'abonnement');
         }
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'abonnement:', error);
-        alert('Erreur lors du chargement de la configuration d\'abonnement');
+        showToast('Erreur lors du chargement de la configuration d\'abonnement');
     }
 }
 
@@ -1279,7 +1320,7 @@ function setFamilleFilter(famille) {
 async function changerFamilleCategorie(nomCategorie, nouvelleFamille) {
     const meta = currentCategoriesMeta[nomCategorie];
     if (!meta || !meta.id) {
-        alert(`Impossible: catégorie "${nomCategorie}" n'a pas d'ID en mémoire — recharge la page.`);
+        showToast(`Impossible: catégorie "${nomCategorie}" n'a pas d'ID en mémoire — recharge la page.`);
         return;
     }
     try {
@@ -1291,14 +1332,14 @@ async function changerFamilleCategorie(nomCategorie, nouvelleFamille) {
         });
         const data = await response.json();
         if (!data.success) {
-            alert(`Erreur: ${data.error || 'échec'}`);
+            showToast(`Erreur: ${data.error || 'échec'}`);
             return;
         }
         currentCategoriesMeta[nomCategorie].famille = nouvelleFamille;
         afficherProduitsConfig();
     } catch (e) {
         console.error('changerFamilleCategorie:', e);
-        alert('Erreur réseau.');
+        showToast('Erreur réseau.');
     }
 }
 
@@ -1956,18 +1997,18 @@ function ajouterPrixSpecial(categorie, produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecial').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentProduitsConfig[categorie][produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -2093,15 +2134,15 @@ async function supprimerProduit(categorie, produit) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit "${produit}" supprimé avec succès`);
+                showToast(`Produit "${produit}" supprimé avec succès`);
                 // Recharger depuis le serveur pour confirmer la suppression
                 await chargerConfigProduits();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
@@ -2111,7 +2152,7 @@ function supprimerCategorie(categorie) {
     const categoriesPrincipales = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin', 'Autres'];
     
     if (categoriesPrincipales.includes(categorie)) {
-        alert(`La catégorie "${categorie}" est une catégorie principale du système et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
+        showToast(`La catégorie "${categorie}" est une catégorie principale du système et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
         return;
     }
     
@@ -2140,7 +2181,7 @@ function supprimerCategorieInventaire(categorie) {
     const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Déchets', 'Autres'];
     
     if (categoriesInventairePrincipales.includes(categorie)) {
-        alert(`La catégorie "${categorie}" est une catégorie logique du système d'inventaire et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
+        showToast(`La catégorie "${categorie}" est une catégorie logique du système d'inventaire et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
         return;
     }
     
@@ -2160,7 +2201,7 @@ function supprimerCategorieInventaire(categorie) {
             }
             
             afficherInventaireConfig();
-            alert(`Catégorie "${categorie}" supprimée avec succès!`);
+            showToast(`Catégorie "${categorie}" supprimée avec succès!`);
         }
         return;
     }
@@ -2353,18 +2394,18 @@ function ajouterPrixSpecialInventaire(produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecialInventaire').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentInventaireConfig[produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -2457,14 +2498,14 @@ async function reattacherProduitVente(produit) {
         });
         const data = await response.json();
         if (data.success) {
-            alert(data.message || 'Réattachement réussi.');
+            showToast(data.message || 'Réattachement réussi.');
             await chargerConfigProduits();
         } else {
-            alert(`Erreur: ${data.error || 'échec du réattachement'}`);
+            showToast(`Erreur: ${data.error || 'échec du réattachement'}`);
         }
     } catch (error) {
         console.error('Erreur réattachement:', error);
-        alert('Erreur réseau lors du réattachement.');
+        showToast('Erreur réseau lors du réattachement.');
     }
 }
 
@@ -2524,7 +2565,7 @@ async function gererVentesLiees(produitInventaire, categorieInv = null) {
 
     const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
     if (!inv) {
-        alert(`Produit inventaire introuvable: ${produitInventaire}`);
+        showToast(`Produit inventaire introuvable: ${produitInventaire}`);
         return;
     }
     if (!Array.isArray(inv.ventes)) inv.ventes = [];
@@ -2661,7 +2702,7 @@ function ajouterVenteLien(produitInventaire, categorieInv = null) {
     if (!input) return;
     const nom = (input.value || '').trim();
     if (!nom) {
-        alert('Tapez ou choisissez un nom de produit vente.');
+        showToast('Tapez ou choisissez un nom de produit vente.');
         return;
     }
     const found = trouverConfigProduitVente(nom);
@@ -2674,7 +2715,7 @@ function ajouterVenteLien(produitInventaire, categorieInv = null) {
     if (!inv) return;
     if (!Array.isArray(inv.ventes)) inv.ventes = [];
     if (inv.ventes.includes(nom)) {
-        alert(`"${nom}" est déjà lié.`);
+        showToast(`"${nom}" est déjà lié.`);
         return;
     }
     inv.ventes.push(nom);
@@ -2737,7 +2778,7 @@ async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = nu
         });
         const venteData = await venteResp.json();
         if (!venteData.success) {
-            alert(`Erreur sauvegarde produits: ${venteData.error || venteData.message}`);
+            showToast(`Erreur sauvegarde produits: ${venteData.error || venteData.message}`);
             return;
         }
         venteConfigModifieeDepuisInventaire = false;
@@ -2750,7 +2791,7 @@ async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = nu
         });
         const invData = await invResp.json();
         if (!invData.success) {
-            alert(`Erreur sauvegarde inventaire: ${invData.error || invData.message}`);
+            showToast(`Erreur sauvegarde inventaire: ${invData.error || invData.message}`);
             return;
         }
 
@@ -2760,7 +2801,7 @@ async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = nu
         refreshGererVentesBody(produitInventaire, categorieInv);
     } catch (e) {
         console.error('sauvegarderDepuisGererVentes:', e);
-        alert('Erreur réseau lors de la sauvegarde.');
+        showToast('Erreur réseau lors de la sauvegarde.');
     } finally {
         if (btn) {
             btn.disabled = false;
@@ -2781,7 +2822,7 @@ async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv =
         });
         const data = await response.json();
         if (!data.success) {
-            alert(`Erreur: ${data.error || 'échec'}`);
+            showToast(`Erreur: ${data.error || 'échec'}`);
             return;
         }
         // Recharger la config produits pour refléter le prix resynchronisé
@@ -2789,7 +2830,7 @@ async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv =
         refreshGererVentesBody(produitInventaire, categorieInv);
     } catch (e) {
         console.error('reattacherDepuisModal:', e);
-        alert('Erreur réseau.');
+        showToast('Erreur réseau.');
     }
 }
 
@@ -2843,14 +2884,14 @@ async function supprimerProduitInventaire(produit, categorie = null) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit d'inventaire "${produit}" supprimé avec succès`);
+                showToast(`Produit d'inventaire "${produit}" supprimé avec succès`);
                 await chargerConfigInventaire();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit inventaire:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
@@ -3050,18 +3091,18 @@ function ajouterPrixSpecialAbonnement(categorie, produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecialAbonnement').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentAbonnementConfig[categorie][produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -3110,21 +3151,21 @@ async function supprimerProduitAbonnement(categorie, produit) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit d'abonnement "${produit}" supprimé avec succès`);
+                showToast(`Produit d'abonnement "${produit}" supprimé avec succès`);
                 await chargerConfigAbonnement();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit abonnement:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
 
 function ajouterProduitAbonnementCategorie(categorie) {
     // À implémenter si besoin d'ajouter de nouveaux produits via un modal
-    alert('Fonctionnalité à implémenter: ajouter un produit à ' + categorie);
+    showToast('Fonctionnalité à implémenter: ajouter un produit à ' + categorie, 'info');
 }
 
 // Sauvegarder la configuration des produits
@@ -3141,7 +3182,7 @@ async function sauvegarderConfigProduits() {
         
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits sauvegardée avec succès !');
+            showToast('Configuration des produits sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -3159,11 +3200,11 @@ async function sauvegarderConfigProduits() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits');
     }
 }
 
@@ -3188,7 +3229,7 @@ async function sauvegarderConfigInventaire() {
             });
             const venteData = await venteResp.json();
             if (!venteData.success) {
-                alert(`Erreur lors de la sauvegarde des prix vente liés: ${venteData.error || venteData.message}`);
+                showToast(`Erreur lors de la sauvegarde des prix vente liés: ${venteData.error || venteData.message}`);
                 return;
             }
             venteConfigModifieeDepuisInventaire = false;
@@ -3206,7 +3247,7 @@ async function sauvegarderConfigInventaire() {
 
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits d\'inventaire sauvegardée avec succès !');
+            showToast('Configuration des produits d\'inventaire sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -3224,11 +3265,11 @@ async function sauvegarderConfigInventaire() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits d\'inventaire');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits d\'inventaire');
     }
 }
 
@@ -3246,7 +3287,7 @@ async function sauvegarderConfigAbonnement() {
         
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits d\'abonnement sauvegardée avec succès !');
+            showToast('Configuration des produits d\'abonnement sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -3264,11 +3305,11 @@ async function sauvegarderConfigAbonnement() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits d\'abonnement');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits d\'abonnement');
     }
 }
 
@@ -3330,17 +3371,17 @@ async function sauvegarderConfigAbonnement() {
                 const data = await response.json();
                 
                 if (data.success) {
-                    alert('Configuration serveur rechargée avec succès!');
+                    showToast('Configuration serveur rechargée avec succès!');
                     // Recharger aussi l'interface admin
                     chargerConfigProduits();
                     chargerConfigInventaire();
                     chargerConfigAbonnement();
                 } else {
-                    alert('Erreur lors du rechargement: ' + data.message);
+                    showToast('Erreur lors du rechargement: ' + data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors du rechargement:', error);
-                alert('Erreur lors du rechargement de la configuration serveur');
+                showToast('Erreur lors du rechargement de la configuration serveur');
             }
         });
     }
@@ -3357,7 +3398,7 @@ async function sauvegarderConfigAbonnement() {
                     document.getElementById('newCategoryName').value = '';
                     bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
                 } else {
-                    alert('Cette catégorie existe déjà');
+                    showToast('Cette catégorie existe déjà');
                 }
             }
         });
@@ -3393,7 +3434,7 @@ async function sauvegarderConfigAbonnement() {
                     
                     bootstrap.Modal.getInstance(document.getElementById('addProductModal')).hide();
                 } else {
-                    alert('Ce produit existe déjà dans cette catégorie');
+                    showToast('Ce produit existe déjà dans cette catégorie');
                 }
             }
         });
@@ -3410,7 +3451,7 @@ async function sauvegarderConfigAbonnement() {
                 const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Déchets", "Autres"];
                 
                 if (categoriesLogiques.includes(categoryName) || categoriesPersonnalisees.includes(categoryName)) {
-                    alert('Cette catégorie existe déjà');
+                    showToast('Cette catégorie existe déjà');
                     return;
                 }
                 
@@ -3431,9 +3472,9 @@ async function sauvegarderConfigAbonnement() {
                     if (bsModal) bsModal.hide();
                 }
                 
-                alert('Catégorie "' + categoryName + '" créée avec succès! Vous pouvez maintenant y ajouter des produits.');
+                showToast('Catégorie "' + categoryName + '" créée avec succès! Vous pouvez maintenant y ajouter des produits.');
             } else {
-                alert('Veuillez entrer un nom de catégorie');
+                showToast('Veuillez entrer un nom de catégorie');
             }
         });
     }
@@ -3467,14 +3508,14 @@ async function sauvegarderConfigAbonnement() {
                         currentInventaireConfig[category] = {};
                     }
                     if (currentInventaireConfig[category][productName]) {
-                        alert('Ce produit existe déjà dans cette catégorie');
+                        showToast('Ce produit existe déjà dans cette catégorie');
                         return;
                     }
                     currentInventaireConfig[category][productName] = productConfig;
                 } else {
                     // Pour les catégories logiques, stocker au niveau racine
                     if (currentInventaireConfig[productName]) {
-                        alert('Ce produit existe déjà');
+                        showToast('Ce produit existe déjà');
                         return;
                     }
                     currentInventaireConfig[productName] = productConfig;
