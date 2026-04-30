@@ -466,10 +466,14 @@ const ReconciliationManager = (function() {
                     break;
 
                 case 'commandesInterPV': {
-                    // Somme des commandes envoyées au centre de découpe par
-                    // ce PV pour la date affichée. Source: cache rempli par
-                    // chargerSommeDecoupeInterPV avant le rendu.
-                    const interPV = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
+                    // Priorité 1: valeur persistée dans la réconciliation
+                    // sauvegardée (data.commandesInterPV). Priorité 2: live
+                    // depuis /api/decoupe/sum-by-pv (cache decoupeInterPVByPV).
+                    // Cette priorité fige la valeur affichée pour les jours
+                    // déjà sauvegardés, même si decoupe_order_logs change après.
+                    const interPV = (data.commandesInterPV != null)
+                        ? Number(data.commandesInterPV) || 0
+                        : ((decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0);
                     cell.textContent = formatMonetaire(interPV);
                     cell.classList.add('currency');
                     if (interPV > 0) {
@@ -480,8 +484,12 @@ const ReconciliationManager = (function() {
                 }
 
                 case 'ventesTotales': {
-                    // Ventes Saisies + Commandes inter-PV pour ce PV
-                    const interPV = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
+                    // Recalculé à partir des ventes saisies + commandes inter-PV
+                    // (saved si présent, live sinon). Pas persisté en propre car
+                    // entièrement dérivé.
+                    const interPV = (data.commandesInterPV != null)
+                        ? Number(data.commandesInterPV) || 0
+                        : ((decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0);
                     const ventesTotales = (Number(data.ventesSaisies) || 0) + interPV;
                     cell.textContent = formatMonetaire(ventesTotales);
                     cell.classList.add('currency');
@@ -1219,6 +1227,13 @@ const ReconciliationManager = (function() {
             // Ajouter les commentaires aux données
             Object.keys(reconciliationData).forEach(pointVente => {
                 reconciliationData[pointVente].commentaire = commentaires[pointVente] || '';
+                // Snapshot des commandes inter-PV au moment de la sauvegarde.
+                // Une fois persisté, ce nombre fige même si la table
+                // decoupe_order_logs change ensuite (ex: nettoyage, archivage).
+                // ventesTotales se recalcule à l'affichage à partir de
+                // ventesSaisies + commandesInterPV.
+                const interPVPersist = (decoupeInterPVByPV && decoupeInterPVByPV[pointVente]) || 0;
+                reconciliationData[pointVente].commandesInterPV = interPVPersist;
             });
             
             // Préparer les données pour la sauvegarde
