@@ -391,6 +391,18 @@ const ReconciliationManager = (function() {
                     cell.textContent = formatMonetaire(data.stockMatin);
                     cell.classList.add('currency');
                     totals.stockMatin += data.stockMatin;
+                    // Alerte: stock matin = 0 alors qu'il y a des ventes saisies
+                    // → l'admin a probablement oublié la saisie pour les produits
+                    // manuels. Ne déclenche pas si stockSoir est non nul (cas
+                    // valide: stock initial nul mais ravitaillement en cours).
+                    if ((data.stockMatin === 0 || !data.stockMatin) &&
+                        (data.stockSoir === 0 || !data.stockSoir) &&
+                        (Number(data.ventesSaisies) > 0)) {
+                        cell.style.backgroundColor = '#fff3cd';
+                        cell.title = '⚠️ Stock matin/soir vide alors que des ventes ont été saisies — vérifie la saisie quotidienne pour les produits manuels.';
+                        cell.style.cursor = 'help';
+                        cell.textContent = '⚠️ ' + cell.textContent;
+                    }
                     
                     // Ajouter des détails de tooltip pour stock matin
                     if (currentDebugInfo && currentDebugInfo.detailsParPointVente && currentDebugInfo.detailsParPointVente[pointVente] && 
