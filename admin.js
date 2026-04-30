@@ -1282,13 +1282,13 @@ async function chargerConfigAbonnement() {
 // Fonction pour générer le bouton de suppression conditionnel
 function getCategorieDeleteButton(categorie) {
     const categoriesPrincipales = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin', 'Autres'];
-    
+
     if (categoriesPrincipales.includes(categorie)) {
         return `<button class="btn btn-sm btn-secondary" disabled title="Catégorie principale - ne peut pas être supprimée">
                     <i class="fas fa-lock"></i>
                 </button>`;
     } else {
-        return `<button class="btn btn-sm btn-danger" onclick="supprimerCategorie('${categorie}')">
+        return `<button class="btn btn-sm btn-danger" data-action="supprimer-categorie" data-categorie="${escAttr(categorie)}">
                     <i class="fas fa-trash"></i>
                 </button>`;
     }
@@ -1303,17 +1303,38 @@ function familleDeCategorie(nomCategorie) {
     return meta && meta.famille ? meta.famille : 'Autres';
 }
 
+// Échappement HTML attribut (couvre " et ' en plus de &<>) — utilisé partout
+// où on injecte du contenu dynamique (noms de catégorie/produit) dans des
+// attributs HTML. Évite les XSS-via-admin si jamais un nom contient des
+// caractères spéciaux.
+function escAttr(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 function rendreFiltreFamille(container) {
     const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
     const html = `
-        <div class="btn-group mb-3" role="group" aria-label="Filtre famille">
+        <div class="btn-group mb-3" role="group" aria-label="Filtre famille" data-role="famille-filter">
             ${familles.map((f) => `
                 <button type="button"
                     class="btn ${currentFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
-                    onclick="setFamilleFilter('${f}')">${f}</button>
+                    data-famille="${escAttr(f)}">${escAttr(f)}</button>
             `).join('')}
         </div>`;
     container.insertAdjacentHTML('beforeend', html);
+    // Délégation: un seul listener pour les 4 boutons
+    const grp = container.querySelector('[data-role="famille-filter"]');
+    if (grp) {
+        grp.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-famille]');
+            if (btn) setFamilleFilter(btn.dataset.famille);
+        });
+    }
 }
 
 function setFamilleFilter(famille) {
@@ -1354,6 +1375,39 @@ function afficherProduitsConfig() {
     container.innerHTML = '';
     rendreFiltreFamille(container);
 
+    // Délégation: un seul listener attaché une fois (idempotent via flag)
+    // pour toutes les actions data-action sur les catégories. Évite les
+    // inline onclick="...('${nom}')" qui pouvaient injecter du code si un
+    // nom de catégorie/produit contenait des caractères spéciaux.
+    if (!container.dataset.delegatedActionsBound) {
+        container.dataset.delegatedActionsBound = '1';
+        container.addEventListener('click', (e) => {
+            const target = e.target.closest('[data-action]');
+            if (!target || !container.contains(target)) return;
+            const action = target.dataset.action;
+            const categorie = target.dataset.categorie;
+            if (action === 'ajouter-produit-categorie') {
+                e.stopPropagation();
+                if (typeof ajouterProduitCategorie === 'function') ajouterProduitCategorie(categorie);
+            } else if (action === 'supprimer-categorie') {
+                e.stopPropagation();
+                if (typeof supprimerCategorie === 'function') supprimerCategorie(categorie);
+            }
+        });
+        container.addEventListener('change', (e) => {
+            const target = e.target.closest('[data-action="changer-famille-categorie"]');
+            if (target) {
+                changerFamilleCategorie(target.dataset.categorie, target.value);
+            }
+        });
+        // Empêche le select famille de plier l'accordéon quand l'admin clique dessus
+        container.addEventListener('click', (e) => {
+            if (e.target.closest('[data-action="changer-famille-categorie"]')) {
+                e.stopPropagation();
+            }
+        });
+    }
+
     // Protection contre les données undefined ou null
     if (!currentProduitsConfig || typeof currentProduitsConfig !== 'object') {
         container.innerHTML = '<div class="alert alert-warning">Aucune configuration de produits disponible</div>';
@@ -1380,10 +1434,10 @@ function afficherProduitsConfig() {
     categoriesAffichees.forEach((categorie, index) => {
         if (typeof currentProduitsConfig[categorie] === 'object' && currentProduitsConfig[categorie] !== null) {
             const famille = familleDeCategorie(categorie);
+            const catEsc = escAttr(categorie);
             const familleSelect = `
                 <select class="form-select form-select-sm me-2" style="width: 130px;"
-                        onclick="event.stopPropagation()"
-                        onchange="changerFamilleCategorie('${categorie.replace(/'/g, "\\'")}', this.value)">
+                        data-action="changer-famille-categorie" data-categorie="${catEsc}">
                     <option value="Boucherie" ${famille === 'Boucherie' ? 'selected' : ''}>Boucherie</option>
                     <option value="Epicerie" ${famille === 'Epicerie' ? 'selected' : ''}>Epicerie</option>
                     <option value="Autres" ${famille === 'Autres' ? 'selected' : ''}>Autres</option>
@@ -1393,10 +1447,10 @@ function afficherProduitsConfig() {
                     <h2 class="accordion-header" id="heading-${index}">
                         <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="collapse-${index}">
                             <i class="fas fa-folder-open me-2"></i>
-                            ${categorie} (${Object.keys(currentProduitsConfig[categorie]).length} produits)
+                            ${escAttr(categorie)} (${Object.keys(currentProduitsConfig[categorie]).length} produits)
                             <div class="ms-auto me-3 d-flex align-items-center">
                                 ${familleSelect}
-                                <button class="btn btn-sm btn-success me-1" onclick="event.stopPropagation(); ajouterProduitCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addProductModal">
+                                <button class="btn btn-sm btn-success me-1" data-action="ajouter-produit-categorie" data-categorie="${catEsc}" data-bs-toggle="modal" data-bs-target="#addProductModal">
                                     <i class="fas fa-plus"></i>
                                 </button>
                                 ${getCategorieDeleteButton(categorie)}

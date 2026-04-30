@@ -27,6 +27,12 @@ const { DecoupeOrderLog } = require('../db/models');
 // pas défini. Source: config/centres-decoupe.json côté Mata.
 const CENTRES_PAR_DEFAUT = ['Centre de Découpe Dakar', 'Centre de Découpe Banlieue'];
 
+// Timezone à utiliser pour les agrégats journaliers. Sans ça, Postgres retombe
+// sur la TZ du serveur (souvent UTC sur Render) → décalage d'un jour aux
+// frontières pour les tenants sénégalais qui ont saisi près de minuit local.
+// Override via env TENANT_TZ si un tenant est dans une autre TZ.
+const TENANT_TZ = process.env.TENANT_TZ || 'Africa/Dakar';
+
 // MATA_DECOUPE_CENTRE peut contenir une liste séparée par ';' pour permettre à
 // l'admin de choisir un centre par commande. La 1ère entrée sert de défaut si
 // le client ne précise rien. Espaces autour du ';' ignorés.
@@ -70,8 +76,8 @@ router.get('/sum-range', async (req, res) => {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFin)) {
             return res.status(400).json({ success: false, error: 'dateFin YYYY-MM-DD invalide.' });
         }
-        const replacements = { d1: dateDebut, d2: dateFin };
-        let where = `DATE(created_at) >= :d1 AND DATE(created_at) <= :d2`;
+        const replacements = { d1: dateDebut, d2: dateFin, tz: TENANT_TZ };
+        let where = `DATE((created_at AT TIME ZONE 'UTC') AT TIME ZONE :tz) >= :d1 AND DATE((created_at AT TIME ZONE 'UTC') AT TIME ZONE :tz) <= :d2`;
         // Si un PV est demandé et qu'il s'agit du tenant, on accepte aussi
         // les lignes legacy avec point_vente = nom de centre (rétro-compat
         // avec le bug d'avant le fix).
@@ -110,9 +116,9 @@ router.get('/sum-by-pv', async (req, res) => {
         const rows = await sequelize.query(
             `SELECT point_vente, point_vente_executant, COALESCE(SUM(montant_total), 0) AS total
              FROM decoupe_order_logs
-             WHERE DATE(created_at) = :d
+             WHERE DATE((created_at AT TIME ZONE 'UTC') AT TIME ZONE :tz) = :d
              GROUP BY point_vente, point_vente_executant`,
-            { replacements: { d: dateStr }, type: sequelize.QueryTypes.SELECT }
+            { replacements: { d: dateStr, tz: TENANT_TZ }, type: sequelize.QueryTypes.SELECT }
         );
 
         // La DB est schema-per-tenant: TOUTES les lignes appartiennent à ce
