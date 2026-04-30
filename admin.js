@@ -1530,8 +1530,8 @@ function genererLignesProduitsInventaire(produits, categorie) {
 
         const modeStock = config.mode_stock || 'manuel';
         const uniteStock = config.unite_stock || 'unite';
-        const ventes = Array.isArray(config.ventes) ? config.ventes.join(', ') : '';
         const ventesCount = Array.isArray(config.ventes) ? config.ventes.length : 0;
+        const escProduit = produit.replace(/'/g, "\\'");
 
         html += `
             <tr>
@@ -1563,11 +1563,11 @@ function genererLignesProduitsInventaire(produits, categorie) {
                     </div>
                 </td>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${ventes}"
-                           placeholder="Ex: Boeuf en gros, Boeuf en détail"
-                           title="Noms exacts des produits Généraux alimentés par cet item d'inventaire. Le prix sera propagé vers ces produits tant qu'ils ne sont pas détachés."
-                           onchange="modifierVentesInventaire('${produit}', this.value, ${catParam})">
-                    ${ventesCount > 0 ? `<small class="text-success">🔗 ${ventesCount} lien${ventesCount > 1 ? 's' : ''}</small>` : ''}
+                    <button type="button" class="btn btn-sm ${ventesCount > 0 ? 'btn-outline-success' : 'btn-outline-secondary'}"
+                            onclick="gererVentesLiees('${escProduit}', ${catParam})"
+                            title="Gérer les produits Généraux alimentés par cet item d'inventaire et leurs prix">
+                        🔗 Gérer ${ventesCount > 0 ? `(${ventesCount})` : ''}
+                    </button>
                 </td>
                 <td>
                     <small class="text-muted">${prixSpeciaux}</small>
@@ -2316,6 +2316,12 @@ async function reattacherProduitVente(produit) {
     }
 }
 
+// Flag levé quand l'admin modifie un prix vente depuis le modal "Gérer ventes liées"
+// de l'onglet Inventaire. Utilisé par sauvegarderConfigInventaire pour aussi
+// pousser les changements vers POST /produits, sans que l'admin ait à basculer
+// d'onglet.
+let venteConfigModifieeDepuisInventaire = false;
+
 // Met à jour la liste des produits vente alimentés par ce produit d'inventaire.
 // Format saisi: noms séparés par virgules (ex: "Boeuf en gros, Boeuf en détail").
 // Le serveur déclenchera la propagation du prix lors du Sauvegarder.
@@ -2327,6 +2333,235 @@ function modifierVentesInventaire(produit, ventesStr, categorie = null) {
             .map((n) => n.trim())
             .filter((n) => n.length > 0);
         config.ventes = noms;
+    }
+}
+
+// Aplatit currentProduitsConfig en liste {nom, categorie, config}.
+// Utilisée par le modal de gestion pour autocompléter les noms et accéder aux prix.
+function listerProduitsVente() {
+    const out = [];
+    if (!currentProduitsConfig || typeof currentProduitsConfig !== 'object') return out;
+    for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+        if (typeof produits !== 'object' || produits === null) continue;
+        for (const [nom, conf] of Object.entries(produits)) {
+            if (typeof conf === 'object' && conf !== null && conf.default !== undefined) {
+                out.push({ nom, categorie: cat, config: conf });
+            }
+        }
+    }
+    return out;
+}
+
+function trouverConfigProduitVente(nomVente) {
+    for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+        if (produits && typeof produits === 'object' && produits[nomVente]) {
+            return { categorie: cat, config: produits[nomVente] };
+        }
+    }
+    return null;
+}
+
+// Modal: gère la liste des produits vente liés à un produit d'inventaire,
+// avec édition de leur prix par défaut directement depuis cet écran.
+async function gererVentesLiees(produitInventaire, categorieInv = null) {
+    // S'assurer que la config vente est chargée (l'admin peut être resté sur l'onglet
+    // inventaire sans l'avoir ouverte).
+    if (!currentProduitsConfig || Object.keys(currentProduitsConfig).length === 0) {
+        await chargerConfigProduits();
+    }
+
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv) {
+        alert(`Produit inventaire introuvable: ${produitInventaire}`);
+        return;
+    }
+    if (!Array.isArray(inv.ventes)) inv.ventes = [];
+
+    // Nettoyer un éventuel modal précédent
+    const old = document.getElementById('gererVentesModal');
+    if (old) old.remove();
+
+    const datalistOptions = listerProduitsVente()
+        .map((p) => `<option value="${p.nom.replace(/"/g, '&quot;')}">${p.categorie}</option>`)
+        .join('');
+
+    const modalHtml = `
+        <div class="modal fade" id="gererVentesModal" tabindex="-1" aria-hidden="true">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Ventes liées à "${produitInventaire}" (Inventaire)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <p class="text-muted small mb-3">
+                  Les produits ci-dessous reçoivent automatiquement le prix de "${produitInventaire}"
+                  tant qu'ils ne sont pas détachés. Modifier un prix ici revient au même que dans
+                  l'onglet "Produits Généraux" — l'enregistrement se fera quand vous cliquerez
+                  <strong>Sauvegarder</strong> en bas du modal ou sur le bouton principal de l'onglet.
+                </p>
+
+                <div class="row g-2 mb-3">
+                  <div class="col-md-8">
+                    <label class="form-label">Ajouter un produit vente lié</label>
+                    <input list="ventesAvailableList" class="form-control" id="newVenteLinkName"
+                           placeholder="Tapez ou choisissez un nom de produit Généraux">
+                    <datalist id="ventesAvailableList">${datalistOptions}</datalist>
+                  </div>
+                  <div class="col-md-4 d-flex align-items-end">
+                    <button class="btn btn-success w-100" onclick="ajouterVenteLien('${produitInventaire.replace(/'/g, "\\'")}', ${categorieInv ? `'${categorieInv}'` : 'null'})">
+                      <i class="fas fa-plus"></i> Ajouter
+                    </button>
+                  </div>
+                </div>
+
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle">
+                    <thead>
+                      <tr>
+                        <th>Produit Généraux</th>
+                        <th style="width: 130px;">Prix Défaut</th>
+                        <th>État</th>
+                        <th style="width: 200px;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="gererVentesBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+              </div>
+            </div>
+          </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modal = new bootstrap.Modal(document.getElementById('gererVentesModal'));
+    modal.show();
+    document.getElementById('gererVentesModal').addEventListener('hidden.bs.modal', function() {
+        this.remove();
+    });
+
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function refreshGererVentesBody(produitInventaire, categorieInv = null) {
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    const tbody = document.getElementById('gererVentesBody');
+    if (!inv || !tbody) return;
+    if (!Array.isArray(inv.ventes) || inv.ventes.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">Aucun produit vente lié — utilisez le formulaire au-dessus pour en ajouter.</td></tr>`;
+        // Refresh la cellule "Gérer (N)" dans le tableau principal
+        afficherInventaireConfig();
+        return;
+    }
+    let html = '';
+    for (const nomVente of inv.ventes) {
+        const found = trouverConfigProduitVente(nomVente);
+        const escNom = nomVente.replace(/'/g, "\\'");
+        const escInv = produitInventaire.replace(/'/g, "\\'");
+        const catArg = categorieInv ? `'${categorieInv}'` : 'null';
+        if (!found) {
+            html += `
+                <tr>
+                  <td>${nomVente} <small class="text-danger">(introuvable dans Produits Généraux)</small></td>
+                  <td>—</td>
+                  <td><span class="badge bg-danger">manquant</span></td>
+                  <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="retirerVenteLien('${escInv}', '${escNom}', ${catArg})">Retirer</button>
+                  </td>
+                </tr>
+            `;
+            continue;
+        }
+        const detache = !!found.config.prix_personnalise;
+        const stateBadge = detache
+            ? `<span class="badge bg-warning text-dark">🔒 prix personnalisé</span>`
+            : `<span class="badge bg-info text-dark">🔗 hérité</span>`;
+        const reattachBtn = detache
+            ? `<button class="btn btn-sm btn-outline-success" title="Resynchroniser depuis le parent" onclick="reattacherDepuisModal('${escNom}', '${escInv}', ${catArg})">🔗 Réattacher</button>`
+            : '';
+        html += `
+            <tr>
+              <td><strong>${nomVente}</strong> <small class="text-muted">— ${found.categorie}</small></td>
+              <td>
+                <input type="number" class="form-control form-control-sm" value="${found.config.default}"
+                       onchange="modifierPrixVenteDepuisInventaire('${found.categorie.replace(/'/g, "\\'")}', '${escNom}', this.value)">
+              </td>
+              <td>${stateBadge}</td>
+              <td>
+                ${reattachBtn}
+                <button class="btn btn-sm btn-outline-danger ms-1" title="Retirer le lien (le produit Généraux reste mais n'est plus lié)" onclick="retirerVenteLien('${escInv}', '${escNom}', ${catArg})">Retirer</button>
+              </td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html;
+}
+
+function ajouterVenteLien(produitInventaire, categorieInv = null) {
+    const input = document.getElementById('newVenteLinkName');
+    if (!input) return;
+    const nom = (input.value || '').trim();
+    if (!nom) {
+        alert('Tapez ou choisissez un nom de produit vente.');
+        return;
+    }
+    const found = trouverConfigProduitVente(nom);
+    if (!found) {
+        if (!confirm(`"${nom}" n'existe pas encore dans Produits Généraux. Le lien sera créé mais le produit devra être ajouté côté Généraux pour que la propagation fonctionne. Continuer ?`)) {
+            return;
+        }
+    }
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv) return;
+    if (!Array.isArray(inv.ventes)) inv.ventes = [];
+    if (inv.ventes.includes(nom)) {
+        alert(`"${nom}" est déjà lié.`);
+        return;
+    }
+    inv.ventes.push(nom);
+    input.value = '';
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function retirerVenteLien(produitInventaire, nomVente, categorieInv = null) {
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv || !Array.isArray(inv.ventes)) return;
+    inv.ventes = inv.ventes.filter((n) => n !== nomVente);
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function modifierPrixVenteDepuisInventaire(categorie, nomVente, nouveauPrix) {
+    if (!currentProduitsConfig[categorie] || !currentProduitsConfig[categorie][nomVente]) return;
+    const prix = parseFloat(nouveauPrix);
+    if (isNaN(prix)) return;
+    currentProduitsConfig[categorie][nomVente].default = prix;
+    venteConfigModifieeDepuisInventaire = true;
+}
+
+async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv = null) {
+    if (!confirm(`Réattacher "${nomVente}" à "${produitInventaire}" ?\n\nLe prix sera resynchronisé depuis le parent inventaire.`)) {
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/produits/${encodeURIComponent(nomVente)}/reattach`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (!data.success) {
+            alert(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        // Recharger la config produits pour refléter le prix resynchronisé
+        await chargerConfigProduits();
+        refreshGererVentesBody(produitInventaire, categorieInv);
+    } catch (e) {
+        console.error('reattacherDepuisModal:', e);
+        alert('Erreur réseau.');
     }
 }
 
@@ -2707,6 +2942,31 @@ async function sauvegarderConfigProduits() {
 // Sauvegarder la configuration de l'inventaire
 async function sauvegarderConfigInventaire() {
     try {
+        // Si l'admin a modifié des prix vente depuis le modal "Gérer ventes liées"
+        // de l'onglet Inventaire, on pousse ces changements AVANT la sauvegarde
+        // inventaire. Ordre important: si on sauvait inventaire d'abord, la
+        // propagation côté serveur écraserait les prix vente personnalisés non
+        // encore détachés, puis le POST /produits suivant les ré-écraserait —
+        // bruit inutile et entrées d'historique en double. En sauvant produits
+        // d'abord, le POST /produits met prix_personnalise=true sur les
+        // produits dont le prix a été touché manuellement, et la propagation
+        // inventaire qui suit les laisse tranquilles.
+        if (venteConfigModifieeDepuisInventaire) {
+            const venteResp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const venteData = await venteResp.json();
+            if (!venteData.success) {
+                alert(`Erreur lors de la sauvegarde des prix vente liés: ${venteData.error || venteData.message}`);
+                return;
+            }
+            venteConfigModifieeDepuisInventaire = false;
+            console.log('✅ Prix vente liés sauvegardés avant propagation inventaire');
+        }
+
         const response = await fetch('/api/admin/config/produits-inventaire', {
             method: 'POST',
             headers: {
@@ -2715,7 +2975,7 @@ async function sauvegarderConfigInventaire() {
             credentials: 'include',
             body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
         });
-        
+
         const data = await response.json();
         if (data.success) {
             alert('Configuration des produits d\'inventaire sauvegardée avec succès !');
