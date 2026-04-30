@@ -1141,6 +1141,10 @@ function hideLoading() {
 let currentProduitsConfig = {};
 let currentInventaireConfig = {};
 let currentAbonnementConfig = {};
+// Méta-données par catégorie de l'onglet Produits Généraux: { "Bovin": {famille: "Boucherie", id: 4, ordre: 1}, ... }
+let currentCategoriesMeta = {};
+// Filtre actif sur l'onglet Produits Généraux: 'Tous' | 'Boucherie' | 'Epicerie' | 'Autres'
+let currentFamilleFilter = 'Tous';
 
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
@@ -1152,6 +1156,7 @@ async function chargerConfigProduits() {
         
         if (data.success && data.produits) {
             currentProduitsConfig = data.produits;
+            currentCategoriesMeta = data.categoriesMeta || {};
             console.log('✅ Produits chargés:', Object.keys(currentProduitsConfig));
             afficherProduitsConfig();
         } else {
@@ -1229,12 +1234,66 @@ function getCategorieDeleteButton(categorie) {
     }
 }
 
+// Famille d'une catégorie selon currentCategoriesMeta. Default 'Autres' si la
+// catégorie n'a pas (encore) de méta — ça arrive sur les nouvelles catégories
+// créées avant que la migration côté DB ait tourné, ou sur les catégories perso
+// d'inventaire qui ne sont pas dans cette table.
+function familleDeCategorie(nomCategorie) {
+    const meta = currentCategoriesMeta[nomCategorie];
+    return meta && meta.famille ? meta.famille : 'Autres';
+}
+
+function rendreFiltreFamille(container) {
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    const html = `
+        <div class="btn-group mb-3" role="group" aria-label="Filtre famille">
+            ${familles.map((f) => `
+                <button type="button"
+                    class="btn ${currentFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+                    onclick="setFamilleFilter('${f}')">${f}</button>
+            `).join('')}
+        </div>`;
+    container.insertAdjacentHTML('beforeend', html);
+}
+
+function setFamilleFilter(famille) {
+    currentFamilleFilter = famille;
+    afficherProduitsConfig();
+}
+
+async function changerFamilleCategorie(nomCategorie, nouvelleFamille) {
+    const meta = currentCategoriesMeta[nomCategorie];
+    if (!meta || !meta.id) {
+        alert(`Impossible: catégorie "${nomCategorie}" n'a pas d'ID en mémoire — recharge la page.`);
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/categories/${meta.id}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ famille: nouvelleFamille })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            alert(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        currentCategoriesMeta[nomCategorie].famille = nouvelleFamille;
+        afficherProduitsConfig();
+    } catch (e) {
+        console.error('changerFamilleCategorie:', e);
+        alert('Erreur réseau.');
+    }
+}
+
 function afficherProduitsConfig() {
     const container = document.getElementById('produits-categories');
     if (!container) return;
-    
+
     container.innerHTML = '';
-    
+    rendreFiltreFamille(container);
+
     // Protection contre les données undefined ou null
     if (!currentProduitsConfig || typeof currentProduitsConfig !== 'object') {
         container.innerHTML = '<div class="alert alert-warning">Aucune configuration de produits disponible</div>';
@@ -1247,19 +1306,40 @@ function afficherProduitsConfig() {
         return;
     }
     
-    categories.forEach((categorie, index) => {
+    // Filtrer selon la famille active. 'Tous' montre tout.
+    const categoriesAffichees = currentFamilleFilter === 'Tous'
+        ? categories
+        : categories.filter((cat) => familleDeCategorie(cat) === currentFamilleFilter);
+
+    if (categoriesAffichees.length === 0) {
+        container.insertAdjacentHTML('beforeend',
+            `<div class="alert alert-info">Aucune catégorie dans la famille "${currentFamilleFilter}". Change le filtre ou reclasse une catégorie via son menu déroulant.</div>`);
+        return;
+    }
+
+    categoriesAffichees.forEach((categorie, index) => {
         if (typeof currentProduitsConfig[categorie] === 'object' && currentProduitsConfig[categorie] !== null) {
+            const famille = familleDeCategorie(categorie);
+            const familleSelect = `
+                <select class="form-select form-select-sm me-2" style="width: 130px;"
+                        onclick="event.stopPropagation()"
+                        onchange="changerFamilleCategorie('${categorie.replace(/'/g, "\\'")}', this.value)">
+                    <option value="Boucherie" ${famille === 'Boucherie' ? 'selected' : ''}>Boucherie</option>
+                    <option value="Epicerie" ${famille === 'Epicerie' ? 'selected' : ''}>Epicerie</option>
+                    <option value="Autres" ${famille === 'Autres' ? 'selected' : ''}>Autres</option>
+                </select>`;
             const categorieHtml = `
                 <div class="accordion-item">
                     <h2 class="accordion-header" id="heading-${index}">
                         <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="collapse-${index}">
                             <i class="fas fa-folder-open me-2"></i>
                             ${categorie} (${Object.keys(currentProduitsConfig[categorie]).length} produits)
-                            <div class="ms-auto me-3">
-                                                            <button class="btn btn-sm btn-success" onclick="ajouterProduitCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addProductModal">
-                                <i class="fas fa-plus"></i>
-                            </button>
-                            ${getCategorieDeleteButton(categorie)}
+                            <div class="ms-auto me-3 d-flex align-items-center">
+                                ${familleSelect}
+                                <button class="btn btn-sm btn-success me-1" onclick="event.stopPropagation(); ajouterProduitCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addProductModal">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                                ${getCategorieDeleteButton(categorie)}
                             </div>
                         </button>
                     </h2>

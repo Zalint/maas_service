@@ -366,16 +366,26 @@ router.post('/categories', requireAdmin, async (req, res) => {
 router.put('/categories/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nom, ordre } = req.body;
-    
+    const { nom, ordre, famille } = req.body;
+
     const category = await Category.findByPk(id);
     if (!category) {
       return res.status(404).json({ success: false, error: 'Catégorie non trouvée' });
     }
-    
-    await category.update({ nom, ordre });
+
+    const updates = {};
+    if (nom !== undefined) updates.nom = nom;
+    if (ordre !== undefined) updates.ordre = ordre;
+    if (famille !== undefined) {
+      if (!['Boucherie', 'Epicerie', 'Autres'].includes(famille)) {
+        return res.status(400).json({ success: false, error: 'Famille invalide (attendu: Boucherie, Epicerie, Autres)' });
+      }
+      updates.famille = famille;
+    }
+
+    await category.update(updates);
     configService.invalidateCache();
-    
+
     res.json({ success: true, data: category });
   } catch (error) {
     console.error('Erreur mise à jour catégorie:', error);
@@ -461,8 +471,17 @@ router.get('/produits', requireAdmin, async (req, res) => {
       produitsResult[categorieName][produit.nom] = config;
     }
     
+    // Méta-données par catégorie (famille de regroupement haut niveau).
+    // Une seule requête sur Category ici, payload léger; permet au frontend de
+    // filtrer Tous / Boucherie / Epicerie / Autres sans round-trip supplémentaire.
+    const allCategories = await Category.findAll({ attributes: ['id', 'nom', 'famille', 'ordre'] });
+    const categoriesMeta = {};
+    for (const c of allCategories) {
+      categoriesMeta[c.nom] = { id: c.id, famille: c.famille || 'Autres', ordre: c.ordre };
+    }
+
     console.log('📋 GET /api/admin/config/produits - Catégories:', Object.keys(produitsResult));
-    res.json({ success: true, produits: produitsResult });
+    res.json({ success: true, produits: produitsResult, categoriesMeta });
   } catch (error) {
     console.error('Erreur récupération produits:', error);
     res.status(500).json({ success: false, error: error.message, produits: {} });

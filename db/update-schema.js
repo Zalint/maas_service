@@ -75,6 +75,27 @@ async function updateSchema() {
             console.log('Colonnes ventes / prix_personnalise vérifiées/ajoutées dans la table produits');
         }
 
+        // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).
+        // Default 'Autres'; on pré-remplit les noms connus pour éviter à l'admin de tout
+        // reclasser à la main au premier déploiement. Les nouvelles catégories créées
+        // ensuite tombent en 'Autres' tant qu'elles ne sont pas reclassées via l'UI.
+        const categoriesTableExists = await checkTableExists('categories');
+        if (categoriesTableExists) {
+            await sequelize.query(`
+                ALTER TABLE categories
+                ADD COLUMN IF NOT EXISTS "famille" VARCHAR(20) NOT NULL DEFAULT 'Autres'
+            `);
+            await sequelize.query(`
+                UPDATE categories SET famille = 'Boucherie'
+                WHERE famille = 'Autres' AND nom IN ('Bovin', 'Ovin', 'Caprin', 'Volaille')
+            `);
+            await sequelize.query(`
+                UPDATE categories SET famille = 'Epicerie'
+                WHERE famille = 'Autres' AND nom IN ('Pack', 'Conserve', 'Riz & Féculents', 'Superette', 'Boissons')
+            `);
+            console.log('Colonne famille vérifiée/ajoutée dans la table categories (Boucherie/Epicerie pré-remplis)');
+        }
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {
