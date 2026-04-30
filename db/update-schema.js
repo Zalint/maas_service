@@ -62,6 +62,19 @@ async function updateSchema() {
         `);
         console.log('Colonne default_screen vérifiée/ajoutée dans la table users');
 
+        // Ajouter les colonnes ventes (inventaire -> liste de produits vente)
+        // et prix_personnalise (vente -> flag de détachement) sur la table produits.
+        // Idempotent: ALTER ... ADD COLUMN IF NOT EXISTS ne fait rien si déjà présent.
+        const produitsTableExists = await checkTableExists('produits');
+        if (produitsTableExists) {
+            await sequelize.query(`
+                ALTER TABLE produits
+                ADD COLUMN IF NOT EXISTS "ventes" TEXT[] DEFAULT '{}',
+                ADD COLUMN IF NOT EXISTS "prix_personnalise" BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonnes ventes / prix_personnalise vérifiées/ajoutées dans la table produits');
+        }
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

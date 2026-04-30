@@ -62,6 +62,20 @@ const Produit = sequelize.define('Produit', {
     allowNull: true,
     field: 'categorie_affichage',
     comment: 'Catégorie personnalisée pour l\'affichage dans l\'admin inventaire (ex: Conserve, Boissons)'
+  },
+  ventes: {
+    type: DataTypes.ARRAY(DataTypes.STRING),
+    allowNull: true,
+    defaultValue: [],
+    field: 'ventes',
+    comment: 'Inventaire uniquement: noms des produits de vente (type_catalogue=vente) que ce produit alimente. Ex: Boeuf -> ["Boeuf en gros", "Boeuf en détail"]'
+  },
+  prix_personnalise: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'prix_personnalise',
+    comment: 'Vente uniquement: true si le prix a été personnalisé par l\'admin et ne doit plus être propagé depuis le parent inventaire'
   }
 }, {
   tableName: 'produits',

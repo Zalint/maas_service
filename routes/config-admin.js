@@ -399,30 +399,47 @@ router.get('/produits', requireAdmin, async (req, res) => {
       where: { type_catalogue: catalogueType },
       include: [
         { model: Category, as: 'categorie' },
-        { 
-          model: PrixPointVente, 
+        {
+          model: PrixPointVente,
           as: 'prixParPointVente',
           include: [{ model: PointVente, as: 'pointVente' }]
         }
       ],
       order: [['nom', 'ASC']]
     });
-    
+
+    // Indexer les parents inventaire pour exposer inventaire_parent sur chaque vente.
+    // Calcul léger: une seule requête sur les inventaires de ce tenant.
+    let parentByVenteName = {};
+    if (catalogueType === 'vente') {
+      const inventaires = await Produit.findAll({
+        where: { type_catalogue: 'inventaire' },
+        attributes: ['nom', 'ventes']
+      });
+      for (const inv of inventaires) {
+        if (Array.isArray(inv.ventes)) {
+          for (const venteNom of inv.ventes) {
+            parentByVenteName[venteNom] = inv.nom;
+          }
+        }
+      }
+    }
+
     // Construire l'objet structuré par catégories
     const produitsResult = {};
-    
+
     for (const produit of produits) {
       const categorieName = produit.categorie ? produit.categorie.nom : 'Autres';
-      
+
       if (!produitsResult[categorieName]) {
         produitsResult[categorieName] = {};
       }
-      
+
       const config = {
         default: parseFloat(produit.prix_defaut) || 0,
         alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : []
       };
-      
+
       // Ajouter les prix par point de vente
       if (produit.prixParPointVente) {
         for (const prix of produit.prixParPointVente) {
@@ -431,7 +448,15 @@ router.get('/produits', requireAdmin, async (req, res) => {
           }
         }
       }
-      
+
+      // Lien inventaire: exposer le parent et le flag de détachement sur les produits vente
+      if (catalogueType === 'vente') {
+        config.prix_personnalise = !!produit.prix_personnalise;
+        if (parentByVenteName[produit.nom]) {
+          config.inventaire_parent = parentByVenteName[produit.nom];
+        }
+      }
+
       produitsResult[categorieName][produit.nom] = config;
     }
     
@@ -468,7 +493,8 @@ router.get('/produits-inventaire', requireAdminOrSupervisor, async (req, res) =>
         prixDefault: parseFloat(produit.prix_defaut) || 0,
         alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : [],
         mode_stock: produit.mode_stock || 'manuel',
-        unite_stock: produit.unite_stock || 'unite'
+        unite_stock: produit.unite_stock || 'unite',
+        ventes: Array.isArray(produit.ventes) ? produit.ventes : []
       };
       
       if (produit.prixParPointVente) {
