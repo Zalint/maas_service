@@ -7953,13 +7953,13 @@ function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
-    // Nouveau toggle: par défaut décoché → cache les produits automatiques.
-    // Cocher pour les afficher.
-    const afficherAutoEl = document.getElementById('afficher-produits-automatiques');
-    const afficherAuto = afficherAutoEl ? afficherAutoEl.checked : true;
+    // Toggle "Masquer les produits automatiques" — coché par défaut.
+    // Cocher = cacher les ⚡, décocher = les afficher.
+    const masquerAutoEl = document.getElementById('masquer-produits-automatiques');
+    const masquerAuto = masquerAutoEl ? masquerAutoEl.checked : true;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Afficher auto: ${afficherAuto}`);
+    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
 
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
@@ -7999,7 +7999,7 @@ function filtrerStock() {
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
-        const matchAuto = afficherAuto || !isAuto;
+        const matchAuto = !masquerAuto || !isAuto;
 
         if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
             row.style.display = '';
@@ -8057,11 +8057,11 @@ function initFilterStock() {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }
 
-    const afficherAuto = document.getElementById('afficher-produits-automatiques');
-    if (afficherAuto) {
-        afficherAuto.addEventListener('change', filtrerStock);
-        // Appliquer le filtre dès l'init pour respecter le default unchecked
-        // (cacher les auto par défaut).
+    const masquerAuto = document.getElementById('masquer-produits-automatiques');
+    if (masquerAuto) {
+        masquerAuto.addEventListener('change', filtrerStock);
+        // Appliquer le filtre dès l'init pour respecter le default coché
+        // (masquer les auto par défaut).
         filtrerStock();
     }
 
