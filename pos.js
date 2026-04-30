@@ -10127,27 +10127,30 @@ async function chargerInterPVPanel() {
     const totalSpan = document.getElementById('interPVTotal');
     const badge = document.getElementById('interPVBadge');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Chargement…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>';
     try {
-        // Filtrer sur la date sélectionnée dans le Résumé du jour
         const dateInput = document.getElementById('summaryDate');
         const dateStr = dateInput ? dateInput.value : '';
         const resp = await fetch('/api/decoupe/mine?limit=200', { credentials: 'include' });
         const data = await resp.json();
         if (!data.success) {
-            tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
             return;
         }
         let rows = data.commandes || [];
+        // Filtre par date locale (toLocaleDateString fr-CA -> "YYYY-MM-DD"
+        // dans la timezone du navigateur, alignée avec la valeur de l'input
+        // date HTML qui est aussi en local).
         if (dateStr) {
+            const before = rows.length;
             rows = rows.filter((r) => {
                 if (!r.created_at) return false;
-                const isoDay = new Date(r.created_at).toISOString().slice(0, 10);
-                return isoDay === dateStr;
+                return new Date(r.created_at).toLocaleDateString('fr-CA') === dateStr;
             });
+            console.log(`[interPV] filtre date=${dateStr} → ${rows.length}/${before} commandes`);
         }
         if (rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Aucune commande pour cette date.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Aucune commande pour cette date.</td></tr>';
             if (badge) badge.style.display = 'none';
             if (totalSpan) totalSpan.textContent = '0';
             return;
@@ -10164,8 +10167,10 @@ async function chargerInterPVPanel() {
             const produitsList = Array.isArray(row.produits)
                 ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
                 : '';
+            const date = row.created_at ? new Date(row.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
             html += `
                 <tr>
+                    <td><small>${escapeDecoupe(date)}</small></td>
                     <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
                     <td>${escapeDecoupe(row.point_vente_executant || '—')}</td>
                     <td><small>${escapeDecoupe(produitsList)}</small></td>
@@ -10178,7 +10183,7 @@ async function chargerInterPVPanel() {
         if (totalSpan) totalSpan.textContent = formatNumberDecoupe(total);
     } catch (e) {
         console.error('chargerInterPVPanel:', e);
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">Erreur réseau</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Erreur réseau</td></tr>';
     }
 }
 
@@ -10197,7 +10202,7 @@ async function rafraichirBadgeInterPV() {
         if (dateStr) {
             rows = rows.filter((r) => {
                 if (!r.created_at) return false;
-                return new Date(r.created_at).toISOString().slice(0, 10) === dateStr;
+                return new Date(r.created_at).toLocaleDateString('fr-CA') === dateStr;
             });
         }
         if (rows.length > 0) {
@@ -10207,7 +10212,7 @@ async function rafraichirBadgeInterPV() {
             badge.style.display = 'none';
         }
     } catch (e) {
-        // silencieux — un échec ne doit pas casser le résumé
+        // silencieux
     }
 }
 
