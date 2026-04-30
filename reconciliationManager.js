@@ -218,15 +218,26 @@ const ReconciliationManager = (function() {
         }
 
         // S'assurer que le cache des commandes inter-PV est à jour pour la date
-        // affichée. On couvre les deux chemins (calcul direct via le bouton
-        // "Calculer" et chargement depuis sauvegarde) en faisant le fetch ici.
-        // Date attendue côté reconciliation = DD/MM/YYYY ou DD-MM-YYYY.
+        // affichée. On lit la date depuis plusieurs sources possibles parce que
+        // currentReconciliation peut ne pas être encore peuplé sur le chemin
+        // "Calculer" direct.
         try {
-            const date = currentReconciliation && currentReconciliation.date
-                ? currentReconciliation.date
-                : null;
+            const dateInput = document.getElementById('date-reconciliation');
+            const dateDisplay = document.getElementById('date-reconciliation-display');
+            const date =
+                (currentReconciliation && currentReconciliation.date) ||
+                (dateInput && dateInput.value) ||
+                (dateDisplay && dateDisplay.textContent) ||
+                null;
+            console.log('[interPV] date détectée pour pré-fetch =', JSON.stringify(date), {
+                fromCurrent: currentReconciliation && currentReconciliation.date,
+                fromInput: dateInput && dateInput.value,
+                fromDisplay: dateDisplay && dateDisplay.textContent
+            });
             if (date) {
                 await chargerSommeDecoupeInterPV(date);
+            } else {
+                console.warn('[interPV] aucune date trouvée — fetch sauté');
             }
         } catch (e) {
             console.warn('[reconciliation] échec pré-fetch inter-PV:', e.message);
