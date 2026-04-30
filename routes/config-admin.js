@@ -632,9 +632,12 @@ router.post('/produits', requireAdmin, async (req, res) => {
         } else {
           // Mettre à jour si les valeurs ont changé
           const oldPrix = parseFloat(produit.prix_defaut);
-          if (oldPrix !== prixDefaut || JSON.stringify(produit.prix_alternatifs) !== JSON.stringify(alternatives)) {
+          const oldAlternatives = produit.prix_alternatifs || [];
+          const priceDiffers = oldPrix !== prixDefaut;
+          const altsDiffers = JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives);
+          if (priceDiffers || altsDiffers) {
             // Enregistrer l'historique si le prix change
-            if (oldPrix !== prixDefaut) {
+            if (priceDiffers) {
               await PrixHistorique.create({
                 produit_id: produit.id,
                 ancien_prix: oldPrix,
@@ -642,12 +645,28 @@ router.post('/produits', requireAdmin, async (req, res) => {
                 modifie_par: username
               });
             }
-            
-            await produit.update({
+
+            // Si le produit est lié à un parent inventaire, marquer le prix
+            // comme personnalisé pour stopper la propagation automatique.
+            // L'admin peut toujours réattacher via POST /produits/:nom/reattach.
+            const updatePayload = {
               categorie_id: category.id,
               prix_defaut: prixDefaut,
               prix_alternatifs: alternatives
-            });
+            };
+            const hasParent = await Produit.findOne({
+              where: {
+                type_catalogue: 'inventaire',
+                ventes: { [Op.contains]: [produitName] }
+              },
+              attributes: ['id']
+            }).catch(() => null);
+            if (hasParent && !produit.prix_personnalise) {
+              updatePayload.prix_personnalise = true;
+              console.log(`  🔒 ${produitName}: prix détaché du parent inventaire`);
+            }
+
+            await produit.update(updatePayload);
             updated++;
           }
         }
@@ -693,15 +712,20 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
     let updated = 0;
     let created = 0;
     
+    let propagated = 0;
+
     // Fonction helper pour traiter un produit
     async function traiterProduit(produitName, config, categorieAffichage = null) {
       if (typeof config !== 'object' || config.prixDefault === undefined) return;
-      
+
       const prixDefaut = config.prixDefault || 0;
       const alternatives = config.alternatives || [];
       const modeStock = config.mode_stock || 'manuel';
       const uniteStock = config.unite_stock || 'unite';
-      
+      const ventesList = Array.isArray(config.ventes)
+        ? config.ventes.filter((v) => typeof v === 'string' && v.trim().length > 0)
+        : [];
+
       let [produit, wasCreated] = await Produit.findOrCreate({
         where: { nom: produitName, type_catalogue: 'inventaire' },
         defaults: {
@@ -709,21 +733,28 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
           prix_alternatifs: alternatives,
           mode_stock: modeStock,
           unite_stock: uniteStock,
-          categorie_affichage: categorieAffichage
+          categorie_affichage: categorieAffichage,
+          ventes: ventesList
         }
       });
-      
+
+      let priceChanged = false;
+
       if (wasCreated) {
         created++;
+        priceChanged = true;
         console.log(`  ✅ Produit créé: ${produitName}${categorieAffichage ? ` (catégorie: ${categorieAffichage})` : ''}`);
       } else {
         const oldPrix = parseFloat(produit.prix_defaut);
-        const needsUpdate = oldPrix !== prixDefaut || 
-          JSON.stringify(produit.prix_alternatifs) !== JSON.stringify(alternatives) ||
+        const oldAlternatives = produit.prix_alternatifs || [];
+        const oldVentes = Array.isArray(produit.ventes) ? produit.ventes : [];
+        const needsUpdate = oldPrix !== prixDefaut ||
+          JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives) ||
           produit.mode_stock !== modeStock ||
           produit.unite_stock !== uniteStock ||
-          produit.categorie_affichage !== categorieAffichage;
-          
+          produit.categorie_affichage !== categorieAffichage ||
+          JSON.stringify(oldVentes) !== JSON.stringify(ventesList);
+
         if (needsUpdate) {
           if (oldPrix !== prixDefaut) {
             await PrixHistorique.create({
@@ -732,23 +763,58 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
               nouveau_prix: prixDefaut,
               modifie_par: username
             });
+            priceChanged = true;
           }
-          
+          if (JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives)) {
+            priceChanged = true;
+          }
+
           await produit.update({
             prix_defaut: prixDefaut,
             prix_alternatifs: alternatives,
             mode_stock: modeStock,
             unite_stock: uniteStock,
-            categorie_affichage: categorieAffichage
+            categorie_affichage: categorieAffichage,
+            ventes: ventesList
           });
           updated++;
           console.log(`  🔄 Produit mis à jour: ${produitName}`);
         }
       }
+
+      // Propagation du prix vers les produits vente liés non détachés.
+      // Ne déclenche que si prix_defaut ou alternatives ont effectivement changé,
+      // et uniquement vers les enfants dont prix_personnalise=false.
+      if (priceChanged && ventesList.length > 0) {
+        const enfants = await Produit.findAll({
+          where: {
+            type_catalogue: 'vente',
+            nom: ventesList,
+            prix_personnalise: false
+          }
+        });
+        for (const enfant of enfants) {
+          const oldEnfantPrix = parseFloat(enfant.prix_defaut);
+          if (oldEnfantPrix !== prixDefaut) {
+            await PrixHistorique.create({
+              produit_id: enfant.id,
+              ancien_prix: oldEnfantPrix,
+              nouveau_prix: prixDefaut,
+              modifie_par: `${username} (propagation depuis ${produitName})`
+            });
+          }
+          await enfant.update({
+            prix_defaut: prixDefaut,
+            prix_alternatifs: alternatives
+          });
+          propagated++;
+          console.log(`    🔗 Propagation: ${produitName} → ${enfant.nom} (prix=${prixDefaut})`);
+        }
+      }
       
       // Prix par point de vente
       for (const [key, value] of Object.entries(config)) {
-        if (!['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key) && typeof value === 'number') {
+        if (!['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key) && typeof value === 'number') {
           const pointVente = await PointVente.findOne({ where: { nom: key } });
           if (pointVente) {
             await PrixPointVente.upsert({
@@ -780,10 +846,77 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
     }
     
     configService.invalidateCache();
-    console.log(`✅ Configuration inventaire sauvegardée: ${created} créés, ${updated} mis à jour`);
-    res.json({ success: true, message: `${created} produits créés, ${updated} mis à jour` });
+    const propagSuffix = propagated > 0 ? `, ${propagated} prix propagés vers les ventes liées` : '';
+    console.log(`✅ Configuration inventaire sauvegardée: ${created} créés, ${updated} mis à jour${propagSuffix}`);
+    res.json({
+      success: true,
+      message: `${created} produits créés, ${updated} mis à jour${propagSuffix}`,
+      propagated
+    });
   } catch (error) {
     console.error('Erreur sauvegarde config inventaire:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/config/produits/:nom/reattach
+ * Réattache un produit vente à son parent inventaire: remet
+ * prix_personnalise=false et resynchronise prix_defaut + prix_alternatifs
+ * depuis le parent (si présent).
+ */
+router.post('/produits/:nom/reattach', requireAdmin, async (req, res) => {
+  try {
+    const nom = req.params.nom;
+    const username = req.session.user?.username || 'admin';
+
+    const produit = await Produit.findOne({
+      where: { nom, type_catalogue: 'vente' }
+    });
+    if (!produit) {
+      return res.status(404).json({ success: false, error: 'Produit vente introuvable' });
+    }
+
+    const parent = await Produit.findOne({
+      where: {
+        type_catalogue: 'inventaire',
+        ventes: { [Op.contains]: [nom] }
+      }
+    });
+    if (!parent) {
+      return res.status(400).json({
+        success: false,
+        error: `Le produit "${nom}" n'est lié à aucun produit inventaire — rien à réattacher.`
+      });
+    }
+
+    const oldPrix = parseFloat(produit.prix_defaut);
+    const newPrix = parseFloat(parent.prix_defaut);
+    if (oldPrix !== newPrix) {
+      await PrixHistorique.create({
+        produit_id: produit.id,
+        ancien_prix: oldPrix,
+        nouveau_prix: newPrix,
+        modifie_par: `${username} (réattachement à ${parent.nom})`
+      });
+    }
+
+    await produit.update({
+      prix_defaut: newPrix,
+      prix_alternatifs: parent.prix_alternatifs || [],
+      prix_personnalise: false
+    });
+
+    configService.invalidateCache();
+    console.log(`🔓 ${nom} réattaché à ${parent.nom} (prix=${newPrix})`);
+    res.json({
+      success: true,
+      message: `"${nom}" réattaché à "${parent.nom}". Prix resynchronisé à ${newPrix}.`,
+      parent: parent.nom,
+      prix_defaut: newPrix
+    });
+  } catch (error) {
+    console.error('Erreur réattachement produit:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
