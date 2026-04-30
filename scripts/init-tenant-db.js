@@ -32,6 +32,7 @@ const bcrypt = require('bcrypt');
 const tenant = require('../config/tenant');
 const { sequelize, testConnection } = require('../db');
 const { User, PointVente, UserPointVente, Category, Produit } = require('../db/models');
+const { updateSchema } = require('../db/update-schema');
 
 const DEFAULT_ADMIN_USERNAME = process.env.DEFAULT_ADMIN_USERNAME || 'ADMIN';
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'ChangeMe123!';
@@ -140,6 +141,21 @@ async function main() {
         console.log(`🔧 Ensuring schema "${tenant.schema}" exists...`);
         await sequelize.query(`CREATE SCHEMA IF NOT EXISTS "${tenant.schema}"`);
         console.log('✅ Schema ready.\n');
+    }
+
+    // ORDRE IMPORTANT: update-schema avant sync.
+    // Sequelize.sync() avec une table existante génère un CREATE TABLE IF NOT
+    // EXISTS suivi de COMMENT ON COLUMN pour chaque colonne du modèle. Si une
+    // nouvelle colonne (ex: categories.famille) a été ajoutée au modèle après
+    // la création initiale de la table, le COMMENT échoue parce que la colonne
+    // n'existe pas en DB. update-schema ajoute toutes les colonnes manquantes
+    // de manière idempotente, ce qui rend sync() ensuite safe.
+    console.log('🔧 Applying schema migrations (update-schema)...');
+    try {
+        await updateSchema();
+        console.log('✅ Migrations applied.\n');
+    } catch (e) {
+        console.warn('⚠️  update-schema a renvoyé une erreur, on continue avec sync:', e.message);
     }
 
     console.log('🔧 Syncing models (creates missing tables, leaves existing data alone)...');
