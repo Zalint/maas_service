@@ -10022,7 +10022,7 @@ async function chargerMesCommandesDecoupe() {
         let html = '';
         for (const row of rows) {
             decoupeMineCache[row.id] = row;
-            const date = row.created_at ? new Date(row.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+            const date = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
             const produitsList = Array.isArray(row.produits)
                 ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
                 : '';
@@ -10144,18 +10144,19 @@ async function chargerInterPVPanel() {
         if (dateStr) {
             const before = rows.length;
             // Log toutes les dates pour faciliter le diagnostic si filtre vide
-            if (before > 0 && rows.filter((r) => formatLocalYMD(new Date(r.created_at)) === dateStr).length === 0) {
+            if (before > 0 && rows.filter((r) => rowCreatedAt(r) && formatLocalYMD(new Date(rowCreatedAt(r))) === dateStr).length === 0) {
                 console.log('[interPV] aucune commande ne match — dates trouvées:',
                     rows.slice(0, 10).map((r) => ({
                         ref: r.commande_ref,
-                        created_at: r.created_at,
-                        localDay: r.created_at ? formatLocalYMD(new Date(r.created_at)) : null
+                        created_at: rowCreatedAt(r),
+                        localDay: rowCreatedAt(r) ? formatLocalYMD(new Date(rowCreatedAt(r))) : null
                     }))
                 );
             }
             rows = rows.filter((r) => {
-                if (!r.created_at) return false;
-                return formatLocalYMD(new Date(r.created_at)) === dateStr;
+                const c = rowCreatedAt(r);
+                if (!c) return false;
+                return formatLocalYMD(new Date(c)) === dateStr;
             });
             console.log(`[interPV] filtre date=${dateStr} → ${rows.length}/${before} commandes`);
         }
@@ -10177,7 +10178,7 @@ async function chargerInterPVPanel() {
             const produitsList = Array.isArray(row.produits)
                 ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
                 : '';
-            const date = row.created_at ? new Date(row.created_at).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+            const date = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
             html += `
                 <tr>
                     <td><small>${escapeDecoupe(date)}</small></td>
@@ -10211,8 +10212,9 @@ async function rafraichirBadgeInterPV() {
         let rows = data.commandes || [];
         if (dateStr) {
             rows = rows.filter((r) => {
-                if (!r.created_at) return false;
-                return formatLocalYMD(new Date(r.created_at)) === dateStr;
+                const c = rowCreatedAt(r);
+                if (!c) return false;
+                return formatLocalYMD(new Date(c)) === dateStr;
             });
         }
         if (rows.length > 0) {
@@ -10255,6 +10257,13 @@ function formatLocalYMD(d) {
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
+}
+
+// Sequelize sérialise les timestamps en camelCase (createdAt) dans le JSON
+// même avec underscored:true qui ne touche que les noms de colonnes DB.
+// Lecture défensive: les deux formes au cas où on bascule un jour la conf.
+function rowCreatedAt(row) {
+    return row && (row.createdAt || row.created_at) || null;
 }
 
 function escapeDecoupe(s) {
