@@ -1145,6 +1145,21 @@ let currentAbonnementConfig = {};
 let currentCategoriesMeta = {};
 // Filtre actif sur l'onglet Produits Généraux: 'Tous' | 'Boucherie' | 'Epicerie' | 'Autres'
 let currentFamilleFilter = 'Tous';
+// Filtre actif sur l'onglet Inventaire (mêmes valeurs que Généraux).
+let currentInventaireFamilleFilter = 'Tous';
+// Mapping famille des catégories d'inventaire. Défauts hardcodés pour les 6
+// catégories logiques standard; surcharges utilisateur stockées en localStorage
+// (clé: 'inventaireCategoriesFamille'). Les catégories d'inventaire ne sont pas
+// en DB (champ categorie_affichage sur Produit + résolution client-side), d'où
+// la persistance localStorage plutôt qu'une nouvelle table.
+const inventaireFamilleDefauts = {
+    'Viandes': 'Boucherie',
+    'Abats et Sous-produits': 'Boucherie',
+    'Produits sur Pieds': 'Boucherie',
+    'Œufs et Produits Laitiers': 'Epicerie',
+    'Déchets': 'Autres',
+    'Autres': 'Autres'
+};
 
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
@@ -1536,27 +1551,84 @@ function getCategorieInventaireDeleteButton(categorie) {
     }
 }
 
+// Helpers famille pour l'inventaire (persistance localStorage).
+function chargerInventaireFamilleMap() {
+    try {
+        return JSON.parse(localStorage.getItem('inventaireCategoriesFamille') || '{}');
+    } catch (e) {
+        return {};
+    }
+}
+function familleDeCategorieInventaire(nomCategorie) {
+    const overrides = chargerInventaireFamilleMap();
+    if (overrides[nomCategorie]) return overrides[nomCategorie];
+    return inventaireFamilleDefauts[nomCategorie] || 'Autres';
+}
+function changerFamilleCategorieInventaire(nomCategorie, nouvelleFamille) {
+    const map = chargerInventaireFamilleMap();
+    map[nomCategorie] = nouvelleFamille;
+    localStorage.setItem('inventaireCategoriesFamille', JSON.stringify(map));
+    afficherInventaireConfig();
+}
+function setFamilleFilterInventaire(famille) {
+    currentInventaireFamilleFilter = famille;
+    afficherInventaireConfig();
+}
+
 // Afficher la configuration des produits d'inventaire avec accordéon
 function afficherInventaireConfig() {
     const container = document.getElementById('inventaire-categories');
     if (!container) return;
-    
+
     container.innerHTML = '';
-    
+
+    // Tabs filtre famille en tête, comme sur Produits Généraux.
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    const filtreHtml = `
+        <div class="btn-group mb-3" role="group" aria-label="Filtre famille inventaire">
+            ${familles.map((f) => `
+                <button type="button"
+                    class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+                    onclick="setFamilleFilterInventaire('${f}')">${f}</button>
+            `).join('')}
+        </div>`;
+    container.insertAdjacentHTML('beforeend', filtreHtml);
+
     const inventaireParCategories = reorganiserInventaireParCategories();
-    
-    Object.keys(inventaireParCategories).forEach((categorie, index) => {
+
+    const categoriesAffichees = Object.keys(inventaireParCategories).filter((cat) =>
+        currentInventaireFamilleFilter === 'Tous' || familleDeCategorieInventaire(cat) === currentInventaireFamilleFilter
+    );
+
+    if (categoriesAffichees.length === 0) {
+        container.insertAdjacentHTML('beforeend',
+            `<div class="alert alert-info">Aucune catégorie d'inventaire dans la famille "${currentInventaireFamilleFilter}". Change le filtre ou reclasse une catégorie via son menu déroulant.</div>`);
+        return;
+    }
+
+    categoriesAffichees.forEach((categorie, index) => {
         const produits = inventaireParCategories[categorie];
         const nombreProduits = Object.keys(produits).length;
-        
+        const famille = familleDeCategorieInventaire(categorie);
+        const escCat = categorie.replace(/'/g, "\\'");
+        const familleSelect = `
+            <select class="form-select form-select-sm me-2" style="width: 130px;"
+                    onclick="event.stopPropagation()"
+                    onchange="changerFamilleCategorieInventaire('${escCat}', this.value)">
+                <option value="Boucherie" ${famille === 'Boucherie' ? 'selected' : ''}>Boucherie</option>
+                <option value="Epicerie" ${famille === 'Epicerie' ? 'selected' : ''}>Epicerie</option>
+                <option value="Autres" ${famille === 'Autres' ? 'selected' : ''}>Autres</option>
+            </select>`;
+
         const categorieHtml = `
             <div class="accordion-item">
                 <h2 class="accordion-header" id="inventaire-heading-${index}">
                     <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#inventaire-collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="inventaire-collapse-${index}">
                         <i class="fas fa-warehouse me-2"></i>
                         ${categorie} (${nombreProduits} produits)
-                        <div class="ms-auto me-3">
-                            <button class="btn btn-sm btn-success" onclick="ajouterProduitInventaireCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addInventaireProductModal">
+                        <div class="ms-auto me-3 d-flex align-items-center">
+                            ${familleSelect}
+                            <button class="btn btn-sm btn-success me-1" onclick="event.stopPropagation(); ajouterProduitInventaireCategorie('${escCat}')" data-bs-toggle="modal" data-bs-target="#addInventaireProductModal">
                                 <i class="fas fa-plus"></i>
                             </button>
                             ${getCategorieInventaireDeleteButton(categorie)}
