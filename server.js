@@ -506,6 +506,7 @@ const clientConfig = require('./config/client-config');
 const paymentsGeneratedRouter = require('./routes/payments-generated');
 const modulesRouter = require('./routes/modules');
 const configAdminRouter = require('./routes/config-admin');
+const decoupeForwardRouter = require('./routes/decoupe-forward');
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON
 // const stockAutoRouter = require('./routes/stock-auto');
 
@@ -514,6 +515,11 @@ app.use('/api/payments/generated', paymentsGeneratedRouter);
 
 // Routes d'administration de la configuration (produits, catégories, prix)
 app.use('/api/admin/config', configAdminRouter);
+
+// Forwarder vers le centre de découpe Mata (commandes_decoupe).
+// Auth session requise — pas d'admin-only, n'importe quel utilisateur connecté
+// du POS peut envoyer une commande au centre.
+app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
 
 // Routes pour la gestion du stock automatique
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON

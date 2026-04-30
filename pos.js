@@ -1709,7 +1709,45 @@ async function confirmerPaiement(event) {
         
         // Success
         console.log('✅ Ventes enregistrées avec succès');
-        
+
+        // 🔪 Envoi au centre de découpe Mata si l'utilisateur l'a coché.
+        // Best-effort: une erreur n'annule pas la vente déjà enregistrée localement.
+        const envoyerDecoupeCheckbox = document.getElementById('envoyerCentreDecoupe');
+        if (envoyerDecoupeCheckbox && envoyerDecoupeCheckbox.checked) {
+            try {
+                const decoupeResp = await fetch('/api/decoupe/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        point_vente: pointVente,
+                        produits: cart.map((item) => ({
+                            categorie: item.category,
+                            produit: item.name,
+                            prixUnit: item.price,
+                            nombre: item.quantity,
+                            montant: item.price * item.quantity
+                        })),
+                        montant_total: total,
+                        nom_client: clientInfo.nom,
+                        numero_client: clientInfo.numero,
+                        adresse_client: clientInfo.adresse,
+                        instructions_client: clientInfo.instructions
+                    })
+                });
+                const decoupeData = await decoupeResp.json();
+                if (decoupeData.success) {
+                    const ref = decoupeData.commande_ref || decoupeData.ref || '';
+                    showToast(`🔪 Commande envoyée au centre de découpe${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
+                } else {
+                    showToast(`⚠️ Vente enregistrée, mais l'envoi au centre de découpe a échoué: ${decoupeData.error || ''}`, 'warning', 8000);
+                }
+            } catch (e) {
+                console.error('Envoi centre de découpe:', e);
+                showToast('⚠️ Vente enregistrée, mais l\'envoi au centre de découpe a échoué (réseau).', 'warning', 8000);
+            }
+        }
+
         // 🆕 Appliquer le crédit client si demandé (synchrone avec attente)
         const useCreditCheckbox = document.getElementById('useCredit');
         if (useCreditCheckbox && useCreditCheckbox.checked && clientInfo.numero) {
@@ -1765,6 +1803,11 @@ async function confirmerPaiement(event) {
         const surPlaceCheckbox = document.getElementById('commandeSurPlace');
         if (surPlaceCheckbox) {
             surPlaceCheckbox.checked = false;
+        }
+        // Reset checkbox "Envoyer au centre de découpe"
+        const envoyerCheckbox = document.getElementById('envoyerCentreDecoupe');
+        if (envoyerCheckbox) {
+            envoyerCheckbox.checked = false;
         }
         
         // Show success feedback
