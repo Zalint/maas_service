@@ -2491,7 +2491,7 @@ function refreshGererVentesBody(produitInventaire, categorieInv = null) {
               <td><strong>${nomVente}</strong> <small class="text-muted">— ${found.categorie}</small></td>
               <td>
                 <input type="number" class="form-control form-control-sm" value="${found.config.default}"
-                       onchange="modifierPrixVenteDepuisInventaire('${found.categorie.replace(/'/g, "\\'")}', '${escNom}', this.value)">
+                       oninput="modifierPrixVenteDepuisInventaire('${found.categorie.replace(/'/g, "\\'")}', '${escNom}', this.value)">
               </td>
               <td>${stateBadge}</td>
               <td>
@@ -2556,6 +2556,25 @@ async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = nu
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Sauvegarde...';
     }
     try {
+        // Filet de sécurité: relire les inputs du modal au moment du clic, au cas où
+        // oninput n'aurait pas pu se déclencher (focus encore sur l'input quand on clique).
+        const tbody = document.getElementById('gererVentesBody');
+        if (tbody) {
+            tbody.querySelectorAll('input[type="number"][oninput]').forEach((input) => {
+                const match = (input.getAttribute('oninput') || '').match(/modifierPrixVenteDepuisInventaire\('([^']+)',\s*'([^']+)'/);
+                if (match) {
+                    const cat = match[1].replace(/\\'/g, "'");
+                    const nom = match[2].replace(/\\'/g, "'");
+                    if (currentProduitsConfig[cat] && currentProduitsConfig[cat][nom]) {
+                        const v = parseFloat(input.value);
+                        if (!isNaN(v)) {
+                            currentProduitsConfig[cat][nom].default = v;
+                            venteConfigModifieeDepuisInventaire = true;
+                        }
+                    }
+                }
+            });
+        }
         // Toujours pousser produits d'abord pour que le serveur détache (prix_personnalise=true)
         // les enfants modifiés AVANT que la propagation inventaire les ré-écrase.
         const venteResp = await fetch('/api/admin/config/produits', {
