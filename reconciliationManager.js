@@ -19,6 +19,8 @@ const ReconciliationManager = (function() {
         { id: 'transferts', label: 'Transferts', isNumeric: true },
         { id: 'ventesTheoriques', label: 'Ventes Théoriques', isNumeric: true },
         { id: 'ventesSaisies', label: 'Ventes Saisies', isNumeric: true },
+        { id: 'commandesInterPV', label: 'Commandes inter-PV', isNumeric: true },
+        { id: 'ventesTotales', label: 'Ventes Totales', isNumeric: true },
         { id: 'creances', label: 'Créances', isNumeric: true },
         { id: 'ecart', label: 'Écart', isNumeric: true },
         { id: 'cashPayment', label: 'Montant Total Cash', isNumeric: true },
@@ -26,6 +28,10 @@ const ReconciliationManager = (function() {
         { id: 'ecartCash', label: 'Ecart Cash', isNumeric: true },
         { id: 'commentaire', label: 'Commentaire', isInput: true }
     ];
+
+    // Cache module: somme des commandes inter-PV par PV pour la date courante.
+    // Rempli par chargerSommeDecoupeInterPV(date) avant le rendu du tableau.
+    let decoupeInterPVByPV = {};
     
     // Mapping des références de paiement aux points de vente - chargé depuis l'API
     let PAYMENT_REF_MAPPING = {};
@@ -206,11 +212,11 @@ const ReconciliationManager = (function() {
     // Fonction principale pour afficher les données dans le tableau
     function afficherReconciliation(reconciliationData, debugInfo) {
         console.log('Affichage des données de réconciliation:', reconciliationData);
-        
+
         if (debugInfo) {
             currentDebugInfo = debugInfo;
         }
-        
+
         const table = document.getElementById('reconciliation-table');
         if (!table) {
             console.error('Table de réconciliation non trouvée dans le DOM');
@@ -385,6 +391,18 @@ const ReconciliationManager = (function() {
                     cell.textContent = formatMonetaire(data.stockMatin);
                     cell.classList.add('currency');
                     totals.stockMatin += data.stockMatin;
+                    // Alerte: stock matin = 0 alors qu'il y a des ventes saisies
+                    // → l'admin a probablement oublié la saisie pour les produits
+                    // manuels. Ne déclenche pas si stockSoir est non nul (cas
+                    // valide: stock initial nul mais ravitaillement en cours).
+                    if ((data.stockMatin === 0 || !data.stockMatin) &&
+                        (data.stockSoir === 0 || !data.stockSoir) &&
+                        (Number(data.ventesSaisies) > 0)) {
+                        cell.style.backgroundColor = '#fff3cd';
+                        cell.title = '⚠️ Stock matin/soir vide alors que des ventes ont été saisies — vérifie la saisie quotidienne pour les produits manuels.';
+                        cell.style.cursor = 'help';
+                        cell.textContent = '⚠️ ' + cell.textContent;
+                    }
                     
                     // Ajouter des détails de tooltip pour stock matin
                     if (currentDebugInfo && currentDebugInfo.detailsParPointVente && currentDebugInfo.detailsParPointVente[pointVente] && 
@@ -458,7 +476,32 @@ const ReconciliationManager = (function() {
                     cell.classList.add('currency');
                     totals.ventesSaisies += data.ventesSaisies;
                     break;
-                    
+
+                case 'commandesInterPV': {
+                    // commandesInterPV est calculé dans script.js calcReconPV
+                    // au moment du fetch, et persisté lors du save dans le
+                    // data JSONB de la réconciliation. Plus de fetch async ni
+                    // de cache module — tout vient du même flux que ventesSaisies.
+                    const interPV = Number(data.commandesInterPV) || 0;
+                    cell.textContent = formatMonetaire(interPV);
+                    cell.classList.add('currency');
+                    if (interPV > 0) {
+                        cell.style.color = '#0d6efd';
+                    }
+                    totals.commandesInterPV = (totals.commandesInterPV || 0) + interPV;
+                    break;
+                }
+
+                case 'ventesTotales': {
+                    const interPV = Number(data.commandesInterPV) || 0;
+                    const ventesTotales = (Number(data.ventesSaisies) || 0) + interPV;
+                    cell.textContent = formatMonetaire(ventesTotales);
+                    cell.classList.add('currency');
+                    cell.style.fontWeight = 'bold';
+                    totals.ventesTotales = (totals.ventesTotales || 0) + ventesTotales;
+                    break;
+                }
+
                 case 'creances':
                     const creancesValue = data.creances || 0;
                     cell.textContent = formatMonetaire(creancesValue);
@@ -920,6 +963,44 @@ const ReconciliationManager = (function() {
         }
     }
     
+    // Charge la somme des commandes inter-PV pour la date donnée et alimente
+    // le cache module decoupeInterPVByPV. La date attendue est au format
+    // DD-MM-YYYY (utilisé par l'écran reconciliation); on la convertit en
+    // YYYY-MM-DD pour l'API.
+    async function chargerSommeDecoupeInterPV(date) {
+        console.log('[interPV] chargerSommeDecoupeInterPV appelée avec date =', JSON.stringify(date));
+        try {
+            decoupeInterPVByPV = {};
+            // Accepte DD-MM-YYYY ou DD/MM/YYYY ou YYYY-MM-DD; convertit en
+            // YYYY-MM-DD pour l'API.
+            let iso = date;
+            const m1 = String(date).match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+            const m2 = String(date).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (m1) iso = `${m1[3]}-${m1[2]}-${m1[1]}`;
+            else if (m2) iso = `${m2[1]}-${m2[2]}-${m2[3]}`;
+            console.log('[interPV] date convertie en ISO =', iso);
+            const url = `/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`;
+            console.log('[interPV] fetch', url);
+            const resp = await fetch(url, { credentials: 'include' });
+            console.log('[interPV] HTTP', resp.status);
+            if (!resp.ok) {
+                console.warn('[interPV] réponse non OK, on abandonne');
+                return;
+            }
+            const data = await resp.json();
+            console.log('[interPV] payload reçu:', data);
+            if (data && data.success && data.sums) {
+                decoupeInterPVByPV = data.sums;
+                console.log('[interPV] cache rempli:', decoupeInterPVByPV);
+            } else {
+                console.warn('[interPV] réponse OK mais sums absent ou success=false');
+            }
+        } catch (e) {
+            console.warn('[interPV] erreur fetch:', e);
+            decoupeInterPVByPV = {};
+        }
+    }
+
     // Charger une réconciliation (sauvegardée ou calculée)
     async function chargerReconciliation(date) {
         try {
@@ -928,8 +1009,13 @@ const ReconciliationManager = (function() {
             if (loadingIndicator) {
                 loadingIndicator.style.display = 'block';
             }
-            
+
             console.log(`Chargement de la réconciliation pour ${date}`);
+
+            // Charger en parallèle la somme des commandes inter-PV pour ce jour
+            // (alimente le cache utilisé par les colonnes commandesInterPV /
+            // ventesTotales lors du rendu du tableau).
+            await chargerSommeDecoupeInterPV(date);
             
             // Mettre à jour l'affichage de la date
             const dateDisplay = document.getElementById('date-reconciliation-display');
@@ -1156,7 +1242,9 @@ const ReconciliationManager = (function() {
                 }
             });
             
-            // Ajouter les commentaires aux données
+            // Ajouter les commentaires aux données. commandesInterPV est déjà
+            // dans reconciliationData[pv] depuis calcReconPV, on n'a rien à
+            // ajouter — il sera persisté tel quel dans le JSONB.
             Object.keys(reconciliationData).forEach(pointVente => {
                 reconciliationData[pointVente].commentaire = commentaires[pointVente] || '';
             });

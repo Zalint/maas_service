@@ -110,6 +110,19 @@ Optional, only if the corresponding module is enabled for that tenant:
 - `OPENAI_API_KEY`, `OPENAI_MODEL` — for AI features
 - `BICTORYS_API_KEY`, `BICTORYS_BASE_URL` — for the payment-links module
 - `BASE_URL` — for absolute URLs in generated invoices
+- `MATA_DECOUPE_BASE_URL`, `MATA_DECOUPE_API_KEY`, `MATA_DECOUPE_CENTRE` —
+  forward POS orders to Mata's `commandes_decoupe` table. The POS exposes
+  a 🔪 Découpe button next to the products header; clicking it opens a
+  modal with a centre selector + cart preview + client form, then POSTs
+  to `<MATA_DECOUPE_BASE_URL>/api/commandes-decoupe/external` with
+  `x-api-key: <MATA_DECOUPE_API_KEY>` and `point_vente_executant` set to
+  the centre chosen by the admin.
+  `MATA_DECOUPE_CENTRE` accepts a `;`-separated list of centres — each
+  becomes a dropdown option in the modal. The 1st is the default. Typical
+  setup for a tenant that can route to either centre:
+  `Centre de Découpe Banlieue;Centre de Découpe Dakar`. Leave the URL/key
+  blank to disable — the endpoint returns 503 with a clear message and
+  no order is created upstream.
 
 > ⚠️ **`BICTORYS_API_KEY` quirk:** even when the payment-links module is
 > off, `server.js` currently does a hard `throw` at module-load time if

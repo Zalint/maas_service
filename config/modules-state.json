@@ -24,7 +24,7 @@
     "active": false
   },
   "precommande": {
-    "active": true
+    "active": false
   },
   "payment-links": {
     "active": false

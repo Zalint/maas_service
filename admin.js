@@ -1,3 +1,44 @@
+// Toast UI minimal basé sur Bootstrap 5. Remplace les alert() natifs.
+// Usage: showToast('msg'), showToast('msg', 'danger'), showToast('msg', 'success', 5000)
+// Si type n'est pas fourni, devine d'après le texte: erreur/échec -> danger,
+// attention/veuillez -> warning, sinon success.
+function showToast(message, type = null, durationMs = 4000) {
+    const text = String(message == null ? '' : message);
+    if (!type) {
+        type = /erreur|error|échec|echec|impossible|invalide/i.test(text) ? 'danger'
+             : /attention|warning|veuillez|prudent/i.test(text) ? 'warning'
+             : 'success';
+    }
+    let container = document.getElementById('appToastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'appToastContainer';
+        container.className = 'toast-container position-fixed top-0 end-0 p-3';
+        container.style.zIndex = '1100';
+        document.body.appendChild(container);
+    }
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const toastEl = document.createElement('div');
+    toastEl.className = `toast align-items-center text-bg-${type} border-0`;
+    toastEl.setAttribute('role', 'alert');
+    toastEl.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body" style="white-space: pre-line;">${safe}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    `;
+    container.appendChild(toastEl);
+    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
+        const t = new bootstrap.Toast(toastEl, { delay: durationMs });
+        t.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    } else {
+        // Fallback si Bootstrap n'est pas chargé: timeout manuel
+        toastEl.classList.add('show');
+        setTimeout(() => toastEl.remove(), durationMs);
+    }
+}
+
 // Fonction pour obtenir le nom d'affichage du rôle utilisateur
 function getUserRoleDisplayName(user) {
     if (!user || !user.role) {
@@ -243,7 +284,7 @@ function afficherListePointsVente(pointsVente) {
 // Mettre à jour la référence de paiement d'un point de vente
 async function updatePaymentRef(id, nom, paymentRef) {
     if (!id) {
-        alert('ID du point de vente non trouvé');
+        showToast('ID du point de vente non trouvé');
         return;
     }
     
@@ -258,15 +299,15 @@ async function updatePaymentRef(id, nom, paymentRef) {
         const data = await response.json();
         
         if (data.success) {
-            alert(`Référence "${paymentRef}" sauvegardée pour ${nom}`);
+            showToast(`Référence "${paymentRef}" sauvegardée pour ${nom}`);
             console.log(`Référence de paiement mise à jour pour ${nom}: ${paymentRef}`);
         } else {
-            alert(data.error || 'Erreur lors de la mise à jour');
+            showToast(data.error || 'Erreur lors de la mise à jour');
             chargerPointsVente();
         }
     } catch (error) {
         console.error('Erreur:', error);
-        alert('Erreur lors de la mise à jour de la référence');
+        showToast('Erreur lors de la mise à jour de la référence');
         chargerPointsVente();
     }
 }
@@ -277,7 +318,7 @@ async function ajouterPointVente() {
     const nom = nomInput.value.trim();
     
     if (!nom) {
-        alert('Veuillez saisir un nom pour le point de vente');
+        showToast('Veuillez saisir un nom pour le point de vente');
         return;
     }
     
@@ -299,13 +340,13 @@ async function ajouterPointVente() {
         if (data.success) {
             nomInput.value = '';
             chargerPointsVente();
-            alert('Point de vente ajouté avec succès');
+            showToast('Point de vente ajouté avec succès');
         } else {
-            alert(data.message || 'Erreur lors de l\'ajout du point de vente');
+            showToast(data.message || 'Erreur lors de l\'ajout du point de vente');
         }
     } catch (error) {
         console.error('Erreur lors de l\'ajout du point de vente:', error);
-        alert('Erreur lors de l\'ajout du point de vente');
+        showToast('Erreur lors de l\'ajout du point de vente');
     }
 }
 
@@ -329,11 +370,11 @@ async function togglePointVente(nom) {
         if (data.success) {
             chargerPointsVente();
         } else {
-            alert(data.message);
+            showToast(data.message);
         }
     } catch (error) {
         console.error('Erreur lors de la modification du point de vente:', error);
-        alert('Erreur lors de la modification du point de vente');
+        showToast('Erreur lors de la modification du point de vente');
     }
 }
 
@@ -443,7 +484,7 @@ function initPrixEventListeners() {
             const nouveauPrix = document.getElementById('nouveau-prix')?.value;
             
             if (!categorie || !produit || !nouveauPrix) {
-                alert('Veuillez remplir tous les champs');
+                showToast('Veuillez remplir tous les champs');
                 return;
             }
             
@@ -464,14 +505,14 @@ function initPrixEventListeners() {
                 const data = await response.json();
                 if (data.success) {
                     document.getElementById('nouveau-prix').value = '';
-                    alert('Prix modifié avec succès');
+                    showToast('Prix modifié avec succès');
                     chargerProduits(); // Recharger les produits pour mettre à jour les menus
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de la modification du prix:', error);
-                alert('Erreur lors de la modification du prix');
+                showToast('Erreur lors de la modification du prix');
             }
         });
     }
@@ -514,7 +555,7 @@ function initCorrectionsEventListeners() {
             const nouveauTotal = document.getElementById('nouveau-total')?.value;
             
             if (!date || !pointVente || !categorie || !produit || !nouveauTotal) {
-                alert('Veuillez remplir tous les champs');
+                showToast('Veuillez remplir tous les champs');
                 return;
             }
             
@@ -537,13 +578,13 @@ function initCorrectionsEventListeners() {
                 const data = await response.json();
                 if (data.success) {
                     document.getElementById('nouveau-total').value = '';
-                    alert('Total corrigé avec succès');
+                    showToast('Total corrigé avec succès');
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de la correction du total:', error);
-                alert('Erreur lors de la correction du total');
+                showToast('Erreur lors de la correction du total');
             }
         });
     }
@@ -559,7 +600,7 @@ function initPointsVenteEventListeners() {
             const nom = document.getElementById('newPointVente')?.value;
             
             if (!nom) {
-                alert('Veuillez saisir un nom de point de vente');
+                showToast('Veuillez saisir un nom de point de vente');
                 return;
             }
             
@@ -581,13 +622,13 @@ function initPointsVenteEventListeners() {
                 if (data.success) {
                     document.getElementById('newPointVente').value = '';
                     chargerPointsVente();
-                    alert('Point de vente ajouté avec succès');
+                    showToast('Point de vente ajouté avec succès');
                 } else {
-                    alert(data.message);
+                    showToast(data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors de l\'ajout du point de vente:', error);
-                alert('Erreur lors de l\'ajout du point de vente');
+                showToast('Erreur lors de l\'ajout du point de vente');
             }
         });
     }
@@ -740,7 +781,7 @@ async function rechercherStocks() {
     const produit = document.getElementById('produit-filter')?.value;
     
     if (!dateDebut || !dateFin) {
-        alert('Veuillez sélectionner une période de dates');
+        showToast('Veuillez sélectionner une période de dates');
         return;
     }
     
@@ -782,7 +823,7 @@ async function rechercherStocks() {
         
     } catch (error) {
         console.error('Erreur lors de la recherche:', error);
-        alert('Erreur lors de la récupération des données');
+        showToast('Erreur lors de la récupération des données');
     } finally {
         hideLoading();
     }
@@ -1018,7 +1059,7 @@ function filterTransfertsData(data, pointVente, produit) {
 // Exporter les données en Excel
 function exportToExcel() {
     if (typeof XLSX === 'undefined') {
-        alert('Bibliothèque Excel non disponible');
+        showToast('Bibliothèque Excel non disponible');
         return;
     }
     
@@ -1028,7 +1069,7 @@ function exportToExcel() {
     const produit = document.getElementById('produit-filter')?.value;
     
     if (consolidatedData.length === 0) {
-        alert('Aucune donnée à exporter');
+        showToast('Aucune donnée à exporter');
         return;
     }
     
@@ -1068,7 +1109,7 @@ function exportToExcel() {
     // Télécharger le fichier
     XLSX.writeFile(workbook, filename);
     
-    alert(`Export Excel réussi : ${filename}`);
+    showToast(`Export Excel réussi : ${filename}`);
 }
 
 // Utilitaires
@@ -1141,6 +1182,25 @@ function hideLoading() {
 let currentProduitsConfig = {};
 let currentInventaireConfig = {};
 let currentAbonnementConfig = {};
+// Méta-données par catégorie de l'onglet Produits Généraux: { "Bovin": {famille: "Boucherie", id: 4, ordre: 1}, ... }
+let currentCategoriesMeta = {};
+// Filtre actif sur l'onglet Produits Généraux: 'Tous' | 'Boucherie' | 'Epicerie' | 'Autres'
+let currentFamilleFilter = 'Tous';
+// Filtre actif sur l'onglet Inventaire (mêmes valeurs que Généraux).
+let currentInventaireFamilleFilter = 'Tous';
+// Mapping famille des catégories d'inventaire. Défauts hardcodés pour les 6
+// catégories logiques standard; surcharges utilisateur stockées en localStorage
+// (clé: 'inventaireCategoriesFamille'). Les catégories d'inventaire ne sont pas
+// en DB (champ categorie_affichage sur Produit + résolution client-side), d'où
+// la persistance localStorage plutôt qu'une nouvelle table.
+const inventaireFamilleDefauts = {
+    'Viandes': 'Boucherie',
+    'Abats et Sous-produits': 'Boucherie',
+    'Produits sur Pieds': 'Boucherie',
+    'Œufs et Produits Laitiers': 'Epicerie',
+    'Déchets': 'Autres',
+    'Autres': 'Autres'
+};
 
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
@@ -1152,6 +1212,7 @@ async function chargerConfigProduits() {
         
         if (data.success && data.produits) {
             currentProduitsConfig = data.produits;
+            currentCategoriesMeta = data.categoriesMeta || {};
             console.log('✅ Produits chargés:', Object.keys(currentProduitsConfig));
             afficherProduitsConfig();
         } else {
@@ -1174,21 +1235,25 @@ async function chargerConfigInventaire() {
         
         if (data.success) {
             currentInventaireConfig = data.produitsInventaire;
-            
+
             // Mettre à jour les catégories personnalisées depuis le serveur
             if (data.categoriesPersonnalisees && data.categoriesPersonnalisees.length > 0) {
                 localStorage.setItem('inventaireCategoriesPersonnalisees', JSON.stringify(data.categoriesPersonnalisees));
                 console.log('📁 Catégories personnalisées chargées:', data.categoriesPersonnalisees);
             }
-            
+
+            // Charger le mapping famille depuis la table inventaire_categories
+            // avant le premier rendu pour éviter un flash 'Autres' partout.
+            await chargerInventaireFamilleMap();
+
             afficherInventaireConfig();
         } else {
             console.error('Erreur lors du chargement de la configuration d\'inventaire:', data.message);
-            alert('Erreur lors du chargement de la configuration d\'inventaire');
+            showToast('Erreur lors du chargement de la configuration d\'inventaire');
         }
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'inventaire:', error);
-        alert('Erreur lors du chargement de la configuration d\'inventaire');
+        showToast('Erreur lors du chargement de la configuration d\'inventaire');
     }
 }
 
@@ -1205,11 +1270,11 @@ async function chargerConfigAbonnement() {
             afficherAbonnementConfig();
         } else {
             console.error('Erreur lors du chargement de la configuration d\'abonnement:', data.message);
-            alert('Erreur lors du chargement de la configuration d\'abonnement');
+            showToast('Erreur lors du chargement de la configuration d\'abonnement');
         }
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'abonnement:', error);
-        alert('Erreur lors du chargement de la configuration d\'abonnement');
+        showToast('Erreur lors du chargement de la configuration d\'abonnement');
     }
 }
 
@@ -1217,24 +1282,132 @@ async function chargerConfigAbonnement() {
 // Fonction pour générer le bouton de suppression conditionnel
 function getCategorieDeleteButton(categorie) {
     const categoriesPrincipales = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin', 'Autres'];
-    
+
     if (categoriesPrincipales.includes(categorie)) {
         return `<button class="btn btn-sm btn-secondary" disabled title="Catégorie principale - ne peut pas être supprimée">
                     <i class="fas fa-lock"></i>
                 </button>`;
     } else {
-        return `<button class="btn btn-sm btn-danger" onclick="supprimerCategorie('${categorie}')">
+        return `<button class="btn btn-sm btn-danger" data-action="supprimer-categorie" data-categorie="${escAttr(categorie)}">
                     <i class="fas fa-trash"></i>
                 </button>`;
+    }
+}
+
+// Famille d'une catégorie selon currentCategoriesMeta. Default 'Autres' si la
+// catégorie n'a pas (encore) de méta — ça arrive sur les nouvelles catégories
+// créées avant que la migration côté DB ait tourné, ou sur les catégories perso
+// d'inventaire qui ne sont pas dans cette table.
+function familleDeCategorie(nomCategorie) {
+    const meta = currentCategoriesMeta[nomCategorie];
+    return meta && meta.famille ? meta.famille : 'Autres';
+}
+
+// Échappement HTML attribut (couvre " et ' en plus de &<>) — utilisé partout
+// où on injecte du contenu dynamique (noms de catégorie/produit) dans des
+// attributs HTML. Évite les XSS-via-admin si jamais un nom contient des
+// caractères spéciaux.
+function escAttr(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function rendreFiltreFamille(container) {
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    const html = `
+        <div class="btn-group mb-3" role="group" aria-label="Filtre famille" data-role="famille-filter">
+            ${familles.map((f) => `
+                <button type="button"
+                    class="btn ${currentFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+                    data-famille="${escAttr(f)}">${escAttr(f)}</button>
+            `).join('')}
+        </div>`;
+    container.insertAdjacentHTML('beforeend', html);
+    // Délégation: un seul listener pour les 4 boutons
+    const grp = container.querySelector('[data-role="famille-filter"]');
+    if (grp) {
+        grp.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-famille]');
+            if (btn) setFamilleFilter(btn.dataset.famille);
+        });
+    }
+}
+
+function setFamilleFilter(famille) {
+    currentFamilleFilter = famille;
+    afficherProduitsConfig();
+}
+
+async function changerFamilleCategorie(nomCategorie, nouvelleFamille) {
+    const meta = currentCategoriesMeta[nomCategorie];
+    if (!meta || !meta.id) {
+        showToast(`Impossible: catégorie "${nomCategorie}" n'a pas d'ID en mémoire — recharge la page.`);
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/categories/${meta.id}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ famille: nouvelleFamille })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        currentCategoriesMeta[nomCategorie].famille = nouvelleFamille;
+        afficherProduitsConfig();
+    } catch (e) {
+        console.error('changerFamilleCategorie:', e);
+        showToast('Erreur réseau.');
     }
 }
 
 function afficherProduitsConfig() {
     const container = document.getElementById('produits-categories');
     if (!container) return;
-    
+
     container.innerHTML = '';
-    
+    rendreFiltreFamille(container);
+
+    // Délégation: un seul listener attaché une fois (idempotent via flag)
+    // pour toutes les actions data-action sur les catégories. Évite les
+    // inline onclick="...('${nom}')" qui pouvaient injecter du code si un
+    // nom de catégorie/produit contenait des caractères spéciaux.
+    if (!container.dataset.delegatedActionsBound) {
+        container.dataset.delegatedActionsBound = '1';
+        container.addEventListener('click', (e) => {
+            const target = e.target.closest('[data-action]');
+            if (!target || !container.contains(target)) return;
+            const action = target.dataset.action;
+            const categorie = target.dataset.categorie;
+            if (action === 'ajouter-produit-categorie') {
+                e.stopPropagation();
+                if (typeof ajouterProduitCategorie === 'function') ajouterProduitCategorie(categorie);
+            } else if (action === 'supprimer-categorie') {
+                e.stopPropagation();
+                if (typeof supprimerCategorie === 'function') supprimerCategorie(categorie);
+            }
+        });
+        container.addEventListener('change', (e) => {
+            const target = e.target.closest('[data-action="changer-famille-categorie"]');
+            if (target) {
+                changerFamilleCategorie(target.dataset.categorie, target.value);
+            }
+        });
+        // Empêche le select famille de plier l'accordéon quand l'admin clique dessus
+        container.addEventListener('click', (e) => {
+            if (e.target.closest('[data-action="changer-famille-categorie"]')) {
+                e.stopPropagation();
+            }
+        });
+    }
+
     // Protection contre les données undefined ou null
     if (!currentProduitsConfig || typeof currentProduitsConfig !== 'object') {
         container.innerHTML = '<div class="alert alert-warning">Aucune configuration de produits disponible</div>';
@@ -1247,19 +1420,40 @@ function afficherProduitsConfig() {
         return;
     }
     
-    categories.forEach((categorie, index) => {
+    // Filtrer selon la famille active. 'Tous' montre tout.
+    const categoriesAffichees = currentFamilleFilter === 'Tous'
+        ? categories
+        : categories.filter((cat) => familleDeCategorie(cat) === currentFamilleFilter);
+
+    if (categoriesAffichees.length === 0) {
+        container.insertAdjacentHTML('beforeend',
+            `<div class="alert alert-info">Aucune catégorie dans la famille "${currentFamilleFilter}". Change le filtre ou reclasse une catégorie via son menu déroulant.</div>`);
+        return;
+    }
+
+    categoriesAffichees.forEach((categorie, index) => {
         if (typeof currentProduitsConfig[categorie] === 'object' && currentProduitsConfig[categorie] !== null) {
+            const famille = familleDeCategorie(categorie);
+            const catEsc = escAttr(categorie);
+            const familleSelect = `
+                <select class="form-select form-select-sm me-2" style="width: 130px;"
+                        data-action="changer-famille-categorie" data-categorie="${catEsc}">
+                    <option value="Boucherie" ${famille === 'Boucherie' ? 'selected' : ''}>Boucherie</option>
+                    <option value="Epicerie" ${famille === 'Epicerie' ? 'selected' : ''}>Epicerie</option>
+                    <option value="Autres" ${famille === 'Autres' ? 'selected' : ''}>Autres</option>
+                </select>`;
             const categorieHtml = `
                 <div class="accordion-item">
                     <h2 class="accordion-header" id="heading-${index}">
                         <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="collapse-${index}">
                             <i class="fas fa-folder-open me-2"></i>
-                            ${categorie} (${Object.keys(currentProduitsConfig[categorie]).length} produits)
-                            <div class="ms-auto me-3">
-                                                            <button class="btn btn-sm btn-success" onclick="ajouterProduitCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addProductModal">
-                                <i class="fas fa-plus"></i>
-                            </button>
-                            ${getCategorieDeleteButton(categorie)}
+                            ${escAttr(categorie)} (${Object.keys(currentProduitsConfig[categorie]).length} produits)
+                            <div class="ms-auto me-3 d-flex align-items-center">
+                                ${familleSelect}
+                                <button class="btn btn-sm btn-success me-1" data-action="ajouter-produit-categorie" data-categorie="${catEsc}" data-bs-toggle="modal" data-bs-target="#addProductModal">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                                ${getCategorieDeleteButton(categorie)}
                             </div>
                         </button>
                     </h2>
@@ -1300,22 +1494,40 @@ function genererLignesProduits(categorie) {
         if (typeof config === 'object' && config.default !== undefined) {
             const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
             const prixSpeciaux = Object.keys(config)
-                .filter(key => !['default', 'alternatives'].includes(key))
+                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key))
                 .map(key => `${key}: ${config[key]}`)
                 .join(', ');
-            
+
+            // Indicateurs de liaison à un produit d'inventaire parent.
+            // - inventaire_parent: nom du produit inventaire dont les `ventes` listent ce produit (calculé côté serveur).
+            // - prix_personnalise: true si l'admin a déjà modifié le prix manuellement -> stoppe la propagation.
+            const parent = config.inventaire_parent || null;
+            const detache = !!config.prix_personnalise;
+            const escapedProduit = produit.replace(/'/g, "\\'");
+            let lienBadge = '';
+            let reattachBtn = '';
+            if (parent) {
+                if (detache) {
+                    lienBadge = `<span class="badge bg-warning text-dark" title="Prix modifié manuellement — la propagation depuis '${parent}' est désactivée. Réattachez pour resynchroniser.">🔒 détaché de ${parent}</span>`;
+                    reattachBtn = `<button class="btn btn-sm btn-outline-success ms-1" title="Réattacher à ${parent} et resynchroniser le prix" onclick="reattacherProduitVente('${escapedProduit}')">🔗 Réattacher</button>`;
+                } else {
+                    lienBadge = `<span class="badge bg-info text-dark" title="Prix hérité de '${parent}'. Modifier le prix ici détachera automatiquement.">🔗 ${parent}</span>`;
+                }
+            }
+
             html += `
                 <tr>
                     <td>
-                        <input type="text" class="form-control form-control-sm" value="${produit}" 
+                        <input type="text" class="form-control form-control-sm" value="${produit}"
                                onchange="modifierNomProduit('${categorie}', '${produit}', this.value)">
+                        ${lienBadge ? `<div class="mt-1">${lienBadge}</div>` : ''}
                     </td>
                     <td>
-                        <input type="number" class="form-control form-control-sm" value="${config.default}" 
+                        <input type="number" class="form-control form-control-sm" value="${config.default}"
                                onchange="modifierPrixDefaut('${categorie}', '${produit}', this.value)">
                     </td>
                     <td>
-                        <input type="text" class="form-control form-control-sm" value="${alternatives}" 
+                        <input type="text" class="form-control form-control-sm" value="${alternatives}"
                                placeholder="Ex: 3500,3600,3700"
                                onchange="modifierAlternatives('${categorie}', '${produit}', this.value)">
                     </td>
@@ -1326,6 +1538,7 @@ function genererLignesProduits(categorie) {
                         </button>
                     </td>
                     <td>
+                        ${reattachBtn}
                         <button class="btn btn-sm btn-danger" onclick="supprimerProduit('${categorie}', '${produit}')">
                             <i class="fas fa-trash"></i>
                         </button>
@@ -1437,27 +1650,117 @@ function getCategorieInventaireDeleteButton(categorie) {
     }
 }
 
+// Helpers famille pour l'inventaire (persistance DB via inventaire_categories).
+// Cache en mémoire chargé au premier rendu de l'onglet, rafraîchi à chaque save.
+let inventaireFamilleMap = null;
+
+async function chargerInventaireFamilleMap() {
+    try {
+        const response = await fetch('/api/admin/config/inventaire-categories', {
+            credentials: 'include'
+        });
+        const data = await response.json();
+        if (data.success) {
+            inventaireFamilleMap = data.familles || {};
+        } else {
+            console.warn('Echec chargement inventaire-categories:', data.error);
+            inventaireFamilleMap = {};
+        }
+    } catch (e) {
+        console.error('chargerInventaireFamilleMap:', e);
+        inventaireFamilleMap = {};
+    }
+    return inventaireFamilleMap;
+}
+
+function familleDeCategorieInventaire(nomCategorie) {
+    if (inventaireFamilleMap && inventaireFamilleMap[nomCategorie]) {
+        return inventaireFamilleMap[nomCategorie];
+    }
+    return inventaireFamilleDefauts[nomCategorie] || 'Autres';
+}
+
+async function changerFamilleCategorieInventaire(nomCategorie, nouvelleFamille) {
+    try {
+        const response = await fetch(`/api/admin/config/inventaire-categories/${encodeURIComponent(nomCategorie)}`, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ famille: nouvelleFamille })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        if (!inventaireFamilleMap) inventaireFamilleMap = {};
+        inventaireFamilleMap[nomCategorie] = nouvelleFamille;
+        afficherInventaireConfig();
+    } catch (e) {
+        console.error('changerFamilleCategorieInventaire:', e);
+        showToast('Erreur réseau lors du changement de famille.');
+    }
+}
+
+function setFamilleFilterInventaire(famille) {
+    currentInventaireFamilleFilter = famille;
+    afficherInventaireConfig();
+}
+
 // Afficher la configuration des produits d'inventaire avec accordéon
 function afficherInventaireConfig() {
     const container = document.getElementById('inventaire-categories');
     if (!container) return;
-    
+
     container.innerHTML = '';
-    
+
+    // Tabs filtre famille en tête, comme sur Produits Généraux.
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    const filtreHtml = `
+        <div class="btn-group mb-3" role="group" aria-label="Filtre famille inventaire">
+            ${familles.map((f) => `
+                <button type="button"
+                    class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+                    onclick="setFamilleFilterInventaire('${f}')">${f}</button>
+            `).join('')}
+        </div>`;
+    container.insertAdjacentHTML('beforeend', filtreHtml);
+
     const inventaireParCategories = reorganiserInventaireParCategories();
-    
-    Object.keys(inventaireParCategories).forEach((categorie, index) => {
+
+    const categoriesAffichees = Object.keys(inventaireParCategories).filter((cat) =>
+        currentInventaireFamilleFilter === 'Tous' || familleDeCategorieInventaire(cat) === currentInventaireFamilleFilter
+    );
+
+    if (categoriesAffichees.length === 0) {
+        container.insertAdjacentHTML('beforeend',
+            `<div class="alert alert-info">Aucune catégorie d'inventaire dans la famille "${currentInventaireFamilleFilter}". Change le filtre ou reclasse une catégorie via son menu déroulant.</div>`);
+        return;
+    }
+
+    categoriesAffichees.forEach((categorie, index) => {
         const produits = inventaireParCategories[categorie];
         const nombreProduits = Object.keys(produits).length;
-        
+        const famille = familleDeCategorieInventaire(categorie);
+        const escCat = categorie.replace(/'/g, "\\'");
+        const familleSelect = `
+            <select class="form-select form-select-sm me-2" style="width: 130px;"
+                    onclick="event.stopPropagation()"
+                    onchange="changerFamilleCategorieInventaire('${escCat}', this.value)">
+                <option value="Boucherie" ${famille === 'Boucherie' ? 'selected' : ''}>Boucherie</option>
+                <option value="Epicerie" ${famille === 'Epicerie' ? 'selected' : ''}>Epicerie</option>
+                <option value="Autres" ${famille === 'Autres' ? 'selected' : ''}>Autres</option>
+            </select>`;
+
         const categorieHtml = `
             <div class="accordion-item">
                 <h2 class="accordion-header" id="inventaire-heading-${index}">
                     <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#inventaire-collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="inventaire-collapse-${index}">
                         <i class="fas fa-warehouse me-2"></i>
                         ${categorie} (${nombreProduits} produits)
-                        <div class="ms-auto me-3">
-                            <button class="btn btn-sm btn-success" onclick="ajouterProduitInventaireCategorie('${categorie}')" data-bs-toggle="modal" data-bs-target="#addInventaireProductModal">
+                        <div class="ms-auto me-3 d-flex align-items-center">
+                            ${familleSelect}
+                            <button class="btn btn-sm btn-success me-1" onclick="event.stopPropagation(); ajouterProduitInventaireCategorie('${escCat}')" data-bs-toggle="modal" data-bs-target="#addInventaireProductModal">
                                 <i class="fas fa-plus"></i>
                             </button>
                             ${getCategorieInventaireDeleteButton(categorie)}
@@ -1474,6 +1777,7 @@ function afficherInventaireConfig() {
                                         <th>Prix Défaut</th>
                                         <th>Alternatives</th>
                                         <th>Mode Stock</th>
+                                        <th>Ventes liées</th>
                                         <th>Prix Spéciaux</th>
                                         <th>Actions</th>
                                     </tr>
@@ -1504,41 +1808,50 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const config = produits[produit];
         const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
         const prixSpeciaux = Object.keys(config)
-            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key))
+            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key))
             .map(key => `${key}: ${config[key]}`)
             .join(', ');
-        
+
         const modeStock = config.mode_stock || 'manuel';
         const uniteStock = config.unite_stock || 'unite';
-        
+        const ventesCount = Array.isArray(config.ventes) ? config.ventes.length : 0;
+        const escProduit = produit.replace(/'/g, "\\'");
+
         html += `
             <tr>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${produit}" 
+                    <input type="text" class="form-control form-control-sm" value="${produit}"
                            onchange="modifierNomProduitInventaire('${produit}', this.value, ${catParam})">
                 </td>
                 <td>
-                    <input type="number" class="form-control form-control-sm" value="${config.prixDefault}" 
+                    <input type="number" class="form-control form-control-sm" value="${config.prixDefault}"
                            onchange="modifierPrixInventaire('${produit}', 'prixDefault', this.value, ${catParam})">
                 </td>
                 <td>
-                    <input type="text" class="form-control form-control-sm" value="${alternatives}" 
+                    <input type="text" class="form-control form-control-sm" value="${alternatives}"
                            placeholder="Ex: 3500,3600"
                            onchange="modifierAlternativesInventaire('${produit}', this.value, ${catParam})">
                 </td>
                 <td>
                     <div class="d-flex align-items-center gap-2">
-                        <select class="form-select form-select-sm" style="width: 100px;" 
+                        <select class="form-select form-select-sm" style="width: 100px;"
                                 onchange="modifierModeStockInventaire('${produit}', this.value, ${catParam})">
                             <option value="manuel" ${modeStock === 'manuel' ? 'selected' : ''}>Manuel</option>
                             <option value="automatique" ${modeStock === 'automatique' ? 'selected' : ''}>Auto</option>
                         </select>
-                        <select class="form-select form-select-sm" style="width: 80px;" 
+                        <select class="form-select form-select-sm" style="width: 80px;"
                                 onchange="modifierUniteStockInventaire('${produit}', this.value, ${catParam})">
                             <option value="unite" ${uniteStock === 'unite' ? 'selected' : ''}>Unité</option>
                             <option value="kilo" ${uniteStock === 'kilo' ? 'selected' : ''}>Kilo</option>
                         </select>
                     </div>
+                </td>
+                <td>
+                    <button type="button" class="btn btn-sm ${ventesCount > 0 ? 'btn-outline-success' : 'btn-outline-secondary'}"
+                            onclick="gererVentesLiees('${escProduit}', ${catParam})"
+                            title="Gérer les produits Généraux alimentés par cet item d'inventaire et leurs prix">
+                        🔗 Gérer ${ventesCount > 0 ? `(${ventesCount})` : ''}
+                    </button>
                 </td>
                 <td>
                     <small class="text-muted">${prixSpeciaux}</small>
@@ -1698,8 +2011,8 @@ function modifierPrixSpeciaux(categorie, produit) {
     // Récupérer la configuration actuelle du produit
     const config = currentProduitsConfig[categorie][produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['default', 'alternatives'].includes(key));
-    
+        .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key));
+
     // Créer le modal dynamiquement
     let modalHtml = `
         <div class="modal fade" id="prixSpeciauxModal" tabindex="-1" aria-labelledby="prixSpeciauxModalLabel" aria-hidden="true">
@@ -1775,18 +2088,18 @@ function ajouterPrixSpecial(categorie, produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecial').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentProduitsConfig[categorie][produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -1815,7 +2128,7 @@ function modifierPrixSpecialExistant(categorie, produit, pointVente, nouveauPrix
 function refreshPrixSpeciauxTable(categorie, produit) {
     const config = currentProduitsConfig[categorie][produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['default', 'alternatives'].includes(key));
+        .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key));
     
     const tbody = document.getElementById('prixSpeciauxTableBody');
     if (!tbody) return;
@@ -1912,15 +2225,15 @@ async function supprimerProduit(categorie, produit) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit "${produit}" supprimé avec succès`);
+                showToast(`Produit "${produit}" supprimé avec succès`);
                 // Recharger depuis le serveur pour confirmer la suppression
                 await chargerConfigProduits();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
@@ -1930,7 +2243,7 @@ function supprimerCategorie(categorie) {
     const categoriesPrincipales = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin', 'Autres'];
     
     if (categoriesPrincipales.includes(categorie)) {
-        alert(`La catégorie "${categorie}" est une catégorie principale du système et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
+        showToast(`La catégorie "${categorie}" est une catégorie principale du système et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
         return;
     }
     
@@ -1959,7 +2272,7 @@ function supprimerCategorieInventaire(categorie) {
     const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Déchets', 'Autres'];
     
     if (categoriesInventairePrincipales.includes(categorie)) {
-        alert(`La catégorie "${categorie}" est une catégorie logique du système d'inventaire et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
+        showToast(`La catégorie "${categorie}" est une catégorie logique du système d'inventaire et ne peut pas être supprimée. Vous pouvez seulement supprimer des produits individuels.`);
         return;
     }
     
@@ -1979,7 +2292,7 @@ function supprimerCategorieInventaire(categorie) {
             }
             
             afficherInventaireConfig();
-            alert(`Catégorie "${categorie}" supprimée avec succès!`);
+            showToast(`Catégorie "${categorie}" supprimée avec succès!`);
         }
         return;
     }
@@ -2019,7 +2332,7 @@ function modifierPrixSpeciauxInventaire(produit) {
     // Récupérer la configuration actuelle du produit
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key));
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
     
     // Créer le modal dynamiquement
     let modalHtml = `
@@ -2094,7 +2407,7 @@ function modifierPrixSpeciauxInventaire(produit) {
 function refreshPrixSpeciauxInventaireTable(produit) {
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(key));
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
     
     const tbody = document.getElementById('prixSpeciauxInventaireTableBody');
     if (!tbody) return;
@@ -2172,18 +2485,18 @@ function ajouterPrixSpecialInventaire(produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecialInventaire').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentInventaireConfig[produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -2262,6 +2575,356 @@ function modifierAlternativesInventaire(produit, alternativesStr, categorie = nu
     }
 }
 
+// Réattache un produit de vente à son parent inventaire et resynchronise le prix.
+// Appelle POST /api/admin/config/produits/:nom/reattach puis recharge la table.
+async function reattacherProduitVente(produit) {
+    if (!confirm(`Réattacher "${produit}" à son parent inventaire ?\n\nLe prix sera resynchronisé depuis le parent et les futures mises à jour du parent se propageront à nouveau.`)) {
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/produits/${encodeURIComponent(produit)}/reattach`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message || 'Réattachement réussi.');
+            await chargerConfigProduits();
+        } else {
+            showToast(`Erreur: ${data.error || 'échec du réattachement'}`);
+        }
+    } catch (error) {
+        console.error('Erreur réattachement:', error);
+        showToast('Erreur réseau lors du réattachement.');
+    }
+}
+
+// Flag levé quand l'admin modifie un prix vente depuis le modal "Gérer ventes liées"
+// de l'onglet Inventaire. Utilisé par sauvegarderConfigInventaire pour aussi
+// pousser les changements vers POST /produits, sans que l'admin ait à basculer
+// d'onglet.
+let venteConfigModifieeDepuisInventaire = false;
+
+// Met à jour la liste des produits vente alimentés par ce produit d'inventaire.
+// Format saisi: noms séparés par virgules (ex: "Boeuf en gros, Boeuf en détail").
+// Le serveur déclenchera la propagation du prix lors du Sauvegarder.
+function modifierVentesInventaire(produit, ventesStr, categorie = null) {
+    const config = trouverConfigProduitInventaire(produit, categorie);
+    if (config) {
+        const noms = (ventesStr || '')
+            .split(',')
+            .map((n) => n.trim())
+            .filter((n) => n.length > 0);
+        config.ventes = noms;
+    }
+}
+
+// Aplatit currentProduitsConfig en liste {nom, categorie, config}.
+// Utilisée par le modal de gestion pour autocompléter les noms et accéder aux prix.
+function listerProduitsVente() {
+    const out = [];
+    if (!currentProduitsConfig || typeof currentProduitsConfig !== 'object') return out;
+    for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+        if (typeof produits !== 'object' || produits === null) continue;
+        for (const [nom, conf] of Object.entries(produits)) {
+            if (typeof conf === 'object' && conf !== null && conf.default !== undefined) {
+                out.push({ nom, categorie: cat, config: conf });
+            }
+        }
+    }
+    return out;
+}
+
+function trouverConfigProduitVente(nomVente) {
+    for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+        if (produits && typeof produits === 'object' && produits[nomVente]) {
+            return { categorie: cat, config: produits[nomVente] };
+        }
+    }
+    return null;
+}
+
+// Modal: gère la liste des produits vente liés à un produit d'inventaire,
+// avec édition de leur prix par défaut directement depuis cet écran.
+async function gererVentesLiees(produitInventaire, categorieInv = null) {
+    // S'assurer que la config vente est chargée (l'admin peut être resté sur l'onglet
+    // inventaire sans l'avoir ouverte).
+    if (!currentProduitsConfig || Object.keys(currentProduitsConfig).length === 0) {
+        await chargerConfigProduits();
+    }
+
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv) {
+        showToast(`Produit inventaire introuvable: ${produitInventaire}`);
+        return;
+    }
+    if (!Array.isArray(inv.ventes)) inv.ventes = [];
+
+    // Nettoyer un éventuel modal précédent
+    const old = document.getElementById('gererVentesModal');
+    if (old) old.remove();
+
+    const datalistOptions = listerProduitsVente()
+        .map((p) => `<option value="${p.nom.replace(/"/g, '&quot;')}">${p.categorie}</option>`)
+        .join('');
+
+    const modalHtml = `
+        <div class="modal fade" id="gererVentesModal" tabindex="-1" aria-hidden="true">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title">Ventes liées à "${produitInventaire}" (Inventaire)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <p class="text-muted small mb-3">
+                  Les produits ci-dessous reçoivent automatiquement le prix de "${produitInventaire}"
+                  tant qu'ils ne sont pas détachés. Modifier un prix ici revient au même que dans
+                  l'onglet "Produits Généraux" — l'enregistrement se fera quand vous cliquerez
+                  <strong>Sauvegarder</strong> en bas du modal ou sur le bouton principal de l'onglet.
+                </p>
+
+                <div class="row g-2 mb-3">
+                  <div class="col-md-8">
+                    <label class="form-label">Ajouter un produit vente lié</label>
+                    <input list="ventesAvailableList" class="form-control" id="newVenteLinkName"
+                           placeholder="Tapez ou choisissez un nom de produit Généraux">
+                    <datalist id="ventesAvailableList">${datalistOptions}</datalist>
+                  </div>
+                  <div class="col-md-4 d-flex align-items-end">
+                    <button class="btn btn-success w-100" onclick="ajouterVenteLien('${produitInventaire.replace(/'/g, "\\'")}', ${categorieInv ? `'${categorieInv}'` : 'null'})">
+                      <i class="fas fa-plus"></i> Ajouter
+                    </button>
+                  </div>
+                </div>
+
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle">
+                    <thead>
+                      <tr>
+                        <th>Produit Généraux</th>
+                        <th style="width: 130px;">Prix Défaut</th>
+                        <th>État</th>
+                        <th style="width: 200px;">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="gererVentesBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                <button type="button" class="btn btn-primary" id="gererVentesSaveBtn"
+                        onclick="sauvegarderDepuisGererVentes('${produitInventaire.replace(/'/g, "\\'")}', ${categorieInv ? `'${categorieInv}'` : 'null'})">
+                  <i class="fas fa-save"></i> Sauver
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modal = new bootstrap.Modal(document.getElementById('gererVentesModal'));
+    modal.show();
+    document.getElementById('gererVentesModal').addEventListener('hidden.bs.modal', function() {
+        this.remove();
+    });
+
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function refreshGererVentesBody(produitInventaire, categorieInv = null) {
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    const tbody = document.getElementById('gererVentesBody');
+    if (!inv || !tbody) return;
+    if (!Array.isArray(inv.ventes) || inv.ventes.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted">Aucun produit vente lié — utilisez le formulaire au-dessus pour en ajouter.</td></tr>`;
+        // Refresh la cellule "Gérer (N)" dans le tableau principal
+        afficherInventaireConfig();
+        return;
+    }
+    let html = '';
+    for (const nomVente of inv.ventes) {
+        const found = trouverConfigProduitVente(nomVente);
+        const escNom = nomVente.replace(/'/g, "\\'");
+        const escInv = produitInventaire.replace(/'/g, "\\'");
+        const catArg = categorieInv ? `'${categorieInv}'` : 'null';
+        if (!found) {
+            html += `
+                <tr>
+                  <td>${nomVente} <small class="text-danger">(introuvable dans Produits Généraux)</small></td>
+                  <td>—</td>
+                  <td><span class="badge bg-danger">manquant</span></td>
+                  <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="retirerVenteLien('${escInv}', '${escNom}', ${catArg})">Retirer</button>
+                  </td>
+                </tr>
+            `;
+            continue;
+        }
+        const detache = !!found.config.prix_personnalise;
+        const stateBadge = detache
+            ? `<span class="badge bg-warning text-dark">🔒 prix personnalisé</span>`
+            : `<span class="badge bg-info text-dark">🔗 hérité</span>`;
+        const reattachBtn = detache
+            ? `<button class="btn btn-sm btn-outline-success" title="Resynchroniser depuis le parent" onclick="reattacherDepuisModal('${escNom}', '${escInv}', ${catArg})">🔗 Réattacher</button>`
+            : '';
+        html += `
+            <tr>
+              <td><strong>${nomVente}</strong> <small class="text-muted">— ${found.categorie}</small></td>
+              <td>
+                <input type="number" class="form-control form-control-sm" value="${found.config.default}"
+                       oninput="modifierPrixVenteDepuisInventaire('${found.categorie.replace(/'/g, "\\'")}', '${escNom}', this.value)">
+              </td>
+              <td>${stateBadge}</td>
+              <td>
+                ${reattachBtn}
+                <button class="btn btn-sm btn-outline-danger ms-1" title="Retirer le lien (le produit Généraux reste mais n'est plus lié)" onclick="retirerVenteLien('${escInv}', '${escNom}', ${catArg})">Retirer</button>
+              </td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html;
+}
+
+function ajouterVenteLien(produitInventaire, categorieInv = null) {
+    const input = document.getElementById('newVenteLinkName');
+    if (!input) return;
+    const nom = (input.value || '').trim();
+    if (!nom) {
+        showToast('Tapez ou choisissez un nom de produit vente.');
+        return;
+    }
+    const found = trouverConfigProduitVente(nom);
+    if (!found) {
+        if (!confirm(`"${nom}" n'existe pas encore dans Produits Généraux. Le lien sera créé mais le produit devra être ajouté côté Généraux pour que la propagation fonctionne. Continuer ?`)) {
+            return;
+        }
+    }
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv) return;
+    if (!Array.isArray(inv.ventes)) inv.ventes = [];
+    if (inv.ventes.includes(nom)) {
+        showToast(`"${nom}" est déjà lié.`);
+        return;
+    }
+    inv.ventes.push(nom);
+    input.value = '';
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function retirerVenteLien(produitInventaire, nomVente, categorieInv = null) {
+    const inv = trouverConfigProduitInventaire(produitInventaire, categorieInv);
+    if (!inv || !Array.isArray(inv.ventes)) return;
+    inv.ventes = inv.ventes.filter((n) => n !== nomVente);
+    refreshGererVentesBody(produitInventaire, categorieInv);
+}
+
+function modifierPrixVenteDepuisInventaire(categorie, nomVente, nouveauPrix) {
+    if (!currentProduitsConfig[categorie] || !currentProduitsConfig[categorie][nomVente]) return;
+    const prix = parseFloat(nouveauPrix);
+    if (isNaN(prix)) return;
+    currentProduitsConfig[categorie][nomVente].default = prix;
+    venteConfigModifieeDepuisInventaire = true;
+}
+
+// Sauve l'état courant (prix vente + mapping inventaire) sans fermer le modal,
+// puis recharge les deux configs et rafraîchit la table pour que les badges
+// (🔗 hérité / 🔒 prix personnalisé) reflètent la nouvelle réalité serveur.
+async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = null) {
+    const btn = document.getElementById('gererVentesSaveBtn');
+    const original = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Sauvegarde...';
+    }
+    try {
+        // Filet de sécurité: relire les inputs du modal au moment du clic, au cas où
+        // oninput n'aurait pas pu se déclencher (focus encore sur l'input quand on clique).
+        const tbody = document.getElementById('gererVentesBody');
+        if (tbody) {
+            tbody.querySelectorAll('input[type="number"][oninput]').forEach((input) => {
+                const match = (input.getAttribute('oninput') || '').match(/modifierPrixVenteDepuisInventaire\('([^']+)',\s*'([^']+)'/);
+                if (match) {
+                    const cat = match[1].replace(/\\'/g, "'");
+                    const nom = match[2].replace(/\\'/g, "'");
+                    if (currentProduitsConfig[cat] && currentProduitsConfig[cat][nom]) {
+                        const v = parseFloat(input.value);
+                        if (!isNaN(v)) {
+                            currentProduitsConfig[cat][nom].default = v;
+                            venteConfigModifieeDepuisInventaire = true;
+                        }
+                    }
+                }
+            });
+        }
+        // Toujours pousser produits d'abord pour que le serveur détache (prix_personnalise=true)
+        // les enfants modifiés AVANT que la propagation inventaire les ré-écrase.
+        const venteResp = await fetch('/api/admin/config/produits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ produits: currentProduitsConfig })
+        });
+        const venteData = await venteResp.json();
+        if (!venteData.success) {
+            showToast(`Erreur sauvegarde produits: ${venteData.error || venteData.message}`);
+            return;
+        }
+        venteConfigModifieeDepuisInventaire = false;
+
+        const invResp = await fetch('/api/admin/config/produits-inventaire', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+        });
+        const invData = await invResp.json();
+        if (!invData.success) {
+            showToast(`Erreur sauvegarde inventaire: ${invData.error || invData.message}`);
+            return;
+        }
+
+        // Recharger les deux configs depuis le serveur pour récupérer prix_personnalise
+        // et les éventuels prix propagés.
+        await Promise.all([chargerConfigProduits(), chargerConfigInventaire()]);
+        refreshGererVentesBody(produitInventaire, categorieInv);
+    } catch (e) {
+        console.error('sauvegarderDepuisGererVentes:', e);
+        showToast('Erreur réseau lors de la sauvegarde.');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+}
+
+async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv = null) {
+    if (!confirm(`Réattacher "${nomVente}" à "${produitInventaire}" ?\n\nLe prix sera resynchronisé depuis le parent inventaire.`)) {
+        return;
+    }
+    try {
+        const response = await fetch(`/api/admin/config/produits/${encodeURIComponent(nomVente)}/reattach`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'échec'}`);
+            return;
+        }
+        // Recharger la config produits pour refléter le prix resynchronisé
+        await chargerConfigProduits();
+        refreshGererVentesBody(produitInventaire, categorieInv);
+    } catch (e) {
+        console.error('reattacherDepuisModal:', e);
+        showToast('Erreur réseau.');
+    }
+}
+
 function modifierModeStockInventaire(produit, modeStock, categorie = null) {
     const config = trouverConfigProduitInventaire(produit, categorie);
     if (config) {
@@ -2312,14 +2975,14 @@ async function supprimerProduitInventaire(produit, categorie = null) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit d'inventaire "${produit}" supprimé avec succès`);
+                showToast(`Produit d'inventaire "${produit}" supprimé avec succès`);
                 await chargerConfigInventaire();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit inventaire:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
@@ -2519,18 +3182,18 @@ function ajouterPrixSpecialAbonnement(categorie, produit) {
     const prix = parseFloat(document.getElementById('nouveauPrixSpecialAbonnement').value);
     
     if (!pointVente) {
-        alert('Veuillez sélectionner un point de vente');
+        showToast('Veuillez sélectionner un point de vente');
         return;
     }
     
     if (!prix || prix <= 0) {
-        alert('Veuillez saisir un prix valide');
+        showToast('Veuillez saisir un prix valide');
         return;
     }
     
     // Vérifier si le prix spécial existe déjà
     if (currentAbonnementConfig[categorie][produit][pointVente]) {
-        alert(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
+        showToast(`Un prix spécial pour "${pointVente}" existe déjà. Utilisez l'édition pour le modifier.`);
         return;
     }
     
@@ -2579,21 +3242,21 @@ async function supprimerProduitAbonnement(categorie, produit) {
             const data = await response.json();
 
             if (data.success) {
-                alert(`Produit d'abonnement "${produit}" supprimé avec succès`);
+                showToast(`Produit d'abonnement "${produit}" supprimé avec succès`);
                 await chargerConfigAbonnement();
             } else {
-                alert(`Erreur: ${data.error}`);
+                showToast(`Erreur: ${data.error}`);
             }
         } catch (error) {
             console.error('Erreur suppression produit abonnement:', error);
-            alert('Erreur lors de la suppression du produit');
+            showToast('Erreur lors de la suppression du produit');
         }
     }
 }
 
 function ajouterProduitAbonnementCategorie(categorie) {
     // À implémenter si besoin d'ajouter de nouveaux produits via un modal
-    alert('Fonctionnalité à implémenter: ajouter un produit à ' + categorie);
+    showToast('Fonctionnalité à implémenter: ajouter un produit à ' + categorie, 'info');
 }
 
 // Sauvegarder la configuration des produits
@@ -2610,7 +3273,7 @@ async function sauvegarderConfigProduits() {
         
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits sauvegardée avec succès !');
+            showToast('Configuration des produits sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -2628,17 +3291,42 @@ async function sauvegarderConfigProduits() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits');
     }
 }
 
 // Sauvegarder la configuration de l'inventaire
 async function sauvegarderConfigInventaire() {
     try {
+        // Si l'admin a modifié des prix vente depuis le modal "Gérer ventes liées"
+        // de l'onglet Inventaire, on pousse ces changements AVANT la sauvegarde
+        // inventaire. Ordre important: si on sauvait inventaire d'abord, la
+        // propagation côté serveur écraserait les prix vente personnalisés non
+        // encore détachés, puis le POST /produits suivant les ré-écraserait —
+        // bruit inutile et entrées d'historique en double. En sauvant produits
+        // d'abord, le POST /produits met prix_personnalise=true sur les
+        // produits dont le prix a été touché manuellement, et la propagation
+        // inventaire qui suit les laisse tranquilles.
+        if (venteConfigModifieeDepuisInventaire) {
+            const venteResp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const venteData = await venteResp.json();
+            if (!venteData.success) {
+                showToast(`Erreur lors de la sauvegarde des prix vente liés: ${venteData.error || venteData.message}`);
+                return;
+            }
+            venteConfigModifieeDepuisInventaire = false;
+            console.log('✅ Prix vente liés sauvegardés avant propagation inventaire');
+        }
+
         const response = await fetch('/api/admin/config/produits-inventaire', {
             method: 'POST',
             headers: {
@@ -2647,10 +3335,10 @@ async function sauvegarderConfigInventaire() {
             credentials: 'include',
             body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
         });
-        
+
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits d\'inventaire sauvegardée avec succès !');
+            showToast('Configuration des produits d\'inventaire sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -2668,11 +3356,11 @@ async function sauvegarderConfigInventaire() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits d\'inventaire');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits d\'inventaire');
     }
 }
 
@@ -2690,7 +3378,7 @@ async function sauvegarderConfigAbonnement() {
         
         const data = await response.json();
         if (data.success) {
-            alert('Configuration des produits d\'abonnement sauvegardée avec succès !');
+            showToast('Configuration des produits d\'abonnement sauvegardée avec succès !');
             
             // Recharger automatiquement la configuration serveur
             try {
@@ -2708,11 +3396,11 @@ async function sauvegarderConfigAbonnement() {
                 console.warn('Erreur lors du rechargement automatique:', reloadError);
             }
         } else {
-            alert(`Erreur lors de la sauvegarde: ${data.message}`);
+            showToast(`Erreur lors de la sauvegarde: ${data.message}`);
         }
     } catch (error) {
         console.error('Erreur lors de la sauvegarde:', error);
-        alert('Erreur lors de la sauvegarde de la configuration des produits d\'abonnement');
+        showToast('Erreur lors de la sauvegarde de la configuration des produits d\'abonnement');
     }
 }
 
@@ -2774,17 +3462,17 @@ async function sauvegarderConfigAbonnement() {
                 const data = await response.json();
                 
                 if (data.success) {
-                    alert('Configuration serveur rechargée avec succès!');
+                    showToast('Configuration serveur rechargée avec succès!');
                     // Recharger aussi l'interface admin
                     chargerConfigProduits();
                     chargerConfigInventaire();
                     chargerConfigAbonnement();
                 } else {
-                    alert('Erreur lors du rechargement: ' + data.message);
+                    showToast('Erreur lors du rechargement: ' + data.message);
                 }
             } catch (error) {
                 console.error('Erreur lors du rechargement:', error);
-                alert('Erreur lors du rechargement de la configuration serveur');
+                showToast('Erreur lors du rechargement de la configuration serveur');
             }
         });
     }
@@ -2801,7 +3489,7 @@ async function sauvegarderConfigAbonnement() {
                     document.getElementById('newCategoryName').value = '';
                     bootstrap.Modal.getInstance(document.getElementById('addCategoryModal')).hide();
                 } else {
-                    alert('Cette catégorie existe déjà');
+                    showToast('Cette catégorie existe déjà');
                 }
             }
         });
@@ -2837,7 +3525,7 @@ async function sauvegarderConfigAbonnement() {
                     
                     bootstrap.Modal.getInstance(document.getElementById('addProductModal')).hide();
                 } else {
-                    alert('Ce produit existe déjà dans cette catégorie');
+                    showToast('Ce produit existe déjà dans cette catégorie');
                 }
             }
         });
@@ -2854,7 +3542,7 @@ async function sauvegarderConfigAbonnement() {
                 const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Déchets", "Autres"];
                 
                 if (categoriesLogiques.includes(categoryName) || categoriesPersonnalisees.includes(categoryName)) {
-                    alert('Cette catégorie existe déjà');
+                    showToast('Cette catégorie existe déjà');
                     return;
                 }
                 
@@ -2875,9 +3563,9 @@ async function sauvegarderConfigAbonnement() {
                     if (bsModal) bsModal.hide();
                 }
                 
-                alert('Catégorie "' + categoryName + '" créée avec succès! Vous pouvez maintenant y ajouter des produits.');
+                showToast('Catégorie "' + categoryName + '" créée avec succès! Vous pouvez maintenant y ajouter des produits.');
             } else {
-                alert('Veuillez entrer un nom de catégorie');
+                showToast('Veuillez entrer un nom de catégorie');
             }
         });
     }
@@ -2911,14 +3599,14 @@ async function sauvegarderConfigAbonnement() {
                         currentInventaireConfig[category] = {};
                     }
                     if (currentInventaireConfig[category][productName]) {
-                        alert('Ce produit existe déjà dans cette catégorie');
+                        showToast('Ce produit existe déjà dans cette catégorie');
                         return;
                     }
                     currentInventaireConfig[category][productName] = productConfig;
                 } else {
                     // Pour les catégories logiques, stocker au niveau racine
                     if (currentInventaireConfig[productName]) {
-                        alert('Ce produit existe déjà');
+                        showToast('Ce produit existe déjà');
                         return;
                     }
                     currentInventaireConfig[productName] = productConfig;

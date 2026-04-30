@@ -249,13 +249,13 @@
                     <div class="col-12">
                         <ul class="nav nav-tabs" id="configTabs" role="tablist">
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="produits-tab" data-bs-toggle="tab" data-bs-target="#produits-content" type="button" role="tab" aria-controls="produits-content" aria-selected="true">
-                                    <i class="fas fa-box-open"></i> Produits Généraux (produits.js)
+                                <button class="nav-link active" id="inventaire-tab" data-bs-toggle="tab" data-bs-target="#inventaire-content" type="button" role="tab" aria-controls="inventaire-content" aria-selected="true">
+                                    <i class="fas fa-warehouse"></i> Produits Inventaire (produitsInventaire.js)
                                 </button>
                             </li>
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="inventaire-tab" data-bs-toggle="tab" data-bs-target="#inventaire-content" type="button" role="tab" aria-controls="inventaire-content" aria-selected="false">
-                                    <i class="fas fa-warehouse"></i> Produits Inventaire (produitsInventaire.js)
+                                <button class="nav-link" id="produits-tab" data-bs-toggle="tab" data-bs-target="#produits-content" type="button" role="tab" aria-controls="produits-content" aria-selected="false">
+                                    <i class="fas fa-box-open"></i> Produits Généraux (produits.js)
                                 </button>
                             </li>
                             <li class="nav-item" role="presentation">
@@ -267,9 +267,34 @@
                     </div>
                 </div>
 
-                <!-- Configuration Produits Généraux -->
+                <!-- Configuration Produits Inventaire (premier onglet) -->
                 <div class="tab-content" id="configTabContent">
-                    <div class="tab-pane fade show active" id="produits-content" role="tabpanel" aria-labelledby="produits-tab">
+                    <div class="tab-pane fade show active" id="inventaire-content" role="tabpanel" aria-labelledby="inventaire-tab">
+                        <div class="card mt-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">Gestion des Produits d'Inventaire</h5>
+                                <div>
+                                    <button class="btn btn-success btn-sm me-2" id="add-inventaire-category-btn" data-bs-toggle="modal" data-bs-target="#addInventaireCategoryModal">
+                                        <i class="fas fa-plus"></i> Ajouter Catégorie
+                                    </button>
+                                    <button class="btn btn-info btn-sm me-2" id="save-inventaire-btn">
+                                        <i class="fas fa-save"></i> Sauvegarder
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm" id="reload-inventaire-btn">
+                                        <i class="fas fa-sync"></i> Recharger
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="inventaire-categories" class="accordion">
+                                    <!-- Les catégories seront générées dynamiquement -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Configuration Produits Généraux -->
+                    <div class="tab-pane fade" id="produits-content" role="tabpanel" aria-labelledby="produits-tab">
                         <div class="card mt-3">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <h5 class="card-title mb-0">Gestion des Produits Généraux</h5>
@@ -290,31 +315,6 @@
                             </div>
                             <div class="card-body">
                                 <div id="produits-categories" class="accordion">
-                                    <!-- Les catégories seront générées dynamiquement -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Configuration Produits Inventaire -->
-                    <div class="tab-pane fade" id="inventaire-content" role="tabpanel" aria-labelledby="inventaire-tab">
-                        <div class="card mt-3">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5 class="card-title mb-0">Gestion des Produits d'Inventaire</h5>
-                                <div>
-                                    <button class="btn btn-success btn-sm me-2" id="add-inventaire-category-btn" data-bs-toggle="modal" data-bs-target="#addInventaireCategoryModal">
-                                        <i class="fas fa-plus"></i> Ajouter Catégorie
-                                    </button>
-                                    <button class="btn btn-info btn-sm me-2" id="save-inventaire-btn">
-                                        <i class="fas fa-save"></i> Sauvegarder
-                                    </button>
-                                    <button class="btn btn-secondary btn-sm" id="reload-inventaire-btn">
-                                        <i class="fas fa-sync"></i> Recharger
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <div id="inventaire-categories" class="accordion">
                                     <!-- Les catégories seront générées dynamiquement -->
                                 </div>
                             </div>

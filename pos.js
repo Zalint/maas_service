@@ -1709,7 +1709,7 @@ async function confirmerPaiement(event) {
         
         // Success
         console.log('✅ Ventes enregistrées avec succès');
-        
+
         // 🆕 Appliquer le crédit client si demandé (synchrone avec attente)
         const useCreditCheckbox = document.getElementById('useCredit');
         if (useCreditCheckbox && useCreditCheckbox.checked && clientInfo.numero) {
@@ -1883,12 +1883,22 @@ async function chargerResume() {
         const dateInput = document.getElementById('summaryDate');
         const date = dateInput ? dateInput.value : new Date().toISOString().split('T')[0];
         const pointVente = document.getElementById('pointVenteSelect').value;
-        
+
         console.log('📊 Chargement résumé - Date:', date, 'Point de vente:', pointVente);
-        
+
         if (!date || !pointVente) {
             console.warn('⚠️ Date ou point de vente manquant');
             return;
+        }
+
+        // Rafraîchir le badge inter-PV en parallèle (fire-and-forget)
+        if (typeof rafraichirBadgeInterPV === 'function') {
+            rafraichirBadgeInterPV();
+            // Si le panneau est déjà ouvert, recharger son contenu pour matcher la date
+            const panel = document.getElementById('interPVPanel');
+            if (panel && panel.style.display !== 'none' && typeof chargerInterPVPanel === 'function') {
+                chargerInterPVPanel();
+            }
         }
 
         // Mettre à jour le bouton Faire la caisse (label + état)
@@ -9816,5 +9826,518 @@ function startPrecommandesCheck() {
     checkPrecommandesInterval = setInterval(() => {
         loadPrecommandes();
     }, 5 * 60 * 1000); // 5 minutes
+}
+
+// ============================================================================
+// Centre de Découpe — modal POS
+// ============================================================================
+
+function ouvrirModalDecoupe() {
+    if (!Array.isArray(cart) || cart.length === 0) {
+        showToast('Le panier est vide. Ajoutez des produits avant d\'envoyer au centre de découpe.', 'warning');
+        return;
+    }
+    rendrePanierDecoupe();
+    chargerCentresDecoupe();
+    switchDecoupeTab('new');
+    const modal = document.getElementById('modalCentreDecoupe');
+    if (modal) modal.style.display = 'flex';
+}
+
+async function chargerCentresDecoupe() {
+    const select = document.getElementById('decoupeCentreSelect');
+    if (!select) return;
+    try {
+        const resp = await fetch('/api/decoupe/centres', { credentials: 'include' });
+        const data = await resp.json();
+        const centres = (data && Array.isArray(data.centres)) ? data.centres : [];
+        if (centres.length === 0) {
+            select.innerHTML = '<option value="">Aucun centre configuré (MATA_DECOUPE_CENTRE)</option>';
+            return;
+        }
+        // Garde le choix précédent s'il existe pour ne pas déranger une saisie en cours.
+        // Sur première ouverture, on force "-- Choisir le centre --" (value vide)
+        // pour que l'admin doive cliquer consciemment plutôt que d'envoyer
+        // par accident sur le 1er centre de la liste.
+        const previous = select.value;
+        const placeholderHtml = '<option value="">-- Choisir le centre --</option>';
+        const optionsHtml = centres
+            .map((c) => `<option value="${escapeDecoupe(c)}">${escapeDecoupe(c)}</option>`)
+            .join('');
+        select.innerHTML = placeholderHtml + optionsHtml;
+        if (previous && centres.includes(previous)) {
+            select.value = previous;
+        } else {
+            select.value = '';
+        }
+    } catch (e) {
+        console.error('chargerCentresDecoupe:', e);
+        select.innerHTML = '<option value="">Erreur de chargement</option>';
+    }
+}
+
+function fermerModalDecoupe() {
+    const modal = document.getElementById('modalCentreDecoupe');
+    if (modal) modal.style.display = 'none';
+}
+
+function switchDecoupeTab(name) {
+    const tabs = { new: 'tab-decoupe-new', mine: 'tab-decoupe-mine' };
+    const panes = { new: 'decoupePane-new', mine: 'decoupePane-mine' };
+    Object.entries(tabs).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('active', k === name);
+    });
+    Object.entries(panes).forEach(([k, id]) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = k === name ? '' : 'none';
+    });
+    if (name === 'mine') chargerMesCommandesDecoupe();
+}
+
+function rendrePanierDecoupe() {
+    const tbody = document.getElementById('decoupePanierBody');
+    const totalSpan = document.getElementById('decoupePanierTotal');
+    if (!tbody || !totalSpan) return;
+    let total = 0;
+    let html = '';
+    for (const item of cart) {
+        const montant = (item.price || 0) * (item.quantity || 0);
+        total += montant;
+        html += `
+            <tr>
+                <td>${escapeDecoupe(item.name)}</td>
+                <td class="text-end">${formatNumberDecoupe(item.price)}</td>
+                <td class="text-center">${item.quantity}</td>
+                <td class="text-end">${formatNumberDecoupe(montant)}</td>
+            </tr>
+        `;
+    }
+    tbody.innerHTML = html || '<tr><td colspan="4" class="text-center text-muted">Panier vide</td></tr>';
+    totalSpan.textContent = formatNumberDecoupe(total);
+}
+
+async function envoyerCommandeDecoupe(event) {
+    if (!Array.isArray(cart) || cart.length === 0) {
+        showToast('Panier vide.', 'warning');
+        return;
+    }
+    const nom = (document.getElementById('decoupeNomClient') || {}).value || '';
+    const numero = (document.getElementById('decoupeNumClient') || {}).value || '';
+    const adresse = (document.getElementById('decoupeAdrClient') || {}).value || '';
+    const instructions = (document.getElementById('decoupeInstructions') || {}).value || '';
+
+    if (!nom.trim() || !numero.trim()) {
+        showToast('Nom et téléphone du client sont requis.', 'warning');
+        return;
+    }
+
+    const pointVente = (document.getElementById('pointVenteSelect') || {}).value || (window.currentUser && window.currentUser.pointVente) || '';
+    const centre = (document.getElementById('decoupeCentreSelect') || {}).value || '';
+    if (!centre) {
+        showToast('Sélectionne un centre de découpe.', 'warning');
+        return;
+    }
+    console.log('[decoupe] envoi vers centre =', JSON.stringify(centre));
+    const total = cart.reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
+    const btn = event && event.target ? event.target.closest('button') : null;
+    const original = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Envoi...';
+    }
+    try {
+        const resp = await fetch('/api/decoupe/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                point_vente: pointVente,
+                point_vente_executant: centre,
+                produits: cart.map((item) => ({
+                    categorie: item.category,
+                    produit: item.name,
+                    prixUnit: item.price,
+                    nombre: item.quantity,
+                    montant: (item.price || 0) * (item.quantity || 0)
+                })),
+                montant_total: total,
+                nom_client: nom,
+                numero_client: numero,
+                adresse_client: adresse,
+                instructions_client: instructions
+            })
+        });
+        const data = await resp.json();
+        if (!data.success) {
+            showToast(`Erreur: ${data.error || 'envoi échoué'}`, 'danger', 8000);
+            return;
+        }
+        const ref = data.commande_ref || data.ref || '';
+        showToast(`🔪 Commande envoyée à ${centre}${ref ? ' — réf ' + ref : ''}`, 'success', 6000);
+        // Reset les champs client + bascule sur la liste pour montrer la nouvelle commande
+        ['decoupeNomClient', 'decoupeNumClient', 'decoupeAdrClient', 'decoupeInstructions'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        switchDecoupeTab('mine');
+    } catch (e) {
+        console.error('envoyerCommandeDecoupe:', e);
+        showToast('Erreur réseau lors de l\'envoi.', 'danger', 8000);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
+}
+
+// Cache local des lignes affichées dans "Mes commandes" pour pouvoir afficher
+// les détails (payload envoyé vs réponse Mata) sans refaire un fetch.
+let decoupeMineCache = {};
+
+async function chargerMesCommandesDecoupe() {
+    const tbody = document.getElementById('decoupeMineBody');
+    const badge = document.getElementById('decoupeMineBadge');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Chargement…</td></tr>';
+    decoupeMineCache = {};
+    try {
+        const resp = await fetch('/api/decoupe/mine?limit=100', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) {
+            tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            return;
+        }
+        const rows = data.commandes || [];
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">Aucune commande envoyée.</td></tr>';
+            if (badge) badge.style.display = 'none';
+            return;
+        }
+        if (badge) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        }
+        let html = '';
+        for (const row of rows) {
+            decoupeMineCache[row.id] = row;
+            const date = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+            const produitsList = Array.isArray(row.produits)
+                ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
+                : '';
+            html += `
+                <tr>
+                    <td>${escapeDecoupe(date)}</td>
+                    <td>
+                        <span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span>
+                        <button class="btn btn-sm btn-link p-0 ms-1" title="Voir détails (envoyé vs Mata)" onclick="afficherDetailsDecoupe(${row.id})">
+                            <i class="fas fa-info-circle"></i>
+                        </button>
+                    </td>
+                    <td><span class="badge bg-info text-dark">${escapeDecoupe(row.point_vente_executant || '—')}</span></td>
+                    <td>${escapeDecoupe(row.point_vente || '')}</td>
+                    <td><small>${escapeDecoupe(produitsList)}</small></td>
+                    <td>${escapeDecoupe(row.nom_client || '')}<br><small class="text-muted">${escapeDecoupe(row.numero_client || '')}</small></td>
+                    <td class="text-end">${formatNumberDecoupe(row.montant_total)} F</td>
+                </tr>
+            `;
+        }
+        tbody.innerHTML = html;
+    } catch (e) {
+        console.error('chargerMesCommandesDecoupe:', e);
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Erreur réseau</td></tr>';
+    }
+}
+
+// Modal de détail: vue user-friendly de la commande (statut, client, produits).
+function afficherDetailsDecoupe(id) {
+    const row = decoupeMineCache[id];
+    if (!row) {
+        showToast('Ligne introuvable.', 'warning');
+        return;
+    }
+    const recu = row.mata_response || {};
+    const statut = (recu.statut || 'reçu').replace(/_/g, ' ');
+    const statutColors = {
+        'reçu': 'secondary', 'en preparation': 'info', 'pret': 'primary',
+        'en livraison': 'warning', 'livre': 'success', 'annule': 'danger'
+    };
+    const statutColor = statutColors[statut] || 'secondary';
+
+    const dateCreation = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : '—';
+    const produits = Array.isArray(row.produits) ? row.produits : [];
+    const totalProduits = produits.reduce((s, p) => s + (Number(p.montant) || 0), 0);
+
+    const produitsRows = produits.map((p) => `
+        <tr>
+            <td><span class="badge bg-light text-dark">${escapeDecoupe(p.categorie || '—')}</span></td>
+            <td>${escapeDecoupe(p.produit || '—')}</td>
+            <td class="text-end">${formatNumberDecoupe(p.prixUnit)}</td>
+            <td class="text-center">${escapeDecoupe(String(p.nombre || 0))}</td>
+            <td class="text-end fw-bold">${formatNumberDecoupe(p.montant)} F</td>
+        </tr>
+    `).join('');
+
+    function infoRow(label, value, fallback = '—') {
+        const v = value && String(value).trim() ? value : fallback;
+        return `
+            <div class="d-flex" style="border-bottom: 1px solid #f0f0f0; padding: 6px 0;">
+                <div style="flex: 0 0 140px; color: #6c757d; font-size: 0.85rem;">${escapeDecoupe(label)}</div>
+                <div style="flex: 1;">${escapeDecoupe(v)}</div>
+            </div>`;
+    }
+
+    const old = document.getElementById('decoupeDetailsModal');
+    if (old) old.remove();
+
+    const html = `
+        <div class="modal-overlay" id="decoupeDetailsModal" style="display: flex; z-index: 9000;">
+            <div class="modal-content" style="max-width: 900px; max-height: 90vh; overflow: auto;">
+                <div class="modal-header" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%); color: white;">
+                    <div>
+                        <h4 style="margin: 0;">
+                            <i class="fas fa-receipt"></i> Commande
+                            <span style="color: #ffeaa7; margin-left: 8px;">${escapeDecoupe(row.commande_ref || '?')}</span>
+                        </h4>
+                        <small style="opacity: 0.9;">${escapeDecoupe(dateCreation)}</small>
+                    </div>
+                    <button type="button" onclick="document.getElementById('decoupeDetailsModal').remove()" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
+                </div>
+                <div class="modal-body" style="padding: 20px;">
+                    <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+                        <span class="badge bg-${statutColor}" style="font-size: 0.95rem; padding: 8px 14px; text-transform: capitalize;">
+                            <i class="fas fa-circle"></i> ${escapeDecoupe(statut)}
+                        </span>
+                        <span class="badge bg-info text-dark" style="font-size: 0.9rem; padding: 6px 10px;">
+                            <i class="fas fa-industry"></i> ${escapeDecoupe(row.point_vente_executant || '—')}
+                        </span>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-2"><i class="fas fa-user"></i> Client</h6>
+                            ${infoRow('Nom', row.nom_client)}
+                            ${infoRow('Téléphone', row.numero_client)}
+                            ${infoRow('Adresse', row.adresse_client)}
+                            ${infoRow('Instructions', row.instructions_client)}
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-2"><i class="fas fa-info-circle"></i> Commande</h6>
+                            ${infoRow('Réf', row.commande_ref)}
+                            ${infoRow('PV demandeur', row.point_vente)}
+                            ${infoRow('Centre', row.point_vente_executant)}
+                            ${infoRow('Origine', recu.origine || 'MaaS')}
+                            ${infoRow('Créée par', row.cree_par || recu.creePar)}
+                        </div>
+                    </div>
+
+                    <h6 class="text-muted mt-4 mb-2"><i class="fas fa-shopping-basket"></i> Produits</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Catégorie</th>
+                                    <th>Produit</th>
+                                    <th class="text-end">PU</th>
+                                    <th class="text-center">Qté</th>
+                                    <th class="text-end">Montant</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${produitsRows || '<tr><td colspan="5" class="text-center text-muted">Aucun produit</td></tr>'}
+                            </tbody>
+                            <tfoot>
+                                <tr style="background: #f8f9fa; font-weight: bold;">
+                                    <td colspan="4" class="text-end">Total</td>
+                                    <td class="text-end" style="color: #c0392b;">${formatNumberDecoupe(row.montant_total || totalProduits)} FCFA</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer" style="padding: 12px 20px;">
+                    <button class="btn btn-secondary" onclick="document.getElementById('decoupeDetailsModal').remove()">Fermer</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+}
+
+// ============================================================================
+// Panneau "Commandes inter-PV" dans le Résumé du jour
+// ============================================================================
+
+let interPVPanelLoaded = false;
+
+function toggleInterPVPanel() {
+    const panel = document.getElementById('interPVPanel');
+    if (!panel) return;
+    if (panel.style.display === 'none') {
+        panel.style.display = '';
+        chargerInterPVPanel();
+    } else {
+        panel.style.display = 'none';
+    }
+}
+
+async function chargerInterPVPanel() {
+    const tbody = document.getElementById('interPVTableBody');
+    const totalSpan = document.getElementById('interPVTotal');
+    const badge = document.getElementById('interPVBadge');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>';
+    try {
+        const dateInput = document.getElementById('summaryDate');
+        const dateStr = dateInput ? dateInput.value : '';
+        const resp = await fetch('/api/decoupe/mine?limit=200', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">${data.error || 'erreur'}</td></tr>`;
+            return;
+        }
+        let rows = data.commandes || [];
+        // Filtre par date locale (toLocaleDateString fr-CA -> "YYYY-MM-DD"
+        // dans la timezone du navigateur, alignée avec la valeur de l'input
+        // date HTML qui est aussi en local).
+        if (dateStr) {
+            const before = rows.length;
+            // Log toutes les dates pour faciliter le diagnostic si filtre vide
+            if (before > 0 && rows.filter((r) => rowCreatedAt(r) && formatLocalYMD(new Date(rowCreatedAt(r))) === dateStr).length === 0) {
+                console.log('[interPV] aucune commande ne match — dates trouvées:',
+                    rows.slice(0, 10).map((r) => ({
+                        ref: r.commande_ref,
+                        created_at: rowCreatedAt(r),
+                        localDay: rowCreatedAt(r) ? formatLocalYMD(new Date(rowCreatedAt(r))) : null
+                    }))
+                );
+            }
+            rows = rows.filter((r) => {
+                const c = rowCreatedAt(r);
+                if (!c) return false;
+                return formatLocalYMD(new Date(c)) === dateStr;
+            });
+            console.log(`[interPV] filtre date=${dateStr} → ${rows.length}/${before} commandes`);
+        }
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Aucune commande pour cette date.</td></tr>';
+            if (badge) badge.style.display = 'none';
+            if (totalSpan) totalSpan.textContent = '0';
+            return;
+        }
+        if (badge) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        }
+        let total = 0;
+        let html = '';
+        for (const row of rows) {
+            // Mémoriser dans le même cache que la tab Mes commandes pour
+            // que afficherDetailsDecoupe(id) trouve la ligne quel que soit
+            // le point d'entrée.
+            decoupeMineCache[row.id] = row;
+            const montant = Number(row.montant_total) || 0;
+            total += montant;
+            const produitsList = Array.isArray(row.produits)
+                ? row.produits.map((p) => `${p.produit || ''} (${p.nombre || 0})`).join(', ')
+                : '';
+            const date = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+            html += `
+                <tr style="cursor: pointer;" onclick="afficherDetailsDecoupe(${row.id})" title="Voir détails (envoyé vs réponse Mata)">
+                    <td><small>${escapeDecoupe(date)}</small></td>
+                    <td><span class="text-danger fw-bold">${escapeDecoupe(row.commande_ref || '—')}</span></td>
+                    <td>${escapeDecoupe(row.point_vente_executant || '—')}</td>
+                    <td><small>${escapeDecoupe(produitsList)}</small></td>
+                    <td class="text-end">${formatNumberDecoupe(montant)} F</td>
+                    <td><span class="badge bg-secondary">Reçu</span></td>
+                </tr>
+            `;
+        }
+        tbody.innerHTML = html;
+        if (totalSpan) totalSpan.textContent = formatNumberDecoupe(total);
+    } catch (e) {
+        console.error('chargerInterPVPanel:', e);
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Erreur réseau</td></tr>';
+    }
+}
+
+// Met à jour le badge sur le bouton inter-PV même quand le panneau est fermé,
+// pour signaler à l'admin qu'il y a des commandes du jour. Appelé par chargerResume.
+async function rafraichirBadgeInterPV() {
+    const badge = document.getElementById('interPVBadge');
+    if (!badge) return;
+    try {
+        const dateInput = document.getElementById('summaryDate');
+        const dateStr = dateInput ? dateInput.value : '';
+        const resp = await fetch('/api/decoupe/mine?limit=200', { credentials: 'include' });
+        const data = await resp.json();
+        if (!data.success) return;
+        let rows = data.commandes || [];
+        if (dateStr) {
+            rows = rows.filter((r) => {
+                const c = rowCreatedAt(r);
+                if (!c) return false;
+                return formatLocalYMD(new Date(c)) === dateStr;
+            });
+        }
+        if (rows.length > 0) {
+            badge.textContent = rows.length;
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+        }
+    } catch (e) {
+        // silencieux
+    }
+}
+
+function ouvrirCentreDecoupeExterne(event) {
+    if (event) event.preventDefault();
+    // Ouvre l'app Mata centre-decoupe.html dans un nouvel onglet.
+    // L'URL Mata est lue côté serveur (MATA_DECOUPE_BASE_URL); on la récupère
+    // via /api/decoupe/centres en interrogeant aussi pour l'URL si exposée,
+    // sinon on tape directement le base-url qui n'est pas exposé au client —
+    // donc on fait un fallback sur '/centre-decoupe.html' au cas où Mata
+    // serait derrière un reverse-proxy commun.
+    fetch('/api/decoupe/external-url', { credentials: 'include' })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+            if (data && data.url) {
+                window.open(data.url, '_blank');
+            } else {
+                showToast('URL du centre de découpe non disponible.', 'warning');
+            }
+        })
+        .catch(() => {
+            showToast('Impossible d\'ouvrir le centre de découpe.', 'danger');
+        });
+}
+
+// YYYY-MM-DD dans la timezone locale du navigateur — aligné avec la valeur
+// d'un <input type="date">. Plus déterministe que toLocaleDateString().
+function formatLocalYMD(d) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+}
+
+// Sequelize sérialise les timestamps en camelCase (createdAt) dans le JSON
+// même avec underscored:true qui ne touche que les noms de colonnes DB.
+// Lecture défensive: les deux formes au cas où on bascule un jour la conf.
+function rowCreatedAt(row) {
+    return row && (row.createdAt || row.created_at) || null;
+}
+
+function escapeDecoupe(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+function formatNumberDecoupe(n) {
+    const num = Number(n) || 0;
+    return num.toLocaleString('fr-FR');
 }
 

@@ -21,6 +21,12 @@ const Category = sequelize.define('Category', {
     allowNull: false,
     defaultValue: 0,
     comment: 'Ordre d\'affichage dans l\'interface'
+  },
+  famille: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'Autres',
+    comment: 'Famille de regroupement haut niveau dans Produits Généraux: Boucherie / Epicerie / Autres'
   }
 }, {
   tableName: 'categories',

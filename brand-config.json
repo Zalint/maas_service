@@ -1,19 +1,10 @@
 {
-  "KEUR_BALLI": {
-    "nom_complet": "Keur BALLI",
+  "MBAO": {
+    "nom_complet": "Mbao",
     "slogan": "",
     "site_web": "",
-    "telephones": [
-      {
-        "point_vente": "Liberté 5",
-        "numeros": ["78 607 18 18", "78 732 57 57"]
-      },
-      {
-        "point_vente": "Almadies 2",
-        "numeros": ["78 607 18 18", "78 732 57 57"]
-      }
-    ],
-    "adresse_siege": "Dakar, Sénégal",
+    "telephones": [],
+    "adresse_siege": "",
     "footer_facture": "Merci de votre confiance !",
     "footer_whatsapp": "Merci de votre confiance !",
     "points_vente_codes": []

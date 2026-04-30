@@ -3769,6 +3769,31 @@ async function chargerVentes() {
             if (montantTotalElement) {
                 montantTotalElement.textContent = `${montantTotal.toLocaleString('fr-FR')} FCFA`;
             }
+
+            // Charger le total commandes découpe sur la même plage / PV.
+            // Best-effort: si l'endpoint échoue, on affiche 0 sans bloquer.
+            try {
+                const params = new URLSearchParams();
+                if (debut) params.append('dateDebut', debut);
+                params.append('dateFin', fin || debut);
+                if (pointVente && pointVente !== 'tous') params.append('pointVente', pointVente);
+                const respDecoupe = await fetch(`/api/decoupe/sum-range?${params.toString()}`, { credentials: 'include' });
+                let totalDecoupe = 0;
+                if (respDecoupe.ok) {
+                    const dataD = await respDecoupe.json();
+                    totalDecoupe = (dataD && dataD.success) ? Number(dataD.total) || 0 : 0;
+                }
+                const elD = document.getElementById('montant-total-decoupe');
+                if (elD) elD.textContent = `${totalDecoupe.toLocaleString('fr-FR')} FCFA`;
+                const elC = document.getElementById('montant-total-combine');
+                if (elC) elC.textContent = `${(montantTotal + totalDecoupe).toLocaleString('fr-FR')} FCFA`;
+            } catch (e) {
+                console.warn('Échec chargement total découpe:', e);
+                const elD = document.getElementById('montant-total-decoupe');
+                if (elD) elD.textContent = '0 FCFA';
+                const elC = document.getElementById('montant-total-combine');
+                if (elC) elC.textContent = `${montantTotal.toLocaleString('fr-FR')} FCFA`;
+            }
             
             // Afficher la première page
             afficherPageVentes(1);
@@ -3803,6 +3828,10 @@ async function chargerVentes() {
         if (montantTotalElement) {
             montantTotalElement.textContent = '0 FCFA';
         }
+        const elD = document.getElementById('montant-total-decoupe');
+        if (elD) elD.textContent = '0 FCFA';
+        const elC = document.getElementById('montant-total-combine');
+        if (elC) elC.textContent = '0 FCFA';
     } finally {
         // Nettoyer la référence à la requête courante
         if (currentVentesRequest) {
@@ -5802,6 +5831,13 @@ function initTableauStock() {
     }
     
     console.log('%c=== Fin initTableauStock ===', 'background: #222; color: #bada55;');
+
+    // Appliquer immédiatement les filtres (incl. masquer les produits auto par
+    // défaut). Sans ça, les lignes que ce render vient d'ajouter ignorent le
+    // dernier filtrerStock() qui a tourné avant qu'elles existent.
+    if (typeof filtrerStock === 'function') {
+        try { filtrerStock(); } catch (e) { console.warn('filtrerStock post-init:', e); }
+    }
 }
 
 // Configuration pour l'inventaire to refac point de vente
@@ -6609,6 +6645,30 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
     }
     console.log('[DEBUG calcReconPV] Ventes Saisies (Internal Fetch):', ventesSaisies);
     console.log('[DEBUG calcReconPV] Créances par Point de Vente:', creancesParPointVente);
+
+    // Fetch des commandes envoyées au centre de découpe pour ce jour, agrégées
+    // par point de vente. On embarque le résultat directement dans l'objet
+    // reconciliation[pointVente].commandesInterPV — pas de cache global ni
+    // de race entre fetch async et rendu sync.
+    let commandesInterPV = {};
+    try {
+        // dateSelectionnee est en format DD/MM/YYYY ; convertir en YYYY-MM-DD
+        const m = String(dateSelectionnee).match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+        const iso = m ? `${m[3]}-${m[2]}-${m[1]}` : dateSelectionnee;
+        const respCD = await fetch(`/api/decoupe/sum-by-pv?date=${encodeURIComponent(iso)}`, {
+            method: 'GET',
+            credentials: 'include'
+        });
+        if (respCD.ok) {
+            const cdData = await respCD.json();
+            if (cdData && cdData.success && cdData.sums) {
+                commandesInterPV = cdData.sums;
+            }
+        }
+    } catch (e) {
+        console.warn('[DEBUG calcReconPV] échec fetch decoupe sum-by-pv:', e);
+    }
+    console.log('[DEBUG calcReconPV] Commandes inter-PV (découpe):', commandesInterPV);
     
     // Initialiser les totaux pour chaque point de vente
     POINTS_VENTE_PHYSIQUES.forEach(pointVente => {
@@ -6620,6 +6680,7 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
             transferts: 0,
             ventes: 0,
             ventesSaisies: ventesSaisies[pointVente] || 0, // Use internal fetch result
+            commandesInterPV: commandesInterPV[pointVente] || 0, // Découpe envoyé ce jour
             creances: creancesParPointVente[pointVente] || 0, // Total des créances pour ce point de vente
             difference: 0,
             pourcentageEcart: 0,
@@ -7892,21 +7953,30 @@ function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
+    // Toggle "Masquer les produits automatiques" — coché par défaut.
+    // Cocher = cacher les ⚡, décocher = les afficher.
+    const masquerAutoEl = document.getElementById('masquer-produits-automatiques');
+    const masquerAuto = masquerAutoEl ? masquerAutoEl.checked : true;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage du stock - Point de vente: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer quantité zéro: ${masquerQuantiteZero}`);
-    
+    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
+
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
         const pointVenteSelect = row.querySelector('td:first-child select');
         const pointVenteCell = row.querySelector('td:first-child');
-        
+
         // Produit: peut être un select (manuel) ou du texte avec badge (automatique)
         const produitSelect = row.querySelector('td:nth-child(2) select');
         const produitCell = row.querySelector('td:nth-child(2)');
-        
+
         const quantiteInput = row.querySelector('td:nth-child(3) input');
-        
+
+        // Détection mode auto: présence du badge ⚡ (badge.bg-primary avec
+        // textContent="⚡") inséré par le rendu de la cellule produit pour les
+        // produits dont mode_stock='automatique'.
+        const isAuto = !!(produitCell && produitCell.querySelector('.badge.bg-primary'));
+
         // Récupérer la valeur du point de vente (select ou texte)
         let pointVente = '';
         if (pointVenteSelect) {
@@ -7914,25 +7984,24 @@ function filtrerStock() {
         } else if (pointVenteCell) {
             pointVente = pointVenteCell.textContent.trim();
         }
-        
+
         // Récupérer la valeur du produit (select ou texte sans le badge)
         let produit = '';
         if (produitSelect) {
             produit = produitSelect.value;
         } else if (produitCell) {
-            // Pour les produits auto, le nom est après le badge "Auto"
             const text = produitCell.textContent.trim();
-            // Enlever "Auto" et le symbole info au début
             produit = text.replace(/^Auto\s*/, '').replace(/ℹ️?\s*$/, '').trim();
         }
-        
+
         const quantite = quantiteInput ? parseFloat(quantiteInput.value) || 0 : 0;
-        
+
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
-        
-        if (matchPointVente && matchProduit && matchQuantite) {
+        const matchAuto = !masquerAuto || !isAuto;
+
+        if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
             row.style.display = '';
         } else {
             row.style.display = 'none';
@@ -7987,7 +8056,15 @@ function initFilterStock() {
     if (masquerQuantiteZero) {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }
-    
+
+    const masquerAuto = document.getElementById('masquer-produits-automatiques');
+    if (masquerAuto) {
+        masquerAuto.addEventListener('change', filtrerStock);
+        // Appliquer le filtre dès l'init pour respecter le default coché
+        // (masquer les auto par défaut).
+        filtrerStock();
+    }
+
     // Initialiser le bouton "Aller à la rec."
     const btnAllerReconciliation = document.getElementById('btn-aller-reconciliation');
     if (btnAllerReconciliation) {

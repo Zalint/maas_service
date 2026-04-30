@@ -16,7 +16,9 @@ const User = require('./User');
 const PointVente = require('./PointVente');
 const UserPointVente = require('./UserPointVente');
 const Category = require('./Category');
+const InventaireCategory = require('./InventaireCategory');
 const Produit = require('./Produit');
+const DecoupeOrderLog = require('./DecoupeOrderLog');
 const PrixPointVente = require('./PrixPointVente');
 const PrixHistorique = require('./PrixHistorique');
 
@@ -158,10 +160,12 @@ async function syncNewModels(options = { alter: true }) {
     await PointVente.sync(options);
     await UserPointVente.sync(options);
     await Category.sync(options);
+    await InventaireCategory.sync(options);
     await Produit.sync(options);
     await PrixPointVente.sync(options);
     await PrixHistorique.sync(options);
-    
+    await DecoupeOrderLog.sync(options);
+
     console.log('Nouveaux modèles synchronisés avec succès');
     return true;
   } catch (error) {
@@ -190,7 +194,9 @@ module.exports = {
   PointVente,
   UserPointVente,
   Category,
+  InventaireCategory,
   Produit,
+  DecoupeOrderLog,
   PrixPointVente,
   PrixHistorique,
   

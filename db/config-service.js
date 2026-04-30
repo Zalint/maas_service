@@ -318,7 +318,8 @@ async function getProduitsAsLegacy(typeCatalogue = 'vente') {
     for (const produit of produits) {
       const config = {
         prixDefault: parseFloat(produit.prix_defaut),
-        alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : []
+        alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : [],
+        ventes: Array.isArray(produit.ventes) ? produit.ventes : []
       };
       
       // Ajouter les prix par point de vente

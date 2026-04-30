@@ -62,6 +62,110 @@ async function updateSchema() {
         `);
         console.log('Colonne default_screen vérifiée/ajoutée dans la table users');
 
+        // Ajouter les colonnes ventes (inventaire -> liste de produits vente)
+        // et prix_personnalise (vente -> flag de détachement) sur la table produits.
+        // Idempotent: ALTER ... ADD COLUMN IF NOT EXISTS ne fait rien si déjà présent.
+        const produitsTableExists = await checkTableExists('produits');
+        if (produitsTableExists) {
+            await sequelize.query(`
+                ALTER TABLE produits
+                ADD COLUMN IF NOT EXISTS "ventes" TEXT[] DEFAULT '{}',
+                ADD COLUMN IF NOT EXISTS "prix_personnalise" BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonnes ventes / prix_personnalise vérifiées/ajoutées dans la table produits');
+        }
+
+        // Table inventaire_categories: persistance par tenant du mapping
+        // nom de catégorie d'inventaire -> famille (Boucherie/Epicerie/Autres).
+        // Les catégories d'inventaire elles-mêmes restent dérivées du champ
+        // categorie_affichage côté Produit; cette table sert uniquement à
+        // stocker le regroupement haut niveau partagé entre admins.
+        const invCatTableExists = await checkTableExists('inventaire_categories');
+        if (!invCatTableExists) {
+            await sequelize.query(`
+                CREATE TABLE inventaire_categories (
+                    nom VARCHAR(100) PRIMARY KEY,
+                    famille VARCHAR(20) NOT NULL DEFAULT 'Autres',
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            `);
+            console.log('Table inventaire_categories créée');
+        }
+        // Pré-remplir / re-pré-remplir les 6 catégories logiques standard.
+        // ON CONFLICT DO NOTHING garantit l'idempotence: lignes existantes
+        // (avec d'éventuelles personnalisations admin) ne sont pas écrasées,
+        // et les manquantes sont ajoutées même sur des bases déjà créées
+        // avant cette commit.
+        await sequelize.query(`
+            INSERT INTO inventaire_categories (nom, famille) VALUES
+              ('Viandes', 'Boucherie'),
+              ('Abats et Sous-produits', 'Boucherie'),
+              ('Produits sur Pieds', 'Boucherie'),
+              ('Œufs et Produits Laitiers', 'Epicerie'),
+              ('Déchets', 'Autres'),
+              ('Autres', 'Autres')
+            ON CONFLICT (nom) DO NOTHING
+        `);
+
+        // Journal local des commandes envoyées au centre de découpe Mata.
+        // Sequelize.sync ne tournera pas sur cette table en prod (initiale via
+        // tenant:init), donc on la crée idempotemment ici.
+        const decoupeLogTableExists = await checkTableExists('decoupe_order_logs');
+        if (!decoupeLogTableExists) {
+            await sequelize.query(`
+                CREATE TABLE decoupe_order_logs (
+                    id SERIAL PRIMARY KEY,
+                    commande_ref VARCHAR(50),
+                    point_vente VARCHAR(100) NOT NULL,
+                    point_vente_executant VARCHAR(100),
+                    produits JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    montant_total NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                    nom_client VARCHAR(150),
+                    numero_client VARCHAR(50),
+                    adresse_client VARCHAR(255),
+                    instructions_client TEXT,
+                    cree_par VARCHAR(150),
+                    mata_response JSONB,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            `);
+            console.log('Table decoupe_order_logs créée');
+        } else {
+            // Migration sur table existante: ajouter mata_response si absent
+            await sequelize.query(`
+                ALTER TABLE decoupe_order_logs
+                ADD COLUMN IF NOT EXISTS mata_response JSONB
+            `);
+        }
+        // Indices idempotents — garantissent leur présence aussi bien sur
+        // tables nouvelles que pré-existantes (cas où la table avait été
+        // créée avant l'ajout des indices, ou via un autre chemin).
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_decoupe_log_created_at ON decoupe_order_logs(created_at DESC)`);
+
+        // Famille de catégorie pour les Produits Généraux (Boucherie / Epicerie / Autres).
+        // Default 'Autres'; on pré-remplit les noms connus pour éviter à l'admin de tout
+        // reclasser à la main au premier déploiement. Les nouvelles catégories créées
+        // ensuite tombent en 'Autres' tant qu'elles ne sont pas reclassées via l'UI.
+        const categoriesTableExists = await checkTableExists('categories');
+        if (categoriesTableExists) {
+            await sequelize.query(`
+                ALTER TABLE categories
+                ADD COLUMN IF NOT EXISTS "famille" VARCHAR(20) NOT NULL DEFAULT 'Autres'
+            `);
+            await sequelize.query(`
+                UPDATE categories SET famille = 'Boucherie'
+                WHERE famille = 'Autres' AND nom IN ('Bovin', 'Ovin', 'Caprin', 'Volaille')
+            `);
+            await sequelize.query(`
+                UPDATE categories SET famille = 'Epicerie'
+                WHERE famille = 'Autres' AND nom IN ('Pack', 'Conserve', 'Riz & Féculents', 'Superette', 'Boissons')
+            `);
+            console.log('Colonne famille vérifiée/ajoutée dans la table categories (Boucherie/Epicerie pré-remplis)');
+        }
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {
