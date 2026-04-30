@@ -7946,21 +7946,27 @@ function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
+    const exclureAutoEl = document.getElementById('exclure-produits-automatiques');
+    const exclureAuto = exclureAutoEl ? exclureAutoEl.checked : false;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage du stock - Point de vente: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer quantité zéro: ${masquerQuantiteZero}`);
-    
+    console.log(`Filtrage du stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Exclure auto: ${exclureAuto}`);
+
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
         const pointVenteSelect = row.querySelector('td:first-child select');
         const pointVenteCell = row.querySelector('td:first-child');
-        
+
         // Produit: peut être un select (manuel) ou du texte avec badge (automatique)
         const produitSelect = row.querySelector('td:nth-child(2) select');
         const produitCell = row.querySelector('td:nth-child(2)');
-        
+
         const quantiteInput = row.querySelector('td:nth-child(3) input');
-        
+
+        // Détection mode auto: pas de <select> sur la cellule produit, et le
+        // badge "Auto" est visible dans la cellule.
+        const isAuto = !produitSelect && produitCell && /\bAuto\b/.test(produitCell.textContent);
+
         // Récupérer la valeur du point de vente (select ou texte)
         let pointVente = '';
         if (pointVenteSelect) {
@@ -7968,25 +7974,24 @@ function filtrerStock() {
         } else if (pointVenteCell) {
             pointVente = pointVenteCell.textContent.trim();
         }
-        
+
         // Récupérer la valeur du produit (select ou texte sans le badge)
         let produit = '';
         if (produitSelect) {
             produit = produitSelect.value;
         } else if (produitCell) {
-            // Pour les produits auto, le nom est après le badge "Auto"
             const text = produitCell.textContent.trim();
-            // Enlever "Auto" et le symbole info au début
             produit = text.replace(/^Auto\s*/, '').replace(/ℹ️?\s*$/, '').trim();
         }
-        
+
         const quantite = quantiteInput ? parseFloat(quantiteInput.value) || 0 : 0;
-        
+
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
-        
-        if (matchPointVente && matchProduit && matchQuantite) {
+        const matchAuto = !exclureAuto || !isAuto;
+
+        if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
             row.style.display = '';
         } else {
             row.style.display = 'none';
@@ -8041,7 +8046,14 @@ function initFilterStock() {
     if (masquerQuantiteZero) {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }
-    
+
+    const exclureAuto = document.getElementById('exclure-produits-automatiques');
+    if (exclureAuto) {
+        exclureAuto.addEventListener('change', filtrerStock);
+        // Appliquer le filtre dès l'init pour respecter le default checked
+        filtrerStock();
+    }
+
     // Initialiser le bouton "Aller à la rec."
     const btnAllerReconciliation = document.getElementById('btn-aller-reconciliation');
     if (btnAllerReconciliation) {
