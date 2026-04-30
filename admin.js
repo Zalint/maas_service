@@ -2431,6 +2431,10 @@ async function gererVentesLiees(produitInventaire, categorieInv = null) {
               </div>
               <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                <button type="button" class="btn btn-primary" id="gererVentesSaveBtn"
+                        onclick="sauvegarderDepuisGererVentes('${produitInventaire.replace(/'/g, "\\'")}', ${categorieInv ? `'${categorieInv}'` : 'null'})">
+                  <i class="fas fa-save"></i> Sauver
+                </button>
               </div>
             </div>
           </div>
@@ -2539,6 +2543,59 @@ function modifierPrixVenteDepuisInventaire(categorie, nomVente, nouveauPrix) {
     if (isNaN(prix)) return;
     currentProduitsConfig[categorie][nomVente].default = prix;
     venteConfigModifieeDepuisInventaire = true;
+}
+
+// Sauve l'état courant (prix vente + mapping inventaire) sans fermer le modal,
+// puis recharge les deux configs et rafraîchit la table pour que les badges
+// (🔗 hérité / 🔒 prix personnalisé) reflètent la nouvelle réalité serveur.
+async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = null) {
+    const btn = document.getElementById('gererVentesSaveBtn');
+    const original = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Sauvegarde...';
+    }
+    try {
+        // Toujours pousser produits d'abord pour que le serveur détache (prix_personnalise=true)
+        // les enfants modifiés AVANT que la propagation inventaire les ré-écrase.
+        const venteResp = await fetch('/api/admin/config/produits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ produits: currentProduitsConfig })
+        });
+        const venteData = await venteResp.json();
+        if (!venteData.success) {
+            alert(`Erreur sauvegarde produits: ${venteData.error || venteData.message}`);
+            return;
+        }
+        venteConfigModifieeDepuisInventaire = false;
+
+        const invResp = await fetch('/api/admin/config/produits-inventaire', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+        });
+        const invData = await invResp.json();
+        if (!invData.success) {
+            alert(`Erreur sauvegarde inventaire: ${invData.error || invData.message}`);
+            return;
+        }
+
+        // Recharger les deux configs depuis le serveur pour récupérer prix_personnalise
+        // et les éventuels prix propagés.
+        await Promise.all([chargerConfigProduits(), chargerConfigInventaire()]);
+        refreshGererVentesBody(produitInventaire, categorieInv);
+    } catch (e) {
+        console.error('sauvegarderDepuisGererVentes:', e);
+        alert('Erreur réseau lors de la sauvegarde.');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+        }
+    }
 }
 
 async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv = null) {
