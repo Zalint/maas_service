@@ -109,7 +109,13 @@ console.log(`[tenant:dev] DB_SCHEMA=${dbSchema}`);
 const nodemonBin = path.join(__dirname, '..', 'node_modules', '.bin', process.platform === 'win32' ? 'nodemon.cmd' : 'nodemon');
 const useNodemon = fs.existsSync(nodemonBin);
 const cmd = useNodemon ? nodemonBin : process.execPath;
-const args = ['-r', 'dotenv/config', 'server.js'];
+// Charge .env.local en priorité (avec fallback sur .env). Sans ça,
+// dotenv/config ne lit que .env et les variables tenant-spécifiques
+// (DB_NAME, MATA_DECOUPE_*, etc.) sont ignorées.
+const envLocalPath = path.join(__dirname, '..', '.env.local');
+const envFile = fs.existsSync(envLocalPath) ? '.env.local' : '.env';
+const args = ['-r', 'dotenv/config', 'server.js', `dotenv_config_path=${envFile}`];
+console.log(`[tenant:dev] env file: ${envFile}`);
 
 // shell:true is needed on Windows ONLY when running a .cmd file
 // (nodemon.cmd needs cmd.exe to resolve). For plain node.exe we must
