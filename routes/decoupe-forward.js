@@ -22,12 +22,18 @@ const router = express.Router();
 const tenant = require('../config/tenant');
 const { DecoupeOrderLog } = require('../db/models');
 
+// Centres connus de Mata, utilisés en fallback si MATA_DECOUPE_CENTRE n'est
+// pas défini. Source: config/centres-decoupe.json côté Mata.
+const CENTRES_PAR_DEFAUT = ['Centre de Découpe Dakar', 'Centre de Découpe Banlieue'];
+
 // MATA_DECOUPE_CENTRE peut contenir une liste séparée par ';' pour permettre à
 // l'admin de choisir un centre par commande. La 1ère entrée sert de défaut si
 // le client ne précise rien. Espaces autour du ';' ignorés.
 function parseCentres() {
-    const raw = process.env.MATA_DECOUPE_CENTRE || 'Centre de découpe';
-    return raw.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+    const raw = process.env.MATA_DECOUPE_CENTRE;
+    if (!raw) return CENTRES_PAR_DEFAUT.slice();
+    const list = raw.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+    return list.length > 0 ? list : CENTRES_PAR_DEFAUT.slice();
 }
 
 router.get('/centres', (req, res) => {
