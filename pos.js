@@ -10143,9 +10143,19 @@ async function chargerInterPVPanel() {
         // date HTML qui est aussi en local).
         if (dateStr) {
             const before = rows.length;
+            // Log toutes les dates pour faciliter le diagnostic si filtre vide
+            if (before > 0 && rows.filter((r) => formatLocalYMD(new Date(r.created_at)) === dateStr).length === 0) {
+                console.log('[interPV] aucune commande ne match — dates trouvées:',
+                    rows.slice(0, 10).map((r) => ({
+                        ref: r.commande_ref,
+                        created_at: r.created_at,
+                        localDay: r.created_at ? formatLocalYMD(new Date(r.created_at)) : null
+                    }))
+                );
+            }
             rows = rows.filter((r) => {
                 if (!r.created_at) return false;
-                return new Date(r.created_at).toLocaleDateString('fr-CA') === dateStr;
+                return formatLocalYMD(new Date(r.created_at)) === dateStr;
             });
             console.log(`[interPV] filtre date=${dateStr} → ${rows.length}/${before} commandes`);
         }
@@ -10202,7 +10212,7 @@ async function rafraichirBadgeInterPV() {
         if (dateStr) {
             rows = rows.filter((r) => {
                 if (!r.created_at) return false;
-                return new Date(r.created_at).toLocaleDateString('fr-CA') === dateStr;
+                return formatLocalYMD(new Date(r.created_at)) === dateStr;
             });
         }
         if (rows.length > 0) {
@@ -10236,6 +10246,15 @@ function ouvrirCentreDecoupeExterne(event) {
         .catch(() => {
             showToast('Impossible d\'ouvrir le centre de découpe.', 'danger');
         });
+}
+
+// YYYY-MM-DD dans la timezone locale du navigateur — aligné avec la valeur
+// d'un <input type="date">. Plus déterministe que toLocaleDateString().
+function formatLocalYMD(d) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
 }
 
 function escapeDecoupe(s) {
