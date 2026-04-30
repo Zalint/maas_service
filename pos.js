@@ -10050,50 +10050,110 @@ async function chargerMesCommandesDecoupe() {
     }
 }
 
-// Modal de détail: side-by-side de ce qui a été envoyé à Mata et ce que Mata
-// a renvoyé. Utile pour diagnostiquer les écarts (ex: pointVente côté Mata
-// vient du binding de la clé API, pas de notre payload).
+// Modal de détail: vue user-friendly de la commande (statut, client, produits).
 function afficherDetailsDecoupe(id) {
     const row = decoupeMineCache[id];
     if (!row) {
         showToast('Ligne introuvable.', 'warning');
         return;
     }
-    const envoye = {
-        produits: row.produits,
-        pointVenteExecutant: row.point_vente_executant,
-        nomClient: row.nom_client,
-        numeroClient: row.numero_client,
-        adresseClient: row.adresse_client,
-        instructionsClient: row.instructions_client,
-        // Le maas connaît son propre PV demandeur et l'enregistre tel quel
-        // (Mata ne l'utilise pas — il dérive pointVente de la clé API).
-        _maasPointVente: row.point_vente
+    const recu = row.mata_response || {};
+    const statut = (recu.statut || 'reçu').replace(/_/g, ' ');
+    const statutColors = {
+        'reçu': 'secondary', 'en preparation': 'info', 'pret': 'primary',
+        'en livraison': 'warning', 'livre': 'success', 'annule': 'danger'
     };
-    const recu = row.mata_response || null;
+    const statutColor = statutColors[statut] || 'secondary';
+
+    const dateCreation = rowCreatedAt(row) ? new Date(rowCreatedAt(row)).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : '—';
+    const produits = Array.isArray(row.produits) ? row.produits : [];
+    const totalProduits = produits.reduce((s, p) => s + (Number(p.montant) || 0), 0);
+
+    const produitsRows = produits.map((p) => `
+        <tr>
+            <td><span class="badge bg-light text-dark">${escapeDecoupe(p.categorie || '—')}</span></td>
+            <td>${escapeDecoupe(p.produit || '—')}</td>
+            <td class="text-end">${formatNumberDecoupe(p.prixUnit)}</td>
+            <td class="text-center">${escapeDecoupe(String(p.nombre || 0))}</td>
+            <td class="text-end fw-bold">${formatNumberDecoupe(p.montant)} F</td>
+        </tr>
+    `).join('');
+
+    function infoRow(label, value, fallback = '—') {
+        const v = value && String(value).trim() ? value : fallback;
+        return `
+            <div class="d-flex" style="border-bottom: 1px solid #f0f0f0; padding: 6px 0;">
+                <div style="flex: 0 0 140px; color: #6c757d; font-size: 0.85rem;">${escapeDecoupe(label)}</div>
+                <div style="flex: 1;">${escapeDecoupe(v)}</div>
+            </div>`;
+    }
 
     const old = document.getElementById('decoupeDetailsModal');
     if (old) old.remove();
+
     const html = `
         <div class="modal-overlay" id="decoupeDetailsModal" style="display: flex; z-index: 9000;">
-            <div class="modal-content" style="max-width: 1100px; max-height: 90vh; overflow: auto;">
-                <div class="modal-header" style="background: #6c757d; color: white;">
-                    <h4 style="margin: 0;">Détails commande <span class="text-warning">${escapeDecoupe(row.commande_ref || '?')}</span></h4>
+            <div class="modal-content" style="max-width: 900px; max-height: 90vh; overflow: auto;">
+                <div class="modal-header" style="background: linear-gradient(135deg, #c0392b 0%, #e74c3c 100%); color: white;">
+                    <div>
+                        <h4 style="margin: 0;">
+                            <i class="fas fa-receipt"></i> Commande
+                            <span style="color: #ffeaa7; margin-left: 8px;">${escapeDecoupe(row.commande_ref || '?')}</span>
+                        </h4>
+                        <small style="opacity: 0.9;">${escapeDecoupe(dateCreation)}</small>
+                    </div>
                     <button type="button" onclick="document.getElementById('decoupeDetailsModal').remove()" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer;">×</button>
                 </div>
                 <div class="modal-body" style="padding: 20px;">
+                    <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+                        <span class="badge bg-${statutColor}" style="font-size: 0.95rem; padding: 8px 14px; text-transform: capitalize;">
+                            <i class="fas fa-circle"></i> ${escapeDecoupe(statut)}
+                        </span>
+                        <span class="badge bg-info text-dark" style="font-size: 0.9rem; padding: 6px 10px;">
+                            <i class="fas fa-industry"></i> ${escapeDecoupe(row.point_vente_executant || '—')}
+                        </span>
+                    </div>
+
                     <div class="row">
                         <div class="col-md-6">
-                            <h5><i class="fas fa-paper-plane"></i> Envoyé par le POS</h5>
-                            <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; white-space: pre-wrap; font-size: 0.85rem;">${escapeDecoupe(JSON.stringify(envoye, null, 2))}</pre>
+                            <h6 class="text-muted mb-2"><i class="fas fa-user"></i> Client</h6>
+                            ${infoRow('Nom', row.nom_client)}
+                            ${infoRow('Téléphone', row.numero_client)}
+                            ${infoRow('Adresse', row.adresse_client)}
+                            ${infoRow('Instructions', row.instructions_client)}
                         </div>
                         <div class="col-md-6">
-                            <h5><i class="fas fa-cloud-download-alt"></i> Renvoyé par Mata</h5>
-                            ${recu
-                                ? `<pre style="background: #fff3cd; padding: 10px; border-radius: 4px; white-space: pre-wrap; font-size: 0.85rem;">${escapeDecoupe(JSON.stringify(recu, null, 2))}</pre>`
-                                : `<div class="text-muted">Aucune réponse stockée (commande envoyée avant l'ajout du champ mata_response — refais un envoi pour voir le diff).</div>`
-                            }
+                            <h6 class="text-muted mb-2"><i class="fas fa-info-circle"></i> Commande</h6>
+                            ${infoRow('Réf', row.commande_ref)}
+                            ${infoRow('PV demandeur', row.point_vente)}
+                            ${infoRow('Centre', row.point_vente_executant)}
+                            ${infoRow('Origine', recu.origine || 'MaaS')}
+                            ${infoRow('Créée par', row.cree_par || recu.creePar)}
                         </div>
+                    </div>
+
+                    <h6 class="text-muted mt-4 mb-2"><i class="fas fa-shopping-basket"></i> Produits</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Catégorie</th>
+                                    <th>Produit</th>
+                                    <th class="text-end">PU</th>
+                                    <th class="text-center">Qté</th>
+                                    <th class="text-end">Montant</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${produitsRows || '<tr><td colspan="5" class="text-center text-muted">Aucun produit</td></tr>'}
+                            </tbody>
+                            <tfoot>
+                                <tr style="background: #f8f9fa; font-weight: bold;">
+                                    <td colspan="4" class="text-end">Total</td>
+                                    <td class="text-end" style="color: #c0392b;">${formatNumberDecoupe(row.montant_total || totalProduits)} FCFA</td>
+                                </tr>
+                            </tfoot>
+                        </table>
                     </div>
                 </div>
                 <div class="modal-footer" style="padding: 12px 20px;">
