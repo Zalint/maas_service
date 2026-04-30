@@ -80,13 +80,11 @@ router.post('/send', async (req, res) => {
             return res.status(400).json({ success: false, error: 'point_vente requis.' });
         }
 
-        const username = req.session && req.session.user ? req.session.user.username : 'maas';
-
+        // Payload Mata: camelCase. Mata dérive pointVente / origine /
+        // partenaireMaas / creePar de la clé x-api-key — on n'envoie pas
+        // ces champs (l'utilisateur Mata "Keur Bally" est associé à la clé
+        // par exemple).
         const payload = {
-            point_vente,
-            point_vente_executant: centre,
-            origine: 'MaaS',
-            partenaire_maas: tenant.name || tenant.slug || 'MaaS',
             produits: produits.map((p) => ({
                 categorie: p.categorie || p.category || '',
                 produit: p.produit || p.name || '',
@@ -94,14 +92,13 @@ router.post('/send', async (req, res) => {
                 nombre: Number(p.nombre != null ? p.nombre : p.quantity) || 0,
                 montant: Number(p.montant != null ? p.montant : (p.price * p.quantity)) || 0
             })),
-            montant_total: Number(montant_total) || 0,
-            nom_client: nom_client || '',
-            numero_client: numero_client || '',
-            adresse_client: adresse_client || '',
-            instructions_client: instructions_client || '',
-            cree_par: `${tenant.slug || 'maas'}:${username}`,
-            notes: notes || ''
+            pointVenteExecutant: centre,
+            nomClient: nom_client || '',
+            numeroClient: numero_client || '',
+            adresseClient: adresse_client || '',
+            instructionsClient: instructions_client || ''
         };
+        if (notes) payload.notes = notes;
 
         const url = `${baseUrl.replace(/\/$/, '')}/api/commandes-decoupe/external`;
         const upstream = await fetch(url, {
@@ -122,8 +119,13 @@ router.post('/send', async (req, res) => {
             });
         }
 
-        const ref = data.commande_ref || data.ref || (data.data && data.data.commande_ref) || null;
-        console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${point_vente}`);
+        // Mata renvoie { success, commande: {commandeRef, pointVente, ...} }
+        const cmd = (data && data.commande) || {};
+        const ref = cmd.commandeRef || data.commandeRef || data.commande_ref || data.ref || null;
+        const pointVenteResolu = cmd.pointVente || point_vente || '';
+        const montantTotal = Number(cmd.montantTotal != null ? cmd.montantTotal : (montant_total || 0)) || 0;
+        const username = req.session && req.session.user ? req.session.user.username : null;
+        console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${pointVenteResolu}`);
 
         // Journal local pour la tab "Mes commandes". Best-effort: si l'insert
         // échoue, la commande est quand même envoyée à Mata avec succès, on
@@ -131,21 +133,22 @@ router.post('/send', async (req, res) => {
         try {
             await DecoupeOrderLog.create({
                 commande_ref: ref,
-                point_vente,
+                point_vente: pointVenteResolu,
                 point_vente_executant: centre,
                 produits: payload.produits,
-                montant_total: payload.montant_total,
-                nom_client: payload.nom_client || null,
-                numero_client: payload.numero_client || null,
-                adresse_client: payload.adresse_client || null,
-                instructions_client: payload.instructions_client || null,
-                cree_par: payload.cree_par
+                montant_total: montantTotal,
+                nom_client: payload.nomClient || null,
+                numero_client: payload.numeroClient || null,
+                adresse_client: payload.adresseClient || null,
+                instructions_client: payload.instructionsClient || null,
+                cree_par: username ? `${tenant.slug || 'maas'}:${username}` : (cmd.creePar || null)
             });
         } catch (logErr) {
             console.error('[decoupe-forward] échec journalisation locale:', logErr.message);
         }
 
-        res.json({ success: true, ...data, commande_ref: ref });
+        // Réponse au frontend: on renvoie ref + l'objet Mata complet pour debug
+        res.json({ success: true, commande_ref: ref, commande: cmd, raw: data });
     } catch (error) {
         console.error('[decoupe-forward] error', error);
         res.status(500).json({ success: false, error: error.message });
