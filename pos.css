@@ -4940,9 +4940,13 @@ body.pos-expert-mode #btnExpertMode {
     color: #ffd54f !important; /* ambre, signal "mode actif" */
 }
 
-/* Layout: en mode expert, on ajoute 2 pistes 4px pour les poignées. */
-body.pos-expert-mode .pos-main {
-    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
+/* Layout: en mode expert, on ajoute 2 pistes 4px pour les poignées —
+   uniquement hors modes spéciaux (.transactions-expanded / .order-tracking-mode)
+   et hors mobile, pour ne pas écraser les overrides existants. */
+@media (min-width: 769px) {
+    body.pos-expert-mode .pos-main:not(.transactions-expanded):not(.order-tracking-mode) {
+        grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
+    }
 }
 
 /* Poignées de redimensionnement — masquées par défaut. */

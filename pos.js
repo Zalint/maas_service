@@ -10423,12 +10423,25 @@ const POS_COL_MIN_PX = 200;
 // Référence sur le handler keydown pour pouvoir le détacher proprement.
 let __posExpertKeydownHandler = null;
 
+// Wrappers safe autour de localStorage : en navigation privée stricte,
+// quota dépassé, ou contextes 3rd-party bloqués, l'API peut throw. On ne
+// veut jamais que l'init ou le toggle plante l'app.
+function posLsGet(key) {
+    try { return localStorage.getItem(key); } catch (_) { return null; }
+}
+function posLsSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (_) { /* ignore */ }
+}
+function posLsRemove(key) {
+    try { localStorage.removeItem(key); } catch (_) { /* ignore */ }
+}
+
 function posExpertModeIsOn() {
-    return localStorage.getItem(POS_EXPERT_KEY) === '1';
+    return posLsGet(POS_EXPERT_KEY) === '1';
 }
 
 function posZoomGet() {
-    const v = parseFloat(localStorage.getItem(POS_ZOOM_KEY));
+    const v = parseFloat(posLsGet(POS_ZOOM_KEY));
     return Number.isFinite(v) && v >= POS_ZOOM_MIN && v <= POS_ZOOM_MAX ? v : POS_ZOOM_DEFAULT;
 }
 
@@ -10436,7 +10449,7 @@ function posZoomApply(value) {
     const v = Math.min(POS_ZOOM_MAX, Math.max(POS_ZOOM_MIN, Math.round(value * 10) / 10));
     document.body.style.zoom = v;
     document.documentElement.style.setProperty('--pos-font-scale', String(v));
-    localStorage.setItem(POS_ZOOM_KEY, String(v));
+    posLsSet(POS_ZOOM_KEY, String(v));
     const label = document.getElementById('posZoomLabel');
     if (label) label.textContent = Math.round(v * 100) + '%';
     return v;
@@ -10451,7 +10464,7 @@ window.posZoomReset    = posZoomReset;
 
 function posColumnsGet() {
     try {
-        const raw = JSON.parse(localStorage.getItem(POS_COLS_KEY));
+        const raw = JSON.parse(posLsGet(POS_COLS_KEY));
         if (Array.isArray(raw) && raw.length === 3 && raw.every(n => Number.isFinite(n) && n > 0)) {
             return raw;
         }
@@ -10463,13 +10476,13 @@ function posColumnsApply(widths) {
     const main = document.querySelector('.pos-main');
     if (!main) return;
     main.style.gridTemplateColumns = `${widths[0]}fr ${POS_RESIZER_PX}px ${widths[1]}fr ${POS_RESIZER_PX}px ${widths[2]}fr`;
-    localStorage.setItem(POS_COLS_KEY, JSON.stringify(widths));
+    posLsSet(POS_COLS_KEY, JSON.stringify(widths));
 }
 
 function posLayoutReset() {
     const main = document.querySelector('.pos-main');
     if (main) main.style.gridTemplateColumns = '';
-    localStorage.removeItem(POS_COLS_KEY);
+    posLsRemove(POS_COLS_KEY);
 }
 window.posLayoutReset = posLayoutReset;
 
@@ -10513,15 +10526,31 @@ function posInitColumnResizers() {
                 const frs = next.map(px => +(px / total * 5).toFixed(3));
                 posColumnsApply(frs);
             };
+            // Teardown idempotent: rappelable plusieurs fois sans danger.
+            // Permet à pointerup/blur/visibilitychange de fallback proprement
+            // si mouseup ne tire pas (release hors fenêtre, focus volé...).
+            let __posDragDone = false;
             const onUp = () => {
+                if (__posDragDone) return;
+                __posDragDone = true;
                 resizer.classList.remove('is-dragging');
                 document.body.style.cursor = prevCursor;
                 document.body.style.userSelect = prevSelect;
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
+                document.removeEventListener('pointerup', onUp);
+                window.removeEventListener('blur', onUp);
+                document.removeEventListener('visibilitychange', onVisibility);
             };
+            const onVisibility = () => { if (document.hidden) onUp(); };
             document.addEventListener('mousemove', onMove);
             document.addEventListener('mouseup', onUp);
+            // Fallbacks: si la souris est relâchée hors fenêtre, ou si le focus
+            // est volé, on garantit le cleanup pour éviter de rester coincé en
+            // 'is-dragging' / cursor:col-resize / userSelect:none.
+            document.addEventListener('pointerup', onUp);
+            window.addEventListener('blur', onUp);
+            document.addEventListener('visibilitychange', onVisibility);
         });
     });
 }
@@ -10542,7 +10571,7 @@ function posExpertModeApply(on) {
     document.body.classList.toggle('pos-expert-mode', !!on);
     if (on) {
         posZoomApply(posZoomGet());
-        const stored = localStorage.getItem(POS_COLS_KEY);
+        const stored = posLsGet(POS_COLS_KEY);
         if (stored) posColumnsApply(posColumnsGet());
         if (!__posExpertKeydownHandler) {
             __posExpertKeydownHandler = posExpertKeydown;
@@ -10566,7 +10595,7 @@ function posExpertModeApply(on) {
 
 function posExpertModeToggle() {
     const next = !posExpertModeIsOn();
-    localStorage.setItem(POS_EXPERT_KEY, next ? '1' : '0');
+    posLsSet(POS_EXPERT_KEY, next ? '1' : '0');
     posExpertModeApply(next);
 }
 window.posExpertModeToggle = posExpertModeToggle;

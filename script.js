@@ -2459,21 +2459,29 @@ function dvPeuplerFiltres() {
         if (cat) catSet.add(cat);
         if (prod) prodSet.add(prod);
     });
-    const fill = (selectId, label, values) => {
+    // filterKey: clé dans dvFilters à synchroniser si la sélection courante
+    // n'existe plus dans le nouveau jeu de valeurs (sinon: filtre fantôme).
+    const fill = (selectId, label, values, filterKey) => {
         const el = document.getElementById(selectId);
         if (!el) return;
         const current = el.value;
         el.innerHTML = `<option value="">${label}</option>`;
-        [...values].sort((a,b) => a.localeCompare(b, 'fr')).forEach(v => {
+        const valsArr = [...values].sort((a,b) => a.localeCompare(b, 'fr'));
+        valsArr.forEach(v => {
             const opt = document.createElement('option');
             opt.value = v; opt.textContent = v;
             el.appendChild(opt);
         });
-        if (current && [...values].includes(current)) el.value = current;
+        if (current && valsArr.includes(current)) {
+            el.value = current;
+        } else {
+            el.value = '';
+            if (filterKey && dvFilters[filterKey]) dvFilters[filterKey] = '';
+        }
     };
-    fill('filter-dv-point-vente', 'Tous les points de vente', pdvSet);
-    fill('filter-dv-categorie',   'Toutes les catégories',    catSet);
-    fill('filter-dv-produit',     'Tous les produits',         prodSet);
+    fill('filter-dv-point-vente', 'Tous les points de vente', pdvSet,  'pointVente');
+    fill('filter-dv-categorie',   'Toutes les catégories',    catSet,  'categorie');
+    fill('filter-dv-produit',     'Tous les produits',         prodSet, 'produit');
 }
 
 function dvComputeFiltered() {
@@ -4135,21 +4143,29 @@ function peuplerFiltresVentes() {
         if (cat) catSet.add(cat);
         if (prod) prodSet.add(prod);
     });
-    const fill = (id, label, vals) => {
+    // filterKey: clé dans ventesFilters à synchroniser si la sélection
+    // courante n'existe plus dans le nouveau jeu de valeurs.
+    const fill = (id, label, vals, filterKey) => {
         const el = document.getElementById(id);
         if (!el) return;
         const current = el.value;
         el.innerHTML = `<option value="">${label}</option>`;
-        [...vals].sort((a,b) => a.localeCompare(b, 'fr')).forEach(v => {
+        const valsArr = [...vals].sort((a,b) => a.localeCompare(b, 'fr'));
+        valsArr.forEach(v => {
             const o = document.createElement('option');
             o.value = v; o.textContent = v;
             el.appendChild(o);
         });
-        if (current && [...vals].includes(current)) el.value = current;
+        if (current && valsArr.includes(current)) {
+            el.value = current;
+        } else {
+            el.value = '';
+            if (filterKey && ventesFilters[filterKey]) ventesFilters[filterKey] = '';
+        }
     };
-    fill('filter-ventes-point-vente', 'Tous les points de vente', pdvSet);
-    fill('filter-ventes-categorie',   'Toutes les catégories',    catSet);
-    fill('filter-ventes-produit',     'Tous les produits',         prodSet);
+    fill('filter-ventes-point-vente', 'Tous les points de vente', pdvSet,  'pointVente');
+    fill('filter-ventes-categorie',   'Toutes les catégories',    catSet,  'categorie');
+    fill('filter-ventes-produit',     'Tous les produits',         prodSet, 'produit');
 }
 
 // Calcule ventesFiltered selon ventesFilters et re-render la page courante.
