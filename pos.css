@@ -432,10 +432,25 @@ body.pos-expert-mode .pos-zoom-controls {
     body.pos-expert-mode .pos-zoom-controls { display: none; }
 }
 
-/* Bouton toggle mode expert: surligné quand actif. */
+/* Bouton toggle mode expert: même gabarit visuel que .btn-dashboard
+   (icône seule, transparente, hover en scale). Surligné quand actif. */
+.header-left #btnExpertMode {
+    font-size: 1.5rem !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    color: white !important;
+    display: inline-flex !important;
+    align-items: center;
+    transition: all 0.2s ease;
+}
+.header-left #btnExpertMode:hover {
+    background: transparent !important;
+    transform: scale(1.1);
+    opacity: 0.9;
+}
 body.pos-expert-mode #btnExpertMode {
-    background: rgba(255, 255, 255, 0.25);
-    color: white;
+    color: #ffd54f !important; /* ambre, signal "mode actif" sans fond */
 }
 
 /* Transactions expanded mode */
