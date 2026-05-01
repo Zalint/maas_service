@@ -10402,3 +10402,176 @@ function formatNumberDecoupe(n) {
     return num.toLocaleString('fr-FR');
 }
 
+// ============================================================================
+// POS UI — Mode expert : zoom + redimensionnement des 3 colonnes.
+// OFF par défaut. Quand OFF, AUCUN listener global n'est actif (pas de
+// keydown sur document, pas de mousedown sur les resizers — leur display
+// est none côté CSS). Aucune interaction avec fetch / auth / cookies.
+// ============================================================================
+
+const POS_EXPERT_KEY = 'pos_expert_mode';
+const POS_ZOOM_KEY   = 'pos_zoom';
+const POS_ZOOM_MIN   = 0.7;
+const POS_ZOOM_MAX   = 1.5;
+const POS_ZOOM_STEP  = 0.1;
+const POS_ZOOM_DEFAULT = 1.0;
+const POS_COLS_KEY   = 'pos_column_widths';
+const POS_COLS_DEFAULT = [2, 2, 1.5]; // fr units, doit matcher pos.css .pos-main
+const POS_RESIZER_PX = 4;
+const POS_COL_MIN_PX = 200;
+
+// Référence sur le handler keydown pour pouvoir le détacher proprement.
+let __posExpertKeydownHandler = null;
+
+function posExpertModeIsOn() {
+    return localStorage.getItem(POS_EXPERT_KEY) === '1';
+}
+
+function posZoomGet() {
+    const v = parseFloat(localStorage.getItem(POS_ZOOM_KEY));
+    return Number.isFinite(v) && v >= POS_ZOOM_MIN && v <= POS_ZOOM_MAX ? v : POS_ZOOM_DEFAULT;
+}
+
+function posZoomApply(value) {
+    const v = Math.min(POS_ZOOM_MAX, Math.max(POS_ZOOM_MIN, Math.round(value * 10) / 10));
+    document.body.style.zoom = v;
+    document.documentElement.style.setProperty('--pos-font-scale', String(v));
+    localStorage.setItem(POS_ZOOM_KEY, String(v));
+    const label = document.getElementById('posZoomLabel');
+    if (label) label.textContent = Math.round(v * 100) + '%';
+    return v;
+}
+
+function posZoomIncrease() { posZoomApply(posZoomGet() + POS_ZOOM_STEP); }
+function posZoomDecrease() { posZoomApply(posZoomGet() - POS_ZOOM_STEP); }
+function posZoomReset()    { posZoomApply(POS_ZOOM_DEFAULT); }
+window.posZoomIncrease = posZoomIncrease;
+window.posZoomDecrease = posZoomDecrease;
+window.posZoomReset    = posZoomReset;
+
+function posColumnsGet() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(POS_COLS_KEY));
+        if (Array.isArray(raw) && raw.length === 3 && raw.every(n => Number.isFinite(n) && n > 0)) {
+            return raw;
+        }
+    } catch (_) { /* ignore */ }
+    return POS_COLS_DEFAULT.slice();
+}
+
+function posColumnsApply(widths) {
+    const main = document.querySelector('.pos-main');
+    if (!main) return;
+    main.style.gridTemplateColumns = `${widths[0]}fr ${POS_RESIZER_PX}px ${widths[1]}fr ${POS_RESIZER_PX}px ${widths[2]}fr`;
+    localStorage.setItem(POS_COLS_KEY, JSON.stringify(widths));
+}
+
+function posLayoutReset() {
+    const main = document.querySelector('.pos-main');
+    if (main) main.style.gridTemplateColumns = '';
+    localStorage.removeItem(POS_COLS_KEY);
+}
+window.posLayoutReset = posLayoutReset;
+
+// Drag handlers attachés une seule fois au DOMContentLoaded. Le CSS masque
+// les resizers (display:none) tant que le mode expert est OFF, donc le
+// mousedown ne peut pas se déclencher hors mode. Double sécurité: garde
+// runtime sur display=none ET sur la classe body.pos-expert-mode.
+function posInitColumnResizers() {
+    const main = document.querySelector('.pos-main');
+    if (!main) return;
+    const resizers = main.querySelectorAll('.pos-resizer');
+    if (resizers.length === 0) return;
+
+    resizers.forEach(resizer => {
+        resizer.addEventListener('mousedown', (e) => {
+            if (!document.body.classList.contains('pos-expert-mode')) return;
+            if (window.getComputedStyle(resizer).display === 'none') return;
+            // Bouton gauche uniquement (évite d'interférer avec menu contextuel).
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const idx = parseInt(resizer.dataset.posResizer, 10);
+            const cols = main.querySelectorAll('[data-pos-col]');
+            if (cols.length !== 3) return;
+
+            const startX = e.clientX;
+            const startWidths = Array.from(cols).map(c => c.getBoundingClientRect().width);
+
+            resizer.classList.add('is-dragging');
+            const prevCursor = document.body.style.cursor;
+            const prevSelect = document.body.style.userSelect;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+
+            const onMove = (ev) => {
+                const dx = ev.clientX - startX;
+                const next = startWidths.slice();
+                next[idx]     = startWidths[idx]     + dx;
+                next[idx + 1] = startWidths[idx + 1] - dx;
+                if (next[idx] < POS_COL_MIN_PX || next[idx + 1] < POS_COL_MIN_PX) return;
+                const total = next.reduce((a, b) => a + b, 0);
+                const frs = next.map(px => +(px / total * 5).toFixed(3));
+                posColumnsApply(frs);
+            };
+            const onUp = () => {
+                resizer.classList.remove('is-dragging');
+                document.body.style.cursor = prevCursor;
+                document.body.style.userSelect = prevSelect;
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    });
+}
+
+// Handler keydown attaché UNIQUEMENT en mode expert. Ne preventDefault que
+// pour les 4 raccourcis reconnus (Ctrl+= / Ctrl++ / Ctrl+- / Ctrl+0). Tout
+// le reste, y compris Enter/Tab dans un formulaire, est laissé intact.
+function posExpertKeydown(e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); posZoomIncrease(); }
+    else if (e.key === '-')             { e.preventDefault(); posZoomDecrease(); }
+    else if (e.key === '0')             { e.preventDefault(); posZoomReset(); }
+}
+
+function posExpertModeApply(on) {
+    document.body.classList.toggle('pos-expert-mode', !!on);
+    if (on) {
+        posZoomApply(posZoomGet());
+        const stored = localStorage.getItem(POS_COLS_KEY);
+        if (stored) posColumnsApply(posColumnsGet());
+        if (!__posExpertKeydownHandler) {
+            __posExpertKeydownHandler = posExpertKeydown;
+            document.addEventListener('keydown', __posExpertKeydownHandler);
+        }
+    } else {
+        // Coupe l'effet visuel sans effacer la persistance (zoom/colonnes
+        // sont restaurés au prochain ON).
+        document.body.style.zoom = '';
+        document.documentElement.style.removeProperty('--pos-font-scale');
+        const main = document.querySelector('.pos-main');
+        if (main) main.style.gridTemplateColumns = '';
+        const label = document.getElementById('posZoomLabel');
+        if (label) label.textContent = '100%';
+        if (__posExpertKeydownHandler) {
+            document.removeEventListener('keydown', __posExpertKeydownHandler);
+            __posExpertKeydownHandler = null;
+        }
+    }
+}
+
+function posExpertModeToggle() {
+    const next = !posExpertModeIsOn();
+    localStorage.setItem(POS_EXPERT_KEY, next ? '1' : '0');
+    posExpertModeApply(next);
+}
+window.posExpertModeToggle = posExpertModeToggle;
+
+document.addEventListener('DOMContentLoaded', () => {
+    posInitColumnResizers();
+    posExpertModeApply(posExpertModeIsOn());
+});
