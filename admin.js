@@ -1829,13 +1829,18 @@ function afficherInventaireConfig() {
 function filtrerProduitsInventaire(query) {
     const container = document.getElementById('inventaire-categories');
     if (!container) return;
-    const q = (query || '').trim().toLowerCase();
+    // NFKD décompose les ligatures (œ→oe, æ→ae) ET les lettres accentuées,
+    // puis on retire les diacritiques combinants (U+0300–U+036F).
+    const norm = (s) => String(s || '')
+        .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().trim();
+    const q = norm(query);
 
     container.querySelectorAll('.accordion-item[data-categorie]').forEach((item) => {
         const rows = item.querySelectorAll('tbody tr[data-produit]');
         let matchCount = 0;
         rows.forEach((row) => {
-            const nom = (row.dataset.produit || '').toLowerCase();
+            const nom = norm(row.dataset.produit);
             const match = !q || nom.includes(q);
             row.style.display = match ? '' : 'none';
             if (match) matchCount++;

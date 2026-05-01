@@ -11,6 +11,10 @@
     "adresse_siege": "",
     "footer_facture": "Merci de votre confiance !",
     "footer_whatsapp": "Merci de votre confiance !",
-    "points_vente_codes": ["MBA"]
+    "points_vente_codes": {
+      "Mbao": "MBA",
+      "Keur Massar": "KMA",
+      "Sacre Coeur": "SAC"
+    }
   }
 }
