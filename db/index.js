@@ -57,6 +57,14 @@ if (process.env.NODE_ENV === 'production') {
 const commonOptions = {
   dialect: 'postgres',
   logging: false,
+  // CRITIQUE: Sequelize.sync() ignore le SET search_path de la session
+  // (vu en debug: search_path=mbao mais Category.sync() crée la table dans
+  // public). On force le schéma par défaut côté `define` pour que toutes
+  // les CREATE TABLE générées par sync() ciblent le bon schéma.
+  // Quand DB_SCHEMA est non défini → tenant.schema='public' → no-op.
+  define: tenant.schema && tenant.schema !== 'public'
+    ? { schema: tenant.schema }
+    : {},
   pool: {
     max: 5,
     min: 0,
