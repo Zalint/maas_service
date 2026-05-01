@@ -67,7 +67,7 @@ let currentUser = null;
 let cart = [];
 let categories = {};
 let products = {};
-let currentCategory = 'all';
+let currentCategory = 'Boucherie';
 let userFavoris = [];
 let showFavorisOnly = false;
 let editFavorisMode = false;
@@ -570,7 +570,10 @@ async function chargerDonnees() {
         await chargerEpicerieCategories();
         await chargerFavoris();
         afficherCategories();
-        afficherProduits('all');
+        // Utilise currentCategory (Boucherie par défaut) au lieu de 'all'
+        // hardcodé — sinon le filtre actif visuellement ne correspond pas
+        // à la grille produits affichée.
+        afficherProduits(currentCategory);
         
     } catch (error) {
         console.error('❌ Erreur chargement données:', error);
@@ -752,12 +755,14 @@ function afficherCategories() {
     const container = document.getElementById('categoriesList');
     container.innerHTML = '';
 
-    const grouped = ['all', 'Epicerie', 'Boucherie'];
+    const grouped = ['Boucherie', 'Epicerie', 'all'];
     const labels = { all: 'Tous', Epicerie: 'Epicerie', Boucherie: 'Boucherie' };
 
     grouped.forEach(key => {
         const btn = document.createElement('button');
-        btn.className = 'category-btn' + (key === 'all' ? ' active' : '');
+        // Boucherie est le filtre par défaut (premier dans l'ordre visuel
+        // et l'usage le plus fréquent au POS).
+        btn.className = 'category-btn' + (key === 'Boucherie' ? ' active' : '');
         btn.textContent = labels[key];
         btn.dataset.group = key;
         btn.onclick = () => {
@@ -780,7 +785,9 @@ function afficherCategories() {
         if (showFavorisOnly) {
             favBtn.classList.add('active');
         } else {
-            container.querySelector('[data-group="all"]').classList.add('active');
+            // Désélectionner Favoris → retomber sur Boucherie (filtre par défaut)
+            const defaultBtn = container.querySelector('[data-group="Boucherie"]');
+            if (defaultBtn) defaultBtn.classList.add('active');
         }
         afficherProduits(currentCategory);
     };
