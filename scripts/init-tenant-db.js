@@ -162,6 +162,60 @@ async function main() {
     await sequelize.sync();
     console.log('✅ Sync complete.\n');
 
+    // Filet défensif: sequelize.sync() peut silencieusement skipper certains
+    // modèles dans des cas edge (search_path désynchro, COMMENT qui plante,
+    // etc.). On force la création explicite des tables critiques que
+    // seedCatalog et la suite vont attaquer immédiatement. Idempotent: ces
+    // sync individuels font CREATE TABLE IF NOT EXISTS, no-op si déjà là.
+    console.log('🔧 Force-sync des modèles critiques (filet de sécurité)...');
+    const criticalModels = [
+        ['User', User], ['PointVente', PointVente],
+        ['UserPointVente', UserPointVente], ['Category', Category],
+        ['Produit', Produit]
+    ];
+    for (const [name, model] of criticalModels) {
+        try {
+            await model.sync();
+        } catch (err) {
+            console.error(`❌ Échec sync ${name}:`, err.message);
+            throw err;
+        }
+    }
+    console.log('✅ Modèles critiques sync.\n');
+
+    // ====== DIAGNOSTIC: où sont vraiment les tables ? ======
+    console.log('🔍 Diagnostic post-sync:');
+    try {
+        const sp = await sequelize.query('SHOW search_path', { type: sequelize.QueryTypes.SELECT, plain: true });
+        console.log('   search_path actuel:', sp ? sp.search_path : 'inconnu');
+
+        const tables = await sequelize.query(
+            `SELECT table_schema, table_name FROM information_schema.tables
+             WHERE table_name IN ('categories', 'produits', 'users', 'points_vente', 'reconciliations')
+             ORDER BY table_schema, table_name`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        if (tables.length === 0) {
+            console.log('   ⚠️  AUCUNE des tables critiques n\'existe nulle part!');
+        } else {
+            console.log('   Tables trouvées:');
+            for (const t of tables) {
+                console.log(`     - ${t.table_schema}.${t.table_name}`);
+            }
+        }
+        // Lister tous les schémas existants
+        const schemas = await sequelize.query(
+            `SELECT schema_name FROM information_schema.schemata
+             WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+             ORDER BY schema_name`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        console.log('   Schémas DB:', schemas.map((s) => s.schema_name).join(', '));
+    } catch (diagErr) {
+        console.error('   ⚠️  Diagnostic échoué:', diagErr.message);
+    }
+    console.log('');
+
     await seedCatalog();
 
     // Seed ADMIN user if no users exist

@@ -1,17 +1,22 @@
-// Mock des fonctions du navigateur
-Object.defineProperty(window, 'matchMedia', {
-    writable: true,
-    value: jest.fn().mockImplementation(query => ({
-        matches: false,
-        media: query,
-        onchange: null,
-        addListener: jest.fn(),
-        removeListener: jest.fn(),
-        addEventListener: jest.fn(),
-        removeEventListener: jest.fn(),
-        dispatchEvent: jest.fn(),
-    })),
-});
+// Mock des fonctions du navigateur — seulement quand on tourne sous jsdom.
+// Les tests d'intégration de routes (supertest) utilisent testEnvironment: node
+// via un docblock @jest-environment, et n'ont pas window. Sans ce guard,
+// l'import de tests/setup.js plantait sur tous les fichiers en env node.
+if (typeof window !== 'undefined') {
+    Object.defineProperty(window, 'matchMedia', {
+        writable: true,
+        value: jest.fn().mockImplementation(query => ({
+            matches: false,
+            media: query,
+            onchange: null,
+            addListener: jest.fn(),
+            removeListener: jest.fn(),
+            addEventListener: jest.fn(),
+            removeEventListener: jest.fn(),
+            dispatchEvent: jest.fn(),
+        })),
+    });
+}
 
 // Mock localStorage
 const localStorageMock = {

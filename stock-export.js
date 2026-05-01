@@ -303,6 +303,11 @@ async function exportStockInventaireToExcel() {
     }
 }
 
+// Export pour les tests unitaires (no-op côté browser car module est undefined).
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { processStockData };
+}
+
 // Add event listener when DOM is loaded
 document.addEventListener('DOMContentLoaded', function() {
     const exportStockExcelBtn = document.getElementById('export-stock-excel');

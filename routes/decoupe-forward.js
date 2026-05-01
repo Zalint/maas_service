@@ -22,26 +22,19 @@ const router = express.Router();
 const tenant = require('../config/tenant');
 const { sequelize } = require('../db');
 const { DecoupeOrderLog } = require('../db/models');
-
-// Centres connus de Mata, utilisés en fallback si MATA_DECOUPE_CENTRE n'est
-// pas défini. Source: config/centres-decoupe.json côté Mata.
-const CENTRES_PAR_DEFAUT = ['Centre de Découpe Dakar', 'Centre de Découpe Banlieue'];
+const {
+    CENTRES_PAR_DEFAUT,
+    parseCentres,
+    normalizeProduit,
+    clampLimit,
+    resoudrePV
+} = require('./decoupe-helpers');
 
 // Timezone à utiliser pour les agrégats journaliers. Sans ça, Postgres retombe
 // sur la TZ du serveur (souvent UTC sur Render) → décalage d'un jour aux
 // frontières pour les tenants sénégalais qui ont saisi près de minuit local.
 // Override via env TENANT_TZ si un tenant est dans une autre TZ.
 const TENANT_TZ = process.env.TENANT_TZ || 'Africa/Dakar';
-
-// MATA_DECOUPE_CENTRE peut contenir une liste séparée par ';' pour permettre à
-// l'admin de choisir un centre par commande. La 1ère entrée sert de défaut si
-// le client ne précise rien. Espaces autour du ';' ignorés.
-function parseCentres() {
-    const raw = process.env.MATA_DECOUPE_CENTRE;
-    if (!raw) return CENTRES_PAR_DEFAUT.slice();
-    const list = raw.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
-    return list.length > 0 ? list : CENTRES_PAR_DEFAUT.slice();
-}
 
 router.get('/centres', (req, res) => {
     res.json({ success: true, centres: parseCentres() });
@@ -122,15 +115,13 @@ router.get('/sum-by-pv', async (req, res) => {
         );
 
         // La DB est schema-per-tenant: TOUTES les lignes appartiennent à ce
-        // tenant. Si point_vente est vide OU matche un nom de centre (bug
-        // historique avant le fix de pointVenteSelect), on les ré-attribue
-        // au tenant. Sinon on garde la valeur stockée.
+        // tenant. resoudrePV ré-attribue les valeurs vides ou centres-name
+        // (bug d'avant fix pointVenteSelect) au nom du tenant.
         const centresConnus = new Set(parseCentres());
         const tenantPV = tenant.name || tenant.slug || 'Inconnu';
         const sums = {};
         for (const r of rows) {
-            const pvBrut = r.point_vente || '';
-            const pv = (!pvBrut || centresConnus.has(pvBrut)) ? tenantPV : pvBrut;
+            const pv = resoudrePV(r.point_vente, centresConnus, tenantPV);
             sums[pv] = (sums[pv] || 0) + (Number(r.total) || 0);
         }
         console.log(`[sum-by-pv] date=${dateStr} → sums=${JSON.stringify(sums)} (rows=${rows.length})`);
@@ -192,22 +183,7 @@ router.post('/send', async (req, res) => {
         // ces champs (l'utilisateur Mata "Keur Bally" est associé à la clé
         // par exemple).
         const payload = {
-            produits: produits.map((p) => {
-                // Normaliser d'abord prixUnit / nombre, puis recalculer montant
-                // à partir de ces valeurs si l'appelant ne l'a pas fourni.
-                // L'ancien fallback p.price * p.quantity tombait en NaN→0
-                // pour les payloads en français (prixUnit/nombre).
-                const prixUnit = Number(p.prixUnit != null ? p.prixUnit : p.price) || 0;
-                const nombre = Number(p.nombre != null ? p.nombre : p.quantity) || 0;
-                const montant = Number(p.montant != null ? p.montant : (prixUnit * nombre)) || 0;
-                return {
-                    categorie: p.categorie || p.category || '',
-                    produit: p.produit || p.name || '',
-                    prixUnit,
-                    nombre,
-                    montant
-                };
-            }),
+            produits: produits.map(normalizeProduit),
             pointVenteExecutant: centre,
             nomClient: nom_client || '',
             numeroClient: numero_client || '',
@@ -264,15 +240,10 @@ router.post('/send', async (req, res) => {
         const cmd = (data && data.commande) || {};
         const ref = cmd.commandeRef || data.commandeRef || data.commande_ref || data.ref || null;
         // Pour le journal local on garde la PV envoyée par le POS (vérité côté
-        // maas), pas cmd.pointVente qui dépend du binding de la clé côté Mata
-        // — souvent mal renseigné et hors de notre contrôle.
-        // Filet de sécurité: si la PV envoyée est vide OU correspond à un
-        // centre (bug historique observé), on retombe sur le nom du tenant.
-        const centresConnusSet = new Set(centresAutorises);
-        let pointVenteResolu = point_vente || cmd.pointVente || '';
-        if (!pointVenteResolu || centresConnusSet.has(pointVenteResolu)) {
-            pointVenteResolu = tenant.name || tenant.slug || 'Inconnu';
-        }
+        // maas), pas cmd.pointVente qui dépend du binding de la clé côté Mata.
+        // resoudrePV applique la même logique de retombée vers tenantPV.
+        const tenantPV = tenant.name || tenant.slug || 'Inconnu';
+        const pointVenteResolu = resoudrePV(point_vente || cmd.pointVente || '', centresAutorises, tenantPV);
         const montantTotal = Number(cmd.montantTotal != null ? cmd.montantTotal : (montant_total || 0)) || 0;
         const username = req.session && req.session.user ? req.session.user.username : null;
         console.log(`[decoupe-forward] commande envoyée à ${centre} — ref=${ref || '?'} pour ${pointVenteResolu}`);
@@ -314,10 +285,7 @@ router.post('/send', async (req, res) => {
  */
 router.get('/mine', async (req, res) => {
     try {
-        // Clamp dur: parseInt accepte les négatifs, et `||` garde -5 puisque
-        // c'est truthy → on passerait limit=-5 à Sequelize. On force entre 1 et 500.
-        const parsed = parseInt(req.query.limit, 10);
-        const limit = Math.max(1, Math.min(Number.isFinite(parsed) ? parsed : 100, 500));
+        const limit = clampLimit(req.query.limit);
         const rows = await DecoupeOrderLog.findAll({
             order: [['created_at', 'DESC']],
             limit
