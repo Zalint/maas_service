@@ -1265,11 +1265,48 @@ app.delete('/api/admin/users/:username', checkAuth, checkAdmin, async (req, res)
 });
 
 // Modifier un utilisateur
+// Self-service: l'utilisateur connecté change SON propre mot de passe.
+// Ne nécessite pas le rôle admin (sinon ADMIN ne pourrait jamais le faire,
+// puisque l'endpoint admin /:username bloque la modification de ADMIN).
+// Vérifie l'ancien mot de passe avant d'accepter le nouveau.
+app.post('/api/me/change-password', checkAuth, async (req, res) => {
+    try {
+        const { oldPassword, newPassword } = req.body || {};
+        if (!oldPassword || !newPassword) {
+            return res.status(400).json({ success: false, message: 'Ancien et nouveau mot de passe requis' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ success: false, message: 'Le nouveau mot de passe doit faire au moins 6 caractères' });
+        }
+        if (oldPassword === newPassword) {
+            return res.status(400).json({ success: false, message: 'Le nouveau mot de passe doit être différent de l\'ancien' });
+        }
+
+        const sessionUser = req.session.user;
+        if (!sessionUser || !sessionUser.username) {
+            return res.status(401).json({ success: false, message: 'Session invalide' });
+        }
+
+        // Vérification de l'ancien mot de passe via le même mécanisme que le login
+        const verified = await users.verifyCredentials(sessionUser.username, oldPassword);
+        if (!verified) {
+            return res.status(403).json({ success: false, message: 'Ancien mot de passe incorrect' });
+        }
+
+        await users.updateUser(sessionUser.username, { password: newPassword });
+        console.log(`✅ Mot de passe changé pour ${sessionUser.username}`);
+        res.json({ success: true, message: 'Mot de passe mis à jour avec succès' });
+    } catch (error) {
+        console.error('Erreur changement mot de passe:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.put('/api/admin/users/:username', checkAuth, checkAdmin, async (req, res) => {
     try {
         const { username } = req.params;
         const { username: newUsername, password, role, pointVente, active } = req.body;
-        
+
         // Empêcher la modification de l'utilisateur ADMIN
         if (username === 'ADMIN') {
             return res.status(400).json({ success: false, message: 'Impossible de modifier l\'administrateur principal' });

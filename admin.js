@@ -99,6 +99,81 @@ async function checkAuth() {
     }
 }
 
+// Gestion du changement de mot de passe self-service.
+// Endpoint POST /api/me/change-password — accessible à tout user connecté
+// y compris ADMIN (l'endpoint admin /api/admin/users/:username bloque ADMIN).
+function initChangePasswordModal() {
+    const submitBtn = document.getElementById('changePasswordSubmit');
+    if (!submitBtn) return;
+
+    submitBtn.addEventListener('click', async () => {
+        const oldPassword = document.getElementById('oldPassword').value;
+        const newPassword = document.getElementById('newPassword').value;
+        const confirm = document.getElementById('newPasswordConfirm').value;
+        const errorBox = document.getElementById('changePasswordError');
+
+        const showError = (msg) => {
+            errorBox.textContent = msg;
+            errorBox.style.display = '';
+        };
+        errorBox.style.display = 'none';
+
+        if (!oldPassword || !newPassword || !confirm) {
+            return showError('Tous les champs sont requis.');
+        }
+        if (newPassword.length < 6) {
+            return showError('Le nouveau mot de passe doit faire au moins 6 caractères.');
+        }
+        if (newPassword !== confirm) {
+            return showError('La confirmation ne correspond pas au nouveau mot de passe.');
+        }
+        if (oldPassword === newPassword) {
+            return showError('Le nouveau mot de passe doit être différent de l\'ancien.');
+        }
+
+        const original = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Enregistrement...';
+        try {
+            const resp = await fetch('/api/me/change-password', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldPassword, newPassword })
+            });
+            const data = await resp.json();
+            if (!data.success) {
+                return showError(data.message || 'Échec du changement de mot de passe');
+            }
+            // Reset les champs et ferme le modal
+            document.getElementById('changePasswordForm').reset();
+            const modalEl = document.getElementById('changePasswordModal');
+            const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            modal.hide();
+            if (typeof showToast === 'function') {
+                showToast('Mot de passe mis à jour avec succès.');
+            } else {
+                alert('Mot de passe mis à jour avec succès.');
+            }
+        } catch (e) {
+            console.error('change-password:', e);
+            showError('Erreur réseau, réessaie.');
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = original;
+        }
+    });
+
+    // Reset les erreurs et champs à chaque ouverture
+    const modalEl = document.getElementById('changePasswordModal');
+    if (modalEl) {
+        modalEl.addEventListener('show.bs.modal', () => {
+            document.getElementById('changePasswordForm').reset();
+            document.getElementById('changePasswordError').style.display = 'none';
+        });
+    }
+}
+
 // Gestion de la déconnexion
 function initLogoutButton() {
     const logoutBtn = document.getElementById('logout-btn');
@@ -3631,6 +3706,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Initialiser les composants de base
     initLogoutButton();
+    initChangePasswordModal();
     initDatePickers();
     initNavigation();
     
