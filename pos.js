@@ -10403,8 +10403,43 @@ function formatNumberDecoupe(n) {
 }
 
 // ============================================================================
-// POS UI : Zoom + redimensionnement des 3 colonnes (Produits/Panier/Résumé)
+// POS UI — Mode expert : zoom + redimensionnement des 3 colonnes
+// (Produits/Panier/Résumé). Désactivé par défaut, activable via le bouton
+// dans le header (#btnExpertMode). État persisté localStorage.
 // ============================================================================
+
+const POS_EXPERT_KEY = 'pos_expert_mode';
+
+function posExpertModeIsOn() {
+    return localStorage.getItem(POS_EXPERT_KEY) === '1';
+}
+
+function posExpertModeApply(on) {
+    document.body.classList.toggle('pos-expert-mode', !!on);
+    if (on) {
+        // Réapplique zoom + colonnes mémorisés
+        posZoomApply(posZoomGet());
+        const stored = localStorage.getItem(POS_COLS_KEY);
+        if (stored) posColumnsApply(posColumnsGet());
+    } else {
+        // Coupe l'effet visuel: reset zoom à 100%, clear le scale polices,
+        // clear l'override grid-template-columns. La persistance reste pour
+        // qu'on retrouve l'état au prochain ON.
+        document.body.style.zoom = '';
+        document.documentElement.style.removeProperty('--pos-font-scale');
+        const main = document.querySelector('.pos-main');
+        if (main) main.style.gridTemplateColumns = '';
+        const label = document.getElementById('posZoomLabel');
+        if (label) label.textContent = '100%';
+    }
+}
+
+function posExpertModeToggle() {
+    const next = !posExpertModeIsOn();
+    localStorage.setItem(POS_EXPERT_KEY, next ? '1' : '0');
+    posExpertModeApply(next);
+}
+window.posExpertModeToggle = posExpertModeToggle;
 
 const POS_ZOOM_KEY = 'pos_zoom';
 const POS_ZOOM_MIN = 0.7;
@@ -10517,6 +10552,8 @@ function posInitColumnResizers() {
 
 function posInitZoomShortcuts() {
     document.addEventListener('keydown', (e) => {
+        // Raccourcis désactivés tant que le mode expert n'est pas activé.
+        if (!document.body.classList.contains('pos-expert-mode')) return;
         if (!(e.ctrlKey || e.metaKey)) return;
         // On ignore quand le focus est dans un champ texte pour ne pas gêner
         // d'éventuels raccourcis natifs (sélection, etc.)
@@ -10529,13 +10566,12 @@ function posInitZoomShortcuts() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Restaure zoom
-    posZoomApply(posZoomGet());
-    // Restaure largeurs colonnes (si l'user a déjà customisé)
-    const stored = localStorage.getItem(POS_COLS_KEY);
-    if (stored) posColumnsApply(posColumnsGet());
-    // Branche les drags + raccourcis clavier
+    // Branche les drags (handler vérifie la visibilité CSS) + raccourcis
+    // clavier (gated derrière la classe body.pos-expert-mode).
     posInitColumnResizers();
     posInitZoomShortcuts();
+    // Applique l'état mode expert mémorisé. Si OFF : la page reste à son
+    // apparence d'origine (cf. CSS scopé sous body.pos-expert-mode).
+    posExpertModeApply(posExpertModeIsOn());
 });
 

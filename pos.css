@@ -330,19 +330,28 @@ body.header-hidden-state .header-reveal-tab {
 }
 
 /* ===== Main Content ===== */
+/* Layout par défaut: 3 colonnes fixes (comportement historique). Le mode
+   expert (body.pos-expert-mode) ajoute 2 pistes de 4px pour les poignées
+   de redimensionnement. */
 .pos-main {
     display: grid;
-    /* 3 colonnes content + 2 resizers (4px chacun). Surchargé en JS si l'user
-       a déjà ajusté les largeurs (persistance localStorage pos_column_widths). */
-    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
+    grid-template-columns: 2fr 2fr 1.5fr;
     gap: 1rem;
     padding: 1rem;
     height: calc(100vh - 80px);
     overflow: hidden;
 }
+body.pos-expert-mode .pos-main {
+    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
+}
 
-/* Poignées de redimensionnement entre colonnes (desktop uniquement). */
+/* Poignées de redimensionnement entre colonnes — masquées par défaut,
+   visibles uniquement en mode expert (et jamais en mobile / modes spéciaux). */
 .pos-resizer {
+    display: none;
+}
+body.pos-expert-mode .pos-resizer {
+    display: block;
     background: transparent;
     cursor: col-resize;
     position: relative;
@@ -352,11 +361,11 @@ body.header-hidden-state .header-reveal-tab {
     margin: 0 -8px; /* élargit la zone cliquable au-delà des 4px visuels */
     z-index: 5;
 }
-.pos-resizer:hover,
-.pos-resizer.is-dragging {
+body.pos-expert-mode .pos-resizer:hover,
+body.pos-expert-mode .pos-resizer.is-dragging {
     background: rgba(220, 53, 69, 0.35);
 }
-.pos-resizer::before {
+body.pos-expert-mode .pos-resizer::before {
     content: '';
     position: absolute;
     top: 50%;
@@ -368,23 +377,24 @@ body.header-hidden-state .header-reveal-tab {
     transform: translate(-50%, -50%);
     transition: background 0.15s;
 }
-.pos-resizer:hover::before,
-.pos-resizer.is-dragging::before {
+body.pos-expert-mode .pos-resizer:hover::before,
+body.pos-expert-mode .pos-resizer.is-dragging::before {
     background: var(--primary-color);
 }
 
-/* En mobile / modes spéciaux, on cache les resizers et on rend la grille à
-   son comportement responsive d'origine (pas de drag possible). */
 @media (max-width: 768px) {
-    .pos-resizer { display: none; }
+    body.pos-expert-mode .pos-resizer { display: none; }
 }
-.pos-main.transactions-expanded .pos-resizer,
-.pos-main.order-tracking-mode .pos-resizer {
+body.pos-expert-mode .pos-main.transactions-expanded .pos-resizer,
+body.pos-expert-mode .pos-main.order-tracking-mode .pos-resizer {
     display: none;
 }
 
-/* ===== Zoom controls ===== */
+/* ===== Zoom controls (mode expert uniquement) ===== */
 .pos-zoom-controls {
+    display: none;
+}
+body.pos-expert-mode .pos-zoom-controls {
     display: inline-flex;
     align-items: center;
     gap: 2px;
@@ -419,7 +429,13 @@ body.header-hidden-state .header-reveal-tab {
     font-variant-numeric: tabular-nums;
 }
 @media (max-width: 768px) {
-    .pos-zoom-controls { display: none; }
+    body.pos-expert-mode .pos-zoom-controls { display: none; }
+}
+
+/* Bouton toggle mode expert: surligné quand actif. */
+body.pos-expert-mode #btnExpertMode {
+    background: rgba(255, 255, 255, 0.25);
+    color: white;
 }
 
 /* Transactions expanded mode */
@@ -625,11 +641,13 @@ body.header-hidden-state .header-reveal-tab {
     overflow-y: auto;
     padding: 1rem;
     display: grid;
-    /* 220px par carte: produit lisible, ~3 colonnes par défaut au lieu de 5
-       (auparavant minmax(150px, 1fr) donnait des cartes trop serrées). */
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 1rem;
     align-content: start;
+}
+/* Mode expert: cartes plus larges, lecture confortable. */
+body.pos-expert-mode .products-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .product-card {
