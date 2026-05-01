@@ -308,7 +308,8 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { processStockData };
 }
 
-// Add event listener when DOM is loaded
+// Add event listener when DOM is loaded — guard for Node/Jest where document is undefined
+if (typeof document !== 'undefined') {
 document.addEventListener('DOMContentLoaded', function() {
     const exportStockExcelBtn = document.getElementById('export-stock-excel');
     if (exportStockExcelBtn) {
@@ -329,4 +330,5 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         observer.observe(document.body, { childList: true, subtree: true });
     }
-}); 
+});
+}

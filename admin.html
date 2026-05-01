@@ -636,45 +636,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
     <!-- Modal Changer mot de passe -->
-    <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-labelledby="changePasswordModalLabel" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header bg-primary text-white">
-                    <h5 class="modal-title" id="changePasswordModalLabel">
-                        <i class="fas fa-key me-2"></i>Changer mon mot de passe
-                    </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fermer"></button>
-                </div>
-                <div class="modal-body">
-                    <form id="changePasswordForm">
-                        <div class="mb-3">
-                            <label for="oldPassword" class="form-label">Ancien mot de passe</label>
-                            <input type="password" class="form-control" id="oldPassword" required autocomplete="current-password">
-                        </div>
-                        <div class="mb-3">
-                            <label for="newPassword" class="form-label">Nouveau mot de passe</label>
-                            <input type="password" class="form-control" id="newPassword" required minlength="6" autocomplete="new-password">
-                            <small class="text-muted">Minimum 6 caractères, doit être différent de l'ancien.</small>
-                        </div>
-                        <div class="mb-3">
-                            <label for="newPasswordConfirm" class="form-label">Confirmer le nouveau mot de passe</label>
-                            <input type="password" class="form-control" id="newPasswordConfirm" required autocomplete="new-password">
-                        </div>
-                        <div id="changePasswordError" class="alert alert-danger" style="display: none;"></div>
-                    </form>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
-                    <button type="button" class="btn btn-primary" id="changePasswordSubmit">
-                        <i class="fas fa-save me-1"></i> Enregistrer
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- Modal "Changer mon mot de passe" injecté par js/change-password.js -->
 
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
+    <script src="js/change-password.js"></script>
     <script src="admin.js"></script>
 </body>
 </html> 

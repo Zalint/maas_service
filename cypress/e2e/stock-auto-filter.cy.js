@@ -43,9 +43,15 @@ describe('Filtre produits automatiques (Stock)', () => {
 
     it('elle est positionnée juste après "Masquer quantité à zéro"', function () {
         if (!stockAvailable) return this.skip();
-        cy.get('#masquer-produits-automatiques').then(($el) => {
-            const parent = $el.closest('.row, .form-group, .col-md-6');
-            expect(parent.find('#masquer-quantite-zero').length).to.be.greaterThan(0);
+        // Vérifie l'adjacence stricte: #masquer-quantite-zero doit être le frère
+        // précédent immédiat de #masquer-produits-automatiques (ou parent immédiat
+        // de chaque côté si chaque checkbox est wrappée dans un .form-check).
+        cy.get('#masquer-produits-automatiques').then(($auto) => {
+            cy.get('#masquer-quantite-zero').then(($zero) => {
+                const autoBlock = $auto.closest('.form-check, label, .form-group').get(0) || $auto.get(0);
+                const zeroBlock = $zero.closest('.form-check, label, .form-group').get(0) || $zero.get(0);
+                expect(zeroBlock.nextElementSibling, 'sibling immédiat').to.equal(autoBlock);
+            });
         });
     });
 

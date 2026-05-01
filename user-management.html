@@ -87,9 +87,15 @@
                                 <label for="newUsername">Nom d'utilisateur</label>
                             </div>
                             
-                            <div class="form-floating">
-                                <input type="password" class="form-control" id="newPassword" placeholder="Mot de passe" required>
-                                <label for="newPassword">Mot de passe</label>
+                            <div class="mb-3">
+                                <label for="newPassword" class="form-label">Mot de passe</label>
+                                <div class="input-group">
+                                    <input type="password" class="form-control" id="newPassword" placeholder="Mot de passe" required autocomplete="new-password">
+                                    <button type="button" class="btn btn-outline-secondary" id="toggleNewPassword" tabindex="-1" title="Afficher / masquer">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                </div>
+                                <small class="text-muted">Au moins 6 caractères.</small>
                             </div>
                             
                             <div class="form-floating">
@@ -188,9 +194,18 @@
                             <label for="editNewUsername">Nouveau nom d'utilisateur</label>
                         </div>
                         
-                        <div class="form-floating mb-3">
-                            <input type="password" class="form-control" id="editNewPassword" placeholder="Nouveau mot de passe">
-                            <label for="editNewPassword">Nouveau mot de passe (laisser vide pour ne pas changer)</label>
+                        <div class="mb-3">
+                            <label for="editNewPassword" class="form-label">Forcer un nouveau mot de passe (laisser vide pour ne pas changer)</label>
+                            <div class="input-group">
+                                <input type="password" class="form-control" id="editNewPassword" placeholder="Nouveau mot de passe" autocomplete="new-password">
+                                <button type="button" class="btn btn-outline-secondary" id="toggleEditNewPassword" tabindex="-1" title="Afficher / masquer">
+                                    <i class="fas fa-eye"></i>
+                                </button>
+                            </div>
+                            <div class="alert alert-info mt-2 mb-0" style="font-size:0.85rem;">
+                                <strong><i class="fas fa-info-circle me-1"></i>Règles :</strong>
+                                Au moins 6 caractères. L'utilisateur devra l'utiliser au prochain login (l'ancien sera invalidé).
+                            </div>
                         </div>
                         
                         <div class="form-floating mb-3">

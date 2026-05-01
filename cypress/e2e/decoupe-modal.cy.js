@@ -98,8 +98,11 @@ describe('Centre de Découpe — modal POS', () => {
         cy.get('#decoupeNomClient').type('Client Test');
         cy.get('#decoupeNumClient').type('770000000');
         cy.contains('button', 'Envoyer au Centre').click();
-        cy.contains(/centre de découpe/i, { matchCase: false, timeout: 5000 })
-            .should('be.visible');
+        // Cible le toast warning explicitement (pas le titre du modal qui contient
+        // aussi "Centre de Découpe"). showToast() crée un .toast.text-bg-warning.
+        cy.get('.toast.text-bg-warning', { timeout: 5000 })
+            .should('be.visible')
+            .and('contain.text', 'Sélectionne un centre de découpe.');
     });
 
     it('Envoyer sans nom client → erreur', function () {

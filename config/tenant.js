@@ -23,7 +23,22 @@ const brandKey = process.env.TENANT_BRAND_KEY || 'KEUR_BALLI';
 // db/index.js sets search_path to this schema on every connection so all
 // queries (Sequelize and raw SQL) resolve here. scripts/init-tenant-db.js
 // creates the schema if needed before running sequelize.sync().
-const schema = process.env.DB_SCHEMA || 'public';
+// Whitelist d'identifiants Postgres sûrs (pas d'espaces, pas de quotes,
+// pas de point-virgule). Toute valeur non conforme retombe sur 'public'
+// avec un warning. Identifiant SQL valide: lettre/_ suivi de
+// lettres/chiffres/_, longueur max 63 (limite Postgres).
+function sanitizeSchema(raw) {
+    if (!raw || typeof raw !== 'string') return 'public';
+    const trimmed = raw.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(trimmed)) {
+        console.warn(
+            `[tenant] ⚠️  DB_SCHEMA="${raw}" rejeté (identifiant invalide) — fallback sur "public"`
+        );
+        return 'public';
+    }
+    return trimmed;
+}
+const schema = sanitizeSchema(process.env.DB_SCHEMA);
 
 const tenant = Object.freeze({ slug, name, brandKey, schema });
 

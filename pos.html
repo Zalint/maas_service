@@ -93,6 +93,9 @@
                         <button class="admin-menu-item" onclick="afficherRecapitulatifJournee(); toggleAdminMenu();">
                             <i class="fas fa-file-invoice"></i> Récapitulatif du jour
                         </button>
+                        <button class="admin-menu-item" onclick="window.openChangePasswordModal && window.openChangePasswordModal(); toggleAdminMenu();">
+                            <i class="fas fa-key"></i> Changer mot de passe
+                        </button>
                     </div>
                 </div>
 
@@ -829,6 +832,7 @@
     <script src="js/inventaire.js?v=20260114a"></script>
     <script src="pos-modal-details.js?v=20260110bictorys"></script>
     <script src="pos.js?v=20260222statuts10"></script>
+    <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
     <!-- PWA Service Worker Registration -->

@@ -236,7 +236,8 @@ describe('update-schema idempotent', () => {
     test('deux exécutions consécutives ne lèvent pas d\'erreur', async () => {
         await updateSchema();
         // Pas de throw
-        await expect(updateSchema()).resolves.not.toThrow();
+        // updateSchema doit résoudre sans throw. Si elle rejette, ce await fait échouer le test.
+await expect(updateSchema()).resolves.toBe(true);
     });
 
     test('le seed inventaire_categories n\'écrase pas les valeurs admin', async () => {
@@ -359,7 +360,8 @@ describe('update-schema sur DB pré-existante (cas tenant prod)', () => {
             `CREATE INDEX idx_decoupe_log_point_vente ON decoupe_order_logs(point_vente)`
         );
         // updateSchema ne doit PAS lever
-        await expect(updateSchema()).resolves.not.toThrow();
+        // updateSchema doit résoudre sans throw. Si elle rejette, ce await fait échouer le test.
+await expect(updateSchema()).resolves.toBe(true);
     });
 });
 
