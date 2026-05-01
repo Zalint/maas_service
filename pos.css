@@ -332,11 +332,94 @@ body.header-hidden-state .header-reveal-tab {
 /* ===== Main Content ===== */
 .pos-main {
     display: grid;
-    grid-template-columns: 2fr 2fr 1.5fr;
+    /* 3 colonnes content + 2 resizers (4px chacun). Surchargé en JS si l'user
+       a déjà ajusté les largeurs (persistance localStorage pos_column_widths). */
+    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
     gap: 1rem;
     padding: 1rem;
     height: calc(100vh - 80px);
     overflow: hidden;
+}
+
+/* Poignées de redimensionnement entre colonnes (desktop uniquement). */
+.pos-resizer {
+    background: transparent;
+    cursor: col-resize;
+    position: relative;
+    transition: background 0.15s;
+    user-select: none;
+    align-self: stretch;
+    margin: 0 -8px; /* élargit la zone cliquable au-delà des 4px visuels */
+    z-index: 5;
+}
+.pos-resizer:hover,
+.pos-resizer.is-dragging {
+    background: rgba(220, 53, 69, 0.35);
+}
+.pos-resizer::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 40px;
+    background: #cbd5e1;
+    border-radius: 2px;
+    transform: translate(-50%, -50%);
+    transition: background 0.15s;
+}
+.pos-resizer:hover::before,
+.pos-resizer.is-dragging::before {
+    background: var(--primary-color);
+}
+
+/* En mobile / modes spéciaux, on cache les resizers et on rend la grille à
+   son comportement responsive d'origine (pas de drag possible). */
+@media (max-width: 768px) {
+    .pos-resizer { display: none; }
+}
+.pos-main.transactions-expanded .pos-resizer,
+.pos-main.order-tracking-mode .pos-resizer {
+    display: none;
+}
+
+/* ===== Zoom controls ===== */
+.pos-zoom-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 2px;
+    margin-right: 4px;
+}
+.pos-zoom-controls .btn-zoom {
+    background: transparent;
+    color: white;
+    border: none;
+    width: 28px;
+    height: 28px;
+    line-height: 1;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.pos-zoom-controls .btn-zoom:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+.pos-zoom-controls .btn-zoom-reset {
+    width: auto;
+    min-width: 44px;
+    padding: 0 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+@media (max-width: 768px) {
+    .pos-zoom-controls { display: none; }
 }
 
 /* Transactions expanded mode */

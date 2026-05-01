@@ -71,6 +71,12 @@
                 <button id="refreshPWABtn" class="btn-icon btn-icon-only" onclick="forceRefreshPWA()" title="Vider cache et recharger">
                     <i class="fas fa-sync-alt"></i>
                 </button>
+                <!-- Zoom controls -->
+                <div class="pos-zoom-controls" role="group" aria-label="Zoom POS">
+                    <button class="btn-icon btn-zoom" onclick="posZoomDecrease()" title="Réduire (Ctrl+-)" aria-label="Zoom out">−</button>
+                    <button class="btn-zoom btn-zoom-reset" onclick="posZoomReset()" title="Réinitialiser à 100% (Ctrl+0)" aria-label="Zoom reset" id="posZoomLabel">100%</button>
+                    <button class="btn-icon btn-zoom" onclick="posZoomIncrease()" title="Agrandir (Ctrl+=)" aria-label="Zoom in">+</button>
+                </div>
                 <button id="installPWABtn" class="btn-icon btn-icon-only" onclick="installPWA()" title="Installer l'application" style="display: none;">
                     <i class="fas fa-download"></i>
                 </button>
@@ -96,6 +102,9 @@
                         <button class="admin-menu-item" onclick="window.openChangePasswordModal && window.openChangePasswordModal(); toggleAdminMenu();">
                             <i class="fas fa-key"></i> Changer mot de passe
                         </button>
+                        <button class="admin-menu-item" onclick="posLayoutReset(); toggleAdminMenu();">
+                            <i class="fas fa-columns"></i> Réinitialiser le layout
+                        </button>
                     </div>
                 </div>
 
@@ -116,7 +125,7 @@
         <!-- Main Content -->
         <div class="pos-main">
             <!-- Left Panel - Products -->
-            <div class="pos-products">
+            <div class="pos-products" data-pos-col="0">
                 <div class="products-header" style="display: flex; align-items: center; justify-content: space-between;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <i class="fas fa-box"></i>
@@ -156,8 +165,11 @@
                 </div>
             </div>
 
+            <!-- Resizer between Produits and Panier -->
+            <div class="pos-resizer" data-pos-resizer="0" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner"></div>
+
             <!-- Center Panel - Cart -->
-            <div class="pos-cart">
+            <div class="pos-cart" data-pos-col="1">
                 <div class="cart-header">
                     <div>
                         <i class="fas fa-shopping-cart"></i>
@@ -253,8 +265,11 @@
                 </div>
             </div>
 
+            <!-- Resizer between Panier and Résumé -->
+            <div class="pos-resizer" data-pos-resizer="1" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner"></div>
+
             <!-- Right Panel - Summary -->
-            <div class="pos-summary">
+            <div class="pos-summary" data-pos-col="2">
                 <div class="summary-header">
                     <i class="fas fa-chart-line"></i>
                     <h2>Résumé du jour</h2>

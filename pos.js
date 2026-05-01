@@ -10402,3 +10402,136 @@ function formatNumberDecoupe(n) {
     return num.toLocaleString('fr-FR');
 }
 
+// ============================================================================
+// POS UI : Zoom + redimensionnement des 3 colonnes (Produits/Panier/Résumé)
+// ============================================================================
+
+const POS_ZOOM_KEY = 'pos_zoom';
+const POS_ZOOM_MIN = 0.7;
+const POS_ZOOM_MAX = 1.5;
+const POS_ZOOM_STEP = 0.1;
+const POS_ZOOM_DEFAULT = 1.0;
+
+const POS_COLS_KEY = 'pos_column_widths';
+const POS_COLS_DEFAULT = [2, 2, 1.5]; // fr units, doit matcher pos.css .pos-main
+const POS_RESIZER_PX = 4;
+const POS_COL_MIN_PX = 200;
+
+function posZoomGet() {
+    const v = parseFloat(localStorage.getItem(POS_ZOOM_KEY));
+    return Number.isFinite(v) && v >= POS_ZOOM_MIN && v <= POS_ZOOM_MAX ? v : POS_ZOOM_DEFAULT;
+}
+
+function posZoomApply(value) {
+    const v = Math.min(POS_ZOOM_MAX, Math.max(POS_ZOOM_MIN, Math.round(value * 10) / 10));
+    document.body.style.zoom = v;
+    localStorage.setItem(POS_ZOOM_KEY, String(v));
+    const label = document.getElementById('posZoomLabel');
+    if (label) label.textContent = Math.round(v * 100) + '%';
+    return v;
+}
+
+function posZoomIncrease() { posZoomApply(posZoomGet() + POS_ZOOM_STEP); }
+function posZoomDecrease() { posZoomApply(posZoomGet() - POS_ZOOM_STEP); }
+function posZoomReset()    { posZoomApply(POS_ZOOM_DEFAULT); }
+
+window.posZoomIncrease = posZoomIncrease;
+window.posZoomDecrease = posZoomDecrease;
+window.posZoomReset    = posZoomReset;
+
+function posColumnsGet() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(POS_COLS_KEY));
+        if (Array.isArray(raw) && raw.length === 3 && raw.every(n => Number.isFinite(n) && n > 0)) {
+            return raw;
+        }
+    } catch (_) { /* ignore */ }
+    return POS_COLS_DEFAULT.slice();
+}
+
+function posColumnsApply(widths) {
+    const main = document.querySelector('.pos-main');
+    if (!main) return;
+    // 5 pistes : col1, resizer, col2, resizer, col3
+    main.style.gridTemplateColumns = `${widths[0]}fr ${POS_RESIZER_PX}px ${widths[1]}fr ${POS_RESIZER_PX}px ${widths[2]}fr`;
+    localStorage.setItem(POS_COLS_KEY, JSON.stringify(widths));
+}
+
+function posLayoutReset() {
+    const main = document.querySelector('.pos-main');
+    if (main) main.style.gridTemplateColumns = '';
+    localStorage.removeItem(POS_COLS_KEY);
+}
+window.posLayoutReset = posLayoutReset;
+
+function posInitColumnResizers() {
+    const main = document.querySelector('.pos-main');
+    if (!main) return;
+    const resizers = main.querySelectorAll('.pos-resizer');
+    if (resizers.length === 0) return;
+
+    resizers.forEach(resizer => {
+        resizer.addEventListener('mousedown', (e) => {
+            // Drag désactivé en mobile ou en mode spécial (resizers cachés via CSS).
+            if (window.getComputedStyle(resizer).display === 'none') return;
+            e.preventDefault();
+            const idx = parseInt(resizer.dataset.posResizer, 10); // 0 = entre col0/col1, 1 = entre col1/col2
+            const cols = main.querySelectorAll('[data-pos-col]');
+            if (cols.length !== 3) return;
+
+            const startX = e.clientX;
+            const startWidths = Array.from(cols).map(c => c.getBoundingClientRect().width);
+
+            resizer.classList.add('is-dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+
+            const onMove = (ev) => {
+                const dx = ev.clientX - startX;
+                const next = startWidths.slice();
+                next[idx]     = startWidths[idx]     + dx;
+                next[idx + 1] = startWidths[idx + 1] - dx;
+                if (next[idx] < POS_COL_MIN_PX || next[idx + 1] < POS_COL_MIN_PX) return;
+                // Convertit en fr (proportions). La 3e colonne garde sa fraction
+                // courante quand on bouge la 1ère poignée, et inversement.
+                const total = next.reduce((a, b) => a + b, 0);
+                const frs = next.map(px => +(px / total * 5).toFixed(3));
+                posColumnsApply(frs);
+            };
+            const onUp = () => {
+                resizer.classList.remove('is-dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    });
+}
+
+function posInitZoomShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        // On ignore quand le focus est dans un champ texte pour ne pas gêner
+        // d'éventuels raccourcis natifs (sélection, etc.)
+        const tag = (document.activeElement && document.activeElement.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        if (e.key === '=' || e.key === '+') { e.preventDefault(); posZoomIncrease(); }
+        else if (e.key === '-')             { e.preventDefault(); posZoomDecrease(); }
+        else if (e.key === '0')             { e.preventDefault(); posZoomReset(); }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Restaure zoom
+    posZoomApply(posZoomGet());
+    // Restaure largeurs colonnes (si l'user a déjà customisé)
+    const stored = localStorage.getItem(POS_COLS_KEY);
+    if (stored) posColumnsApply(posColumnsGet());
+    // Branche les drags + raccourcis clavier
+    posInitColumnResizers();
+    posInitZoomShortcuts();
+});
+
