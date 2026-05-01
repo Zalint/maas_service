@@ -371,7 +371,13 @@ async function saveEditUser() {
         alert('Veuillez remplir tous les champs obligatoires et sélectionner au moins un point de vente');
         return;
     }
-    
+
+    // Si admin a saisi un nouveau mot de passe → règle minimum 6 caractères
+    if (newPassword && newPassword.length < 6) {
+        alert('Le mot de passe forcé doit faire au moins 6 caractères.');
+        return;
+    }
+
     // Vérifier que le nouveau nom d'utilisateur n'existe pas déjà (sauf pour l'utilisateur actuel)
     if (newUsername !== originalUsername && users.some(u => u.username === newUsername)) {
         alert('Ce nom d\'utilisateur existe déjà');
@@ -576,5 +582,23 @@ document.addEventListener('DOMContentLoaded', async function() {
         document.getElementById('saveEditUser').addEventListener('click', function() {
             saveEditUser();
         });
+
+        // Boutons œil pour révéler/masquer les mots de passe (création + édition)
+        function wirePwdToggle(toggleBtnId, inputId) {
+            const btn = document.getElementById(toggleBtnId);
+            const input = document.getElementById(inputId);
+            if (!btn || !input) return;
+            btn.addEventListener('click', function () {
+                const isPwd = input.type === 'password';
+                input.type = isPwd ? 'text' : 'password';
+                const icon = btn.querySelector('i');
+                if (icon) {
+                    icon.classList.toggle('fa-eye', !isPwd);
+                    icon.classList.toggle('fa-eye-slash', isPwd);
+                }
+            });
+        }
+        wirePwdToggle('toggleNewPassword', 'newPassword');
+        wirePwdToggle('toggleEditNewPassword', 'editNewPassword');
     }
 }); 

@@ -64,10 +64,11 @@ function resoudrePV(pvBrut, centresAutorises, tenantPV) {
     const centres = centresAutorises instanceof Set
         ? centresAutorises
         : new Set(centresAutorises || []);
-    if (!pvBrut || centres.has(pvBrut)) {
+    const pvNormalized = typeof pvBrut === 'string' ? pvBrut.trim() : '';
+    if (!pvNormalized || centres.has(pvNormalized)) {
         return tenantPV || 'Inconnu';
     }
-    return pvBrut;
+    return pvNormalized;
 }
 
 module.exports = {

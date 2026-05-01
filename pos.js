@@ -788,6 +788,7 @@ function afficherCategories() {
             // Désélectionner Favoris → retomber sur Boucherie (filtre par défaut)
             const defaultBtn = container.querySelector('[data-group="Boucherie"]');
             if (defaultBtn) defaultBtn.classList.add('active');
+            currentCategory = 'Boucherie';
         }
         afficherProduits(currentCategory);
     };

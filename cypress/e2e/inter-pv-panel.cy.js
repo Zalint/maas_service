@@ -150,9 +150,8 @@ describe('Panneau Commandes inter-PV (Résumé du jour)', () => {
         cy.get('#summaryDate').then(($input) => {
             if ($input.length) {
                 cy.wrap($input).type('2026-01-01');
-                cy.wait(500);
-                // Le rafraîchirBadgeInterPV se déclenche aussi
-                // On valide juste que le panel est encore visible
+                // Attendre explicitement le reload déclenché par le change de date
+                cy.wait('@reload').its('response.statusCode').should('eq', 200);
                 cy.get('#interPVPanel').should('be.visible');
             }
         });

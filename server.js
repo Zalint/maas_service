@@ -929,6 +929,7 @@ app.post('/api/login', async (req, res) => {
             username: user.username,
             role: user.role,
             pointVente: user.pointVente,
+            default_screen: user.default_screen || null,
             isAdmin: user.role === 'admin',
             isLecteur: user.role === 'lecteur',
             isSupervisor: ['superutilisateur', 'superviseur'].includes(user.role),
@@ -1298,7 +1299,7 @@ app.post('/api/me/change-password', checkAuth, async (req, res) => {
         res.json({ success: true, message: 'Mot de passe mis à jour avec succès' });
     } catch (error) {
         console.error('Erreur changement mot de passe:', error);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ success: false, message: 'Erreur interne du serveur' });
     }
 });
 
@@ -2032,34 +2033,45 @@ app.get('/api/dernieres-ventes', checkAuth, checkReadAccess, async (req, res) =>
 
 // Route pour la redirection après connexion
 app.get('/redirect', async (req, res) => {
-    console.log('Redirection demandée, session:', req.session);
-    if (req.session.user) {
-        if (req.session.user.username === 'ADMIN') {
-            return res.sendFile(path.join(__dirname, 'user-management.html'));
-        }
-        if (req.session.user.isSuperAdmin) {
-            return res.sendFile(path.join(__dirname, 'admin.html'));
-        }
-
-        // Lire default_screen depuis la BDD (pas la session, qui peut être ancienne)
-        try {
-            const allowedScreens = ['index.html', 'pos.html', 'Realtime.html', 'auditClient.html'];
-            const dbUser = await User.findOne({ where: { username: req.session.user.username }, attributes: ['default_screen'] });
-            const screen = dbUser && dbUser.default_screen;
-            if (screen && allowedScreens.includes(screen)) {
-                // Mettre à jour la session pour les prochains accès
-                req.session.user.default_screen = screen;
-                return res.sendFile(path.join(__dirname, screen));
-            }
-        } catch (e) {
-            console.error('Erreur lecture default_screen:', e.message);
-        }
-
-        return res.sendFile(path.join(__dirname, 'index.html'));
-    } else {
-        console.log('Pas de session utilisateur, redirection vers login');
-        res.redirect('/login.html');
+    if (!req.session.user) {
+        console.log('[/redirect] pas de session, login');
+        return res.redirect('/login.html');
     }
+
+    const allowedScreens = ['index.html', 'pos.html', 'Realtime.html', 'auditClient.html', 'admin.html', 'user-management.html'];
+
+    // Lire la valeur la plus fraîche depuis la BDD (en cas de changement
+    // par admin pendant que l'utilisateur a une session active).
+    let screen = null;
+    try {
+        const dbUser = await User.findOne({
+            where: { username: req.session.user.username },
+            attributes: ['default_screen']
+        });
+        screen = dbUser && dbUser.default_screen ? dbUser.default_screen : null;
+        // Mettre la session au goût du jour pour les autres consommateurs
+        req.session.user.default_screen = screen;
+    } catch (e) {
+        console.error('[/redirect] erreur lecture default_screen:', e.message);
+        screen = req.session.user.default_screen || null;
+    }
+
+    console.log(`[/redirect] user=${req.session.user.username} role=${req.session.user.role} default_screen=${screen || '(none)'}`);
+
+    // Si l'admin a explicitement défini un écran par défaut → on respecte SON choix
+    // (y compris pour les comptes "spéciaux" comme ADMIN ou role=admin).
+    if (screen && allowedScreens.includes(screen)) {
+        return res.sendFile(path.join(__dirname, screen));
+    }
+
+    // Pas de default_screen → fallbacks historiques par rôle
+    if (req.session.user.username === 'ADMIN') {
+        return res.sendFile(path.join(__dirname, 'user-management.html'));
+    }
+    if (req.session.user.isSuperAdmin) {
+        return res.sendFile(path.join(__dirname, 'admin.html'));
+    }
+    return res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Mettre à jour l'écran par défaut d'un utilisateur
