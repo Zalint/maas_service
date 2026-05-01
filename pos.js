@@ -10403,54 +10403,29 @@ function formatNumberDecoupe(n) {
 }
 
 // ============================================================================
-// POS UI — Mode expert : zoom + redimensionnement des 3 colonnes
-// (Produits/Panier/Résumé). Désactivé par défaut, activable via le bouton
-// dans le header (#btnExpertMode). État persisté localStorage.
+// POS UI — Mode expert : zoom + redimensionnement des 3 colonnes.
+// OFF par défaut. Quand OFF, AUCUN listener global n'est actif (pas de
+// keydown sur document, pas de mousedown sur les resizers — leur display
+// est none côté CSS). Aucune interaction avec fetch / auth / cookies.
 // ============================================================================
 
 const POS_EXPERT_KEY = 'pos_expert_mode';
+const POS_ZOOM_KEY   = 'pos_zoom';
+const POS_ZOOM_MIN   = 0.7;
+const POS_ZOOM_MAX   = 1.5;
+const POS_ZOOM_STEP  = 0.1;
+const POS_ZOOM_DEFAULT = 1.0;
+const POS_COLS_KEY   = 'pos_column_widths';
+const POS_COLS_DEFAULT = [2, 2, 1.5]; // fr units, doit matcher pos.css .pos-main
+const POS_RESIZER_PX = 4;
+const POS_COL_MIN_PX = 200;
+
+// Référence sur le handler keydown pour pouvoir le détacher proprement.
+let __posExpertKeydownHandler = null;
 
 function posExpertModeIsOn() {
     return localStorage.getItem(POS_EXPERT_KEY) === '1';
 }
-
-function posExpertModeApply(on) {
-    document.body.classList.toggle('pos-expert-mode', !!on);
-    if (on) {
-        // Réapplique zoom + colonnes mémorisés
-        posZoomApply(posZoomGet());
-        const stored = localStorage.getItem(POS_COLS_KEY);
-        if (stored) posColumnsApply(posColumnsGet());
-    } else {
-        // Coupe l'effet visuel: reset zoom à 100%, clear le scale polices,
-        // clear l'override grid-template-columns. La persistance reste pour
-        // qu'on retrouve l'état au prochain ON.
-        document.body.style.zoom = '';
-        document.documentElement.style.removeProperty('--pos-font-scale');
-        const main = document.querySelector('.pos-main');
-        if (main) main.style.gridTemplateColumns = '';
-        const label = document.getElementById('posZoomLabel');
-        if (label) label.textContent = '100%';
-    }
-}
-
-function posExpertModeToggle() {
-    const next = !posExpertModeIsOn();
-    localStorage.setItem(POS_EXPERT_KEY, next ? '1' : '0');
-    posExpertModeApply(next);
-}
-window.posExpertModeToggle = posExpertModeToggle;
-
-const POS_ZOOM_KEY = 'pos_zoom';
-const POS_ZOOM_MIN = 0.7;
-const POS_ZOOM_MAX = 1.5;
-const POS_ZOOM_STEP = 0.1;
-const POS_ZOOM_DEFAULT = 1.0;
-
-const POS_COLS_KEY = 'pos_column_widths';
-const POS_COLS_DEFAULT = [2, 2, 1.5]; // fr units, doit matcher pos.css .pos-main
-const POS_RESIZER_PX = 4;
-const POS_COL_MIN_PX = 200;
 
 function posZoomGet() {
     const v = parseFloat(localStorage.getItem(POS_ZOOM_KEY));
@@ -10460,9 +10435,6 @@ function posZoomGet() {
 function posZoomApply(value) {
     const v = Math.min(POS_ZOOM_MAX, Math.max(POS_ZOOM_MIN, Math.round(value * 10) / 10));
     document.body.style.zoom = v;
-    // Variable utilisée par les éléments clés (cartes produit, lignes panier,
-    // totaux) pour amplifier visuellement l'effet du zoom sur les polices.
-    // Compose multiplicativement avec body.zoom.
     document.documentElement.style.setProperty('--pos-font-scale', String(v));
     localStorage.setItem(POS_ZOOM_KEY, String(v));
     const label = document.getElementById('posZoomLabel');
@@ -10473,7 +10445,6 @@ function posZoomApply(value) {
 function posZoomIncrease() { posZoomApply(posZoomGet() + POS_ZOOM_STEP); }
 function posZoomDecrease() { posZoomApply(posZoomGet() - POS_ZOOM_STEP); }
 function posZoomReset()    { posZoomApply(POS_ZOOM_DEFAULT); }
-
 window.posZoomIncrease = posZoomIncrease;
 window.posZoomDecrease = posZoomDecrease;
 window.posZoomReset    = posZoomReset;
@@ -10491,7 +10462,6 @@ function posColumnsGet() {
 function posColumnsApply(widths) {
     const main = document.querySelector('.pos-main');
     if (!main) return;
-    // 5 pistes : col1, resizer, col2, resizer, col3
     main.style.gridTemplateColumns = `${widths[0]}fr ${POS_RESIZER_PX}px ${widths[1]}fr ${POS_RESIZER_PX}px ${widths[2]}fr`;
     localStorage.setItem(POS_COLS_KEY, JSON.stringify(widths));
 }
@@ -10503,6 +10473,10 @@ function posLayoutReset() {
 }
 window.posLayoutReset = posLayoutReset;
 
+// Drag handlers attachés une seule fois au DOMContentLoaded. Le CSS masque
+// les resizers (display:none) tant que le mode expert est OFF, donc le
+// mousedown ne peut pas se déclencher hors mode. Double sécurité: garde
+// runtime sur display=none ET sur la classe body.pos-expert-mode.
 function posInitColumnResizers() {
     const main = document.querySelector('.pos-main');
     if (!main) return;
@@ -10511,10 +10485,12 @@ function posInitColumnResizers() {
 
     resizers.forEach(resizer => {
         resizer.addEventListener('mousedown', (e) => {
-            // Drag désactivé en mobile ou en mode spécial (resizers cachés via CSS).
+            if (!document.body.classList.contains('pos-expert-mode')) return;
             if (window.getComputedStyle(resizer).display === 'none') return;
+            // Bouton gauche uniquement (évite d'interférer avec menu contextuel).
+            if (e.button !== 0) return;
             e.preventDefault();
-            const idx = parseInt(resizer.dataset.posResizer, 10); // 0 = entre col0/col1, 1 = entre col1/col2
+            const idx = parseInt(resizer.dataset.posResizer, 10);
             const cols = main.querySelectorAll('[data-pos-col]');
             if (cols.length !== 3) return;
 
@@ -10522,6 +10498,8 @@ function posInitColumnResizers() {
             const startWidths = Array.from(cols).map(c => c.getBoundingClientRect().width);
 
             resizer.classList.add('is-dragging');
+            const prevCursor = document.body.style.cursor;
+            const prevSelect = document.body.style.userSelect;
             document.body.style.cursor = 'col-resize';
             document.body.style.userSelect = 'none';
 
@@ -10531,16 +10509,14 @@ function posInitColumnResizers() {
                 next[idx]     = startWidths[idx]     + dx;
                 next[idx + 1] = startWidths[idx + 1] - dx;
                 if (next[idx] < POS_COL_MIN_PX || next[idx + 1] < POS_COL_MIN_PX) return;
-                // Convertit en fr (proportions). La 3e colonne garde sa fraction
-                // courante quand on bouge la 1ère poignée, et inversement.
                 const total = next.reduce((a, b) => a + b, 0);
                 const frs = next.map(px => +(px / total * 5).toFixed(3));
                 posColumnsApply(frs);
             };
             const onUp = () => {
                 resizer.classList.remove('is-dragging');
-                document.body.style.cursor = '';
-                document.body.style.userSelect = '';
+                document.body.style.cursor = prevCursor;
+                document.body.style.userSelect = prevSelect;
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
             };
@@ -10550,28 +10526,52 @@ function posInitColumnResizers() {
     });
 }
 
-function posInitZoomShortcuts() {
-    document.addEventListener('keydown', (e) => {
-        // Raccourcis désactivés tant que le mode expert n'est pas activé.
-        if (!document.body.classList.contains('pos-expert-mode')) return;
-        if (!(e.ctrlKey || e.metaKey)) return;
-        // On ignore quand le focus est dans un champ texte pour ne pas gêner
-        // d'éventuels raccourcis natifs (sélection, etc.)
-        const tag = (document.activeElement && document.activeElement.tagName) || '';
-        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-        if (e.key === '=' || e.key === '+') { e.preventDefault(); posZoomIncrease(); }
-        else if (e.key === '-')             { e.preventDefault(); posZoomDecrease(); }
-        else if (e.key === '0')             { e.preventDefault(); posZoomReset(); }
-    });
+// Handler keydown attaché UNIQUEMENT en mode expert. Ne preventDefault que
+// pour les 4 raccourcis reconnus (Ctrl+= / Ctrl++ / Ctrl+- / Ctrl+0). Tout
+// le reste, y compris Enter/Tab dans un formulaire, est laissé intact.
+function posExpertKeydown(e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); posZoomIncrease(); }
+    else if (e.key === '-')             { e.preventDefault(); posZoomDecrease(); }
+    else if (e.key === '0')             { e.preventDefault(); posZoomReset(); }
 }
 
+function posExpertModeApply(on) {
+    document.body.classList.toggle('pos-expert-mode', !!on);
+    if (on) {
+        posZoomApply(posZoomGet());
+        const stored = localStorage.getItem(POS_COLS_KEY);
+        if (stored) posColumnsApply(posColumnsGet());
+        if (!__posExpertKeydownHandler) {
+            __posExpertKeydownHandler = posExpertKeydown;
+            document.addEventListener('keydown', __posExpertKeydownHandler);
+        }
+    } else {
+        // Coupe l'effet visuel sans effacer la persistance (zoom/colonnes
+        // sont restaurés au prochain ON).
+        document.body.style.zoom = '';
+        document.documentElement.style.removeProperty('--pos-font-scale');
+        const main = document.querySelector('.pos-main');
+        if (main) main.style.gridTemplateColumns = '';
+        const label = document.getElementById('posZoomLabel');
+        if (label) label.textContent = '100%';
+        if (__posExpertKeydownHandler) {
+            document.removeEventListener('keydown', __posExpertKeydownHandler);
+            __posExpertKeydownHandler = null;
+        }
+    }
+}
+
+function posExpertModeToggle() {
+    const next = !posExpertModeIsOn();
+    localStorage.setItem(POS_EXPERT_KEY, next ? '1' : '0');
+    posExpertModeApply(next);
+}
+window.posExpertModeToggle = posExpertModeToggle;
+
 document.addEventListener('DOMContentLoaded', () => {
-    // Branche les drags (handler vérifie la visibilité CSS) + raccourcis
-    // clavier (gated derrière la classe body.pos-expert-mode).
     posInitColumnResizers();
-    posInitZoomShortcuts();
-    // Applique l'état mode expert mémorisé. Si OFF : la page reste à son
-    // apparence d'origine (cf. CSS scopé sous body.pos-expert-mode).
     posExpertModeApply(posExpertModeIsOn());
 });
-

@@ -330,9 +330,6 @@ body.header-hidden-state .header-reveal-tab {
 }
 
 /* ===== Main Content ===== */
-/* Layout par défaut: 3 colonnes fixes (comportement historique). Le mode
-   expert (body.pos-expert-mode) ajoute 2 pistes de 4px pour les poignées
-   de redimensionnement. */
 .pos-main {
     display: grid;
     grid-template-columns: 2fr 2fr 1.5fr;
@@ -340,117 +337,6 @@ body.header-hidden-state .header-reveal-tab {
     padding: 1rem;
     height: calc(100vh - 80px);
     overflow: hidden;
-}
-body.pos-expert-mode .pos-main {
-    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
-}
-
-/* Poignées de redimensionnement entre colonnes — masquées par défaut,
-   visibles uniquement en mode expert (et jamais en mobile / modes spéciaux). */
-.pos-resizer {
-    display: none;
-}
-body.pos-expert-mode .pos-resizer {
-    display: block;
-    background: transparent;
-    cursor: col-resize;
-    position: relative;
-    transition: background 0.15s;
-    user-select: none;
-    align-self: stretch;
-    margin: 0 -8px; /* élargit la zone cliquable au-delà des 4px visuels */
-    z-index: 5;
-}
-body.pos-expert-mode .pos-resizer:hover,
-body.pos-expert-mode .pos-resizer.is-dragging {
-    background: rgba(220, 53, 69, 0.35);
-}
-body.pos-expert-mode .pos-resizer::before {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 2px;
-    height: 40px;
-    background: #cbd5e1;
-    border-radius: 2px;
-    transform: translate(-50%, -50%);
-    transition: background 0.15s;
-}
-body.pos-expert-mode .pos-resizer:hover::before,
-body.pos-expert-mode .pos-resizer.is-dragging::before {
-    background: var(--primary-color);
-}
-
-@media (max-width: 768px) {
-    body.pos-expert-mode .pos-resizer { display: none; }
-}
-body.pos-expert-mode .pos-main.transactions-expanded .pos-resizer,
-body.pos-expert-mode .pos-main.order-tracking-mode .pos-resizer {
-    display: none;
-}
-
-/* ===== Zoom controls (mode expert uniquement) ===== */
-.pos-zoom-controls {
-    display: none;
-}
-body.pos-expert-mode .pos-zoom-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: 6px;
-    padding: 2px;
-    margin-right: 4px;
-}
-.pos-zoom-controls .btn-zoom {
-    background: transparent;
-    color: white;
-    border: none;
-    width: 28px;
-    height: 28px;
-    line-height: 1;
-    font-weight: 700;
-    cursor: pointer;
-    border-radius: 4px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-.pos-zoom-controls .btn-zoom:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-.pos-zoom-controls .btn-zoom-reset {
-    width: auto;
-    min-width: 44px;
-    padding: 0 6px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-@media (max-width: 768px) {
-    body.pos-expert-mode .pos-zoom-controls { display: none; }
-}
-
-/* Bouton toggle mode expert: même gabarit visuel que .btn-dashboard
-   (icône seule, transparente, hover en scale). Surligné quand actif. */
-.header-left #btnExpertMode {
-    font-size: 1.5rem !important;
-    padding: 0 !important;
-    background: transparent !important;
-    border: none !important;
-    color: white !important;
-    display: inline-flex !important;
-    align-items: center;
-    transition: all 0.2s ease;
-}
-.header-left #btnExpertMode:hover {
-    background: transparent !important;
-    transform: scale(1.1);
-    opacity: 0.9;
-}
-body.pos-expert-mode #btnExpertMode {
-    color: #ffd54f !important; /* ambre, signal "mode actif" sans fond */
 }
 
 /* Transactions expanded mode */
@@ -660,10 +546,6 @@ body.pos-expert-mode #btnExpertMode {
     gap: 1rem;
     align-content: start;
 }
-/* Mode expert: cartes plus larges, lecture confortable. */
-body.pos-expert-mode .products-grid {
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-}
 
 .product-card {
     background: var(--white);
@@ -712,23 +594,21 @@ body.pos-expert-mode .products-grid {
     color: var(--primary-color);
 }
 
-/* Textes des cartes produit : utilisent --pos-font-scale pour amplifier
-   visuellement l'effet du zoom (compose avec body.zoom). */
 .product-name {
     font-weight: 600;
     color: var(--text-dark);
     margin-bottom: 0.5rem;
-    font-size: calc(0.95rem * var(--pos-font-scale, 1));
+    font-size: 0.95rem;
 }
 
 .product-price {
     color: var(--primary-color);
     font-weight: bold;
-    font-size: calc(1.1rem * var(--pos-font-scale, 1));
+    font-size: 1.1rem;
 }
 
 .product-category {
-    font-size: calc(0.75rem * var(--pos-font-scale, 1));
+    font-size: 0.75rem;
     color: var(--text-muted);
     margin-top: 0.25rem;
 }
@@ -838,12 +718,11 @@ body.pos-expert-mode .products-grid {
     font-weight: 600;
     color: var(--text-dark);
     margin-bottom: 0.25rem;
-    font-size: calc(1rem * var(--pos-font-scale, 1));
 }
 
 .cart-item-price {
     color: var(--text-muted);
-    font-size: calc(0.9rem * var(--pos-font-scale, 1));
+    font-size: 0.9rem;
     display: flex;
     align-items: center;
     gap: 0.25rem;
@@ -922,7 +801,7 @@ body.pos-expert-mode .products-grid {
 .cart-item-total {
     font-weight: bold;
     color: var(--primary-color);
-    font-size: calc(1.1rem * var(--pos-font-scale, 1));
+    font-size: 1.1rem;
     min-width: 100px;
     text-align: right;
 }
@@ -5035,4 +4914,144 @@ body.pos-expert-mode .products-grid {
     }
 }
 
+/* ============================================================================
+   Mode expert POS — opt-in via #btnExpertMode (body.pos-expert-mode)
+   Tout est scopé sous body.pos-expert-mode pour ne rien laisser fuiter en
+   mode normal (apparence d'origine inchangée).
+   ============================================================================ */
+
+/* Bouton toggle: même gabarit visuel que .btn-dashboard. */
+.header-left #btnExpertMode {
+    font-size: 1.5rem !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    color: white !important;
+    display: inline-flex !important;
+    align-items: center;
+    transition: all 0.2s ease;
+}
+.header-left #btnExpertMode:hover {
+    background: transparent !important;
+    transform: scale(1.1);
+    opacity: 0.9;
+}
+body.pos-expert-mode #btnExpertMode {
+    color: #ffd54f !important; /* ambre, signal "mode actif" */
+}
+
+/* Layout: en mode expert, on ajoute 2 pistes 4px pour les poignées. */
+body.pos-expert-mode .pos-main {
+    grid-template-columns: 2fr 4px 2fr 4px 1.5fr;
+}
+
+/* Poignées de redimensionnement — masquées par défaut. */
+.pos-resizer {
+    display: none;
+}
+body.pos-expert-mode .pos-resizer {
+    display: block;
+    background: transparent;
+    cursor: col-resize;
+    position: relative;
+    transition: background 0.15s;
+    user-select: none;
+    align-self: stretch;
+    margin: 0 -8px; /* zone cliquable élargie au-delà des 4px visuels */
+    z-index: 5;
+}
+body.pos-expert-mode .pos-resizer:hover,
+body.pos-expert-mode .pos-resizer.is-dragging {
+    background: rgba(220, 53, 69, 0.35);
+}
+body.pos-expert-mode .pos-resizer::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 40px;
+    background: #cbd5e1;
+    border-radius: 2px;
+    transform: translate(-50%, -50%);
+    transition: background 0.15s;
+}
+body.pos-expert-mode .pos-resizer:hover::before,
+body.pos-expert-mode .pos-resizer.is-dragging::before {
+    background: var(--primary-color);
+}
+@media (max-width: 768px) {
+    body.pos-expert-mode .pos-resizer { display: none; }
+}
+body.pos-expert-mode .pos-main.transactions-expanded .pos-resizer,
+body.pos-expert-mode .pos-main.order-tracking-mode .pos-resizer {
+    display: none;
+}
+
+/* Cartes produit agrandies en mode expert. */
+body.pos-expert-mode .products-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+/* Polices boostées via --pos-font-scale (set par JS). Fallback 1 → identité. */
+body.pos-expert-mode .product-name {
+    font-size: calc(0.95rem * var(--pos-font-scale, 1));
+}
+body.pos-expert-mode .product-price {
+    font-size: calc(1.1rem * var(--pos-font-scale, 1));
+}
+body.pos-expert-mode .product-category {
+    font-size: calc(0.75rem * var(--pos-font-scale, 1));
+}
+body.pos-expert-mode .cart-item-name {
+    font-size: calc(1rem * var(--pos-font-scale, 1));
+}
+body.pos-expert-mode .cart-item-price {
+    font-size: calc(0.9rem * var(--pos-font-scale, 1));
+}
+body.pos-expert-mode .cart-item-total {
+    font-size: calc(1.1rem * var(--pos-font-scale, 1));
+}
+
+/* Trio zoom controls — masqué par défaut. */
+.pos-zoom-controls {
+    display: none;
+}
+body.pos-expert-mode .pos-zoom-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 2px;
+    margin-right: 4px;
+}
+body.pos-expert-mode .pos-zoom-controls .btn-zoom {
+    background: transparent;
+    color: white;
+    border: none;
+    width: 28px;
+    height: 28px;
+    line-height: 1;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+body.pos-expert-mode .pos-zoom-controls .btn-zoom:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+body.pos-expert-mode .pos-zoom-controls .btn-zoom-reset {
+    width: auto;
+    min-width: 44px;
+    padding: 0 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+@media (max-width: 768px) {
+    body.pos-expert-mode .pos-zoom-controls { display: none; }
+}
 

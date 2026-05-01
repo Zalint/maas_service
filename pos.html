@@ -71,15 +71,15 @@
                         <!-- Rempli dynamiquement -->
                     </select>
                 </div>
+                <!-- Zoom controls (mode expert uniquement, scoped via CSS) -->
+                <div class="pos-zoom-controls" role="group" aria-label="Zoom POS">
+                    <button type="button" class="btn-icon btn-zoom" onclick="posZoomDecrease()" title="Réduire (Ctrl+-)" aria-label="Zoom out">−</button>
+                    <button type="button" class="btn-zoom btn-zoom-reset" onclick="posZoomReset()" title="Réinitialiser à 100% (Ctrl+0)" aria-label="Zoom reset" id="posZoomLabel">100%</button>
+                    <button type="button" class="btn-icon btn-zoom" onclick="posZoomIncrease()" title="Agrandir (Ctrl+=)" aria-label="Zoom in">+</button>
+                </div>
                 <button id="refreshPWABtn" class="btn-icon btn-icon-only" onclick="forceRefreshPWA()" title="Vider cache et recharger">
                     <i class="fas fa-sync-alt"></i>
                 </button>
-                <!-- Zoom controls -->
-                <div class="pos-zoom-controls" role="group" aria-label="Zoom POS">
-                    <button class="btn-icon btn-zoom" onclick="posZoomDecrease()" title="Réduire (Ctrl+-)" aria-label="Zoom out">−</button>
-                    <button class="btn-zoom btn-zoom-reset" onclick="posZoomReset()" title="Réinitialiser à 100% (Ctrl+0)" aria-label="Zoom reset" id="posZoomLabel">100%</button>
-                    <button class="btn-icon btn-zoom" onclick="posZoomIncrease()" title="Agrandir (Ctrl+=)" aria-label="Zoom in">+</button>
-                </div>
                 <button id="installPWABtn" class="btn-icon btn-icon-only" onclick="installPWA()" title="Installer l'application" style="display: none;">
                     <i class="fas fa-download"></i>
                 </button>
@@ -168,7 +168,7 @@
                 </div>
             </div>
 
-            <!-- Resizer between Produits and Panier -->
+            <!-- Resizer between Produits and Panier (mode expert uniquement) -->
             <div class="pos-resizer" data-pos-resizer="0" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner"></div>
 
             <!-- Center Panel - Cart -->
@@ -268,7 +268,7 @@
                 </div>
             </div>
 
-            <!-- Resizer between Panier and Résumé -->
+            <!-- Resizer between Panier and Résumé (mode expert uniquement) -->
             <div class="pos-resizer" data-pos-resizer="1" role="separator" aria-orientation="vertical" title="Glisser pour redimensionner"></div>
 
             <!-- Right Panel - Summary -->
