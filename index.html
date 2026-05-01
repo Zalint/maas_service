@@ -567,6 +567,64 @@
                                     </div>
                                 </div>
                             </div>
+
+                            <!-- Filtres pour le tableau Dernières ventes -->
+                            <div class="card mb-3 border-primary">
+                                <div class="card-body">
+                                    <div class="row mb-2">
+                                        <div class="col-md-8">
+                                            <h6 class="mb-3"><i class="bi bi-funnel"></i> Filtres du tableau</h6>
+                                        </div>
+                                        <div class="col-md-4 text-end">
+                                            <div id="dv-montant-filtre-info" style="display: none;">
+                                                <span class="badge bg-success" style="font-size: 14px; padding: 8px 12px;">
+                                                    <i class="bi bi-cash-stack"></i> Total filtré: <strong id="dv-montant-total-filtre">0 FCFA</strong>
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="row g-3 mb-2">
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-date" class="form-label">Date</label>
+                                            <input type="text" class="form-control form-control-sm" id="filter-dv-date" placeholder="JJ/MM/AAAA">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-point-vente" class="form-label">Point de Vente</label>
+                                            <select class="form-select form-select-sm" id="filter-dv-point-vente">
+                                                <option value="">Tous les points de vente</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-categorie" class="form-label">Catégorie</label>
+                                            <select class="form-select form-select-sm" id="filter-dv-categorie">
+                                                <option value="">Toutes les catégories</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-produit" class="form-label">Produit</label>
+                                            <select class="form-select form-select-sm" id="filter-dv-produit">
+                                                <option value="">Tous les produits</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-nom-client" class="form-label">Nom Client</label>
+                                            <input type="text" class="form-control form-control-sm" id="filter-dv-nom-client" placeholder="Rechercher...">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-numero-client" class="form-label">Numéro Client</label>
+                                            <input type="text" class="form-control form-control-sm" id="filter-dv-numero-client" placeholder="Rechercher...">
+                                        </div>
+                                    </div>
+                                    <div class="row g-3">
+                                        <div class="col-md-12 text-end">
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-filters-dv">
+                                                <i class="bi bi-arrow-clockwise"></i> Réinitialiser
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div class="table-responsive">
                                 <table id="dernieres-ventes" class="table table-striped">
                                     <thead>
@@ -589,6 +647,14 @@
                                         </tr>
                                     </thead>
                                     <tbody></tbody>
+                                    <tfoot>
+                                        <tr class="table-secondary fw-bold">
+                                            <td colspan="8" class="text-end">Total filtré :</td>
+                                            <td id="dv-tfoot-nombre">0</td>
+                                            <td id="dv-tfoot-montant">0 FCFA</td>
+                                            <td colspan="5"></td>
+                                        </tr>
+                                    </tfoot>
                                 </table>
                             </div>
                         </div>
@@ -1120,6 +1186,64 @@
                                         <div id="pagination-buttons" class="btn-group"></div>
                                     </div>
                                 </div>
+
+                                <!-- Filtres pour le tableau des ventes -->
+                                <div class="card mb-3 border-primary">
+                                    <div class="card-body">
+                                        <div class="row mb-2">
+                                            <div class="col-md-8">
+                                                <h6 class="mb-3"><i class="bi bi-funnel"></i> Filtres du tableau</h6>
+                                            </div>
+                                            <div class="col-md-4 text-end">
+                                                <div id="montant-filtre-info" style="display: none;">
+                                                    <span class="badge bg-success" style="font-size: 14px; padding: 8px 12px;">
+                                                        <i class="bi bi-cash-stack"></i> Total filtré: <strong id="montant-total-filtre">0 FCFA</strong>
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="row g-3 mb-2">
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-date" class="form-label">Date</label>
+                                                <input type="text" class="form-control form-control-sm" id="filter-ventes-date" placeholder="JJ/MM/AAAA">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-point-vente" class="form-label">Point de Vente</label>
+                                                <select class="form-select form-select-sm" id="filter-ventes-point-vente">
+                                                    <option value="">Tous les points de vente</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-categorie" class="form-label">Catégorie</label>
+                                                <select class="form-select form-select-sm" id="filter-ventes-categorie">
+                                                    <option value="">Toutes les catégories</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-produit" class="form-label">Produit</label>
+                                                <select class="form-select form-select-sm" id="filter-ventes-produit">
+                                                    <option value="">Tous les produits</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-nom-client" class="form-label">Nom Client</label>
+                                                <input type="text" class="form-control form-control-sm" id="filter-ventes-nom-client" placeholder="Rechercher...">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-numero-client" class="form-label">Numéro Client</label>
+                                                <input type="text" class="form-control form-control-sm" id="filter-ventes-numero-client" placeholder="Rechercher...">
+                                            </div>
+                                        </div>
+                                        <div class="row g-3">
+                                            <div class="col-md-12 text-end">
+                                                <button type="button" class="btn btn-outline-secondary btn-sm" id="reset-filters-ventes">
+                                                    <i class="bi bi-arrow-clockwise"></i> Réinitialiser
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="table-responsive">
                                     <table id="tableau-ventes" class="table table-striped">
                                         <thead>
@@ -1141,6 +1265,14 @@
                                             </tr>
                                         </thead>
                                         <tbody></tbody>
+                                        <tfoot>
+                                            <tr class="table-secondary fw-bold">
+                                                <td colspan="8" class="text-end">Total filtré :</td>
+                                                <td id="tv-tfoot-quantite">0</td>
+                                                <td id="tv-tfoot-montant">0 FCFA</td>
+                                                <td colspan="4"></td>
+                                            </tr>
+                                        </tfoot>
                                     </table>
                                 </div>
                             </div>

@@ -2434,17 +2434,161 @@ function getPrixProduitGlobal(nomProduit) {
     return null;
 }
 
+// Etat des filtres pour #dernieres-ventes (recherche client side, no fetch).
+let dvAll = [];
+let dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
+
+// Normalise une date "DD/MM/YYYY" ou "YYYY-MM-DD" -> "YYYY-MM-DD" pour comparer.
+function dvNormalizeDate(s) {
+    if (!s || typeof s !== 'string') return '';
+    const t = s.trim();
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    return t;
+}
+
+function dvPeuplerFiltres() {
+    const pdvSet = new Set(), catSet = new Set(), prodSet = new Set();
+    dvAll.forEach(v => {
+        const pdv = v.PointDeVente || v['Point de Vente'] || v.pointVente || '';
+        const cat = formatCategorie(v.Categorie || v.Catégorie || v.categorie || '');
+        const prod = v.Produit || '';
+        if (pdv) pdvSet.add(pdv);
+        if (cat) catSet.add(cat);
+        if (prod) prodSet.add(prod);
+    });
+    const fill = (selectId, label, values) => {
+        const el = document.getElementById(selectId);
+        if (!el) return;
+        const current = el.value;
+        el.innerHTML = `<option value="">${label}</option>`;
+        [...values].sort((a,b) => a.localeCompare(b, 'fr')).forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v; opt.textContent = v;
+            el.appendChild(opt);
+        });
+        if (current && [...values].includes(current)) el.value = current;
+    };
+    fill('filter-dv-point-vente', 'Tous les points de vente', pdvSet);
+    fill('filter-dv-categorie',   'Toutes les catégories',    catSet);
+    fill('filter-dv-produit',     'Tous les produits',         prodSet);
+}
+
+function dvComputeFiltered() {
+    let v = dvAll.slice();
+    if (dvFilters.date) {
+        const d = dvNormalizeDate(dvFilters.date);
+        v = v.filter(x => dvNormalizeDate(x.Date || '') === d);
+    }
+    if (dvFilters.pointVente) {
+        const f = dvFilters.pointVente.toLowerCase();
+        v = v.filter(x => (x.PointDeVente || x['Point de Vente'] || x.pointVente || '').toLowerCase() === f);
+    }
+    if (dvFilters.categorie) {
+        const f = dvFilters.categorie.toLowerCase();
+        v = v.filter(x => formatCategorie(x.Categorie || x.Catégorie || x.categorie || '').toLowerCase() === f);
+    }
+    if (dvFilters.produit) {
+        const f = dvFilters.produit.toLowerCase();
+        v = v.filter(x => (x.Produit || '').toLowerCase() === f);
+    }
+    if (dvFilters.nomClient) {
+        const f = dvFilters.nomClient.toLowerCase();
+        v = v.filter(x => (x.nomClient || '').toLowerCase().includes(f));
+    }
+    if (dvFilters.numeroClient) {
+        const f = dvFilters.numeroClient.toLowerCase();
+        v = v.filter(x => (x.numeroClient || '').toLowerCase().includes(f));
+    }
+    return v;
+}
+
+function dvUpdateTotalsAndBadge(filtered) {
+    let totalNombre = 0, totalMontant = 0;
+    filtered.forEach(v => {
+        totalNombre += parseFloat(v.Nombre) || 0;
+        totalMontant += parseFloat(v.Montant) || 0;
+    });
+    const elN = document.getElementById('dv-tfoot-nombre');
+    const elM = document.getElementById('dv-tfoot-montant');
+    if (elN) elN.textContent = totalNombre.toLocaleString('fr-FR');
+    if (elM) elM.textContent = `${totalMontant.toLocaleString('fr-FR')} FCFA`;
+    const badge = document.getElementById('dv-montant-filtre-info');
+    const badgeVal = document.getElementById('dv-montant-total-filtre');
+    const active = Object.values(dvFilters).some(f => f !== '');
+    if (badge && badgeVal) {
+        if (active) {
+            badgeVal.textContent = `${totalMontant.toLocaleString('fr-FR')} FCFA`;
+            badge.style.display = 'block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
+function dvRender() {
+    const filtered = dvComputeFiltered();
+    dvRenderRows(filtered);
+    dvUpdateTotalsAndBadge(filtered);
+}
+
+function dvWireOnce() {
+    if (dvWireOnce.done) return;
+    dvWireOnce.done = true;
+    const onChange = (key) => function() { dvFilters[key] = this.value; dvRender(); };
+    const onInput  = (key) => function() { dvFilters[key] = this.value; dvRender(); };
+    const dEl = document.getElementById('filter-dv-date');
+    if (dEl) dEl.addEventListener('input', onInput('date'));
+    if (dEl && typeof flatpickr !== 'undefined') {
+        try {
+            flatpickr(dEl, {
+                locale: 'fr', dateFormat: 'd/m/Y',
+                onChange: (sel, str) => { dvFilters.date = str; dvRender(); }
+            });
+        } catch (e) { /* fallback texte libre */ }
+    }
+    const map = {
+        'filter-dv-point-vente':   ['change', 'pointVente'],
+        'filter-dv-categorie':     ['change', 'categorie'],
+        'filter-dv-produit':       ['change', 'produit'],
+        'filter-dv-nom-client':    ['input',  'nomClient'],
+        'filter-dv-numero-client': ['input',  'numeroClient']
+    };
+    Object.entries(map).forEach(([id, [evt, key]]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener(evt, evt === 'change' ? onChange(key) : onInput(key));
+    });
+    const reset = document.getElementById('reset-filters-dv');
+    if (reset) reset.addEventListener('click', () => {
+        dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
+        ['filter-dv-date','filter-dv-point-vente','filter-dv-categorie','filter-dv-produit','filter-dv-nom-client','filter-dv-numero-client']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        if (dEl && dEl._flatpickr) dEl._flatpickr.clear();
+        dvRender();
+    });
+}
+
 function afficherDernieresVentes(ventes) {
     const tbody = document.querySelector("#dernieres-ventes tbody");
     if (!tbody) {
         console.error("Element tbody introuvable pour #dernieres-ventes");
         return;
     }
-    tbody.innerHTML = ""; // Vider le tableau avant d'ajouter de nouvelles lignes
+    dvAll = Array.isArray(ventes) ? ventes.slice() : [];
+    dvWireOnce();
+    dvPeuplerFiltres();
+    dvRender();
+}
 
-    // Standardiser la date pour la comparaison (definition moved up or assumed global)
-    // const standardiserDate = (dateStr) => { ... } // Definition might be here or earlier
-
+// Rendu des lignes (factorise la boucle d'origine pour pouvoir re-render
+// sur changement de filtre sans refetch).
+function dvRenderRows(ventes) {
+    const tbody = document.querySelector("#dernieres-ventes tbody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
     ventes.forEach(vente => {
         const row = tbody.insertRow();
         
@@ -3672,6 +3816,8 @@ function creerGraphiqueVentesParCategorie(donnees) {
 let currentPage = 1;
 const itemsPerPage = 30;
 let allVentes = [];
+let ventesFiltered = []; // ventes après application des filtres tableau-ventes
+let ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
 
 // Variable pour annuler les requêtes précédentes
 let currentVentesRequest = null;
@@ -3795,9 +3941,14 @@ async function chargerVentes() {
                 if (elC) elC.textContent = `${montantTotal.toLocaleString('fr-FR')} FCFA`;
             }
             
+            // Peupler les selects de filtres + recalculer le filtré (si filtres actifs)
+            peuplerFiltresVentes();
+            filtrerVentes(/*resetPage*/ false);
+
             // Afficher la première page
+            currentPage = 1;
             afficherPageVentes(1);
-            
+
             // Mettre à jour les informations de pagination
             updatePaginationInfo();
 
@@ -3840,17 +3991,51 @@ async function chargerVentes() {
     }
 }
 
+// Renvoie le dataset à paginer: filtré si au moins un filtre actif, sinon brut.
+function getVentesAfficher() {
+    const active = Object.values(ventesFilters).some(f => f !== '');
+    return active ? ventesFiltered : allVentes;
+}
+
+// Met à jour le tfoot (Quantité + Montant) sur l'ensemble du dataset
+// affiché (pas juste la page courante) + le badge "Total filtré".
+function updateTableauVentesTotals() {
+    const data = getVentesAfficher();
+    let totalQte = 0, totalMnt = 0;
+    data.forEach(v => {
+        totalQte += parseFloat(v.Nombre || v.quantite) || 0;
+        totalMnt += parseFloat(v.Montant || v.total) || 0;
+    });
+    const elQ = document.getElementById('tv-tfoot-quantite');
+    const elM = document.getElementById('tv-tfoot-montant');
+    if (elQ) elQ.textContent = totalQte.toLocaleString('fr-FR');
+    if (elM) elM.textContent = `${totalMnt.toLocaleString('fr-FR')} FCFA`;
+    const badge = document.getElementById('montant-filtre-info');
+    const badgeVal = document.getElementById('montant-total-filtre');
+    const active = Object.values(ventesFilters).some(f => f !== '');
+    if (badge && badgeVal) {
+        if (active) {
+            badgeVal.textContent = `${totalMnt.toLocaleString('fr-FR')} FCFA`;
+            badge.style.display = 'block';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+}
+
 // Fonction pour afficher une page spécifique des ventes
 function afficherPageVentes(page) {
     const tbody = document.querySelector('#tableau-ventes tbody');
     if (!tbody) return;
 
+    const data = getVentesAfficher();
+
     // Calculer les indices de début et de fin pour la page courante
     const startIndex = (page - 1) * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
-    
+
     // Obtenir les ventes pour la page courante
-    const ventesPage = allVentes.slice(startIndex, endIndex);
+    const ventesPage = data.slice(startIndex, endIndex);
     
     tbody.innerHTML = '';
     
@@ -3879,16 +4064,20 @@ function afficherPageVentes(page) {
         `;
         tbody.appendChild(tr);
     });
+    updateTableauVentesTotals();
 }
 
 // Fonction pour mettre à jour les informations de pagination
 function updatePaginationInfo() {
-    const totalPages = Math.ceil(allVentes.length / itemsPerPage);
+    const data = getVentesAfficher();
+    const totalPages = Math.max(1, Math.ceil(data.length / itemsPerPage));
     const paginationInfo = document.getElementById('pagination-info');
     const paginationButtons = document.getElementById('pagination-buttons');
-    
+
     if (paginationInfo) {
-        paginationInfo.textContent = `Page ${currentPage} sur ${totalPages} (${allVentes.length} ventes au total)`;
+        const active = Object.values(ventesFilters).some(f => f !== '');
+        const filterText = active ? ` (${data.length} filtrées sur ${allVentes.length})` : '';
+        paginationInfo.textContent = `Page ${currentPage} sur ${totalPages} (${data.length} ventes${filterText ? '' : ' au total'}${filterText})`;
     }
     
     if (paginationButtons) {
@@ -3923,6 +4112,119 @@ function updatePaginationInfo() {
         paginationButtons.appendChild(nextButton);
     }
 }
+
+// Normalise une date pour comparaison (DD/MM/YYYY ou YYYY-MM-DD -> YYYY-MM-DD)
+function tvNormalizeDate(s) {
+    if (!s || typeof s !== 'string') return '';
+    const t = s.trim();
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    return t;
+}
+
+// Peuple les selects Point de Vente / Catégorie / Produit à partir de allVentes.
+function peuplerFiltresVentes() {
+    const pdvSet = new Set(), catSet = new Set(), prodSet = new Set();
+    allVentes.forEach(v => {
+        const pdv = v['Point de Vente'] || v.pointVente || '';
+        const cat = formatCategorie(v.Catégorie || v.categorie || '');
+        const prod = v.Produit || v.produit || '';
+        if (pdv) pdvSet.add(pdv);
+        if (cat) catSet.add(cat);
+        if (prod) prodSet.add(prod);
+    });
+    const fill = (id, label, vals) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const current = el.value;
+        el.innerHTML = `<option value="">${label}</option>`;
+        [...vals].sort((a,b) => a.localeCompare(b, 'fr')).forEach(v => {
+            const o = document.createElement('option');
+            o.value = v; o.textContent = v;
+            el.appendChild(o);
+        });
+        if (current && [...vals].includes(current)) el.value = current;
+    };
+    fill('filter-ventes-point-vente', 'Tous les points de vente', pdvSet);
+    fill('filter-ventes-categorie',   'Toutes les catégories',    catSet);
+    fill('filter-ventes-produit',     'Tous les produits',         prodSet);
+}
+
+// Calcule ventesFiltered selon ventesFilters et re-render la page courante.
+function filtrerVentes(resetPage = true) {
+    let v = allVentes.slice();
+    if (ventesFilters.date) {
+        const d = tvNormalizeDate(ventesFilters.date);
+        v = v.filter(x => tvNormalizeDate(x.Date || x.date || '') === d);
+    }
+    if (ventesFilters.pointVente) {
+        const f = ventesFilters.pointVente.toLowerCase();
+        v = v.filter(x => (x['Point de Vente'] || x.pointVente || '').toLowerCase() === f);
+    }
+    if (ventesFilters.categorie) {
+        const f = ventesFilters.categorie.toLowerCase();
+        v = v.filter(x => formatCategorie(x.Catégorie || x.categorie || '').toLowerCase() === f);
+    }
+    if (ventesFilters.produit) {
+        const f = ventesFilters.produit.toLowerCase();
+        v = v.filter(x => (x.Produit || x.produit || '').toLowerCase() === f);
+    }
+    if (ventesFilters.nomClient) {
+        const f = ventesFilters.nomClient.toLowerCase();
+        v = v.filter(x => (x.nomClient || '').toLowerCase().includes(f));
+    }
+    if (ventesFilters.numeroClient) {
+        const f = ventesFilters.numeroClient.toLowerCase();
+        v = v.filter(x => (x.numeroClient || '').toLowerCase().includes(f));
+    }
+    ventesFiltered = v;
+    if (resetPage) currentPage = 1;
+    afficherPageVentes(currentPage);
+    updatePaginationInfo();
+}
+
+// Branche les listeners une seule fois.
+(function wireTableauVentesFilters() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const dEl = document.getElementById('filter-ventes-date');
+        if (dEl) {
+            dEl.addEventListener('input', function() { ventesFilters.date = this.value; filtrerVentes(); });
+            if (typeof flatpickr !== 'undefined') {
+                try {
+                    flatpickr(dEl, {
+                        locale: 'fr', dateFormat: 'd/m/Y',
+                        onChange: (sel, str) => { ventesFilters.date = str; filtrerVentes(); }
+                    });
+                } catch (e) { /* fallback texte */ }
+            }
+        }
+        const map = {
+            'filter-ventes-point-vente':   ['change', 'pointVente'],
+            'filter-ventes-categorie':     ['change', 'categorie'],
+            'filter-ventes-produit':       ['change', 'produit'],
+            'filter-ventes-nom-client':    ['input',  'nomClient'],
+            'filter-ventes-numero-client': ['input',  'numeroClient']
+        };
+        Object.entries(map).forEach(([id, [evt, key]]) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener(evt, function() { ventesFilters[key] = this.value; filtrerVentes(); });
+        });
+        const reset = document.getElementById('reset-filters-ventes');
+        if (reset) reset.addEventListener('click', () => {
+            ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
+            ['filter-ventes-date','filter-ventes-point-vente','filter-ventes-categorie','filter-ventes-produit','filter-ventes-nom-client','filter-ventes-numero-client']
+                .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+            if (dEl && dEl._flatpickr) dEl._flatpickr.clear();
+            ventesFiltered = [];
+            currentPage = 1;
+            afficherPageVentes(1);
+            updatePaginationInfo();
+        });
+    });
+})();
 
 // Fonction pour lire un fichier Excel ou CSV
 function lireFichier(file) {
