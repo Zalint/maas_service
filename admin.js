@@ -1193,6 +1193,8 @@ let currentCategoriesMeta = {};
 let currentFamilleFilter = 'Tous';
 // Filtre actif sur l'onglet Inventaire (mêmes valeurs que Généraux).
 let currentInventaireFamilleFilter = 'Tous';
+// Recherche texte sur l'onglet Inventaire — filtre les lignes par nom de produit.
+let currentInventaireSearchQuery = '';
 // Mapping famille des catégories d'inventaire. Défauts hardcodés pour les 6
 // catégories logiques standard; surcharges utilisateur stockées en localStorage
 // (clé: 'inventaireCategoriesFamille'). Les catégories d'inventaire ne sont pas
@@ -1722,14 +1724,31 @@ function afficherInventaireConfig() {
     // Tabs filtre famille en tête, comme sur Produits Généraux.
     const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
     const filtreHtml = `
-        <div class="btn-group mb-3" role="group" aria-label="Filtre famille inventaire">
-            ${familles.map((f) => `
-                <button type="button"
-                    class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
-                    onclick="setFamilleFilterInventaire('${f}')">${f}</button>
-            `).join('')}
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+            <div class="btn-group" role="group" aria-label="Filtre famille inventaire">
+                ${familles.map((f) => `
+                    <button type="button"
+                        class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+                        onclick="setFamilleFilterInventaire('${f}')">${f}</button>
+                `).join('')}
+            </div>
+            <div class="input-group input-group-sm" style="max-width: 320px;">
+                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                <input type="search" id="inventaire-search-input" class="form-control"
+                       placeholder="Rechercher un produit…"
+                       value="${escAttr(currentInventaireSearchQuery || '')}"
+                       autocomplete="off">
+            </div>
         </div>`;
     container.insertAdjacentHTML('beforeend', filtreHtml);
+
+    const searchInput = container.querySelector('#inventaire-search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            currentInventaireSearchQuery = e.target.value || '';
+            filtrerProduitsInventaire(currentInventaireSearchQuery);
+        });
+    }
 
     const inventaireParCategories = reorganiserInventaireParCategories();
 
@@ -1758,7 +1777,7 @@ function afficherInventaireConfig() {
             </select>`;
 
         const categorieHtml = `
-            <div class="accordion-item">
+            <div class="accordion-item" data-categorie="${escAttr(categorie)}">
                 <h2 class="accordion-header" id="inventaire-heading-${index}">
                     <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#inventaire-collapse-${index}" aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="inventaire-collapse-${index}">
                         <i class="fas fa-warehouse me-2"></i>
@@ -1798,6 +1817,49 @@ function afficherInventaireConfig() {
         `;
         container.insertAdjacentHTML('beforeend', categorieHtml);
     });
+
+    if (currentInventaireSearchQuery) {
+        filtrerProduitsInventaire(currentInventaireSearchQuery);
+    }
+}
+
+// Filtre client-side: masque les lignes dont le nom de produit ne contient pas
+// la requête, masque les catégories sans match, et déplie automatiquement les
+// catégories qui ont au moins un match.
+function filtrerProduitsInventaire(query) {
+    const container = document.getElementById('inventaire-categories');
+    if (!container) return;
+    // NFKD décompose les ligatures (œ→oe, æ→ae) ET les lettres accentuées,
+    // puis on retire les diacritiques combinants (U+0300–U+036F).
+    const norm = (s) => String(s || '')
+        .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().trim();
+    const q = norm(query);
+
+    container.querySelectorAll('.accordion-item[data-categorie]').forEach((item) => {
+        const rows = item.querySelectorAll('tbody tr[data-produit]');
+        let matchCount = 0;
+        rows.forEach((row) => {
+            const nom = norm(row.dataset.produit);
+            const match = !q || nom.includes(q);
+            row.style.display = match ? '' : 'none';
+            if (match) matchCount++;
+        });
+        item.style.display = (q && matchCount === 0) ? 'none' : '';
+
+        // Déplie les catégories qui ont un match quand l'utilisateur cherche.
+        if (q && matchCount > 0) {
+            const collapse = item.querySelector('.accordion-collapse');
+            const button = item.querySelector('.accordion-button');
+            if (collapse && !collapse.classList.contains('show')) {
+                collapse.classList.add('show');
+            }
+            if (button && button.classList.contains('collapsed')) {
+                button.classList.remove('collapsed');
+                button.setAttribute('aria-expanded', 'true');
+            }
+        }
+    });
 }
 
 // Générer les lignes de produits pour une catégorie d'inventaire
@@ -1823,7 +1885,7 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const escProduit = produit.replace(/'/g, "\\'");
 
         html += `
-            <tr>
+            <tr data-produit="${escAttr(produit)}">
                 <td>
                     <input type="text" class="form-control form-control-sm" value="${produit}"
                            onchange="modifierNomProduitInventaire('${produit}', this.value, ${catParam})">

@@ -275,13 +275,17 @@ async function loadBrandConfig() {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         brandConfig = await response.json();
-        // Synchroniser KEUR_BALLI avec nomDuClient.json (sans écraser les téléphones du JSON)
-        const existingKeurBalli = brandConfig["KEUR_BALLI"] || {};
-        brandConfig["KEUR_BALLI"] = {
-            ...existingKeurBalli,
-            "nom_complet": nomClient.nom || existingKeurBalli.nom_complet || "Keur BALLI",
-            "site_web": nomClient.site_web || existingKeurBalli.site_web || "",
-        };
+        // Ne synchroniser KEUR_BALLI avec nomDuClient.json QUE s'il est déjà
+        // déclaré dans brand-config.json. Sur un tenant qui ne contient pas
+        // KEUR_BALLI (ex: Mata → MBAO), on ne crée pas de brand fictive.
+        if (brandConfig["KEUR_BALLI"]) {
+            const existingKeurBalli = brandConfig["KEUR_BALLI"];
+            brandConfig["KEUR_BALLI"] = {
+                ...existingKeurBalli,
+                "nom_complet": nomClient.nom || existingKeurBalli.nom_complet || "Keur BALLI",
+                "site_web": nomClient.site_web || existingKeurBalli.site_web || "",
+            };
+        }
         console.log('✅ Brand configuration loaded:', Object.keys(brandConfig));
     } catch (error) {
         console.error('❌ Error loading brand config:', error);
@@ -312,9 +316,15 @@ function getBrandConfig(commandeId = null) {
         if (prefixMatch) {
             const prefix = prefixMatch[1];
             
-            // Check which brand has this prefix in their points_vente_codes
+            // Check which brand has this prefix in their points_vente_codes.
+            // Support 2 formats: array ["MBA","KMA"] (legacy) ou objet
+            // { "Mbao": "MBA", "Keur Massar": "KMA" } (recommandé — utilisé
+            // aussi par getPrefixeForPointVente).
             for (const [brandKey, brandData] of Object.entries(brandConfig)) {
-                if (brandData.points_vente_codes && brandData.points_vente_codes.includes(prefix)) {
+                const codes = brandData.points_vente_codes;
+                if (!codes) continue;
+                const codesList = Array.isArray(codes) ? codes : Object.values(codes);
+                if (codesList.includes(prefix)) {
                     console.log(`🏷️ Detected brand: ${brandKey} from commandeId: ${commandeId}`);
                     return brandData;
                 }
@@ -334,9 +344,70 @@ function getBrandConfig(commandeId = null) {
         }
     }
     
-    // Default to KEUR_BALLI (nomDuClient)
-    console.log('🏷️ Using default brand: KEUR_BALLI');
-    return brandConfig['KEUR_BALLI'];
+    // Defaut: KEUR_BALLI s'il existe, sinon la première brand déclarée dans
+    // brand-config.json (cas tenant Mata où seul MBAO est défini).
+    if (brandConfig['KEUR_BALLI']) {
+        console.log('🏷️ Using default brand: KEUR_BALLI');
+        return brandConfig['KEUR_BALLI'];
+    }
+    const firstBrandKey = Object.keys(brandConfig)[0];
+    if (firstBrandKey) {
+        console.log(`🏷️ Using first brand from config: ${firstBrandKey}`);
+        return brandConfig[firstBrandKey];
+    }
+    return null;
+}
+
+// Cherche le préfixe d'ID de commande pour un point de vente donné, en
+// parcourant brand-config.json. Retourne null si non trouvé. Format attendu:
+// `points_vente_codes` est un objet { "Mbao": "MBA", "Keur Massar": "KMA" }.
+function getPrefixeForPointVente(pointVente) {
+    if (!brandConfig || !pointVente) return null;
+    for (const brand of Object.values(brandConfig)) {
+        const codes = brand && brand.points_vente_codes;
+        if (codes && !Array.isArray(codes) && codes[pointVente]) {
+            return codes[pointVente];
+        }
+    }
+    return null;
+}
+
+// Filtre la liste de téléphones d'une brand pour ne garder que ceux dont
+// `point_vente` correspond au PV de la commande. Comparaison tolérante aux
+// accents, à la casse et aux espaces. Retourne [] si aucune correspondance —
+// l'appelant n'imprime alors rien (pas de bulk).
+function filtrerTelephonesParPointVente(telephones, pointVenteCommande) {
+    if (!Array.isArray(telephones) || telephones.length === 0) return [];
+    const norm = (s) => String(s || '')
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .toLowerCase().replace(/\s+/g, ' ').trim();
+    const cible = norm(pointVenteCommande);
+    if (!cible) return [];
+    return telephones.filter(tel => tel && tel.point_vente && norm(tel.point_vente) === cible);
+}
+
+// Construit le bloc téléphones d'un ticket. Retourne une chaîne (avec sauts de
+// ligne) prête à concaténer, ou '' si aucun numéro à afficher pour ce PV.
+// Centralise la logique partagée entre imprimerTicketThermique et
+// _genererTicketPourBT — gère format { numeros: [] } et legacy { numero }.
+function formatTicketPhones(telephones, commandePV, centrer) {
+    if (!Array.isArray(telephones) || telephones.length === 0) return '';
+    const matches = filtrerTelephonesParPointVente(telephones, commandePV);
+    if (matches.length === 0) return '';
+    return matches.map(tel => {
+        let numerosFormattes;
+        if (tel.numeros && Array.isArray(tel.numeros)) {
+            numerosFormattes = tel.numeros.join(' ou ');
+        } else if (tel.numero) {
+            let n = tel.numero.replace(/\+221\s*/g, '').replace(/\s+/g, '');
+            if (n.length === 9) {
+                n = n.substring(0, 2) + ' ' + n.substring(2, 5) + ' ' + n.substring(5, 7) + ' ' + n.substring(7, 9);
+            }
+            numerosFormattes = n;
+        }
+        const telLine = tel.point_vente ? `${tel.point_vente} ${numerosFormattes}` : numerosFormattes;
+        return centrer(telLine) + '\n';
+    }).join('');
 }
 
 function normalizeQuantity(value) {
@@ -4293,11 +4364,16 @@ function copyToClipboard(text, label = 'Texte') {
 }
 
 function formatCurrency(amount) {
-    return new Intl.NumberFormat('fr-FR', {
+    // Intl en fr-FR utilise U+202F (NARROW NO-BREAK SPACE) comme séparateur de
+    // milliers. Les imprimantes thermiques ne le rendent pas (octet exotique
+    // → caractère parasite type "W" et décalage de la ligne). On normalise en
+    // espace ASCII pour rester compatible affichage écran ET ticket papier.
+    const formatted = new Intl.NumberFormat('fr-FR', {
         style: 'decimal',
         minimumFractionDigits: 0,
         maximumFractionDigits: 0
-    }).format(amount) + ' FCFA';
+    }).format(amount);
+    return formatted.replace(/[  ]/g, ' ') + ' FCFA';
 }
 
 function showToast(message, type = 'success') {
@@ -7044,27 +7120,11 @@ async function imprimerTicketThermique(commandeId) {
     // Ne rien afficher si site_web est vide
     ticket += '\n';
     
-    // Téléphones - use config if available
-    if (config && config.telephones && config.telephones.length > 0) {
-        config.telephones.forEach(tel => {
-            // Support nouveau format { point_vente, numeros: [] } et ancien { point_vente, numero }
-            let numerosFormattes;
-            if (tel.numeros && Array.isArray(tel.numeros)) {
-                numerosFormattes = tel.numeros.join(' ou ');
-            } else if (tel.numero) {
-                let n = tel.numero.replace(/\+221\s*/g, '').replace(/\s+/g, '');
-                if (n.length === 9) {
-                    n = n.substring(0, 2) + ' ' + n.substring(2, 5) + ' ' + n.substring(5, 7) + ' ' + n.substring(7, 9);
-                }
-                numerosFormattes = n;
-            }
-            const telLine = tel.point_vente ? `${tel.point_vente} ${numerosFormattes}` : numerosFormattes;
-            ticket += centrer(telLine) + '\n';
-        });
-    } else {
-        // Fallback
-        ticket += centrer('Liberté 5 78 607 18 18 ou 78 732 57 57') + '\n';
-        ticket += centrer('Almadies 2 78 607 18 18 ou 78 732 57 57') + '\n';
+    // Téléphones — n'imprime QUE le numéro du PV de la commande. Si pas de
+    // match dans brand-config, rien ne s'affiche (pas de fallback hardcodé).
+    if (config && config.telephones) {
+        const commandePV = firstItem['Point de Vente'] || firstItem.pointVente || firstItem.Point_de_vente || firstItem.point_vente || '';
+        ticket += formatTicketPhones(config.telephones, commandePV, centrer);
     }
     ticket += SEPARATEUR + '\n';
     ticket += '\n';
@@ -7269,12 +7329,10 @@ async function _genererTicketPourBT(commandeId) {
     let tk = SEP+'\n' + c(config ? config.nom_complet : '')+'\n';
     if (config && config.site_web) tk += c(config.site_web)+'\n';
     tk += '\n';
-    if (config && config.telephones && config.telephones.length > 0) {
-        config.telephones.forEach(tel => {
-            let nf; if (tel.numeros && Array.isArray(tel.numeros)) { nf = tel.numeros.join(' ou '); } else if (tel.numero) { let n = tel.numero.replace(/\+221\s*/g,'').replace(/\s+/g,''); if(n.length===9) n=n.substring(0,2)+' '+n.substring(2,5)+' '+n.substring(5,7)+' '+n.substring(7,9); nf=n; }
-            tk += c(tel.point_vente ? `${tel.point_vente} ${nf}` : nf)+'\n';
-        });
-    } else { tk += c('Liberté 5 78 607 18 18 ou 78 732 57 57')+'\n'; tk += c('Almadies 2 78 607 18 18 ou 78 732 57 57')+'\n'; }
+    if (config && config.telephones) {
+        const commandePV = firstItem['Point de Vente'] || firstItem.pointVente || firstItem.Point_de_vente || firstItem.point_vente || '';
+        tk += formatTicketPhones(config.telephones, commandePV, c);
+    }
     tk += SEP+'\n\n';
     tk += 'COMMANDE: '+commandeId+'\n';
     const now = new Date();
@@ -9522,17 +9580,10 @@ async function convertPrecommandeGroupToOrder(precommandeIds) {
         // Générer un ID de commande unique pour tout le groupe (reuse firstPrecommande from outer scope)
         const pointVente = firstPrecommande['Point de Vente'];
         
-        // Générer l'ID de commande basé sur le point de vente
-        const prefixes = {
-            'Mbao': 'MBA',
-            'O.Foire': 'OFO',
-            'Keur Massar': 'KMA',
-            'Linguere': 'LIN',
-            'Dahra': 'DAH',
-            'Abattage': 'ABA',
-            'Sacre Coeur': 'SAC'
-        };
-        const prefix = prefixes[pointVente] || 'CMD';
+        // Préfixe lu dynamiquement depuis brand-config.json
+        // (points_vente_codes par brand). Fallback 'CMD' si le PV n'est pas
+        // référencé dans le tenant courant.
+        const prefix = getPrefixeForPointVente(pointVente) || 'CMD';
         const timestamp = Date.now();
         const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
         const commandeId = `${prefix}_P_${timestamp}${random}`;
