@@ -162,6 +162,27 @@ async function main() {
     await sequelize.sync();
     console.log('✅ Sync complete.\n');
 
+    // Filet défensif: sequelize.sync() peut silencieusement skipper certains
+    // modèles dans des cas edge (search_path désynchro, COMMENT qui plante,
+    // etc.). On force la création explicite des tables critiques que
+    // seedCatalog et la suite vont attaquer immédiatement. Idempotent: ces
+    // sync individuels font CREATE TABLE IF NOT EXISTS, no-op si déjà là.
+    console.log('🔧 Force-sync des modèles critiques (filet de sécurité)...');
+    const criticalModels = [
+        ['User', User], ['PointVente', PointVente],
+        ['UserPointVente', UserPointVente], ['Category', Category],
+        ['Produit', Produit]
+    ];
+    for (const [name, model] of criticalModels) {
+        try {
+            await model.sync();
+        } catch (err) {
+            console.error(`❌ Échec sync ${name}:`, err.message);
+            throw err;
+        }
+    }
+    console.log('✅ Modèles critiques sync.\n');
+
     await seedCatalog();
 
     // Seed ADMIN user if no users exist
