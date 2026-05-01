@@ -10425,6 +10425,10 @@ function posZoomGet() {
 function posZoomApply(value) {
     const v = Math.min(POS_ZOOM_MAX, Math.max(POS_ZOOM_MIN, Math.round(value * 10) / 10));
     document.body.style.zoom = v;
+    // Variable utilisée par les éléments clés (cartes produit, lignes panier,
+    // totaux) pour amplifier visuellement l'effet du zoom sur les polices.
+    // Compose multiplicativement avec body.zoom.
+    document.documentElement.style.setProperty('--pos-font-scale', String(v));
     localStorage.setItem(POS_ZOOM_KEY, String(v));
     const label = document.getElementById('posZoomLabel');
     if (label) label.textContent = Math.round(v * 100) + '%';

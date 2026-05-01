@@ -625,7 +625,9 @@ body.header-hidden-state .header-reveal-tab {
     overflow-y: auto;
     padding: 1rem;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    /* 220px par carte: produit lisible, ~3 colonnes par défaut au lieu de 5
+       (auparavant minmax(150px, 1fr) donnait des cartes trop serrées). */
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 1rem;
     align-content: start;
 }
@@ -677,21 +679,23 @@ body.header-hidden-state .header-reveal-tab {
     color: var(--primary-color);
 }
 
+/* Textes des cartes produit : utilisent --pos-font-scale pour amplifier
+   visuellement l'effet du zoom (compose avec body.zoom). */
 .product-name {
     font-weight: 600;
     color: var(--text-dark);
     margin-bottom: 0.5rem;
-    font-size: 0.95rem;
+    font-size: calc(0.95rem * var(--pos-font-scale, 1));
 }
 
 .product-price {
     color: var(--primary-color);
     font-weight: bold;
-    font-size: 1.1rem;
+    font-size: calc(1.1rem * var(--pos-font-scale, 1));
 }
 
 .product-category {
-    font-size: 0.75rem;
+    font-size: calc(0.75rem * var(--pos-font-scale, 1));
     color: var(--text-muted);
     margin-top: 0.25rem;
 }
@@ -801,11 +805,12 @@ body.header-hidden-state .header-reveal-tab {
     font-weight: 600;
     color: var(--text-dark);
     margin-bottom: 0.25rem;
+    font-size: calc(1rem * var(--pos-font-scale, 1));
 }
 
 .cart-item-price {
     color: var(--text-muted);
-    font-size: 0.9rem;
+    font-size: calc(0.9rem * var(--pos-font-scale, 1));
     display: flex;
     align-items: center;
     gap: 0.25rem;
@@ -884,7 +889,7 @@ body.header-hidden-state .header-reveal-tab {
 .cart-item-total {
     font-weight: bold;
     color: var(--primary-color);
-    font-size: 1.1rem;
+    font-size: calc(1.1rem * var(--pos-font-scale, 1));
     min-width: 100px;
     text-align: right;
 }
