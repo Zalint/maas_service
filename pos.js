@@ -7080,28 +7080,29 @@ async function imprimerTicketThermique(commandeId) {
     const hasValidCredit = creditUsed > 0 && creditStatus !== 'failed';
     const finalAmount = hasValidCredit ? (amountPaidAfterCredit || (commande.totalAmount - creditUsed)) : commande.totalAmount;
     
-    // Configuration du ticket (42 caractères de large)
-    const LARGEUR = 42;
+    // Configuration du ticket — imprimante 58mm = 32 caractères de large.
+    // Au-dessus, les lignes wrappent et décalent les montants (ex: 25 500 →
+    // "2" en fin de ligne puis "5 500 FCFA" sur la suivante).
+    const LARGEUR = 32;
     const SEPARATEUR = '='.repeat(LARGEUR);
     const LIGNE = '-'.repeat(LARGEUR);
-    
+
     // Fonction helper pour centrer le texte
     const centrer = (texte) => {
         const espaces = Math.max(0, Math.floor((LARGEUR - texte.length) / 2));
         return ' '.repeat(espaces) + texte;
     };
-    
+
     // Fonction helper pour aligner à droite
     const alignerDroite = (texte) => {
         return ' '.repeat(Math.max(0, LARGEUR - texte.length)) + texte;
     };
-    
-    // Fonction pour formater une ligne produit
+
+    // Fonction pour formater une ligne produit (32 cars : 15 + 2 + 1 + 14)
     const formatLigneProduit = (produit, qte, pu, total) => {
-        // Produit(20) Qte(3) Total(19)
-        let ligneProduit = produit.substring(0, 20).padEnd(20);
-        ligneProduit += String(qte).padStart(3) + ' ';
-        ligneProduit += String(total).padStart(18);
+        let ligneProduit = produit.substring(0, 15).padEnd(15);
+        ligneProduit += String(qte).padStart(2) + ' ';
+        ligneProduit += String(total).padStart(14);
         return ligneProduit;
     };
     
@@ -7321,9 +7322,10 @@ async function _genererTicketPourBT(commandeId) {
     const hasValidCredit = creditUsed > 0 && creditStatus !== 'failed';
     const finalAmount = hasValidCredit ? (amountPaidAfterCredit || (commande.totalAmount - creditUsed)) : commande.totalAmount;
 
-    const L = 42, SEP = '='.repeat(L), LIG = '-'.repeat(L);
+    // 32 cars (58mm). Au-dessus, les lignes wrappent et décalent les montants.
+    const L = 32, SEP = '='.repeat(L), LIG = '-'.repeat(L);
     const c = t => ' '.repeat(Math.max(0, Math.floor((L - t.length) / 2))) + t;
-    const fp = (p, q, t) => { let r = p.substring(0,20).padEnd(20); r += String(q).padStart(3)+' '; r += String(t).padStart(18); return r; };
+    const fp = (p, q, t) => { let r = p.substring(0,15).padEnd(15); r += String(q).padStart(2)+' '; r += String(t).padStart(14); return r; };
     const config = typeof getBrandConfig === 'function' ? getBrandConfig(commandeId) : null;
 
     let tk = SEP+'\n' + c(config ? config.nom_complet : '')+'\n';
