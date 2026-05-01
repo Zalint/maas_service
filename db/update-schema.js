@@ -217,25 +217,29 @@ async function checkTableExists(tableName) {
 /**
  * Vérifie si les colonnes spécifiées existent dans la table.
  *
- * Utilise ANY(:cols) au lieu de IN (:col0,:col1,…) pour:
- *  - moins de placeholders dynamiques (plus simple à parser)
- *  - portabilité avec les drivers/parseurs SQL plus stricts (pg-mem en test)
+ * Utilise IN (:c0, :c1, …) avec placeholders nommés. ANY(:cols) ne marche
+ * pas avec Sequelize en Postgres réel: l'array se fait expand comme valeurs
+ * comma-séparées, pas comme literal ARRAY[].
  *
  * Constrain to current_schema() pour ne pas matcher d'autres schémas tenant
  * dans le mode shared-Postgres.
  */
 async function checkColumnsExist(tableName, columnNames) {
     try {
+        const placeholders = columnNames.map((_, i) => `:c${i}`).join(', ');
+        const replacements = { tableName };
+        columnNames.forEach((c, i) => { replacements[`c${i}`] = c; });
+
         const query = `
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = current_schema()
             AND table_name = :tableName
-            AND column_name = ANY(:cols)
+            AND column_name IN (${placeholders})
         `;
 
         const rows = await sequelize.query(query, {
-            replacements: { tableName, cols: columnNames },
+            replacements,
             type: sequelize.QueryTypes.SELECT
         });
 
