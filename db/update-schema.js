@@ -55,12 +55,18 @@ async function updateSchema() {
             console.log('La table cash_payments existe déjà');
         }
         
-        // Ajouter la colonne default_screen à la table users si elle n'existe pas
-        await sequelize.query(`
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS default_screen VARCHAR(100) DEFAULT NULL
-        `);
-        console.log('Colonne default_screen vérifiée/ajoutée dans la table users');
+        // Ajouter la colonne default_screen à la table users si la table existe.
+        // Sur tenant vierge (avant sequelize.sync), users n'existe pas encore →
+        // ALTER TABLE échouerait. On garde le check pour cohérence avec les
+        // autres ALTER (produits, categories).
+        const usersTableExists = await checkTableExists('users');
+        if (usersTableExists) {
+            await sequelize.query(`
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS default_screen VARCHAR(100) DEFAULT NULL
+            `);
+            console.log('Colonne default_screen vérifiée/ajoutée dans la table users');
+        }
 
         // Ajouter les colonnes ventes (inventaire -> liste de produits vente)
         // et prix_personnalise (vente -> flag de détachement) sur la table produits.
@@ -184,9 +190,12 @@ async function checkTableExists(tableName) {
         // always return false for non-public tenants and force a
         // re-sync on every boot — harmless but wrong, and would also
         // mask whether the table genuinely exists in this tenant.
+        // SELECT 1 explicite (vs SELECT FROM) pour la portabilité — pg-mem
+        // exige une colonne dans le subquery EXISTS, Postgres réel accepte
+        // les deux. Comportement identique en prod, plus testable hors-prod.
         const query = `
             SELECT EXISTS (
-                SELECT FROM information_schema.tables
+                SELECT 1 FROM information_schema.tables
                 WHERE table_schema = current_schema()
                 AND table_name = :tableName
             )
@@ -206,37 +215,31 @@ async function checkTableExists(tableName) {
 }
 
 /**
- * Vérifie si les colonnes spécifiées existent dans la table
+ * Vérifie si les colonnes spécifiées existent dans la table.
+ *
+ * Utilise ANY(:cols) au lieu de IN (:col0,:col1,…) pour:
+ *  - moins de placeholders dynamiques (plus simple à parser)
+ *  - portabilité avec les drivers/parseurs SQL plus stricts (pg-mem en test)
+ *
+ * Constrain to current_schema() pour ne pas matcher d'autres schémas tenant
+ * dans le mode shared-Postgres.
  */
 async function checkColumnsExist(tableName, columnNames) {
     try {
-        // Construction d'une requête qui compte les colonnes existantes
-        const placeholders = columnNames.map((col, idx) => `:col${idx}`).join(', ');
-        const replacements = {};
-        columnNames.forEach((col, idx) => {
-            replacements[`col${idx}`] = col;
-        });
-        replacements.tableName = tableName;
-        
-        // Constrain to current_schema() — without it, this would match
-        // columns in any schema named the same way, which under
-        // schema-per-tenant could give false positives across tenants.
         const query = `
-            SELECT COUNT(*) as count
+            SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = current_schema()
             AND table_name = :tableName
-            AND column_name IN (${placeholders})
+            AND column_name = ANY(:cols)
         `;
-        
-        const result = await sequelize.query(query, {
-            replacements,
-            type: sequelize.QueryTypes.SELECT,
-            plain: true
+
+        const rows = await sequelize.query(query, {
+            replacements: { tableName, cols: columnNames },
+            type: sequelize.QueryTypes.SELECT
         });
-        
-        // Si le nombre de colonnes trouvées correspond au nombre de colonnes recherchées
-        return result.count == columnNames.length;
+
+        return rows.length === columnNames.length;
     } catch (error) {
         console.error(`Erreur lors de la vérification des colonnes dans la table ${tableName}:`, error);
         throw error;
