@@ -12,7 +12,7 @@ global.PRIX_DEFAUT = {
   'Yell': 2500,
   'Foie': 3400
 };
-global.TOUS_POINTS_VENTE = [...POINTS_VENTE_PHYSIQUES, 'Abattage', 'Depot', 'Gros Client'];
+global.TOUS_POINTS_VENTE = [...POINTS_VENTE_PHYSIQUES, 'Dépôt central', 'Depot', 'Gros Client'];
 
 // Setup du DOM pour les tests
 document.body.innerHTML = `

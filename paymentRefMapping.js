@@ -7,7 +7,7 @@ const paymentRefMapping = {
     "V_KM": "Keur Massar",
     "V_OSF": "O.Foire",
     "V_SAC": "Sacre Coeur",
-    "V_ABATS": "Abattage"
+    "V_ABATS": "Dépôt central"
 };
 
 module.exports = paymentRefMapping;

@@ -59,7 +59,7 @@ global.confirm = jest.fn();
 global.prompt = jest.fn();
 
 // Mock des variables globales
-global.POINTS_VENTE_PHYSIQUES = ['Abattage', 'O.Foire', 'Gros Client'];
+global.POINTS_VENTE_PHYSIQUES = ['Dépôt central', 'O.Foire', 'Gros Client'];
 global.PRODUITS = ['Boeuf', 'Veau', 'Agneau', 'Yell', 'Foie'];
 global.PRIX_DEFAUT = {
     'Boeuf': 3600,

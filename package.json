@@ -45,7 +45,8 @@
     "tenant:verify": "node scripts/verify-tenant.js",
     "tenant:dev": "node scripts/dev-tenant.js",
     "tenant:migrate": "node scripts/migrate-tenant-to-shared.js",
-    "tenant:drop": "node scripts/drop-tenant-schema.js"
+    "tenant:drop": "node scripts/drop-tenant-schema.js",
+    "tenant:rename-abattage": "node -r dotenv/config scripts/rename-abattage-to-depot.js"
   },
   "keywords": [],
   "author": "",
