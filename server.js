@@ -10632,28 +10632,35 @@ app.get('/api/external/reconciliation', validateApiKey, async (req, res) => {
         let volumeAbattoirBoeuf = 0;
         let volumeAbattoirVeau = 0;
 
-        const depotKey = detailsByPDV['Dépôt central'] ? 'Dépôt central'
-                       : (detailsByPDV['Abattage'] ? 'Abattage' : null);
-        if (depotKey) {
-            if (detailsByPDV[depotKey]['Boeuf']) {
-                const positiveTransfers = transfertsData.transferts.filter(t =>
-                    (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
-                    t.produit === 'Boeuf' &&
-                    t.impact === 1
-                );
-                if (positiveTransfers.length > 0) {
-                    volumeAbattoirBoeuf = positiveTransfers.reduce((sum, transfer) => sum + transfer.quantite, 0);
-                }
+        // Pendant la fenêtre de transition, les deux PDV peuvent coexister
+        // dans detailsByPDV. On vérifie chaque produit sur les DEUX PDV au
+        // lieu de gater sur un seul depotKey, sinon un Boeuf présent côté
+        // 'Abattage' alors que 'Dépôt central' existe (sans Boeuf) serait raté.
+        const hasBoeuf =
+            detailsByPDV['Dépôt central']?.['Boeuf'] ||
+            detailsByPDV['Abattage']?.['Boeuf'];
+        if (hasBoeuf) {
+            const positiveTransfers = transfertsData.transferts.filter(t =>
+                (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
+                t.produit === 'Boeuf' &&
+                t.impact === 1
+            );
+            if (positiveTransfers.length > 0) {
+                volumeAbattoirBoeuf = positiveTransfers.reduce((sum, transfer) => sum + transfer.quantite, 0);
             }
-            if (detailsByPDV[depotKey]['Veau']) {
-                const positiveTransfersVeau = transfertsData.transferts.filter(t =>
-                    (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
-                    t.produit === 'Veau' &&
-                    t.impact === 1
-                );
-                if (positiveTransfersVeau.length > 0) {
-                    volumeAbattoirVeau = positiveTransfersVeau.reduce((sum, transfer) => sum + transfer.quantite, 0);
-                }
+        }
+
+        const hasVeau =
+            detailsByPDV['Dépôt central']?.['Veau'] ||
+            detailsByPDV['Abattage']?.['Veau'];
+        if (hasVeau) {
+            const positiveTransfersVeau = transfertsData.transferts.filter(t =>
+                (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
+                t.produit === 'Veau' &&
+                t.impact === 1
+            );
+            if (positiveTransfersVeau.length > 0) {
+                volumeAbattoirVeau = positiveTransfersVeau.reduce((sum, transfer) => sum + transfer.quantite, 0);
             }
         }
         

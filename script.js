@@ -7180,7 +7180,9 @@ function afficherReconciliation(reconciliation, debugInfo) {
     // pour afficher l'information sur la péréquation.
     const _hasSource = (name) =>
         (POINTS_VENTE_PHYSIQUES.includes(name) || TOUS_POINTS_VENTE.includes(name)) && reconciliation[name];
-    const hasAbattage = _hasSource('Dépôt central') || _hasSource('Abattage');
+    // Honorer aussi reconciliation['Abattage'] direct: un payload legacy
+    // peut contenir cette clé même après le rename des listes PV.
+    const hasAbattage = _hasSource('Dépôt central') || _hasSource('Abattage') || !!reconciliation['Abattage'];
     const perationInfo = document.getElementById('peration-info');
 
     console.log('🔍 Debug PV source (Dépôt central / Abattage):');

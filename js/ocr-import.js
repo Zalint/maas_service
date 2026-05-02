@@ -603,7 +603,8 @@ function displayOCRResults(data) {
                 // Nouveau produit
                 ocrExtractedData[index].matched = false;
                 customInput.style.display = 'block';
-                customInput.value = ocrExtractedData[index].article_original.replace(/^KG\s+/i, '');
+                const orig = String(ocrExtractedData[index].article_original || '');
+                customInput.value = orig.replace(/^KG\s+/i, '');
                 ocrExtractedData[index].produit = customInput.value;
                 e.target.style.borderColor = '';
             }
@@ -613,7 +614,9 @@ function displayOCRResults(data) {
     tbody.querySelectorAll('.ocr-produit-custom').forEach(input => {
         input.addEventListener('change', (e) => {
             const index = parseInt(e.target.dataset.index);
-            ocrExtractedData[index].produit = e.target.value;
+            // Trim pour éviter qu'un espace en trop crée un doublon (" Boeuf"
+            // != "Boeuf" côté lookup BDD).
+            ocrExtractedData[index].produit = String(e.target.value || '').trim();
         });
     });
 
