@@ -1353,17 +1353,7 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
     }
     
     console.log('Tentative d\'ajout de ventes:', JSON.stringify(entries));
-    
-    // Fonction pour normaliser le nom du produit (première lettre majuscule)
-    function normalizeProductName(name) {
-        if (!name) return name;
-        return name.trim()
-            .toLowerCase()
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-    }
-    
+
     // Vérifier les restrictions temporelles pour chaque vente
     for (const entry of entries) {
         const restriction = checkSaleTimeRestrictions(entry.date, req.session.user.username, req.session.user.role);
@@ -1389,16 +1379,12 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
     try {
         const { Produit, Category } = require('./db/models');
         
-        // Créer automatiquement les produits qui n'existent pas
+        // Créer automatiquement les produits qui n'existent pas.
+        // Le nom est utilisé tel que reçu — pas de normalisation de casse.
+        // Les produits existants gardent leur casse d'origine; seules les
+        // ventes pour des produits réellement inconnus créent une nouvelle ligne.
         for (const entry of entries) {
-            // Normaliser le nom du produit (Title Case) pour les nouveaux produits.
-            // Avant de créer, on fait un lookup case-insensitive: si un produit
-            // existe déjà avec une casse différente (ex: "Boeuf en gros" vs
-            // "Boeuf En Gros"), on réutilise la casse canonique de la BDD au
-            // lieu de créer un doublon.
-            entry.produit = normalizeProductName(entry.produit);
-
-            let produitNom = entry.produit;
+            const produitNom = entry.produit;
             const categorieNom = entry.categorie || 'Import OCR';
 
             // Chercher ou créer la catégorie
@@ -1408,21 +1394,13 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 console.log(`📁 Catégorie créée: ${categorieNom}`);
             }
 
-            // Lookup case-insensitive du produit vente — évite les doublons
-            // "Boeuf en gros" / "Boeuf En Gros" provoqués par la normalisation.
+            // Lookup exact (la casse du nom envoyé par le client doit
+            // correspondre à celle stockée en BDD).
             let produitVente = await Produit.findOne({
-                where: {
-                    nom: { [Op.iLike]: produitNom },
-                    type_catalogue: 'vente'
-                }
+                where: { nom: produitNom, type_catalogue: 'vente' }
             });
 
-            if (produitVente) {
-                // Adopter la casse canonique de la BDD pour toute la suite
-                // (insertion en base, propagation cache).
-                produitNom = produitVente.nom;
-                entry.produit = produitVente.nom;
-            } else {
+            if (!produitVente) {
                 produitVente = await Produit.create({
                     nom: produitNom,
                     type_catalogue: 'vente',
@@ -1442,12 +1420,8 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 };
             }
 
-            // Lookup case-insensitive du produit inventaire (même logique).
             let produitInventaire = await Produit.findOne({
-                where: {
-                    nom: { [Op.iLike]: produitNom },
-                    type_catalogue: 'inventaire'
-                }
+                where: { nom: produitNom, type_catalogue: 'inventaire' }
             });
 
             if (!produitInventaire) {
