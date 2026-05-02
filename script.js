@@ -7136,20 +7136,13 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
             reconciliation[pointVente].ventesSaisies;
             
         if (reconciliation[pointVente].ventes !== 0) {
-            // Calcul spécial pour le point de vente "Abattage"
-            if (pointVente === 'Abattage') {
-                // Pour Abattage : (Ventes Théoriques / Stock Matin) * 100
-                if (reconciliation[pointVente].stockMatin !== 0) {
-                    reconciliation[pointVente].pourcentageEcart = 
-                        (reconciliation[pointVente].ventes / reconciliation[pointVente].stockMatin) * 100;
-                } else {
-                    // Cas où le stock matin est nul - pas de calcul possible
-                    reconciliation[pointVente].pourcentageEcart = null;
-                    reconciliation[pointVente].commentaire = 'Stock matin nul - calcul impossible';
-                }
+            // Dépôt central (et ancien Abattage): pas de % d'écart calculé
+            // (PV source, pas de comparaison ventes théoriques vs saisies pertinente).
+            if (pointVente === 'Dépôt central' || pointVente === 'Abattage') {
+                reconciliation[pointVente].pourcentageEcart = null;
             } else {
                 // Pour les autres points de vente : (Écart / Ventes Théoriques) * 100
-                reconciliation[pointVente].pourcentageEcart = 
+                reconciliation[pointVente].pourcentageEcart =
                     (reconciliation[pointVente].difference / reconciliation[pointVente].ventes) * 100;
             }
         } else {
@@ -7183,18 +7176,23 @@ function afficherReconciliation(reconciliation, debugInfo) {
     let totalVentesSaisies = 0;
     let totalDifference = 0;
     
-    // Vérifier si Abattage est présent pour afficher l'information sur la pération
-    const hasAbattage = (POINTS_VENTE_PHYSIQUES.includes('Abattage') || TOUS_POINTS_VENTE.includes('Abattage')) && reconciliation['Abattage'];
+    // Vérifier si un PV "source" (Dépôt central / ancien Abattage) est présent
+    // pour afficher l'information sur la péréquation.
+    const _hasSource = (name) =>
+        (POINTS_VENTE_PHYSIQUES.includes(name) || TOUS_POINTS_VENTE.includes(name)) && reconciliation[name];
+    // Honorer aussi reconciliation['Abattage'] direct: un payload legacy
+    // peut contenir cette clé même après le rename des listes PV.
+    const hasAbattage = _hasSource('Dépôt central') || _hasSource('Abattage') || !!reconciliation['Abattage'];
     const perationInfo = document.getElementById('peration-info');
-    
-    // Debug: afficher les informations pour comprendre le problème
-    console.log('🔍 Debug Abattage:');
+
+    console.log('🔍 Debug PV source (Dépôt central / Abattage):');
     console.log('  POINTS_VENTE_PHYSIQUES:', POINTS_VENTE_PHYSIQUES);
     console.log('  TOUS_POINTS_VENTE:', TOUS_POINTS_VENTE);
-    console.log('  Abattage dans POINTS_VENTE_PHYSIQUES:', POINTS_VENTE_PHYSIQUES.includes('Abattage'));
-    console.log('  Abattage dans TOUS_POINTS_VENTE:', TOUS_POINTS_VENTE.includes('Abattage'));
+    console.log('  hasSource(Dépôt central):', _hasSource('Dépôt central'));
+    console.log('  hasSource(Abattage):', _hasSource('Abattage'));
+    console.log('  reconciliation[Dépôt central]:', reconciliation['Dépôt central']);
     console.log('  reconciliation[Abattage]:', reconciliation['Abattage']);
-    console.log('  hasAbattage:', hasAbattage);
+    console.log('  hasAbattage (any source):', hasAbattage);
     console.log('  perationInfo element:', perationInfo);
     
     if (perationInfo) {
@@ -7288,31 +7286,11 @@ function afficherReconciliation(reconciliation, debugInfo) {
             // Pourcentage d'écart
             const tdPourcentage = document.createElement('td');
             
-            // Gestion spéciale pour Abattage
-            if (pointVente === 'Abattage') {
-                console.log('🔍 Debug tooltip Abattage:');
-                console.log('  pointVente:', pointVente);
-                console.log('  data.pourcentageEcart:', data.pourcentageEcart);
-                
-                if (data.pourcentageEcart === null) {
-                    tdPourcentage.textContent = "N/A";
-                    tdPourcentage.classList.add('text-muted', 'fst-italic');
-                    tdPourcentage.title = "Stock matin nul - calcul impossible";
-                    console.log('  Tooltip défini: "Stock matin nul - calcul impossible"');
-                } else {
-                    tdPourcentage.textContent = `${data.pourcentageEcart.toFixed(2)}%`;
-                    tdPourcentage.title = "Pération : Perte de volume entre abattoir et point de vente";
-                    console.log('  Tooltip défini: "Pération : Perte de volume entre abattoir et point de vente"');
-                    
-                    // Appliquer le style basé sur la valeur (pour Abattage, plus c'est élevé, mieux c'est)
-                    if (data.pourcentageEcart >= 90) {
-                        tdPourcentage.classList.add('text-success', 'fw-bold');
-                    } else if (data.pourcentageEcart >= 80) {
-                        tdPourcentage.classList.add('text-warning', 'fw-bold');
-                    } else if (data.pourcentageEcart > 0) {
-                        tdPourcentage.classList.add('text-danger', 'fw-bold');
-                    }
-                }
+            // PV source (Dépôt central / ancien Abattage): pas de % d'écart affiché.
+            if (pointVente === 'Dépôt central' || pointVente === 'Abattage') {
+                tdPourcentage.textContent = '—';
+                tdPourcentage.classList.add('text-muted', 'fst-italic');
+                tdPourcentage.title = 'PV source : pas de % d\'écart calculé';
             } else {
                 // Pour les autres points de vente
                 if (data.pourcentageEcart !== null) {
@@ -10205,14 +10183,9 @@ async function exportReconciliationMoisToExcel() {
 
                     // Calculate percentage difference
                     let pourcentageEcart;
-                    if (pointVente === 'Abattage') {
-                        // Pour Abattage : (Ventes Théoriques / Stock Matin) * 100
-                        if (stockMatinValue > 0) {
-                            pourcentageEcart = (ventesTheoriques / stockMatinValue) * 100;
-                        } else {
-                            // Cas où le stock matin est nul - pas de calcul possible
-                            pourcentageEcart = null;
-                        }
+                    if (pointVente === 'Dépôt central' || pointVente === 'Abattage') {
+                        // PV source: pas de % d'écart calculé.
+                        pourcentageEcart = null;
                     } else {
                         // Pour les autres points de vente : (Écart / Ventes Théoriques) * 100
                         pourcentageEcart = ventesTheoriques > 0 ? (difference / ventesTheoriques) * 100 : 0;
@@ -12239,14 +12212,18 @@ function calculerAnalyticsVentes(ventes) {
         console.log(`  - ${v.Produit}: PU=${v.PU}, Qté=${v.Nombre}, Montant=${(parseFloat(v.PU) || 0) * (parseFloat(v.Nombre) || 0)}`);
     });
 
-    // Debug: Compter les ventes exclues
-    const ventesAbattage = ventes.filter(v => v['Point de Vente'] && v['Point de Vente'].toLowerCase() === 'abattage');
-    console.log(`🔍 DEBUG - Ventes exclues (Point de vente "Abattage"): ${ventesAbattage.length}`);
+    // Debug: Compter les ventes exclues (PV source: Dépôt central / ancien Abattage)
+    const _isSourcePdv = (v) => {
+        const p = (v['Point de Vente'] || '').toLowerCase();
+        return p === 'abattage' || p === 'dépôt central';
+    };
+    const ventesAbattage = ventes.filter(_isSourcePdv);
+    console.log(`🔍 DEBUG - Ventes exclues (PV source Dépôt central/Abattage): ${ventesAbattage.length}`);
 
     // Parcourir toutes les ventes et calculer les statistiques
     ventes.forEach(vente => {
-        // Exclure les ventes du point de vente "Abattage"
-        if (vente['Point de Vente'] && vente['Point de Vente'].toLowerCase() === 'abattage') {
+        // Exclure les ventes des PV source (Dépôt central / ancien Abattage).
+        if (_isSourcePdv(vente)) {
             return; // Skip cette vente
         }
         

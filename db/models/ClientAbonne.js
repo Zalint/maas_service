@@ -94,7 +94,8 @@ ClientAbonne.generateAbonneId = async function(pointVente, dateInscription = new
         'Linguere': 'L',
         'Sacre Coeur': 'S',
         'Dahra': 'D',
-        'Abattage': 'A'
+        'Abattage': 'A',
+        'Dépôt central': 'A'
     };
     
     const letter = POINT_VENTE_LETTERS[pointVente];

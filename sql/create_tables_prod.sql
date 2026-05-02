@@ -471,8 +471,12 @@ CREATE TABLE IF NOT EXISTS points_vente (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_points_vente_nom ON points_vente(nom);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_points_vente_payment_ref ON points_vente(payment_ref);
 
--- Insérer le point de vente Abattage par défaut (les autres peuvent être créés via l'admin)
-INSERT INTO points_vente (nom, active, payment_ref) VALUES ('Abattage', TRUE, 'V_ABATS') ON CONFLICT (nom) DO UPDATE SET active = TRUE, payment_ref = 'V_ABATS';
+-- Insérer le point de vente "Dépôt central" par défaut (PV source / receptions
+-- partenaires - anciennement nommé "Abattage"). Les autres peuvent être créés via l'admin.
+-- Idempotent via payment_ref (l'identifiant stable). Permet de rebaptiser
+-- automatiquement une row legacy 'Abattage' -> 'Dépôt central' sans collision
+-- sur l'index unique payment_ref.
+INSERT INTO points_vente (nom, active, payment_ref) VALUES ('Dépôt central', TRUE, 'V_ABATS') ON CONFLICT (payment_ref) DO UPDATE SET nom = 'Dépôt central', active = TRUE;
 
 -- =====================================================
 -- TABLE: user_points_vente
@@ -757,8 +761,8 @@ CREATE INDEX IF NOT EXISTS idx_prix_historique_created_at ON prix_historique(cre
 -- WHERE point_de_vente IS NOT NULL 
 -- AND point_de_vente NOT IN (SELECT nom FROM points_vente WHERE active = TRUE);
 
--- Normaliser les références de paiement
-UPDATE cash_payments SET point_de_vente = 'Abattage' WHERE point_de_vente = 'V_ABATS';
+-- Normaliser les références de paiement (label PV; le code V_ABATS reste stable)
+UPDATE cash_payments SET point_de_vente = 'Dépôt central' WHERE point_de_vente IN ('V_ABATS', 'Abattage');
 
 -- =====================================================
 -- TABLE HISTORIQUE IMPORTS OCR

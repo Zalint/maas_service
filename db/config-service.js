@@ -94,7 +94,7 @@ async function getPointsVenteAsLegacy() {
 
 /**
  * Récupère le mapping des références de paiement vers les noms de points de vente
- * @returns {Promise<Object>} - { 'V_KB': 'Keur Bali', 'V_ABATS': 'Abattage' }
+ * @returns {Promise<Object>} - { 'V_KB': 'Keur Bali', 'V_ABATS': 'Dépôt central' }
  */
 async function getPaymentRefMapping() {
   const pointsVente = await PointVente.findAll({
@@ -114,7 +114,7 @@ async function getPaymentRefMapping() {
 
 /**
  * Récupère le mapping inverse: nom du point de vente vers code de référence
- * @returns {Promise<Object>} - { 'Keur Bali': 'V_KB', 'Abattage': 'V_ABATS' }
+ * @returns {Promise<Object>} - { 'Keur Bali': 'V_KB', 'Dépôt central': 'V_ABATS' }
  */
 async function getPointVenteToRefMapping() {
   const pointsVente = await PointVente.findAll({

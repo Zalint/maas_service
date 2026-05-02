@@ -5,7 +5,7 @@
 // Mock des variables globales
 global.POINTS_VENTE_PHYSIQUES = ['Mbao', 'O.Foire', 'Linguere', 'Dahra', 'Touba', 'Keur Massar'];
 global.PRODUITS = ['Boeuf', 'Veau', 'Agneau', 'Yell', 'Foie'];
-global.TOUS_POINTS_VENTE = [...POINTS_VENTE_PHYSIQUES, 'Abattage', 'Depot', 'Gros Client'];
+global.TOUS_POINTS_VENTE = [...POINTS_VENTE_PHYSIQUES, 'Dépôt central', 'Depot', 'Gros Client'];
 
 // Fonctions de validation
 function validateStock(stock) {

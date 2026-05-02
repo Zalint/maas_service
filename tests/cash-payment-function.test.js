@@ -130,7 +130,7 @@ const addCashPaymentToReconciliation = async () => {
           'V_KM': 'Keur Massar',
           'V_OSF': 'O.Foire',
           'V_SAC': 'Sacre Coeur',
-          'V_ABATS': 'Abattage'
+          'V_ABATS': 'Dépôt central'
         };
         
         // Construire l'objet de données avec le mapping des points de vente

@@ -460,18 +460,6 @@ async function extractOCRData() {
 }
 
 /**
- * Normalise le nom du produit (première lettre majuscule)
- */
-function normalizeProductName(name) {
-    if (!name) return name;
-    return name.trim()
-        .toLowerCase()
-        .split(' ')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-}
-
-/**
  * Génère le HTML du select de matching pour un item
  */
 function generateMatchingSelect(item, index) {
@@ -518,13 +506,6 @@ function displayOCRResults(data) {
     const totalCell = document.getElementById('ocr-total');
 
     tbody.innerHTML = '';
-    
-    // Normaliser les noms de produits
-    data.items.forEach(item => {
-        if (!item.matched) {
-            item.produit = normalizeProductName(item.produit);
-        }
-    });
     
     data.items.forEach((item, index) => {
         const row = document.createElement('tr');
@@ -622,7 +603,8 @@ function displayOCRResults(data) {
                 // Nouveau produit
                 ocrExtractedData[index].matched = false;
                 customInput.style.display = 'block';
-                customInput.value = normalizeProductName(ocrExtractedData[index].article_original.replace(/^KG\s+/i, ''));
+                const orig = String(ocrExtractedData[index].article_original || '');
+                customInput.value = orig.replace(/^KG\s+/i, '');
                 ocrExtractedData[index].produit = customInput.value;
                 e.target.style.borderColor = '';
             }
@@ -632,8 +614,9 @@ function displayOCRResults(data) {
     tbody.querySelectorAll('.ocr-produit-custom').forEach(input => {
         input.addEventListener('change', (e) => {
             const index = parseInt(e.target.dataset.index);
-            ocrExtractedData[index].produit = normalizeProductName(e.target.value);
-            e.target.value = ocrExtractedData[index].produit;
+            // Trim pour éviter qu'un espace en trop crée un doublon (" Boeuf"
+            // != "Boeuf" côté lookup BDD).
+            ocrExtractedData[index].produit = String(e.target.value || '').trim();
         });
     });
 

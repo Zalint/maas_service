@@ -63,7 +63,7 @@ async function loadConfigFromDB() {
         // Configuration par défaut en cas d'erreur
         pointsVente = {
             "Keur Bali": { active: true },
-            "Abattage": { active: true }
+            "Dépôt central": { active: true }
         };
         produits = {};
         produitsInventaire = {};
@@ -1353,17 +1353,7 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
     }
     
     console.log('Tentative d\'ajout de ventes:', JSON.stringify(entries));
-    
-    // Fonction pour normaliser le nom du produit (première lettre majuscule)
-    function normalizeProductName(name) {
-        if (!name) return name;
-        return name.trim()
-            .toLowerCase()
-            .split(' ')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-    }
-    
+
     // Vérifier les restrictions temporelles pour chaque vente
     for (const entry of entries) {
         const restriction = checkSaleTimeRestrictions(entry.date, req.session.user.username, req.session.user.role);
@@ -1389,28 +1379,27 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
     try {
         const { Produit, Category } = require('./db/models');
         
-        // Créer automatiquement les produits qui n'existent pas
+        // Créer automatiquement les produits qui n'existent pas.
+        // Le nom est utilisé tel que reçu — pas de normalisation de casse.
+        // Les produits existants gardent leur casse d'origine; seules les
+        // ventes pour des produits réellement inconnus créent une nouvelle ligne.
         for (const entry of entries) {
-            // Normaliser le nom du produit
-            entry.produit = normalizeProductName(entry.produit);
-            
-            // Vérifier si le produit existe dans la BDD
             const produitNom = entry.produit;
             const categorieNom = entry.categorie || 'Import OCR';
-            
+
             // Chercher ou créer la catégorie
             let category = await Category.findOne({ where: { nom: categorieNom } });
             if (!category) {
                 category = await Category.create({ nom: categorieNom });
                 console.log(`📁 Catégorie créée: ${categorieNom}`);
             }
-            
-            // Chercher le produit (type vente)
-            let produitVente = await Produit.findOne({ 
-                where: { nom: produitNom, type_catalogue: 'vente' } 
+
+            // Lookup exact (la casse du nom envoyé par le client doit
+            // correspondre à celle stockée en BDD).
+            let produitVente = await Produit.findOne({
+                where: { nom: produitNom, type_catalogue: 'vente' }
             });
-            
-            // Créer le produit de vente s'il n'existe pas
+
             if (!produitVente) {
                 produitVente = await Produit.create({
                     nom: produitNom,
@@ -1420,7 +1409,7 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                     categorie_id: category.id
                 });
                 console.log(`✅ Produit vente créé: ${produitNom} (catégorie: ${categorieNom})`);
-                
+
                 // Mettre à jour le cache des produits
                 if (!produits[categorieNom]) {
                     produits[categorieNom] = {};
@@ -1430,13 +1419,11 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                     alternatives: []
                 };
             }
-            
-            // Chercher le produit (type inventaire)
-            let produitInventaire = await Produit.findOne({ 
-                where: { nom: produitNom, type_catalogue: 'inventaire' } 
+
+            let produitInventaire = await Produit.findOne({
+                where: { nom: produitNom, type_catalogue: 'inventaire' }
             });
-            
-            // Créer le produit d'inventaire s'il n'existe pas (mode automatique par défaut pour OCR)
+
             if (!produitInventaire) {
                 // Déterminer l'unité selon les infos d'import
                 let uniteStock = 'unite';
@@ -10470,15 +10457,10 @@ app.get('/api/external/reconciliation', validateApiKey, async (req, res) => {
             pdvData.ecartCash = pdvData.cashPayments - pdvData.ventesSaisies;
             
             // Calculate percentages
-            if (pdvData.pointVente === 'Abattage') {
-                // Pour Abattage : (Ventes Théoriques / Stock Matin) * 100
-                const stockMatinAbs = Math.abs(pdvData.stockMatin);
-                if (stockMatinAbs > 0) {
-                    pdvData.ecartPct = (pdvData.ventesTheoriques / stockMatinAbs * 100).toFixed(2);
-                } else {
-                    // Cas où le stock matin est nul - pas de calcul possible
-                    pdvData.ecartPct = null;
-                }
+            // Dépôt central: pas de % d'écart (PV source, pas de notion de
+            // ventes vs ventes saisies pertinente).
+            if (pdvData.pointVente === 'Dépôt central' || pdvData.pointVente === 'Abattage') {
+                pdvData.ecartPct = null;
             } else {
                 // Pour les autres points de vente : (Écart absolu / Ventes Théoriques absolues) * 100
                 const stockVariation = Math.abs(pdvData.ventesTheoriques);
@@ -10644,36 +10626,41 @@ app.get('/api/external/reconciliation', validateApiKey, async (req, res) => {
             });
         });
         
-        // Calculate volumeAbattoirBoeuf and volumeAbattoirVeau for Abattage point de vente
+        // Calcul des volumes Boeuf/Veau receptionnes au Depot central
+        // (anciennement "Abattage"). Bascule lors du rename: on accepte les
+        // deux noms pour eviter une fenetre de transition incohérente.
         let volumeAbattoirBoeuf = 0;
         let volumeAbattoirVeau = 0;
-        
-        // Calculate volumes from positive transfers (impact = +) for Abattage
-        // Use the transfertsData that's already loaded in the reconciliation API
-        if (detailsByPDV['Abattage']) {
-            if (detailsByPDV['Abattage']['Boeuf']) {
-                // Filter positive transfers for Abattage/Boeuf
-                const positiveTransfers = transfertsData.transferts.filter(t => 
-                    t.pointVente === 'Abattage' && 
-                    t.produit === 'Boeuf' && 
-                    t.impact === 1
-                );
-                
-                if (positiveTransfers.length > 0) {
-                    volumeAbattoirBoeuf = positiveTransfers.reduce((sum, transfer) => sum + transfer.quantite, 0);
-                }
+
+        // Pendant la fenêtre de transition, les deux PDV peuvent coexister
+        // dans detailsByPDV. On vérifie chaque produit sur les DEUX PDV au
+        // lieu de gater sur un seul depotKey, sinon un Boeuf présent côté
+        // 'Abattage' alors que 'Dépôt central' existe (sans Boeuf) serait raté.
+        const hasBoeuf =
+            detailsByPDV['Dépôt central']?.['Boeuf'] ||
+            detailsByPDV['Abattage']?.['Boeuf'];
+        if (hasBoeuf) {
+            const positiveTransfers = transfertsData.transferts.filter(t =>
+                (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
+                t.produit === 'Boeuf' &&
+                t.impact === 1
+            );
+            if (positiveTransfers.length > 0) {
+                volumeAbattoirBoeuf = positiveTransfers.reduce((sum, transfer) => sum + transfer.quantite, 0);
             }
-            if (detailsByPDV['Abattage']['Veau']) {
-                // Filter positive transfers for Abattage/Veau
-                const positiveTransfersVeau = transfertsData.transferts.filter(t => 
-                    t.pointVente === 'Abattage' && 
-                    t.produit === 'Veau' && 
-                    t.impact === 1
-                );
-                
-                if (positiveTransfersVeau.length > 0) {
-                    volumeAbattoirVeau = positiveTransfersVeau.reduce((sum, transfer) => sum + transfer.quantite, 0);
-                }
+        }
+
+        const hasVeau =
+            detailsByPDV['Dépôt central']?.['Veau'] ||
+            detailsByPDV['Abattage']?.['Veau'];
+        if (hasVeau) {
+            const positiveTransfersVeau = transfertsData.transferts.filter(t =>
+                (t.pointVente === 'Dépôt central' || t.pointVente === 'Abattage') &&
+                t.produit === 'Veau' &&
+                t.impact === 1
+            );
+            if (positiveTransfersVeau.length > 0) {
+                volumeAbattoirVeau = positiveTransfersVeau.reduce((sum, transfer) => sum + transfer.quantite, 0);
             }
         }
         
@@ -12284,7 +12271,7 @@ async function fetchProxyMarginPrices(startDate, endDate, pointVente) {
             FROM ventes 
             WHERE 
                 date >= '${startYMD}' AND date <= '${endYMD}'
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 ${pointVenteFilter}
                 AND (
                     LOWER(produit) LIKE '%boeuf en gros%' 
@@ -12306,7 +12293,7 @@ async function fetchProxyMarginPrices(startDate, endDate, pointVente) {
             FROM ventes 
             WHERE 
                 date >= '${startYMD}' AND date <= '${endYMD}'
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 ${pointVenteFilter}
                 AND (LOWER(produit) LIKE '%veau en gros%' 
                     OR LOWER(produit) LIKE '%veau en détail%')
@@ -12326,7 +12313,7 @@ async function fetchProxyMarginPrices(startDate, endDate, pointVente) {
             FROM ventes 
             WHERE 
                 date >= '${startYMD}' AND date <= '${endYMD}'
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 ${pointVenteFilter}
                 AND LOWER(produit) LIKE '%poulet%'
         `;
@@ -12345,7 +12332,7 @@ async function fetchProxyMarginPrices(startDate, endDate, pointVente) {
             FROM ventes 
             WHERE 
                 date >= '${startYMD}' AND date <= '${endYMD}'
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 ${pointVenteFilter}
                 AND LOWER(produit) LIKE '%agneau%'
         `;
@@ -12364,7 +12351,7 @@ async function fetchProxyMarginPrices(startDate, endDate, pointVente) {
             FROM ventes 
             WHERE 
                 date >= '${startYMD}' AND date <= '${endYMD}'
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 ${pointVenteFilter}
                 AND (LOWER(produit) = 'oeuf' OR LOWER(produit) = 'tablette')
         `;
@@ -12505,7 +12492,7 @@ async function getSalesDataForPeriod(startDate, endDate) {
             WHERE 
                 TO_DATE(date, 'DD-MM-YYYY') >= TO_DATE(:startDate, 'DD-MM-YYYY')
                 AND TO_DATE(date, 'DD-MM-YYYY') <= TO_DATE(:endDate, 'DD-MM-YYYY')
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 AND (
                    LOWER(produit) LIKE '%boeuf en gros%' 
                     OR LOWER(produit) LIKE '%boeuf en détail%'
@@ -12526,7 +12513,7 @@ async function getSalesDataForPeriod(startDate, endDate) {
             WHERE 
                 TO_DATE(date, 'DD-MM-YYYY') >= TO_DATE(:startDate, 'DD-MM-YYYY')
                 AND TO_DATE(date, 'DD-MM-YYYY') <= TO_DATE(:endDate, 'DD-MM-YYYY')
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 AND LOWER(produit) LIKE '%veau%'
         `;
         
@@ -12544,7 +12531,7 @@ async function getSalesDataForPeriod(startDate, endDate) {
             WHERE 
                 TO_DATE(date, 'DD-MM-YYYY') >= TO_DATE(:startDate, 'DD-MM-YYYY')
                 AND TO_DATE(date, 'DD-MM-YYYY') <= TO_DATE(:endDate, 'DD-MM-YYYY')
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 AND LOWER(produit) LIKE '%poulet%'
         `;
         
@@ -12562,7 +12549,7 @@ async function getSalesDataForPeriod(startDate, endDate) {
             WHERE 
                 TO_DATE(date, 'DD-MM-YYYY') >= TO_DATE(:startDate, 'DD-MM-YYYY')
                 AND TO_DATE(date, 'DD-MM-YYYY') <= TO_DATE(:endDate, 'DD-MM-YYYY')
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 AND LOWER(produit) LIKE '%agneau%'
                 AND LOWER(produit) NOT LIKE '%tete agneau%'
                 AND LOWER(produit) NOT LIKE '%tête agneau%'
@@ -12582,7 +12569,7 @@ async function getSalesDataForPeriod(startDate, endDate) {
             WHERE 
                 TO_DATE(date, 'DD-MM-YYYY') >= TO_DATE(:startDate, 'DD-MM-YYYY')
                 AND TO_DATE(date, 'DD-MM-YYYY') <= TO_DATE(:endDate, 'DD-MM-YYYY')
-                AND point_vente != 'Abattage'
+                AND point_vente NOT IN ('Abattage', 'Dépôt central')
                 AND (LOWER(produit) = 'oeuf' OR LOWER(produit) LIKE '%tablette%')
         `;
         
@@ -13040,9 +13027,11 @@ async function fetchSellingPricesFromVentes(startDate, endDate, pointVente) {
         
         // Process each vente exactly like calculerAnalyticsVentes()
         data.ventes.forEach(vente => {
-            // Exclude "Abattage" point de vente (same as calculerAnalyticsVentes)
-            if (vente['Point de Vente'] && vente['Point de Vente'].toLowerCase() === 'abattage') {
-                return; // Skip this vente
+            // Exclure les PV "source" (Dépôt central / ancien Abattage) des
+            // analytics ventes (ce ne sont pas des points de vente publics).
+            const _pdvLower = (vente['Point de Vente'] || '').toLowerCase();
+            if (_pdvLower === 'abattage' || _pdvLower === 'dépôt central') {
+                return;
             }
             
             const produit = vente.Produit || '';
@@ -13935,13 +13924,13 @@ app.get('/api/external/analytics', validateApiKey, async (req, res) => {
         
         console.log(`📅 Final dates: ${finalStartDate} to ${finalEndDate}`);
         
-        // Get active points of sale (excluding Abattage) from database
+        // Get active points of sale (excluding sources: Dépôt central / Abattage) from database
         const pointsVenteData = await configService.getPointsVenteAsLegacy();
         const activePointsVente = Object.entries(pointsVenteData)
-            .filter(([name, properties]) => properties.active && name !== 'Abattage')
+            .filter(([name, properties]) => properties.active && name !== 'Abattage' && name !== 'Dépôt central')
             .map(([name, _]) => name);
-        
-        console.log(`🏪 Active points of sale (excluding Abattage):`, activePointsVente);
+
+        console.log(`🏪 Active points of sale (excluding sources):`, activePointsVente);
         
         // Determine which points of sale to process
         let pointsToProcess = [];
@@ -15720,7 +15709,7 @@ app.get('/api/livreur/check/:commandeId', checkAuth, async (req, res) => {
 
 // ===== CLOTURES DE CAISSE =====
 function generateCashReference(pointVente) {
-    const posMapping = { 'Dahra': 'CASH_DHR', 'Linguere': 'CASH_LGR', 'Mbao': 'CASH_MBA', 'Keur Massar': 'CASH_KM', 'O.Foire': 'CASH_OSF', 'Sacre Coeur': 'CASH_SAC', 'Abattage': 'CASH_ABATS', 'Touba': 'CASH_TB' };
+    const posMapping = { 'Dahra': 'CASH_DHR', 'Linguere': 'CASH_LGR', 'Mbao': 'CASH_MBA', 'Keur Massar': 'CASH_KM', 'O.Foire': 'CASH_OSF', 'Sacre Coeur': 'CASH_SAC', 'Abattage': 'CASH_ABATS', 'Dépôt central': 'CASH_ABATS', 'Touba': 'CASH_TB' };
     return posMapping[pointVente] || null;
 }
 
