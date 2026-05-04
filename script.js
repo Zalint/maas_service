@@ -4908,8 +4908,11 @@ async function sauvegarderTransfert() {
             console.error('Erreur lors de la vérification de session:', error);
         }
         
-        // Récupérer les données du tableau
-        const rows = document.querySelectorAll('#transfertTable tbody tr');
+        // Récupérer les données du tableau (enfant direct uniquement: les
+        // <tr> du <tbody> imbriqué de l'éditeur de calibres ne doivent pas
+        // être ramassés ici, sinon on accède a `.point-vente-select` qui
+        // n'existe pas et on plante avec "reading 'value' of null").
+        const rows = document.querySelectorAll('#transfertTable > tbody > tr');
         const transferts = [];
         
         rows.forEach(row => {
@@ -9899,7 +9902,8 @@ window.addEventListener('DOMContentLoaded', function() {
                 }
 
                 // --- TRANSFERT TABLE ---
-                const transfertRows = Array.from(document.querySelectorAll('#transfertTable tbody tr'));
+                // Enfant direct uniquement: ignorer les <tr> de l'éditeur calibres imbriqué.
+                const transfertRows = Array.from(document.querySelectorAll('#transfertTable > tbody > tr'));
                 console.log('Transfert rows found:', transfertRows.length);
                 
                 for (const row of transfertRows) {
