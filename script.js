@@ -4650,19 +4650,23 @@ async function chargerTransferts(date) {
  *
  * Comportement:
  *   - Produit avec PRODUITS_VENTILATION_POIDS (ex: Poulet):
- *       - Affiche un mini-éditeur (poids_kg + quantité par ligne).
+ *       - Affiche un mini-éditeur (poids_kg + qté + prix unitaire par ligne).
  *       - inputQuantite passe en lecture seule, recalculé = Σ qte des calibres.
  *       - kgDisplay affiche Σ (qte × poids_kg) à 2 décimales.
+ *       - Si au moins un calibre a un prix saisi, inputPrixUnitaire est
+ *         auto-rempli avec la moyenne pondérée Σ(qte×prix)/Σ qte. Reste
+ *         editable (l'utilisateur peut overrider).
  *   - Produit sans ventilation:
  *       - Affiche "—" et libère inputQuantite.
  *
  * @param {HTMLElement} row - <tr> du transfert
  * @param {string} produit - nom canonique du produit
- * @param {Array<{poids_kg:number,quantite:number}>=} calibresInit - calibres existants à pré-remplir
+ * @param {Array<{poids_kg:number,quantite:number,prix_unitaire?:number}>=} calibresInit
  */
 function configurerVentilationLigneTransfert(row, produit, calibresInit) {
     const tdDetails = row.querySelector('.details-cell');
     const inputQuantite = row.querySelector('.quantite-input');
+    const inputPrixUnitaire = row.querySelector('.prix-unitaire-input');
     const kgDisplay = row.querySelector('.kg-display');
     if (!tdDetails || !inputQuantite) return;
 
@@ -4676,11 +4680,28 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         tdDetails.appendChild(span);
         inputQuantite.readOnly = false;
         if (kgDisplay) kgDisplay.textContent = '';
+        // Pas de ventilation: prix non recalculé, retour au style normal.
+        if (inputPrixUnitaire) inputPrixUnitaire.style.fontStyle = '';
         return;
     }
 
     // Editeur calibres
     inputQuantite.readOnly = true;
+    // Reset du style à chaque (re)configuration; l'italique se réappliquera
+    // si l'utilisateur écrase la valeur auto-remplie après coup.
+    if (inputPrixUnitaire) inputPrixUnitaire.style.fontStyle = '';
+
+    // Listener "italique sur override" attaché une seule fois par input.
+    // Le flag _isAutoFilling permet de distinguer un input dispatché par
+    // recalc (auto-remplissage) d'une saisie clavier de l'utilisateur.
+    if (inputPrixUnitaire && !inputPrixUnitaire._italicOnOverrideAttached) {
+        inputPrixUnitaire.addEventListener('input', () => {
+            if (!inputPrixUnitaire._isAutoFilling) {
+                inputPrixUnitaire.style.fontStyle = 'italic';
+            }
+        });
+        inputPrixUnitaire._italicOnOverrideAttached = true;
+    }
 
     const editor = document.createElement('div');
     editor.className = 'calibres-editor';
@@ -4688,18 +4709,30 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
     const table = document.createElement('table');
     table.className = 'table table-sm mb-1 calibres-table';
     table.innerHTML = `
-        <thead><tr><th style="font-size:0.75rem;">Poids (kg)</th><th style="font-size:0.75rem;">Qté</th><th></th></tr></thead>
+        <thead><tr>
+            <th style="font-size:0.75rem;">Poids (kg)</th>
+            <th style="font-size:0.75rem;">Qté</th>
+            <th style="font-size:0.75rem;">Prix unitaire</th>
+            <th></th>
+        </tr></thead>
         <tbody></tbody>`;
     const calibresBody = table.querySelector('tbody');
 
     const recalc = () => {
         let sumQte = 0;
         let sumKg = 0;
+        let sumValeur = 0;
+        let qteAvecPrix = 0;
         calibresBody.querySelectorAll('tr').forEach(tr => {
             const poids = parseFloat(tr.querySelector('.calibre-poids').value) || 0;
             const qte = parseFloat(tr.querySelector('.calibre-qte').value) || 0;
+            const prixRaw = tr.querySelector('.calibre-prix').value;
             sumQte += qte;
             sumKg += qte * poids;
+            if (prixRaw !== '' && !isNaN(parseFloat(prixRaw))) {
+                sumValeur += qte * parseFloat(prixRaw);
+                qteAvecPrix += qte;
+            }
         });
         // Mettre à jour la quantité totale (lecture seule pour ces produits)
         inputQuantite.value = sumQte;
@@ -4707,17 +4740,30 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         if (kgDisplay) {
             kgDisplay.textContent = sumKg > 0 ? `${sumKg.toFixed(2)} kg` : '';
         }
+        // Auto-remplir le prix unitaire global si au moins un calibre a un
+        // prix saisi. Reste editable: l'utilisateur peut overrider apres
+        // (auquel cas le champ passe en italique via le listener).
+        if (inputPrixUnitaire && qteAvecPrix > 0) {
+            const moyennePonderee = sumValeur / qteAvecPrix;
+            inputPrixUnitaire._isAutoFilling = true;
+            inputPrixUnitaire.value = parseFloat(moyennePonderee.toFixed(2));
+            inputPrixUnitaire.style.fontStyle = '';
+            inputPrixUnitaire.dispatchEvent(new Event('input', { bubbles: true }));
+            inputPrixUnitaire._isAutoFilling = false;
+        }
     };
 
-    const ajouterCalibre = (poids = '', qte = '') => {
+    const ajouterCalibre = (poids = '', qte = '', prix = '') => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><input type="number" class="form-control form-control-sm calibre-poids" min="0.01" step="0.01" value="${poids}"></td>
             <td><input type="number" class="form-control form-control-sm calibre-qte" min="0" step="1" value="${qte}"></td>
+            <td><input type="number" class="form-control form-control-sm calibre-prix" min="0" step="1" value="${prix}" placeholder="optionnel"></td>
             <td><button type="button" class="btn btn-sm btn-outline-danger calibre-remove" title="Supprimer">×</button></td>
         `;
         tr.querySelector('.calibre-poids').addEventListener('input', recalc);
         tr.querySelector('.calibre-qte').addEventListener('input', recalc);
+        tr.querySelector('.calibre-prix').addEventListener('input', recalc);
         tr.querySelector('.calibre-remove').addEventListener('click', () => {
             tr.remove();
             recalc();
@@ -4740,7 +4786,11 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
 
     // Pré-remplir si on a des calibres existants
     if (Array.isArray(calibresInit) && calibresInit.length > 0) {
-        calibresInit.forEach(c => ajouterCalibre(c.poids_kg, c.quantite));
+        calibresInit.forEach(c => ajouterCalibre(
+            c.poids_kg,
+            c.quantite,
+            (c.prix_unitaire !== undefined && c.prix_unitaire !== null) ? c.prix_unitaire : ''
+        ));
         recalc();
     } else if (parseFloat(inputQuantite.value) > 0) {
         // Transfert existant sans ventilation persistée: on respecte la
@@ -4934,8 +4984,14 @@ async function sauvegarderTransfert() {
                 calibreRows.forEach(cr => {
                     const poids = parseFloat(cr.querySelector('.calibre-poids').value);
                     const qte = parseFloat(cr.querySelector('.calibre-qte').value);
+                    const prixRaw = cr.querySelector('.calibre-prix') ? cr.querySelector('.calibre-prix').value : '';
                     if (poids > 0 && qte > 0) {
-                        calibres.push({ poids_kg: poids, quantite: qte });
+                        const calibre = { poids_kg: poids, quantite: qte };
+                        const prix = parseFloat(prixRaw);
+                        if (!isNaN(prix) && prix >= 0) {
+                            calibre.prix_unitaire = prix;
+                        }
+                        calibres.push(calibre);
                     }
                 });
                 if (calibres.length > 0) {

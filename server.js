@@ -2694,10 +2694,24 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
                         message: `Calibre invalide pour ${transfert.produit}: poids_kg et quantite > 0 requis`
                     });
                 }
-                cleanCalibres.push({
+                const cleanCalibre = {
                     poids_kg: parseFloat(poids.toFixed(2)),
                     quantite: qte
-                });
+                };
+                // prix_unitaire est optionnel par calibre. Si fourni il doit
+                // etre >= 0; sinon on l'omet et c'est le prix global de la
+                // ligne qui s'applique a ce calibre.
+                if (c.prix_unitaire !== undefined && c.prix_unitaire !== null && c.prix_unitaire !== '') {
+                    const prix = parseFloat(c.prix_unitaire);
+                    if (isNaN(prix) || prix < 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message: `Calibre invalide pour ${transfert.produit}: prix_unitaire invalide`
+                        });
+                    }
+                    cleanCalibre.prix_unitaire = parseFloat(prix.toFixed(2));
+                }
+                cleanCalibres.push(cleanCalibre);
                 sumQte += qte;
             }
             const qtetotal = parseFloat(transfert.quantite) || 0;
