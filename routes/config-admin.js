@@ -557,7 +557,8 @@ router.get('/produits-inventaire', requireAdminOrSupervisor, async (req, res) =>
         alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : [],
         mode_stock: produit.mode_stock || 'manuel',
         unite_stock: produit.unite_stock || 'unite',
-        ventes: Array.isArray(produit.ventes) ? produit.ventes : []
+        ventes: Array.isArray(produit.ventes) ? produit.ventes : [],
+        ventilation_poids: !!produit.ventilation_poids
       };
       
       if (produit.prixParPointVente) {
@@ -807,6 +808,7 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       const alternatives = config.alternatives || [];
       const modeStock = config.mode_stock || 'manuel';
       const uniteStock = config.unite_stock || 'unite';
+      const ventilationPoids = !!config.ventilation_poids;
       const ventesList = Array.isArray(config.ventes)
         ? config.ventes.filter((v) => typeof v === 'string' && v.trim().length > 0)
         : [];
@@ -819,7 +821,8 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
           mode_stock: modeStock,
           unite_stock: uniteStock,
           categorie_affichage: categorieAffichage,
-          ventes: ventesList
+          ventes: ventesList,
+          ventilation_poids: ventilationPoids
         }
       });
 
@@ -842,7 +845,8 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
           produit.mode_stock !== modeStock ||
           produit.unite_stock !== uniteStock ||
           produit.categorie_affichage !== categorieAffichage ||
-          JSON.stringify(oldVentes) !== JSON.stringify(ventesList);
+          JSON.stringify(oldVentes) !== JSON.stringify(ventesList) ||
+          !!produit.ventilation_poids !== ventilationPoids;
 
         if (needsUpdate) {
           if (oldPrix !== prixDefaut) {
@@ -864,7 +868,8 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
             mode_stock: modeStock,
             unite_stock: uniteStock,
             categorie_affichage: categorieAffichage,
-            ventes: ventesList
+            ventes: ventesList,
+            ventilation_poids: ventilationPoids
           });
           updated++;
           console.log(`  🔄 Produit mis à jour: ${produitName}`);

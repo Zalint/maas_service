@@ -1881,8 +1881,10 @@ function genererLignesProduitsInventaire(produits, categorie) {
 
         const modeStock = config.mode_stock || 'manuel';
         const uniteStock = config.unite_stock || 'unite';
+        const ventilationPoids = !!config.ventilation_poids;
         const ventesCount = Array.isArray(config.ventes) ? config.ventes.length : 0;
         const escProduit = produit.replace(/'/g, "\\'");
+        const ventilationCheckboxId = `ventilation-${produit.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
         html += `
             <tr data-produit="${escAttr(produit)}">
@@ -1900,17 +1902,25 @@ function genererLignesProduitsInventaire(produits, categorie) {
                            onchange="modifierAlternativesInventaire('${produit}', this.value, ${catParam})">
                 </td>
                 <td>
-                    <div class="d-flex align-items-center gap-2">
-                        <select class="form-select form-select-sm" style="width: 100px;"
-                                onchange="modifierModeStockInventaire('${produit}', this.value, ${catParam})">
-                            <option value="manuel" ${modeStock === 'manuel' ? 'selected' : ''}>Manuel</option>
-                            <option value="automatique" ${modeStock === 'automatique' ? 'selected' : ''}>Auto</option>
-                        </select>
-                        <select class="form-select form-select-sm" style="width: 80px;"
-                                onchange="modifierUniteStockInventaire('${produit}', this.value, ${catParam})">
-                            <option value="unite" ${uniteStock === 'unite' ? 'selected' : ''}>Unité</option>
-                            <option value="kilo" ${uniteStock === 'kilo' ? 'selected' : ''}>Kilo</option>
-                        </select>
+                    <div class="d-flex flex-column gap-1">
+                        <div class="d-flex align-items-center gap-2">
+                            <select class="form-select form-select-sm" style="width: 100px;"
+                                    onchange="modifierModeStockInventaire('${produit}', this.value, ${catParam})">
+                                <option value="manuel" ${modeStock === 'manuel' ? 'selected' : ''}>Manuel</option>
+                                <option value="automatique" ${modeStock === 'automatique' ? 'selected' : ''}>Auto</option>
+                            </select>
+                            <select class="form-select form-select-sm" style="width: 80px;"
+                                    onchange="modifierUniteStockInventaire('${produit}', this.value, ${catParam})">
+                                <option value="unite" ${uniteStock === 'unite' ? 'selected' : ''}>Unité</option>
+                                <option value="kilo" ${uniteStock === 'kilo' ? 'selected' : ''}>Kilo</option>
+                            </select>
+                        </div>
+                        <div class="form-check form-check-inline" title="Saisie d'une ventilation par calibre (poids+quantité) lors des transferts">
+                            <input class="form-check-input" type="checkbox" id="${ventilationCheckboxId}"
+                                   ${ventilationPoids ? 'checked' : ''}
+                                   onchange="modifierVentilationPoidsInventaire('${produit}', this.checked, ${catParam})">
+                            <label class="form-check-label small" for="${ventilationCheckboxId}">Ventilation par poids</label>
+                        </div>
                     </div>
                 </td>
                 <td>
@@ -3005,6 +3015,13 @@ function modifierUniteStockInventaire(produit, uniteStock, categorie = null) {
     const config = trouverConfigProduitInventaire(produit, categorie);
     if (config) {
         config.unite_stock = uniteStock;
+    }
+}
+
+function modifierVentilationPoidsInventaire(produit, ventilation, categorie = null) {
+    const config = trouverConfigProduitInventaire(produit, categorie);
+    if (config) {
+        config.ventilation_poids = !!ventilation;
     }
 }
 

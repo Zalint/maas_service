@@ -43,6 +43,12 @@ const Transfert = sequelize.define('Transfert', {
   commentaire: {
     type: DataTypes.TEXT,
     allowNull: true
+  },
+  extension: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: null,
+    comment: 'Données enrichies. Pour les produits avec ventilation_poids=true, contient { calibres: [{ poids_kg, quantite }] }'
   }
 }, {
   tableName: 'transferts',

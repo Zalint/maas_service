@@ -110,9 +110,12 @@ CREATE TABLE IF NOT EXISTS transferts (
     total FLOAT NOT NULL DEFAULT 0,
     impact VARCHAR(255) NOT NULL,
     commentaire TEXT,
+    extension JSONB DEFAULT NULL,
     "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+COMMENT ON COLUMN transferts.extension IS 'Données enrichies. Ex: { "calibres": [{ "poids_kg": 1.4, "quantite": 12 }, ...] } pour les produits avec ventilation_poids=true';
 
 -- Index pour améliorer les performances de recherche
 CREATE INDEX IF NOT EXISTS idx_transferts_date ON transferts(date);
@@ -550,10 +553,13 @@ CREATE TABLE IF NOT EXISTS produits (
     mode_stock mode_stock_type NOT NULL DEFAULT 'manuel',
     unite_stock unite_stock_type NOT NULL DEFAULT 'unite',
     categorie_affichage VARCHAR(100),
+    ventilation_poids BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_produit_type UNIQUE (nom, type_catalogue)
 );
+
+COMMENT ON COLUMN produits.ventilation_poids IS 'Inventaire: si TRUE, les transferts de ce produit acceptent une ventilation par calibre (poids_kg + quantite) dans transferts.extension.calibres';
 
 -- Commentaire pour la colonne categorie_affichage
 COMMENT ON COLUMN produits.categorie_affichage IS 'Catégorie personnalisée pour l''affichage dans l''admin inventaire (ex: Conserve, Boissons)';

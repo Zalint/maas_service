@@ -2654,27 +2654,74 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
 app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, async (req, res) => {
     try {
         const transferts = req.body;
-        
+
         // Vérifier si des transferts sont fournis
         if (!Array.isArray(transferts) || transferts.length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Aucun transfert à sauvegarder' 
+            return res.status(400).json({
+                success: false,
+                message: 'Aucun transfert à sauvegarder'
             });
         }
-        
+
+        // Validation de la ventilation par calibre (extension.calibres).
+        // Quand un produit est saisi avec ventilation, on impose:
+        //  - calibres est un tableau non vide
+        //  - chaque entrée { poids_kg > 0, quantite > 0 }
+        //  - Σ calibres.quantite === transfert.quantite (à 0.001 près)
+        // On normalise aussi les chiffres pour stocker en JSONB propre.
+        for (const transfert of transferts) {
+            const ext = transfert.extension;
+            if (ext === undefined || ext === null) continue;
+            if (typeof ext !== 'object' || !Array.isArray(ext.calibres)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `extension invalide pour ${transfert.produit || '?'}: attendu { calibres: [...] }`
+                });
+            }
+            if (ext.calibres.length === 0) {
+                // Tableau vide = pas de ventilation. Normaliser à null.
+                transfert.extension = null;
+                continue;
+            }
+            let sumQte = 0;
+            const cleanCalibres = [];
+            for (const c of ext.calibres) {
+                const poids = parseFloat(c.poids_kg);
+                const qte = parseFloat(c.quantite);
+                if (!(poids > 0) || !(qte > 0)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Calibre invalide pour ${transfert.produit}: poids_kg et quantite > 0 requis`
+                    });
+                }
+                cleanCalibres.push({
+                    poids_kg: parseFloat(poids.toFixed(2)),
+                    quantite: qte
+                });
+                sumQte += qte;
+            }
+            const qtetotal = parseFloat(transfert.quantite) || 0;
+            if (Math.abs(sumQte - qtetotal) > 0.001) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Pour ${transfert.produit}: Σ calibres = ${sumQte}, ne correspond pas à la quantité totale ${qtetotal}`
+                });
+            }
+            transfert.extension = { calibres: cleanCalibres };
+        }
+
         // Grouper les transferts par date
         const transfertsByDate = {};
-        
+
         transferts.forEach(transfert => {
             if (!transfert.date) {
                 throw new Error('Date manquante pour un transfert');
             }
-            
+
             if (!transfertsByDate[transfert.date]) {
                 transfertsByDate[transfert.date] = [];
             }
-            
+
             transfertsByDate[transfert.date].push(transfert);
         });
         
