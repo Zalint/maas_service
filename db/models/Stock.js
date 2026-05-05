@@ -44,6 +44,13 @@ const Stock = sequelize.define('Stock', {
   commentaire: {
     type: DataTypes.TEXT,
     allowNull: true
+  },
+  is_auto_calculated: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'is_auto_calculated',
+    comment: 'TRUE: ligne stock soir derivée auto (matin + transferts - ventes) pour produit en mode_stock=automatique. FALSE: saisie manuelle ou override utilisateur, ne sera pas ecrasee par le recompute auto.'
   }
 }, {
   tableName: 'stocks',

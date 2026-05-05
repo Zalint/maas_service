@@ -103,6 +103,44 @@ async function updateSchema() {
             console.log('Colonne extension vérifiée/ajoutée dans la table transferts');
         }
 
+        // Stock soir auto-calcul: marque les lignes derivees automatiquement
+        // (matin + transferts - ventes) pour produits mode_stock=automatique,
+        // par opposition aux saisies manuelles / overrides utilisateur.
+        const stocksTableExists = await checkTableExists('stocks');
+        if (stocksTableExists) {
+            await sequelize.query(`
+                ALTER TABLE stocks
+                ADD COLUMN IF NOT EXISTS "is_auto_calculated" BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonne is_auto_calculated vérifiée/ajoutée dans la table stocks');
+        }
+
+        // Verrou defensif: tous les produits dont la categorie a famille =
+        // 'Boucherie' (Bovin/Ovin/Poulet/Poisson/Caprin) ou nommee 'Pack'
+        // doivent rester en mode_stock = 'manuel'. Idempotent: ne touche que
+        // les lignes qui ne sont pas deja a manuel. Sans ca, un check accidentel
+        // dans l'admin pourrait faire decrementer le stock boucherie sur les
+        // ventes, ce qui n'est pas l'intention metier.
+        if (produitsTableExists) {
+            try {
+                const [, metaBoucherie] = await sequelize.query(`
+                    UPDATE produits SET mode_stock = 'manuel'
+                     WHERE mode_stock <> 'manuel'
+                       AND categorie_id IN (
+                           SELECT id FROM categories
+                            WHERE famille = 'Boucherie' OR nom = 'Pack'
+                       )
+                `);
+                if (metaBoucherie && metaBoucherie.rowCount) {
+                    console.log(`🔒 Verrou Boucherie/Pack: ${metaBoucherie.rowCount} produits ramenes a mode_stock=manuel.`);
+                }
+            } catch (e) {
+                // En tenant frais, categories peut avoir famille NULL: on
+                // continue, le seed posera la bonne famille plus tard.
+                console.warn('⚠️  Verrou Boucherie/Pack non applique:', e.message);
+            }
+        }
+
         // Table inventaire_categories: persistance par tenant du mapping
         // nom de catégorie d'inventaire -> famille (Boucherie/Epicerie/Autres).
         // Les catégories d'inventaire elles-mêmes restent dérivées du champ

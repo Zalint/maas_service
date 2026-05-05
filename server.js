@@ -785,6 +785,50 @@ const STOCK_MATIN_PATH = path.join(__dirname, 'data', 'stock-matin.json');
 const STOCK_SOIR_PATH = path.join(__dirname, 'data', 'stock-soir.json');
 const TRANSFERTS_PATH = path.join(__dirname, 'data', 'transferts.json');
 
+/**
+ * Reconstruit le fichier JSON stock-{matin,soir}.json pour une date donnee
+ * a partir des lignes presentes en BDD (table stocks). Utilise apres un
+ * recompute auto: la BDD est la source de verite, on resynchronise le JSON
+ * pour que GET /api/stock/:type continue a renvoyer la meme chose meme avant
+ * un eventuel reload depuis la BDD.
+ *
+ * Format produit (compatible avec le client existant):
+ *   { "<PV>-<Produit>": { date, typeStock: "Stock Matin"|"Stock Soir",
+ *     "Point de Vente", Produit, Nombre, PU, Montant, Commentaire, auto } }
+ *
+ * @param {string} dateInput - format DD/MM/YYYY ou DD-MM-YYYY (input client).
+ * @param {'matin'|'soir'} type
+ */
+async function syncStockJsonFromBDD(dateInput, type) {
+    const { Stock } = require('./db/models');
+    const { formatDate, parseDate } = require('./db/utils');
+    const dateBdd = formatDate(parseDate(dateInput));
+
+    const rows = await Stock.findAll({ where: { date: dateBdd, typeStock: type } });
+    const result = {};
+    const typeStockLabel = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
+    for (const r of rows) {
+        const key = `${r.pointVente}-${r.produit}`;
+        result[key] = {
+            date: r.date,
+            typeStock: typeStockLabel,
+            'Point de Vente': r.pointVente,
+            Produit: r.produit,
+            Nombre: String(parseFloat(r.quantite)),
+            PU: String(parseFloat(r.prixUnitaire)),
+            Montant: String(parseFloat(r.total)),
+            Commentaire: r.commentaire || '',
+            auto: !!r.is_auto_calculated
+        };
+    }
+
+    const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
+    const filePath = getPathByDate(baseFilePath, dateInput);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    await fsPromises.writeFile(filePath, JSON.stringify(result, null, 2));
+}
+
 // Fonction pour récupérer le mappage des références de paiement depuis la BDD
 const getPaymentRefToPdv = async () => {
     const { PointVente } = require('./db/models');
@@ -1542,103 +1586,26 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
         await Vente.bulkCreate(ventesToInsert);
         
         // =====================================================
-        // MISE À JOUR STOCK SOIR POUR PRODUITS AUTO
-        // Stock Soir = Stock Matin - Ventes
-        // =====================================================
+        // MISE A JOUR STOCK SOIR POUR PRODUITS AUTO
+        // Delegue a recomputeStockSoirForAuto qui:
+        //   - Recalcule pour TOUS les produits auto (pas seulement ceux vendus
+        //     dans cette requete -> couvre les produits affectes indirectement)
+        //   - Respecte le flag is_auto_calculated (ne touche pas les overrides
+        //     utilisateur)
+        //   - Ecrit en BDD (survit aux redeploiements Render).
+        // Puis on resynchronise le JSON depuis la BDD pour que GET stock/soir
+        // renvoie immediatement la nouvelle valeur sans attendre un fallback.
         try {
-            const { Produit } = require('./db/models');
-            
-            for (const vente of ventesToInsert) {
-                // Chercher si le produit existe et est en mode automatique
-                const produit = await Produit.findOne({
-                    where: { 
-                        nom: vente.produit,
-                        mode_stock: 'automatique'
-                    }
-                });
-                
-                if (produit) {
-                    const dateVente = vente.date;
-                    const dateFormatted = standardiserDateFormat(dateVente);
-                    const pointVente = vente.pointVente;
-                    const produitNom = vente.produit;
-                    const quantiteVendue = parseFloat(vente.nombre) || 0;
-                    
-                    // Format PLAT: { "PointVente-Produit": { Nombre, PU, ... } }
-                    const stockKey = `${pointVente}-${produitNom}`;
-                    
-                    // Charger Stock Matin
-                    const stockMatinPath = getPathByDate(STOCK_MATIN_PATH, dateFormatted);
-                    let stockMatin = {};
-                    if (fs.existsSync(stockMatinPath)) {
-                        stockMatin = JSON.parse(fs.readFileSync(stockMatinPath, 'utf8'));
-                    }
-                    
-                    // Initialiser Stock Matin si le produit n'existe pas (avec 0)
-                    if (!stockMatin[stockKey]) {
-                        stockMatin[stockKey] = {
-                            Nombre: 0,
-                            PU: produit.prix_defaut || vente.prixUnit || 0,
-                            Montant: 0,
-                            Produit: produitNom,
-                            "Point de Vente": pointVente,
-                            mode: 'automatique'
-                        };
-                        // Sauvegarder Stock Matin
-                        const dirPath = path.dirname(stockMatinPath);
-                        if (!fs.existsSync(dirPath)) {
-                            fs.mkdirSync(dirPath, { recursive: true });
-                        }
-                        fs.writeFileSync(stockMatinPath, JSON.stringify(stockMatin, null, 2));
-                        console.log(`📦 Stock Matin initialisé: ${stockKey}: 0`);
-                    }
-                    
-                    // Calculer Stock Soir = Stock Matin - Ventes totales du jour
-                    const stockMatinData = stockMatin[stockKey] || {};
-                    const stockMatinQte = parseFloat(stockMatinData.Nombre || stockMatinData.quantite || 0);
-                    
-                    // Calculer total des ventes du jour pour ce produit
-                    const ventesJour = await Vente.findAll({
-                        where: {
-                            date: vente.date,
-                            pointVente: pointVente,
-                            produit: produitNom
-                        }
-                    });
-                    
-                    const totalVentes = ventesJour.reduce((sum, v) => sum + parseFloat(v.nombre || 0), 0);
-                    const stockSoirQte = stockMatinQte - totalVentes;
-                    const prixUnit = parseFloat(produit.prix_defaut || vente.prixUnit || 0);
-                    
-                    // Mettre à jour Stock Soir (format PLAT)
-                    const stockSoirPath = getPathByDate(STOCK_SOIR_PATH, dateFormatted);
-                    let stockSoir = {};
-                    if (fs.existsSync(stockSoirPath)) {
-                        stockSoir = JSON.parse(fs.readFileSync(stockSoirPath, 'utf8'));
-                    }
-                    
-                    stockSoir[stockKey] = {
-                        Nombre: stockSoirQte,
-                        PU: prixUnit,
-                        Montant: stockSoirQte * prixUnit,
-                        Produit: produitNom,
-                        "Point de Vente": pointVente,
-                        mode: 'automatique'
-                    };
-                    
-                    // Sauvegarder Stock Soir
-                    const dirPath = path.dirname(stockSoirPath);
-                    if (!fs.existsSync(dirPath)) {
-                        fs.mkdirSync(dirPath, { recursive: true });
-                    }
-                    fs.writeFileSync(stockSoirPath, JSON.stringify(stockSoir, null, 2));
-                    
-                    console.log(`📦 Stock Soir mis à jour: ${stockKey}: ${stockMatinQte} - ${totalVentes} = ${stockSoirQte}`);
-                }
+            const { recomputeStockSoirForAuto } = require('./db/utils');
+            const datesUniques = [...new Set(ventesToInsert.map((v) => v.date))];
+            for (const dateVente of datesUniques) {
+                const result = await recomputeStockSoirForAuto(dateVente);
+                console.log(`📦 Stock soir auto recompute (${dateVente}):`, result);
+                await syncStockJsonFromBDD(dateVente, 'soir');
             }
         } catch (stockError) {
             // Log l'erreur mais ne pas bloquer la vente
-            console.error('⚠️ Erreur mise à jour stock (non bloquant):', stockError.message);
+            console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
         }
         // =====================================================
         
@@ -2282,7 +2249,8 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
                     Nombre: String(parseFloat(r.quantite)),
                     PU: String(parseFloat(r.prixUnitaire)),
                     Montant: String(parseFloat(r.total)),
-                    Commentaire: r.commentaire || ''
+                    Commentaire: r.commentaire || '',
+                    auto: !!r.is_auto_calculated
                 };
             }
             console.log(`✅ Fallback BDD stock ${type}: ${rows.length} lignes pour ${dateBdd}.`);
@@ -2684,8 +2652,25 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
         // cote fichier (writeFile ecrase l'integralite).
         try {
             const { Stock } = require('./db/models');
-            const { formatDate, parseDate } = require('./db/utils');
+            const { formatDate, parseDate, computeStockSoirAutoValues } = require('./db/utils');
             const dateBdd = formatDate(parseDate(date));
+
+            // Pour le stock soir, on classifie chaque ligne en auto vs override
+            // utilisateur en comparant la valeur soumise a la valeur calculee
+            // (matin + transferts - ventes). Tolerance: 0.001 pour eviter les
+            // faux negatifs lies aux flotants. Pour les produits non-auto,
+            // is_auto_calculated reste false (saisie manuelle classique).
+            let classify = null;
+            if (type === 'soir') {
+                const { autoSet, calcByKey } = await computeStockSoirAutoValues(date);
+                classify = (pv, produit, valeur) => {
+                    if (!autoSet.has(produit)) return false;
+                    const calc = calcByKey.get(`${pv}|${produit}`);
+                    if (calc === undefined) return false;
+                    return Math.abs(calc - valeur) < 0.001;
+                };
+            }
+
             await Stock.destroy({ where: { date: dateBdd, typeStock: type } });
 
             // Le shape du body cote stock est { "key1": { date, "Point de Vente",
@@ -2693,22 +2678,43 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
             // chaque valeur portant tous les champs.
             const rows = Object.values(req.body || {})
                 .filter((e) => e && (e['Point de Vente'] || e.pointVente) && (e.Produit || e.produit))
-                .map((e) => ({
-                    date: dateBdd,
-                    typeStock: type,
-                    pointVente: e['Point de Vente'] || e.pointVente,
-                    produit: e.Produit || e.produit,
-                    quantite: parseFloat(e.Nombre || e.quantite) || 0,
-                    prixUnitaire: parseFloat(e.PU || e.prixUnitaire) || 0,
-                    total: parseFloat(e.Montant || e.total) || 0,
-                    commentaire: e.Commentaire || e.commentaire || ''
-                }));
+                .map((e) => {
+                    const pv = e['Point de Vente'] || e.pointVente;
+                    const produit = e.Produit || e.produit;
+                    const quantite = parseFloat(e.Nombre || e.quantite) || 0;
+                    return {
+                        date: dateBdd,
+                        typeStock: type,
+                        pointVente: pv,
+                        produit,
+                        quantite,
+                        prixUnitaire: parseFloat(e.PU || e.prixUnitaire) || 0,
+                        total: parseFloat(e.Montant || e.total) || 0,
+                        commentaire: e.Commentaire || e.commentaire || '',
+                        is_auto_calculated: classify ? classify(pv, produit, quantite) : false
+                    };
+                });
             if (rows.length > 0) {
                 await Stock.bulkCreate(rows);
                 console.log(`✅ Stock ${type} persiste en BDD: ${rows.length} lignes pour ${dateBdd}.`);
             }
         } catch (dbError) {
             console.error('⚠️  Echec persistance BDD stock (JSON OK):', dbError.message);
+        }
+
+        // Si on vient de sauver le stock matin, recompute le stock soir auto:
+        // le matin est l'input principal du calcul (matin + transferts - ventes).
+        // Pas de recompute pour type='soir' ici (ce serait recursif: la sauvegarde
+        // EST l'evenement qui pose la valeur).
+        if (type === 'matin') {
+            try {
+                const { recomputeStockSoirForAuto } = require('./db/utils');
+                const result = await recomputeStockSoirForAuto(date);
+                console.log(`📦 Stock soir auto recompute (${date}):`, result);
+                await syncStockJsonFromBDD(date, 'soir');
+            } catch (stockError) {
+                console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
+            }
         }
 
         res.json({ success: true });
@@ -2861,6 +2867,19 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
             console.log(`✅ Transferts persistés en BDD: ${transferts.length} lignes.`);
         } catch (dbError) {
             console.error('⚠️  Echec persistance BDD transferts (JSON OK):', dbError.message);
+        }
+
+        // Recompute stock soir auto: un transfert peut affecter le solde d'un
+        // produit auto (ajout depot central -> incremente, sortie -> decremente).
+        try {
+            const { recomputeStockSoirForAuto } = require('./db/utils');
+            for (const dateTransfert of Object.keys(transfertsByDate)) {
+                const result = await recomputeStockSoirForAuto(dateTransfert);
+                console.log(`📦 Stock soir auto recompute (${dateTransfert}):`, result);
+                await syncStockJsonFromBDD(dateTransfert, 'soir');
+            }
+        } catch (stockError) {
+            console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
         }
 
         res.json({ success: true });
