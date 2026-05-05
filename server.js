@@ -2686,6 +2686,12 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
             let sumQte = 0;
             const cleanCalibres = [];
             for (const c of ext.calibres) {
+                if (typeof c !== 'object' || c === null) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Calibre invalide pour ${transfert.produit}: entrée non-objet`
+                    });
+                }
                 const poids = parseFloat(c.poids_kg);
                 const qte = parseFloat(c.quantite);
                 if (!(poids > 0) || !(qte > 0)) {
@@ -2714,7 +2720,13 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
                 cleanCalibres.push(cleanCalibre);
                 sumQte += qte;
             }
-            const qtetotal = parseFloat(transfert.quantite) || 0;
+            const qtetotal = parseFloat(transfert.quantite);
+            if (!Number.isFinite(qtetotal)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Pour ${transfert.produit}: quantite manquante ou invalide (recu: ${JSON.stringify(transfert.quantite)})`
+                });
+            }
             if (Math.abs(sumQte - qtetotal) > 0.001) {
                 return res.status(400).json({
                     success: false,

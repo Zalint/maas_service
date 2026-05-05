@@ -641,7 +641,7 @@ INSERT INTO produits (nom, categorie_id, type_catalogue, prix_defaut, prix_alter
 ON CONFLICT (nom, type_catalogue) DO NOTHING;
 
 -- Produits d'INVENTAIRE (sans catégorie)
-INSERT INTO produits (nom, categorie_id, type_catalogue, prix_defaut, prix_alternatifs) VALUES 
+INSERT INTO produits (nom, categorie_id, type_catalogue, prix_defaut, prix_alternatifs) VALUES
     ('Boeuf', NULL, 'inventaire', 3500, '{3500,3400,3600,3700}'),
     ('Veau', NULL, 'inventaire', 3700, '{3700,3600,3800,3900}'),
     ('Agneau', NULL, 'inventaire', 4500, '{4500,4000,5000}'),
@@ -653,6 +653,12 @@ INSERT INTO produits (nom, categorie_id, type_catalogue, prix_defaut, prix_alter
     ('Yell', NULL, 'inventaire', 2000, '{2000,2500}'),
     ('Dechet', NULL, 'inventaire', 1000, '{1000}')
 ON CONFLICT (nom, type_catalogue) DO NOTHING;
+
+-- Activer la ventilation par calibre pour Poulet sur les fresh installs.
+-- Aligne le comportement avec db/update-schema.js qui fait pareil pour les
+-- tenants existants. Idempotent.
+UPDATE produits SET ventilation_poids = TRUE
+ WHERE nom = 'Poulet' AND type_catalogue = 'inventaire' AND ventilation_poids = FALSE;
 
 -- =====================================================
 -- TABLE: stock_auto

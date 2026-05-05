@@ -1875,7 +1875,7 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const config = produits[produit];
         const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
         const prixSpeciaux = Object.keys(config)
-            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key))
+            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids'].includes(key))
             .map(key => `${key}: ${config[key]}`)
             .join(', ');
 
@@ -1918,7 +1918,7 @@ function genererLignesProduitsInventaire(produits, categorie) {
                         <div class="form-check form-check-inline" title="Saisie d'une ventilation par calibre (poids+quantité) lors des transferts">
                             <input class="form-check-input" type="checkbox" id="${ventilationCheckboxId}"
                                    ${ventilationPoids ? 'checked' : ''}
-                                   onchange="modifierVentilationPoidsInventaire('${produit}', this.checked, ${catParam})">
+                                   onchange="modifierVentilationPoidsInventaire('${escProduit}', this.checked, ${catParam})">
                             <label class="form-check-label small" for="${ventilationCheckboxId}">Ventilation par poids</label>
                         </div>
                     </div>
@@ -2409,8 +2409,10 @@ function modifierPrixSpeciauxInventaire(produit) {
     // Récupérer la configuration actuelle du produit
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
-    
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids'].includes(key));
+    // ventilation_poids est un flag booleen, pas un prix par PV: l'exclure
+    // empeche son affichage parasite dans la liste des prix speciaux.
+
     // Créer le modal dynamiquement
     let modalHtml = `
         <div class="modal fade" id="prixSpeciauxInventaireModal" tabindex="-1" aria-labelledby="prixSpeciauxInventaireModalLabel" aria-hidden="true">
@@ -2484,7 +2486,7 @@ function modifierPrixSpeciauxInventaire(produit) {
 function refreshPrixSpeciauxInventaireTable(produit) {
     const config = currentInventaireConfig[produit];
     const prixSpeciaux = Object.keys(config)
-        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key));
+        .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids'].includes(key));
     
     const tbody = document.getElementById('prixSpeciauxInventaireTableBody');
     if (!tbody) return;

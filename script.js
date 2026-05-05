@@ -4753,21 +4753,50 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         }
     };
 
+    // Construit chaque ligne via les APIs DOM plutot que innerHTML pour
+    // eviter d'injecter une valeur non echappee si calibresInit vient un
+    // jour d'une source non validee.
+    const buildNumberInput = (className, value, attrs) => {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.className = `form-control form-control-sm ${className}`;
+        for (const [k, v] of Object.entries(attrs || {})) input.setAttribute(k, v);
+        input.value = value === '' || value === null || value === undefined ? '' : String(value);
+        return input;
+    };
     const ajouterCalibre = (poids = '', qte = '', prix = '') => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td><input type="number" class="form-control form-control-sm calibre-poids" min="0.01" step="0.01" value="${poids}"></td>
-            <td><input type="number" class="form-control form-control-sm calibre-qte" min="0" step="1" value="${qte}"></td>
-            <td><input type="number" class="form-control form-control-sm calibre-prix" min="0" step="1" value="${prix}" placeholder="optionnel"></td>
-            <td><button type="button" class="btn btn-sm btn-outline-danger calibre-remove" title="Supprimer">×</button></td>
-        `;
-        tr.querySelector('.calibre-poids').addEventListener('input', recalc);
-        tr.querySelector('.calibre-qte').addEventListener('input', recalc);
-        tr.querySelector('.calibre-prix').addEventListener('input', recalc);
-        tr.querySelector('.calibre-remove').addEventListener('click', () => {
+
+        const tdPoids = document.createElement('td');
+        const inputPoids = buildNumberInput('calibre-poids', poids, { min: '0.01', step: '0.01' });
+        tdPoids.appendChild(inputPoids);
+
+        const tdQte = document.createElement('td');
+        const inputQte = buildNumberInput('calibre-qte', qte, { min: '0', step: '1' });
+        tdQte.appendChild(inputQte);
+
+        const tdPrix = document.createElement('td');
+        const inputPrix = buildNumberInput('calibre-prix', prix, { min: '0', step: '1', placeholder: 'optionnel' });
+        tdPrix.appendChild(inputPrix);
+
+        const tdAction = document.createElement('td');
+        const btnRemove = document.createElement('button');
+        btnRemove.type = 'button';
+        btnRemove.className = 'btn btn-sm btn-outline-danger calibre-remove';
+        btnRemove.title = 'Supprimer';
+        btnRemove.textContent = '×';
+        tdAction.appendChild(btnRemove);
+
+        tr.append(tdPoids, tdQte, tdPrix, tdAction);
+
+        inputPoids.addEventListener('input', recalc);
+        inputQte.addEventListener('input', recalc);
+        inputPrix.addEventListener('input', recalc);
+        btnRemove.addEventListener('click', () => {
             tr.remove();
             recalc();
         });
+
         calibresBody.appendChild(tr);
     };
 
