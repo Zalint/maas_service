@@ -551,25 +551,27 @@ async function checkAdminAccess() {
 
 async function truncateTable() {
     // Confirmation avec double vérification
-    const confirmation = confirm(
+    const confirmation = await showConfirmModal(
         '⚠️ ATTENTION ⚠️\n\n' +
         'Vous êtes sur le point de SUPPRIMER DÉFINITIVEMENT tous les logs d\'audit client.\n\n' +
         'Cette action est IRRÉVERSIBLE !\n\n' +
         'Tous les historiques de recherches seront perdus.\n\n' +
-        'Voulez-vous vraiment continuer ?'
+        'Voulez-vous vraiment continuer ?',
+        { title: 'Vider les logs', okLabel: 'Continuer', okVariant: 'danger' }
     );
-    
+
     if (!confirmation) {
         return;
     }
-    
+
     // Deuxième confirmation
-    const finalConfirmation = confirm(
+    const finalConfirmation = await showConfirmModal(
         '⚠️ DERNIÈRE CONFIRMATION ⚠️\n\n' +
         'Êtes-vous ABSOLUMENT SÛR de vouloir vider la table des logs d\'audit ?\n\n' +
-        'Cette action ne peut pas être annulée !'
+        'Cette action ne peut pas être annulée !',
+        { title: 'Confirmer suppression', okLabel: 'OUI, supprimer tout', okVariant: 'danger' }
     );
-    
+
     if (!finalConfirmation) {
         return;
     }

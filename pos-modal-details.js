@@ -1686,10 +1686,13 @@ async function regenererLienBictorys(commandeId) {
         return;
     }
     
-    if (!confirm('Voulez-vous vraiment régénérer le lien de paiement Bictorys ?')) {
-        return;
+    {
+        const ok = await showConfirmModal('Voulez-vous vraiment régénérer le lien de paiement Bictorys ?', {
+            title: 'Régénérer le lien', okLabel: 'Régénérer'
+        });
+        if (!ok) return;
     }
-    
+
     try {
         showToast('Régénération du lien Bictorys...', 'info');
         
@@ -1720,7 +1723,10 @@ async function regenererLienBictorys(commandeId) {
 }
 
 async function supprimerLienBictorys(commandeId) {
-    if (!confirm('Voulez-vous vraiment supprimer le lien de paiement Bictorys ?')) {
+    const ok = await showConfirmModal('Voulez-vous vraiment supprimer le lien de paiement Bictorys ?', {
+        title: 'Supprimer le lien', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         return;
     }
     

@@ -1450,7 +1450,10 @@ async function recalculerVentesTheo(id) {
 async function supprimerEstimation(id) {
     console.log('=== DELETE ESTIMATION START ===');
     
-    if (!confirm('Voulez-vous vraiment supprimer cette estimation ?')) {
+    const ok = await showConfirmModal('Voulez-vous vraiment supprimer cette estimation ?', {
+        title: 'Supprimer estimation', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         console.log('Deletion cancelled by user');
         return;
     }

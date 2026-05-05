@@ -754,7 +754,10 @@ async function importOCRData() {
     confirmMsg += `✅ ${matchedItems} produit(s) existant(s)\n`;
     confirmMsg += `🆕 ${newItems} nouveau(x) produit(s) à créer`;
     
-    if (!confirm(confirmMsg)) {
+    const ok = await showConfirmModal(confirmMsg, {
+        title: 'Importer les ventes OCR', okLabel: 'Importer', okVariant: 'success'
+    });
+    if (!ok) {
         return;
     }
 
@@ -1216,10 +1219,16 @@ async function viewOCRImport(id) {
  */
 async function deleteOCRImport(id) {
     // First confirm: ask about deleting associated sales
-    const deleteVentes = confirm('Voulez-vous également supprimer les ventes associées ?\n\nOUI = Supprimer import ET ventes\nNON = Supprimer uniquement l\'historique');
-    
+    const deleteVentes = await showConfirmModal(
+        'Voulez-vous également supprimer les ventes associées ?\n\nOK = Supprimer import ET ventes\nAnnuler = Supprimer uniquement l\'historique',
+        { title: 'Type de suppression', okLabel: 'Import + ventes', cancelLabel: 'Import seul' }
+    );
+
     // Second confirm: final confirmation
-    const finalConfirm = confirm(`Confirmer la suppression de l'import #${id} ?${deleteVentes ? '\n⚠️ Les ventes associées seront DÉFINITIVEMENT supprimées !' : ''}`);
+    const finalConfirm = await showConfirmModal(
+        `Confirmer la suppression de l'import #${id} ?${deleteVentes ? '\n⚠️ Les ventes associées seront DÉFINITIVEMENT supprimées !' : ''}`,
+        { title: 'Confirmer la suppression', okLabel: 'Supprimer', okVariant: 'danger' }
+    );
     if (!finalConfirm) {
         return; // User cancelled, abort the operation
     }

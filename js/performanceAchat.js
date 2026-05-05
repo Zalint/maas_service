@@ -699,7 +699,10 @@ function resetForm() {
 
 // Delete performance
 async function deletePerformance(id) {
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cette entrée ?')) {
+    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette entrée ?', {
+        title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         return;
     }
     

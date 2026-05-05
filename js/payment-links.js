@@ -1795,14 +1795,17 @@ async function handleArchiveOldLinks() {
     const confirmationMessage = `
 Archiver les anciens liens de paiement ?
 
-Cette action va archiver tous les liens avec le statut "Payé" 
+Cette action va archiver tous les liens avec le statut "Payé"
 dont la date d'expiration est antérieure à il y a une semaine.
 
-Les liens archivés ne seront plus visibles dans le tableau principal 
+Les liens archivés ne seront plus visibles dans le tableau principal
 mais resteront consultables dans les archives.
     `.trim();
 
-    if (!confirm(confirmationMessage)) {
+    const ok = await showConfirmModal(confirmationMessage, {
+        title: 'Archiver les anciens liens', okLabel: 'Archiver', okVariant: 'warning'
+    });
+    if (!ok) {
         return;
     }
 
@@ -2060,11 +2063,14 @@ Montant: ${formatAmount(link.amount)} ${link.currency}
 Date de création: ${formatDateTime(link.createdAt)}
 
 Cette action va archiver ce lien de paiement.
-Le lien archivé ne sera plus visible dans le tableau principal 
+Le lien archivé ne sera plus visible dans le tableau principal
 mais restera consultable dans les archives.
     `.trim();
 
-    if (!confirm(confirmationMessage)) {
+    const ok = await showConfirmModal(confirmationMessage, {
+        title: 'Archiver ce lien', okLabel: 'Archiver', okVariant: 'warning'
+    });
+    if (!ok) {
         return;
     }
 
@@ -2123,10 +2129,13 @@ async function deletePaymentLink(paymentLinkId) {
     `.trim();
     
     // Demander confirmation avec les détails
-    if (!confirm(confirmationMessage)) {
+    const ok = await showConfirmModal(confirmationMessage, {
+        title: 'Supprimer le lien', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         return;
     }
-    
+
     try {
         console.log('🗑️ Suppression du lien de paiement:', paymentLinkId);
         
@@ -2261,11 +2270,12 @@ async function updateAllOpenPayments() {
     }
     
     // Demander confirmation
-    const confirmUpdate = confirm(
+    const confirmUpdate = await showConfirmModal(
         'Voulez-vous vraiment vérifier le statut de tous les paiements ouverts des 2 derniers jours ? ' +
-        'Cette opération peut prendre quelques instants.'
+        'Cette opération peut prendre quelques instants.',
+        { title: 'Actualiser les statuts', okLabel: 'Actualiser' }
     );
-    
+
     if (!confirmUpdate) {
         return;
     }

@@ -222,7 +222,10 @@ function afficherEstimations(estimations) {
  * Supprime une estimation
  */
 async function supprimerEstimation(id) {
-    if (!confirm('Voulez-vous vraiment supprimer cette estimation ?')) return;
+    const ok = await showConfirmModal('Voulez-vous vraiment supprimer cette estimation ?', {
+        title: 'Supprimer estimation', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) return;
 
     try {
         const response = await fetch(`/api/estimations/${id}`, {

@@ -2279,20 +2279,25 @@ async function updatePointsVenteDropdown(prixSpeciauxExistants = []) {
     }
 }
 
-function supprimerPrixSpecial(categorie, produit, pointVente) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`)) {
-        if (confirm(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`)) {
-            delete currentProduitsConfig[categorie][produit][pointVente];
-            // Recharger seulement le tableau dans le modal
-            refreshPrixSpeciauxTable(categorie, produit);
-            // Recharger l'affichage principal
-            afficherProduitsConfig();
-        }
-    }
+async function supprimerPrixSpecial(categorie, produit, pointVente) {
+    const ok1 = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`, {
+        title: 'Supprimer prix spécial', okLabel: 'Oui', okVariant: 'warning'
+    });
+    if (!ok1) return;
+    const ok2 = await showConfirmModal(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`, {
+        title: 'Confirmer suppression définitive', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok2) return;
+    delete currentProduitsConfig[categorie][produit][pointVente];
+    refreshPrixSpeciauxTable(categorie, produit);
+    afficherProduitsConfig();
 }
 
 async function supprimerProduit(categorie, produit) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le produit "${produit}" ?`)) {
+    const ok = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le produit "${produit}" ?`, {
+        title: 'Supprimer le produit', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (ok) {
         try {
             const response = await fetch(`/api/admin/config/produits/by-name?nom=${encodeURIComponent(produit)}&type_catalogue=vente`, {
                 method: 'DELETE',
@@ -2315,7 +2320,7 @@ async function supprimerProduit(categorie, produit) {
     }
 }
 
-function supprimerCategorie(categorie) {
+async function supprimerCategorie(categorie) {
     // Protection pour les catégories principales - ne pas permettre leur suppression
     const categoriesPrincipales = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin', 'Autres'];
     
@@ -2325,12 +2330,16 @@ function supprimerCategorie(categorie) {
     }
     
     const nombreProduits = Object.keys(currentProduitsConfig[categorie]).length;
-    if (confirm(`Êtes-vous sûr de vouloir supprimer la catégorie "${categorie}" et ses ${nombreProduits} produits ?`)) {
-        if (confirm(`Cette suppression est définitive et supprimera TOUS les produits de la catégorie "${categorie}". Confirmer la suppression définitive ?`)) {
-            delete currentProduitsConfig[categorie];
-            afficherProduitsConfig();
-        }
-    }
+    const ok1 = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer la catégorie "${categorie}" et ses ${nombreProduits} produits ?`, {
+        title: 'Supprimer catégorie', okLabel: 'Continuer', okVariant: 'warning'
+    });
+    if (!ok1) return;
+    const ok2 = await showConfirmModal(`Cette suppression est définitive et supprimera TOUS les produits de la catégorie "${categorie}". Confirmer la suppression définitive ?`, {
+        title: 'Confirmer suppression définitive', okLabel: 'Supprimer tout', okVariant: 'danger'
+    });
+    if (!ok2) return;
+    delete currentProduitsConfig[categorie];
+    afficherProduitsConfig();
 }
 
 function ajouterProduitCategorie(categorie) {
@@ -2344,7 +2353,7 @@ function ajouterProduitInventaireCategorie(categorie) {
     document.getElementById('addInventaireProductModalLabel').textContent = `Ajouter un produit à ${categorie}`;
 }
 
-function supprimerCategorieInventaire(categorie) {
+async function supprimerCategorieInventaire(categorie) {
     // Protection pour les catégories d'inventaire logiques - ne pas permettre leur suppression
     const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Déchets', 'Autres'];
     
@@ -2357,17 +2366,18 @@ function supprimerCategorieInventaire(categorie) {
     const categoriesPersonnalisees = JSON.parse(localStorage.getItem('inventaireCategoriesPersonnalisees') || '[]');
     
     if (categoriesPersonnalisees.includes(categorie)) {
-        if (confirm(`Êtes-vous sûr de vouloir supprimer la catégorie personnalisée "${categorie}" et tous ses produits ?`)) {
-            // Supprimer la catégorie de la config
+        const ok = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer la catégorie personnalisée "${categorie}" et tous ses produits ?`, {
+            title: 'Supprimer catégorie', okLabel: 'Supprimer', okVariant: 'danger'
+        });
+        if (ok) {
             delete currentInventaireConfig[categorie];
-            
-            // Supprimer de la liste des catégories personnalisées
+
             const index = categoriesPersonnalisees.indexOf(categorie);
             if (index > -1) {
                 categoriesPersonnalisees.splice(index, 1);
                 localStorage.setItem('inventaireCategoriesPersonnalisees', JSON.stringify(categoriesPersonnalisees));
             }
-            
+
             afficherInventaireConfig();
             showToast(`Catégorie "${categorie}" supprimée avec succès!`);
         }
@@ -2380,14 +2390,18 @@ function supprimerCategorieInventaire(categorie) {
     const produits = inventaireParCategories[categorie];
     const nombreProduits = Object.keys(produits).length;
     
-    if (confirm(`Êtes-vous sûr de vouloir supprimer tous les ${nombreProduits} produits de la catégorie "${categorie}" ?`)) {
-        if (confirm(`Cette suppression est définitive et supprimera TOUS les produits de la catégorie "${categorie}". Confirmer la suppression définitive ?`)) {
-            Object.keys(produits).forEach(produit => {
-                delete currentInventaireConfig[produit];
-            });
-            afficherInventaireConfig();
-        }
-    }
+    const okA = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer tous les ${nombreProduits} produits de la catégorie "${categorie}" ?`, {
+        title: 'Supprimer produits', okLabel: 'Continuer', okVariant: 'warning'
+    });
+    if (!okA) return;
+    const okB = await showConfirmModal(`Cette suppression est définitive et supprimera TOUS les produits de la catégorie "${categorie}". Confirmer la suppression définitive ?`, {
+        title: 'Confirmer suppression définitive', okLabel: 'Supprimer tout', okVariant: 'danger'
+    });
+    if (!okB) return;
+    Object.keys(produits).forEach(produit => {
+        delete currentInventaireConfig[produit];
+    });
+    afficherInventaireConfig();
 }
 
 function modifierPrixSpeciauxInventaire(produit) {
@@ -2601,16 +2615,18 @@ function modifierPrixSpecialExistantInventaire(produit, pointVente, nouveauPrix)
     }
 }
 
-function supprimerPrixSpecialInventaire(produit, pointVente) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`)) {
-        if (confirm(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`)) {
-            delete currentInventaireConfig[produit][pointVente];
-            // Recharger seulement le tableau dans le modal
-            refreshPrixSpeciauxInventaireTable(produit);
-            // Recharger l'affichage principal
-            afficherInventaireConfig();
-        }
-    }
+async function supprimerPrixSpecialInventaire(produit, pointVente) {
+    const ok1 = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`, {
+        title: 'Supprimer prix spécial', okLabel: 'Oui', okVariant: 'warning'
+    });
+    if (!ok1) return;
+    const ok2 = await showConfirmModal(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`, {
+        title: 'Confirmer suppression définitive', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok2) return;
+    delete currentInventaireConfig[produit][pointVente];
+    refreshPrixSpeciauxInventaireTable(produit);
+    afficherInventaireConfig();
 }
 
 // Fonctions de modification pour les produits d'inventaire
@@ -2657,7 +2673,10 @@ function modifierAlternativesInventaire(produit, alternativesStr, categorie = nu
 // Réattache un produit de vente à son parent inventaire et resynchronise le prix.
 // Appelle POST /api/admin/config/produits/:nom/reattach puis recharge la table.
 async function reattacherProduitVente(produit) {
-    if (!confirm(`Réattacher "${produit}" à son parent inventaire ?\n\nLe prix sera resynchronisé depuis le parent et les futures mises à jour du parent se propageront à nouveau.`)) {
+    const ok = await showConfirmModal(`Réattacher "${produit}" à son parent inventaire ?\n\nLe prix sera resynchronisé depuis le parent et les futures mises à jour du parent se propageront à nouveau.`, {
+        title: 'Réattacher', okLabel: 'Réattacher'
+    });
+    if (!ok) {
         return;
     }
     try {
@@ -2867,7 +2886,7 @@ function refreshGererVentesBody(produitInventaire, categorieInv = null) {
     tbody.innerHTML = html;
 }
 
-function ajouterVenteLien(produitInventaire, categorieInv = null) {
+async function ajouterVenteLien(produitInventaire, categorieInv = null) {
     const input = document.getElementById('newVenteLinkName');
     if (!input) return;
     const nom = (input.value || '').trim();
@@ -2877,7 +2896,10 @@ function ajouterVenteLien(produitInventaire, categorieInv = null) {
     }
     const found = trouverConfigProduitVente(nom);
     if (!found) {
-        if (!confirm(`"${nom}" n'existe pas encore dans Produits Généraux. Le lien sera créé mais le produit devra être ajouté côté Généraux pour que la propagation fonctionne. Continuer ?`)) {
+        const ok = await showConfirmModal(`"${nom}" n'existe pas encore dans Produits Généraux. Le lien sera créé mais le produit devra être ajouté côté Généraux pour que la propagation fonctionne. Continuer ?`, {
+            title: 'Produit non encore créé', okLabel: 'Continuer'
+        });
+        if (!ok) {
             return;
         }
     }
@@ -2981,7 +3003,10 @@ async function sauvegarderDepuisGererVentes(produitInventaire, categorieInv = nu
 }
 
 async function reattacherDepuisModal(nomVente, produitInventaire, categorieInv = null) {
-    if (!confirm(`Réattacher "${nomVente}" à "${produitInventaire}" ?\n\nLe prix sera resynchronisé depuis le parent inventaire.`)) {
+    const ok = await showConfirmModal(`Réattacher "${nomVente}" à "${produitInventaire}" ?\n\nLe prix sera resynchronisé depuis le parent inventaire.`, {
+        title: 'Réattacher', okLabel: 'Réattacher'
+    });
+    if (!ok) {
         return;
     }
     try {
@@ -3051,7 +3076,10 @@ function trouverConfigProduitInventaire(produit, categorie = null) {
 }
 
 async function supprimerProduitInventaire(produit, categorie = null) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le produit d'inventaire "${produit}" ?`)) {
+    const ok = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le produit d'inventaire "${produit}" ?`, {
+        title: 'Supprimer produit inventaire', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (ok) {
         try {
             const response = await fetch(`/api/admin/config/produits/by-name?nom=${encodeURIComponent(produit)}&type_catalogue=inventaire`, {
                 method: 'DELETE',
@@ -3305,20 +3333,25 @@ function modifierPrixSpecialExistantAbonnement(categorie, produit, pointVente, n
     }
 }
 
-function supprimerPrixSpecialAbonnement(categorie, produit, pointVente) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`)) {
-        if (confirm(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`)) {
-            delete currentAbonnementConfig[categorie][produit][pointVente];
-            // Recharger seulement le tableau dans le modal
-            refreshPrixSpeciauxAbonnementTable(categorie, produit);
-            // Recharger l'affichage principal
-            afficherAbonnementConfig();
-        }
-    }
+async function supprimerPrixSpecialAbonnement(categorie, produit, pointVente) {
+    const ok1 = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le prix spécial pour "${pointVente}" ?`, {
+        title: 'Supprimer prix spécial', okLabel: 'Oui', okVariant: 'warning'
+    });
+    if (!ok1) return;
+    const ok2 = await showConfirmModal(`Cette suppression est définitive. Confirmer la suppression du prix spécial pour "${pointVente}" ?`, {
+        title: 'Confirmer suppression définitive', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok2) return;
+    delete currentAbonnementConfig[categorie][produit][pointVente];
+    refreshPrixSpeciauxAbonnementTable(categorie, produit);
+    afficherAbonnementConfig();
 }
 
 async function supprimerProduitAbonnement(categorie, produit) {
-    if (confirm(`Êtes-vous sûr de vouloir supprimer le produit d'abonnement "${produit}" ?`)) {
+    const ok = await showConfirmModal(`Êtes-vous sûr de vouloir supprimer le produit d'abonnement "${produit}" ?`, {
+        title: 'Supprimer produit abonnement', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (ok) {
         try {
             const response = await fetch(`/api/admin/config/produits/by-name?nom=${encodeURIComponent(produit)}&type_catalogue=abonnement`, {
                 method: 'DELETE',

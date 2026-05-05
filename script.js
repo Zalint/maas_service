@@ -1,125 +1,9 @@
 // Démarrage du script
+// showToast et showConfirmModal sont fournis par js/ui-helpers.js (charge avant
+// ce fichier). window.alert est aussi override la-bas pour devenir un toast.
 
 // Variables globales pour les points de vente (déclarées en premier pour éviter les erreurs de temporal dead zone)
 var POINTS_VENTE_PHYSIQUES = [];
-
-/**
- * Toast minimal base sur Bootstrap 5. Remplace alert() pour les messages non
- * bloquants (info / erreur / succes). Pour les confirmations (OK/Cancel),
- * utiliser showConfirmModal() qui retourne une Promise<boolean>.
- *
- * Si le type n'est pas fourni, devine d'apres le texte: erreur -> danger,
- * attention/veuillez -> warning, sinon success.
- */
-function showToast(message, type = null, durationMs = 4000) {
-    const text = String(message == null ? '' : message);
-    if (!type) {
-        type = /erreur|error|échec|echec|impossible|invalide/i.test(text) ? 'danger'
-             : /attention|warning|veuillez|prudent/i.test(text) ? 'warning'
-             : 'success';
-    }
-    let container = document.getElementById('appToastContainer');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'appToastContainer';
-        container.className = 'toast-container position-fixed top-0 end-0 p-3';
-        container.style.zIndex = '1100';
-        document.body.appendChild(container);
-    }
-    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const toastEl = document.createElement('div');
-    toastEl.className = `toast align-items-center text-bg-${type} border-0`;
-    toastEl.setAttribute('role', 'alert');
-    toastEl.innerHTML = `
-        <div class="d-flex">
-            <div class="toast-body" style="white-space: pre-line;">${safe}</div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-    `;
-    container.appendChild(toastEl);
-    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
-        const t = new bootstrap.Toast(toastEl, { delay: durationMs });
-        t.show();
-        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
-    } else {
-        toastEl.classList.add('show');
-        setTimeout(() => toastEl.remove(), durationMs);
-    }
-}
-
-/**
- * Modal de confirmation Bootstrap (remplace confirm() natif). Affiche un
- * titre + le message + boutons OK/Cancel. Resout la Promise avec true si
- * l'utilisateur confirme, false sinon (Cancel ou fermeture).
- *
- * @param {string} message - texte (les retours a la ligne sont preserves).
- * @param {{title?: string, okLabel?: string, cancelLabel?: string, okVariant?: string}=} options
- * @returns {Promise<boolean>}
- */
-function showConfirmModal(message, options = {}) {
-    const {
-        title = 'Confirmation',
-        okLabel = 'OK',
-        cancelLabel = 'Annuler',
-        okVariant = 'primary'
-    } = options;
-    const safe = String(message == null ? '' : message)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    return new Promise((resolve) => {
-        const modalEl = document.createElement('div');
-        modalEl.className = 'modal fade';
-        modalEl.tabIndex = -1;
-        modalEl.innerHTML = `
-            <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">${title}</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body" style="white-space: pre-line;">${safe}</div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-action="cancel">${cancelLabel}</button>
-                        <button type="button" class="btn btn-${okVariant}" data-action="ok">${okLabel}</button>
-                    </div>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modalEl);
-
-        let settled = false;
-        const settle = (value) => {
-            if (settled) return;
-            settled = true;
-            resolve(value);
-        };
-
-        modalEl.querySelector('[data-action="ok"]').addEventListener('click', () => {
-            settle(true);
-            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-            } else {
-                modalEl.remove();
-            }
-        });
-        modalEl.querySelector('[data-action="cancel"]').addEventListener('click', () => {
-            settle(false);
-        });
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            settle(false); // fermeture sans clic OK = annulation
-            modalEl.remove();
-        });
-
-        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-            const m = new bootstrap.Modal(modalEl);
-            m.show();
-        } else {
-            // Fallback ultra-simple si Bootstrap absent.
-            modalEl.style.display = 'block';
-            modalEl.classList.add('show');
-        }
-    });
-}
 
 document.addEventListener('DOMContentLoaded', function() {
     // Vérifier si le gestionnaire de réconciliation est disponible
@@ -2776,8 +2660,11 @@ function dvRenderRows(ventes) {
             deleteButton.setAttribute('data-id', vente.id);
             deleteButton.innerHTML = '<i class="fas fa-trash"></i>';
             deleteButton.addEventListener('click', async () => {
-                if (confirm('Êtes-vous sûr de vouloir supprimer cette vente ?')) {
-                    await supprimerVente(vente.id); 
+                const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette vente ?', {
+                    title: 'Supprimer la vente', okLabel: 'Supprimer', okVariant: 'danger'
+                });
+                if (ok) {
+                    await supprimerVente(vente.id);
                 }
             });
             actionsCell.appendChild(deleteButton);
@@ -4680,7 +4567,10 @@ async function chargerTransferts(date) {
                     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
                     btnSupprimer.addEventListener('click', async (e) => {
                         e.preventDefault();
-                        if (confirm('Voulez-vous vraiment supprimer ce transfert ?')) {
+                        const okDel = await showConfirmModal('Voulez-vous vraiment supprimer ce transfert ?', {
+                            title: 'Supprimer le transfert', okLabel: 'Supprimer', okVariant: 'danger'
+                        });
+                        if (okDel) {
                             try {
                                 // Supprimer le transfert via l'API
                                 const response = await fetch(`/api/transferts`, {
@@ -5041,9 +4931,12 @@ function ajouterLigneTransfert() {
     const btnSupprimer = document.createElement('button');
     btnSupprimer.className = 'btn btn-danger btn-sm';
     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-    btnSupprimer.addEventListener('click', (e) => {
+    btnSupprimer.addEventListener('click', async (e) => {
         e.preventDefault();
-        if (confirm('Voulez-vous vraiment supprimer cette ligne ?')) {
+        const ok = await showConfirmModal('Voulez-vous vraiment supprimer cette ligne ?', {
+            title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+        });
+        if (ok) {
             row.remove();
         }
     });
@@ -5480,7 +5373,11 @@ async function copierStock() {
 
         // Demander confirmation
         const commentaireSuffix = copyComments ? ' (commentaires inclus)' : ' (sans les commentaires)';
-        if (!confirm(`Voulez-vous copier les données du stock ${sourceTypeStock} du ${sourceDate} vers le stock ${targetTypeStock} du ${targetDate}${commentaireSuffix}? Cette action remplacera les données existantes.`)) {
+        const okCopy = await showConfirmModal(
+            `Voulez-vous copier les données du stock ${sourceTypeStock} du ${sourceDate} vers le stock ${targetTypeStock} du ${targetDate}${commentaireSuffix}? Cette action remplacera les données existantes.`,
+            { title: 'Copier le stock', okLabel: 'Copier', okVariant: 'warning' }
+        );
+        if (!okCopy) {
             return;
         }
 
@@ -5872,13 +5769,13 @@ function ajouterLigneStock() {
     const btnSupprimer = document.createElement('button');
     btnSupprimer.className = 'btn btn-danger btn-sm';
     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-    btnSupprimer.addEventListener('click', (e) => {
+    btnSupprimer.addEventListener('click', async (e) => {
         e.preventDefault();
-        
+
         // Vérifier les restrictions temporelles pour la suppression
         const dateInput = document.getElementById('date-inventaire');
         const typeStockSelect = document.getElementById('type-stock');
-        
+
         if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
             alert('Vous ne pouvez pas supprimer cette ligne pour cette date. Les utilisateurs peuvent modifier le stock seulement le jour J et jusqu\'au lendemain avant 4h00 du matin. Seuls administrateurs sont exemptés de cette restriction.');
             return;
@@ -5889,8 +5786,11 @@ function ajouterLigneStock() {
             alert('Le stock matin est rempli automatiquement par le système. Seuls les administrateurs peuvent supprimer des lignes manuellement.');
             return;
         }
-        
-        if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+        const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+            title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+        });
+        if (ok) {
             row.remove();
         }
     });
@@ -6290,23 +6190,26 @@ function initTableauStock() {
             const btnSupprimer = document.createElement('button');
             btnSupprimer.className = 'btn btn-danger btn-sm';
             btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-            btnSupprimer.addEventListener('click', (e) => {
+            btnSupprimer.addEventListener('click', async (e) => {
                 e.preventDefault();
-                
+
                 const dateInput = document.getElementById('date-inventaire');
                 const typeStockSelect = document.getElementById('type-stock');
-                
+
                 if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
                     alert('Vous ne pouvez pas supprimer cette ligne pour cette date.');
                     return;
                 }
-                
+
                 if (typeStockSelect && typeStockSelect.value === 'matin' && currentUser && !canModifyStockMatinFields(currentUser.username)) {
                     alert('Seuls les administrateurs peuvent supprimer des lignes du stock matin.');
                     return;
                 }
-                
-                if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+                const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                    title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                });
+                if (ok) {
                     row.remove();
                 }
             });
@@ -6499,9 +6402,12 @@ function initTableauStock() {
                 const btnSupprimer = document.createElement('button');
                 btnSupprimer.className = 'btn btn-danger btn-sm';
                 btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-                btnSupprimer.addEventListener('click', (e) => {
+                btnSupprimer.addEventListener('click', async (e) => {
                     e.preventDefault();
-                    if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+                    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                        title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                    if (ok) {
                         row.remove();
                     }
                 });
@@ -6838,23 +6744,26 @@ async function onTypeStockChange() {
                 const btnSupprimer = document.createElement('button');
                 btnSupprimer.className = 'btn btn-danger btn-sm';
                 btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-                btnSupprimer.onclick = () => {
+                btnSupprimer.onclick = async () => {
                     // Vérifier les restrictions temporelles pour la suppression
                     const dateInput = document.getElementById('date-inventaire');
                     const typeStockSelect = document.getElementById('type-stock');
-                    
+
                     if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
                         alert('Vous ne pouvez pas supprimer cette ligne pour cette date. Les utilisateurs peuvent modifier le stock seulement le jour J et jusqu\'au lendemain avant 4h00 du matin. Seuls administrateurs sont exemptés de cette restriction.');
                         return;
                     }
-                    
+
                     // Vérifier les restrictions spécifiques au stock matin
                     if (typeStockSelect && typeStockSelect.value === 'matin' && currentUser && !canModifyStockMatinFields(currentUser.username)) {
                         alert('Le stock matin est rempli automatiquement par le système. Seuls les administrateurs peuvent supprimer des lignes manuellement.');
                         return;
                     }
-                    
-                    if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+                    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                        title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                    if (ok) {
                         tr.remove();
                     }
                 };
@@ -6959,12 +6868,18 @@ async function supprimerVentesJour() {
     });
     
     // Double confirmation
-    const firstConfirm = confirm(`⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de supprimer TOUTES les ventes du ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`);
-    
+    const firstConfirm = await showConfirmModal(
+        `⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de supprimer TOUTES les ventes du ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`,
+        { title: 'Supprimer toutes les ventes', okLabel: 'Continuer', okVariant: 'warning' }
+    );
+
     if (!firstConfirm) return;
-    
-    const secondConfirm = confirm(`🔴 DERNIÈRE CONFIRMATION 🔴\n\nTapez OK pour confirmer la suppression de TOUTES les ventes du ${dateFormatted}.`);
-    
+
+    const secondConfirm = await showConfirmModal(
+        `🔴 DERNIÈRE CONFIRMATION 🔴\n\nConfirmer la suppression de TOUTES les ventes du ${dateFormatted}.`,
+        { title: 'Dernière confirmation', okLabel: 'OUI, supprimer tout', okVariant: 'danger' }
+    );
+
     if (!secondConfirm) return;
     
     try {
@@ -8792,12 +8707,18 @@ async function resetStock(type) {
     const typeName = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
     
     // Double confirmation
-    const firstConfirm = confirm(`⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de mettre TOUTES les quantités du ${typeName} à 0 pour le ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`);
-    
+    const firstConfirm = await showConfirmModal(
+        `⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de mettre TOUTES les quantités du ${typeName} à 0 pour le ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`,
+        { title: `Réinitialiser ${typeName}`, okLabel: 'Continuer', okVariant: 'warning' }
+    );
+
     if (!firstConfirm) return;
-    
-    const secondConfirm = confirm(`🔴 DERNIÈRE CONFIRMATION 🔴\n\nTapez OK pour confirmer la réinitialisation du ${typeName} du ${dateFormatted}.`);
-    
+
+    const secondConfirm = await showConfirmModal(
+        `🔴 DERNIÈRE CONFIRMATION 🔴\n\nConfirmer la réinitialisation du ${typeName} du ${dateFormatted}.`,
+        { title: 'Dernière confirmation', okLabel: 'OUI, réinitialiser', okVariant: 'danger' }
+    );
+
     if (!secondConfirm) return;
     
     try {
@@ -11738,7 +11659,10 @@ async function confirmerConversion() {
         return;
     }
     
-    if (!confirm('Êtes-vous sûr de vouloir convertir cette pré-commande en vente réelle ?')) {
+    const okConv = await showConfirmModal('Êtes-vous sûr de vouloir convertir cette pré-commande en vente réelle ?', {
+        title: 'Convertir pré-commande', okLabel: 'Convertir', okVariant: 'success'
+    });
+    if (!okConv) {
         return;
     }
     
@@ -12217,7 +12141,10 @@ async function supprimerPrecommande(precommandeId) {
         return;
     }
     
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cette pré-commande ?')) {
+    const okDelPre = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette pré-commande ?', {
+        title: 'Supprimer pré-commande', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!okDelPre) {
         return;
     }
     
