@@ -785,6 +785,60 @@ const STOCK_MATIN_PATH = path.join(__dirname, 'data', 'stock-matin.json');
 const STOCK_SOIR_PATH = path.join(__dirname, 'data', 'stock-soir.json');
 const TRANSFERTS_PATH = path.join(__dirname, 'data', 'transferts.json');
 
+/**
+ * Stringifie une valeur numerique en evitant "NaN" si la source SQL est NULL
+ * ou non-parseable. Le frontend traite les chaines vides comme 0 mais affiche
+ * "NaN" tel quel, ce qui pollue l'UI.
+ */
+function numToStringSafe(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? String(n) : '';
+}
+
+/**
+ * Reconstruit le fichier JSON stock-{matin,soir}.json pour une date donnee
+ * a partir des lignes presentes en BDD (table stocks). Utilise apres un
+ * recompute auto: la BDD est la source de verite, on resynchronise le JSON
+ * pour que GET /api/stock/:type continue a renvoyer la meme chose meme avant
+ * un eventuel reload depuis la BDD.
+ *
+ * Format produit (compatible avec le client existant):
+ *   { "<PV>-<Produit>": { date, typeStock: "Stock Matin"|"Stock Soir",
+ *     "Point de Vente", Produit, Nombre, PU, Montant, Commentaire, auto } }
+ *
+ * @param {string} dateInput - format DD/MM/YYYY ou DD-MM-YYYY (input client).
+ * @param {'matin'|'soir'} type
+ */
+async function syncStockJsonFromBDD(dateInput, type) {
+    const { Stock } = require('./db/models');
+    const { formatDate, parseDate } = require('./db/utils');
+    const dateBdd = formatDate(parseDate(dateInput));
+
+    const rows = await Stock.findAll({ where: { date: dateBdd, typeStock: type } });
+    const result = {};
+    const typeStockLabel = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
+    for (const r of rows) {
+        const key = `${r.pointVente}-${r.produit}`;
+        result[key] = {
+            date: r.date,
+            typeStock: typeStockLabel,
+            'Point de Vente': r.pointVente,
+            Produit: r.produit,
+            Nombre: numToStringSafe(r.quantite),
+            PU: numToStringSafe(r.prixUnitaire),
+            Montant: numToStringSafe(r.total),
+            Commentaire: r.commentaire || '',
+            auto: !!r.is_auto_calculated
+        };
+    }
+
+    const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
+    const filePath = getPathByDate(baseFilePath, dateInput);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    await fsPromises.writeFile(filePath, JSON.stringify(result, null, 2));
+}
+
 // Fonction pour récupérer le mappage des références de paiement depuis la BDD
 const getPaymentRefToPdv = async () => {
     const { PointVente } = require('./db/models');
@@ -1542,103 +1596,26 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
         await Vente.bulkCreate(ventesToInsert);
         
         // =====================================================
-        // MISE À JOUR STOCK SOIR POUR PRODUITS AUTO
-        // Stock Soir = Stock Matin - Ventes
-        // =====================================================
+        // MISE A JOUR STOCK SOIR POUR PRODUITS AUTO
+        // Delegue a recomputeStockSoirForAuto qui:
+        //   - Recalcule pour TOUS les produits auto (pas seulement ceux vendus
+        //     dans cette requete -> couvre les produits affectes indirectement)
+        //   - Respecte le flag is_auto_calculated (ne touche pas les overrides
+        //     utilisateur)
+        //   - Ecrit en BDD (survit aux redeploiements Render).
+        // Puis on resynchronise le JSON depuis la BDD pour que GET stock/soir
+        // renvoie immediatement la nouvelle valeur sans attendre un fallback.
         try {
-            const { Produit } = require('./db/models');
-            
-            for (const vente of ventesToInsert) {
-                // Chercher si le produit existe et est en mode automatique
-                const produit = await Produit.findOne({
-                    where: { 
-                        nom: vente.produit,
-                        mode_stock: 'automatique'
-                    }
-                });
-                
-                if (produit) {
-                    const dateVente = vente.date;
-                    const dateFormatted = standardiserDateFormat(dateVente);
-                    const pointVente = vente.pointVente;
-                    const produitNom = vente.produit;
-                    const quantiteVendue = parseFloat(vente.nombre) || 0;
-                    
-                    // Format PLAT: { "PointVente-Produit": { Nombre, PU, ... } }
-                    const stockKey = `${pointVente}-${produitNom}`;
-                    
-                    // Charger Stock Matin
-                    const stockMatinPath = getPathByDate(STOCK_MATIN_PATH, dateFormatted);
-                    let stockMatin = {};
-                    if (fs.existsSync(stockMatinPath)) {
-                        stockMatin = JSON.parse(fs.readFileSync(stockMatinPath, 'utf8'));
-                    }
-                    
-                    // Initialiser Stock Matin si le produit n'existe pas (avec 0)
-                    if (!stockMatin[stockKey]) {
-                        stockMatin[stockKey] = {
-                            Nombre: 0,
-                            PU: produit.prix_defaut || vente.prixUnit || 0,
-                            Montant: 0,
-                            Produit: produitNom,
-                            "Point de Vente": pointVente,
-                            mode: 'automatique'
-                        };
-                        // Sauvegarder Stock Matin
-                        const dirPath = path.dirname(stockMatinPath);
-                        if (!fs.existsSync(dirPath)) {
-                            fs.mkdirSync(dirPath, { recursive: true });
-                        }
-                        fs.writeFileSync(stockMatinPath, JSON.stringify(stockMatin, null, 2));
-                        console.log(`📦 Stock Matin initialisé: ${stockKey}: 0`);
-                    }
-                    
-                    // Calculer Stock Soir = Stock Matin - Ventes totales du jour
-                    const stockMatinData = stockMatin[stockKey] || {};
-                    const stockMatinQte = parseFloat(stockMatinData.Nombre || stockMatinData.quantite || 0);
-                    
-                    // Calculer total des ventes du jour pour ce produit
-                    const ventesJour = await Vente.findAll({
-                        where: {
-                            date: vente.date,
-                            pointVente: pointVente,
-                            produit: produitNom
-                        }
-                    });
-                    
-                    const totalVentes = ventesJour.reduce((sum, v) => sum + parseFloat(v.nombre || 0), 0);
-                    const stockSoirQte = stockMatinQte - totalVentes;
-                    const prixUnit = parseFloat(produit.prix_defaut || vente.prixUnit || 0);
-                    
-                    // Mettre à jour Stock Soir (format PLAT)
-                    const stockSoirPath = getPathByDate(STOCK_SOIR_PATH, dateFormatted);
-                    let stockSoir = {};
-                    if (fs.existsSync(stockSoirPath)) {
-                        stockSoir = JSON.parse(fs.readFileSync(stockSoirPath, 'utf8'));
-                    }
-                    
-                    stockSoir[stockKey] = {
-                        Nombre: stockSoirQte,
-                        PU: prixUnit,
-                        Montant: stockSoirQte * prixUnit,
-                        Produit: produitNom,
-                        "Point de Vente": pointVente,
-                        mode: 'automatique'
-                    };
-                    
-                    // Sauvegarder Stock Soir
-                    const dirPath = path.dirname(stockSoirPath);
-                    if (!fs.existsSync(dirPath)) {
-                        fs.mkdirSync(dirPath, { recursive: true });
-                    }
-                    fs.writeFileSync(stockSoirPath, JSON.stringify(stockSoir, null, 2));
-                    
-                    console.log(`📦 Stock Soir mis à jour: ${stockKey}: ${stockMatinQte} - ${totalVentes} = ${stockSoirQte}`);
-                }
+            const { recomputeStockSoirForAuto } = require('./db/utils');
+            const datesUniques = [...new Set(ventesToInsert.map((v) => v.date))];
+            for (const dateVente of datesUniques) {
+                const result = await recomputeStockSoirForAuto(dateVente);
+                console.log(`📦 Stock soir auto recompute (${dateVente}):`, result);
+                await syncStockJsonFromBDD(dateVente, 'soir');
             }
         } catch (stockError) {
             // Log l'erreur mais ne pas bloquer la vente
-            console.error('⚠️ Erreur mise à jour stock (non bloquant):', stockError.message);
+            console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
         }
         // =====================================================
         
@@ -2243,19 +2220,55 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
         const type = req.params.type;
         const date = req.query.date;
         const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
-        
+
         // Obtenir le chemin du fichier spécifique à la date
         const filePath = getPathByDate(baseFilePath, date);
-        
+
         // Vérifier si le fichier existe
-        if (!fs.existsSync(filePath)) {
-            // Si le fichier n'existe pas, retourner un objet vide
-            console.log(`Fichier de stock ${type} pour la date ${date} non trouvé, retour d'un objet vide`);
+        if (fs.existsSync(filePath)) {
+            const data = await fsPromises.readFile(filePath, 'utf8');
+            return res.json(JSON.parse(data));
+        }
+
+        // Fallback BDD: typiquement apres un redeploiement Render qui a
+        // efface le filesystem ephemere. On reconstitue le shape attendu
+        // par le client (objet flat, cle = "<PointVente>-<Produit>").
+        try {
+            const { Stock } = require('./db/models');
+            const { formatDate, parseDate } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(date));
+            const rows = await Stock.findAll({
+                where: { date: dateBdd, typeStock: type }
+            });
+            if (rows.length === 0) {
+                console.log(`Aucune donnee BDD pour stock ${type} ${dateBdd}, retour {}.`);
+                return res.json({});
+            }
+            const result = {};
+            // Le typeStock cote client est "Stock Matin"/"Stock Soir" (camel +
+            // espace) dans les anciens dumps JSON; on conserve ce label dans
+            // chaque entree pour matcher le format attendu.
+            const typeStockLabel = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
+            for (const r of rows) {
+                const key = `${r.pointVente}-${r.produit}`;
+                result[key] = {
+                    date: r.date,
+                    typeStock: typeStockLabel,
+                    'Point de Vente': r.pointVente,
+                    Produit: r.produit,
+                    Nombre: numToStringSafe(r.quantite),
+                    PU: numToStringSafe(r.prixUnitaire),
+                    Montant: numToStringSafe(r.total),
+                    Commentaire: r.commentaire || '',
+                    auto: !!r.is_auto_calculated
+                };
+            }
+            console.log(`✅ Fallback BDD stock ${type}: ${rows.length} lignes pour ${dateBdd}.`);
+            return res.json(result);
+        } catch (dbError) {
+            console.warn('⚠️  Fallback BDD stock echoue:', dbError.message);
             return res.json({});
         }
-        
-        const data = await fsPromises.readFile(filePath, 'utf8');
-        res.json(JSON.parse(data));
     } catch (error) {
         console.error('Erreur lors du chargement des données:', error);
         res.status(500).json({ error: 'Erreur lors du chargement des données' });
@@ -2632,17 +2645,94 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
         }
         
         const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
-        
+
         // Obtenir le chemin du fichier spécifique à la date
         const filePath = getPathByDate(baseFilePath, date);
-        
+
         // Sauvegarder les données dans le fichier spécifique à la date
         await fsPromises.writeFile(filePath, JSON.stringify(req.body, null, 2));
-        
+
         // Note: Le fichier principal n'est pas mis à jour en production pour éviter les erreurs de permissions
         // Les données de stock sont sauvegardées uniquement dans les fichiers par date
         console.log(`Données de stock ${type} sauvegardées dans le fichier par date: ${filePath}`);
-        
+
+        // Dual-write: persister aussi en BDD pour survivre aux redeploiements
+        // Render. Strategie: pour ce couple (date, typeStock), DELETE-puis-
+        // bulkCreate, ce qui matche la semantique du remplacement complet
+        // cote fichier (writeFile ecrase l'integralite).
+        try {
+            const { Stock } = require('./db/models');
+            const { formatDate, parseDate, computeStockSoirAutoValues } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(date));
+
+            // Pour le stock soir, on classifie chaque ligne en auto vs override
+            // utilisateur en comparant la valeur soumise a la valeur calculee
+            // (matin + transferts - ventes). Tolerance: 0.001 pour eviter les
+            // faux negatifs lies aux flotants. Pour les produits non-auto,
+            // is_auto_calculated reste false (saisie manuelle classique).
+            let classify = null;
+            if (type === 'soir') {
+                const { autoSet, calcByKey } = await computeStockSoirAutoValues(date);
+                classify = (pv, produit, valeur) => {
+                    if (!autoSet.has(produit)) return false;
+                    const calc = calcByKey.get(`${pv}|${produit}`);
+                    if (calc === undefined) return false;
+                    return Math.abs(calc - valeur) < 0.001;
+                };
+            }
+
+            // Le shape du body cote stock est { "key1": { date, "Point de Vente",
+            // Produit, Nombre, PU, Montant, Commentaire, ... }, ... } — flat,
+            // chaque valeur portant tous les champs.
+            const rows = Object.values(req.body || {})
+                .filter((e) => e && (e['Point de Vente'] || e.pointVente) && (e.Produit || e.produit))
+                .map((e) => {
+                    const pv = e['Point de Vente'] || e.pointVente;
+                    const produit = e.Produit || e.produit;
+                    const quantite = parseFloat(e.Nombre || e.quantite) || 0;
+                    return {
+                        date: dateBdd,
+                        typeStock: type,
+                        pointVente: pv,
+                        produit,
+                        quantite,
+                        prixUnitaire: parseFloat(e.PU || e.prixUnitaire) || 0,
+                        total: parseFloat(e.Montant || e.total) || 0,
+                        commentaire: e.Commentaire || e.commentaire || '',
+                        is_auto_calculated: classify ? classify(pv, produit, quantite) : false
+                    };
+                });
+
+            // Transaction: si bulkCreate echoue apres destroy, rollback pour
+            // ne pas perdre les anciennes lignes.
+            await sequelize.transaction(async (tx) => {
+                await Stock.destroy({ where: { date: dateBdd, typeStock: type }, transaction: tx });
+                if (rows.length > 0) {
+                    await Stock.bulkCreate(rows, { transaction: tx });
+                }
+            });
+            if (rows.length > 0) {
+                console.log(`✅ Stock ${type} persiste en BDD: ${rows.length} lignes pour ${dateBdd}.`);
+            }
+        } catch (dbError) {
+            console.error('⚠️  Echec persistance BDD stock (JSON OK):', dbError.message);
+        }
+
+        // Si on vient de sauver le stock matin, recompute le stock soir auto:
+        // le matin est l'input principal du calcul (matin + transferts - ventes).
+        // Pas de recompute pour type='soir' ici (ce serait recursif: la sauvegarde
+        // EST l'evenement qui pose la valeur).
+        if (type === 'matin') {
+            try {
+                const { recomputeStockSoirForAuto } = require('./db/utils');
+                const result = await recomputeStockSoirForAuto(date);
+                console.log(`📦 Stock soir auto recompute (${date}):`, result);
+                await syncStockJsonFromBDD(date, 'soir');
+            } catch (stockError) {
+                console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
+            }
+        }
+
         res.json({ success: true });
     } catch (error) {
         console.error('Erreur lors de la sauvegarde des données:', error);
@@ -2780,7 +2870,34 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
         // Note: Le fichier principal n'est pas mis à jour en production pour éviter les erreurs de permissions
         // Les transferts sont sauvegardés uniquement dans les fichiers par date
         console.log(`Transferts sauvegardés dans les fichiers par date: ${allTransferts.length} transferts au total`);
-        
+
+        // Dual-write: persister aussi en BDD pour survivre aux redeploiements
+        // Render (filesystem ephemere). saveTransferts fait DELETE-puis-bulkCreate
+        // par date, ce qui matche la semantique du remplacement complet ci-dessus.
+        // En cas d'echec BDD, on logge mais on ne fait pas planter la requete:
+        // le fichier JSON est deja ecrit, l'experience utilisateur reste OK
+        // jusqu'au prochain redemarrage.
+        try {
+            const { saveTransferts } = require('./db/utils');
+            await saveTransferts(transferts);
+            console.log(`✅ Transferts persistés en BDD: ${transferts.length} lignes.`);
+        } catch (dbError) {
+            console.error('⚠️  Echec persistance BDD transferts (JSON OK):', dbError.message);
+        }
+
+        // Recompute stock soir auto: un transfert peut affecter le solde d'un
+        // produit auto (ajout depot central -> incremente, sortie -> decremente).
+        try {
+            const { recomputeStockSoirForAuto } = require('./db/utils');
+            for (const dateTransfert of Object.keys(transfertsByDate)) {
+                const result = await recomputeStockSoirForAuto(dateTransfert);
+                console.log(`📦 Stock soir auto recompute (${dateTransfert}):`, result);
+                await syncStockJsonFromBDD(dateTransfert, 'soir');
+            }
+        } catch (stockError) {
+            console.error('⚠️  Erreur recompute stock soir auto (non bloquant):', stockError.message);
+        }
+
         res.json({ success: true });
     } catch (error) {
         console.error('Erreur lors de la sauvegarde des transferts:', error);
@@ -2792,39 +2909,62 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
 app.get('/api/transferts', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date } = req.query;
-        
+
+        // Helper: lit la BDD et reconstitue le shape attendu par le client.
+        const lireDepuisBDD = async (filtreDate) => {
+            const { Transfert } = require('./db/models');
+            const where = filtreDate ? { date: filtreDate } : {};
+            const rows = await Transfert.findAll({ where, order: [['id', 'ASC']] });
+            return rows.map((r) => ({
+                date: r.date,
+                pointVente: r.pointVente,
+                produit: r.produit,
+                quantite: parseFloat(r.quantite),
+                prixUnitaire: parseFloat(r.prixUnitaire),
+                total: parseFloat(r.total),
+                impact: typeof r.impact === 'string' ? parseInt(r.impact, 10) : r.impact,
+                commentaire: r.commentaire || '',
+                extension: r.extension || null
+            }));
+        };
+
         if (date) {
-            // Obtenir le chemin du fichier spécifique à la date
             const filePath = getPathByDate(TRANSFERTS_PATH, date);
-            
-            // Vérifier si le fichier spécifique existe
             if (fs.existsSync(filePath)) {
                 const content = await fsPromises.readFile(filePath, 'utf8');
                 const transferts = JSON.parse(content || '[]');
                 return res.json({ success: true, transferts });
             }
-            
-            // Si le fichier spécifique n'existe pas, chercher dans le fichier principal
             if (fs.existsSync(TRANSFERTS_PATH)) {
                 const content = await fsPromises.readFile(TRANSFERTS_PATH, 'utf8');
                 const allTransferts = JSON.parse(content || '[]');
-                // Filtrer les transferts par date
                 const transferts = allTransferts.filter(t => t.date === date);
-                return res.json({ success: true, transferts });
+                if (transferts.length > 0) return res.json({ success: true, transferts });
             }
-            
-            // Si aucun fichier n'existe, retourner un tableau vide
-            return res.json({ success: true, transferts: [] });
+            // Fallback BDD (typiquement apres un redeploiement Render qui a
+            // efface le filesystem ephemere).
+            try {
+                const { formatDate, parseDate } = require('./db/utils');
+                const dateBdd = formatDate(parseDate(date));
+                const transferts = await lireDepuisBDD(dateBdd);
+                return res.json({ success: true, transferts });
+            } catch (dbError) {
+                console.warn('⚠️  Fallback BDD transferts echoue:', dbError.message);
+                return res.json({ success: true, transferts: [] });
+            }
         } else {
-            // Retourner tous les transferts depuis le fichier principal
             if (fs.existsSync(TRANSFERTS_PATH)) {
                 const content = await fsPromises.readFile(TRANSFERTS_PATH, 'utf8');
                 const transferts = JSON.parse(content || '[]');
                 return res.json({ success: true, transferts });
             }
-            
-            // Si le fichier n'existe pas, retourner un tableau vide
-            return res.json({ success: true, transferts: [] });
+            try {
+                const transferts = await lireDepuisBDD(null);
+                return res.json({ success: true, transferts });
+            } catch (dbError) {
+                console.warn('⚠️  Fallback BDD transferts echoue:', dbError.message);
+                return res.json({ success: true, transferts: [] });
+            }
         }
     } catch (error) {
         console.error('Erreur lors de la récupération des transferts:', error);
@@ -2908,6 +3048,37 @@ app.delete('/api/transferts', checkAuth, checkWriteAccess, async (req, res) => {
                 console.log('Transfert vu dans le fichier principal (legacy).');
                 foundAndRemoved = true;
             }
+        }
+
+        // Suppression cote BDD aussi (dual-write). Match strict sur les memes
+        // champs que cote JSON: si le filesystem ephemere a deja ete nettoye,
+        // c'est ici qu'on supprime reellement la ligne.
+        try {
+            const { Transfert } = require('./db/models');
+            const { formatDate, parseDate } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(transfertData.date));
+            const all = await Transfert.findAll({
+                where: {
+                    date: dateBdd,
+                    pointVente: transfertData.pointVente,
+                    produit: transfertData.produit
+                }
+            });
+            const toDelete = all.find((r) => {
+                const sameImpact = String(r.impact) === String(transfertData.impact);
+                // Tolerance flotante: les montants stockes en FLOAT peuvent
+                // diverger de la valeur saisie au-dela de la 6e decimale.
+                const sameQte = Math.abs(parseFloat(r.quantite) - parseFloat(transfertData.quantite)) < 0.001;
+                const samePrix = Math.abs(parseFloat(r.prixUnitaire) - parseFloat(transfertData.prixUnitaire)) < 0.001;
+                return sameImpact && sameQte && samePrix;
+            });
+            if (toDelete) {
+                await toDelete.destroy();
+                foundAndRemoved = true;
+                console.log('Transfert supprime aussi en BDD.');
+            }
+        } catch (dbError) {
+            console.warn('⚠️  Suppression BDD transfert echouee (JSON OK):', dbError.message);
         }
 
         if (!foundAndRemoved) {

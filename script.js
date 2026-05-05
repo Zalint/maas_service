@@ -6127,14 +6127,24 @@ function initTableauStock() {
                 inputQuantite.value = quantite;
                 inputPrixUnitaire.value = donnees.PU || donnees.prixUnitaire || PRIX_DEFAUT_INVENTAIRE[produit] || 0;
                 inputCommentaire.value = donnees.Commentaire || donnees.commentaire || '';
-                
+
+                // Stock soir derive auto: italique + indicateur visuel.
+                // L'utilisateur peut toujours modifier la valeur (override),
+                // l'override sera detecte cote serveur en comparant la
+                // valeur soumise a la valeur calculee.
+                if (donnees.auto === true) {
+                    inputQuantite.style.fontStyle = 'italic';
+                    inputQuantite.title = 'Valeur calculée automatiquement (Matin + Transferts - Ventes). Vous pouvez la modifier.';
+                    row.dataset.autoCalculated = 'true';
+                }
+
                 // Afficher en rouge si quantité négative
                 if (quantite < 0) {
                     inputQuantite.style.backgroundColor = '#ffcccc';
                     inputQuantite.style.color = '#cc0000';
                     inputQuantite.style.fontWeight = 'bold';
                 }
-                
+
                 const total = quantite * parseFloat(inputPrixUnitaire.value);
                 tdTotal.textContent = total.toLocaleString('fr-FR');
                 if (total < 0) {
@@ -6206,7 +6216,18 @@ function initTableauStock() {
             
             inputQuantite.addEventListener('input', updateTotal);
             inputPrixUnitaire.addEventListener('input', updateTotal);
-            
+
+            // Override: si l'utilisateur modifie une valeur auto-calculee,
+            // on retire le style italique pour signaler le passage en manuel.
+            // Le serveur classifiera definitivement au save en comparant la
+            // valeur soumise a la valeur recalculee.
+            inputQuantite.addEventListener('input', () => {
+                if (row.dataset.autoCalculated === 'true') {
+                    inputQuantite.style.fontStyle = '';
+                    delete row.dataset.autoCalculated;
+                }
+            });
+
             // Gestionnaire pour le filtre
             inputQuantite.addEventListener('change', () => {
                 if (document.getElementById('masquer-quantite-zero').checked) {

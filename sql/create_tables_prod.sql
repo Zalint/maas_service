@@ -121,6 +121,11 @@ COMMENT ON COLUMN transferts.extension IS 'Données enrichies. Ex: { "calibres":
 CREATE INDEX IF NOT EXISTS idx_transferts_date ON transferts(date);
 CREATE INDEX IF NOT EXISTS idx_transferts_point_vente ON transferts(point_vente);
 
+-- Colonne ajoutee pour le stock soir auto-calcule (idempotent).
+-- Voir db/update-schema.js pour la migration en place sur tenants existants.
+ALTER TABLE stocks ADD COLUMN IF NOT EXISTS is_auto_calculated BOOLEAN NOT NULL DEFAULT FALSE;
+COMMENT ON COLUMN stocks.is_auto_calculated IS 'TRUE: stock soir derive auto (matin + transferts - ventes) pour produits mode_stock=automatique. FALSE: saisie manuelle / override.';
+
 -- =====================================================
 -- TABLE: reconciliations
 -- Description: Stocke les données de réconciliation journalière
