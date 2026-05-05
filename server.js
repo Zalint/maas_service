@@ -2243,19 +2243,54 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
         const type = req.params.type;
         const date = req.query.date;
         const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
-        
+
         // Obtenir le chemin du fichier spécifique à la date
         const filePath = getPathByDate(baseFilePath, date);
-        
+
         // Vérifier si le fichier existe
-        if (!fs.existsSync(filePath)) {
-            // Si le fichier n'existe pas, retourner un objet vide
-            console.log(`Fichier de stock ${type} pour la date ${date} non trouvé, retour d'un objet vide`);
+        if (fs.existsSync(filePath)) {
+            const data = await fsPromises.readFile(filePath, 'utf8');
+            return res.json(JSON.parse(data));
+        }
+
+        // Fallback BDD: typiquement apres un redeploiement Render qui a
+        // efface le filesystem ephemere. On reconstitue le shape attendu
+        // par le client (objet flat, cle = "<PointVente>-<Produit>").
+        try {
+            const { Stock } = require('./db/models');
+            const { formatDate, parseDate } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(date));
+            const rows = await Stock.findAll({
+                where: { date: dateBdd, typeStock: type }
+            });
+            if (rows.length === 0) {
+                console.log(`Aucune donnee BDD pour stock ${type} ${dateBdd}, retour {}.`);
+                return res.json({});
+            }
+            const result = {};
+            // Le typeStock cote client est "Stock Matin"/"Stock Soir" (camel +
+            // espace) dans les anciens dumps JSON; on conserve ce label dans
+            // chaque entree pour matcher le format attendu.
+            const typeStockLabel = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
+            for (const r of rows) {
+                const key = `${r.pointVente}-${r.produit}`;
+                result[key] = {
+                    date: r.date,
+                    typeStock: typeStockLabel,
+                    'Point de Vente': r.pointVente,
+                    Produit: r.produit,
+                    Nombre: String(parseFloat(r.quantite)),
+                    PU: String(parseFloat(r.prixUnitaire)),
+                    Montant: String(parseFloat(r.total)),
+                    Commentaire: r.commentaire || ''
+                };
+            }
+            console.log(`✅ Fallback BDD stock ${type}: ${rows.length} lignes pour ${dateBdd}.`);
+            return res.json(result);
+        } catch (dbError) {
+            console.warn('⚠️  Fallback BDD stock echoue:', dbError.message);
             return res.json({});
         }
-        
-        const data = await fsPromises.readFile(filePath, 'utf8');
-        res.json(JSON.parse(data));
     } catch (error) {
         console.error('Erreur lors du chargement des données:', error);
         res.status(500).json({ error: 'Erreur lors du chargement des données' });
@@ -2632,17 +2667,50 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
         }
         
         const baseFilePath = type === 'matin' ? STOCK_MATIN_PATH : STOCK_SOIR_PATH;
-        
+
         // Obtenir le chemin du fichier spécifique à la date
         const filePath = getPathByDate(baseFilePath, date);
-        
+
         // Sauvegarder les données dans le fichier spécifique à la date
         await fsPromises.writeFile(filePath, JSON.stringify(req.body, null, 2));
-        
+
         // Note: Le fichier principal n'est pas mis à jour en production pour éviter les erreurs de permissions
         // Les données de stock sont sauvegardées uniquement dans les fichiers par date
         console.log(`Données de stock ${type} sauvegardées dans le fichier par date: ${filePath}`);
-        
+
+        // Dual-write: persister aussi en BDD pour survivre aux redeploiements
+        // Render. Strategie: pour ce couple (date, typeStock), DELETE-puis-
+        // bulkCreate, ce qui matche la semantique du remplacement complet
+        // cote fichier (writeFile ecrase l'integralite).
+        try {
+            const { Stock } = require('./db/models');
+            const { formatDate, parseDate } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(date));
+            await Stock.destroy({ where: { date: dateBdd, typeStock: type } });
+
+            // Le shape du body cote stock est { "key1": { date, "Point de Vente",
+            // Produit, Nombre, PU, Montant, Commentaire, ... }, ... } — flat,
+            // chaque valeur portant tous les champs.
+            const rows = Object.values(req.body || {})
+                .filter((e) => e && (e['Point de Vente'] || e.pointVente) && (e.Produit || e.produit))
+                .map((e) => ({
+                    date: dateBdd,
+                    typeStock: type,
+                    pointVente: e['Point de Vente'] || e.pointVente,
+                    produit: e.Produit || e.produit,
+                    quantite: parseFloat(e.Nombre || e.quantite) || 0,
+                    prixUnitaire: parseFloat(e.PU || e.prixUnitaire) || 0,
+                    total: parseFloat(e.Montant || e.total) || 0,
+                    commentaire: e.Commentaire || e.commentaire || ''
+                }));
+            if (rows.length > 0) {
+                await Stock.bulkCreate(rows);
+                console.log(`✅ Stock ${type} persiste en BDD: ${rows.length} lignes pour ${dateBdd}.`);
+            }
+        } catch (dbError) {
+            console.error('⚠️  Echec persistance BDD stock (JSON OK):', dbError.message);
+        }
+
         res.json({ success: true });
     } catch (error) {
         console.error('Erreur lors de la sauvegarde des données:', error);
@@ -2780,7 +2848,21 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
         // Note: Le fichier principal n'est pas mis à jour en production pour éviter les erreurs de permissions
         // Les transferts sont sauvegardés uniquement dans les fichiers par date
         console.log(`Transferts sauvegardés dans les fichiers par date: ${allTransferts.length} transferts au total`);
-        
+
+        // Dual-write: persister aussi en BDD pour survivre aux redeploiements
+        // Render (filesystem ephemere). saveTransferts fait DELETE-puis-bulkCreate
+        // par date, ce qui matche la semantique du remplacement complet ci-dessus.
+        // En cas d'echec BDD, on logge mais on ne fait pas planter la requete:
+        // le fichier JSON est deja ecrit, l'experience utilisateur reste OK
+        // jusqu'au prochain redemarrage.
+        try {
+            const { saveTransferts } = require('./db/utils');
+            await saveTransferts(transferts);
+            console.log(`✅ Transferts persistés en BDD: ${transferts.length} lignes.`);
+        } catch (dbError) {
+            console.error('⚠️  Echec persistance BDD transferts (JSON OK):', dbError.message);
+        }
+
         res.json({ success: true });
     } catch (error) {
         console.error('Erreur lors de la sauvegarde des transferts:', error);
@@ -2792,39 +2874,62 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
 app.get('/api/transferts', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date } = req.query;
-        
+
+        // Helper: lit la BDD et reconstitue le shape attendu par le client.
+        const lireDepuisBDD = async (filtreDate) => {
+            const { Transfert } = require('./db/models');
+            const where = filtreDate ? { date: filtreDate } : {};
+            const rows = await Transfert.findAll({ where, order: [['id', 'ASC']] });
+            return rows.map((r) => ({
+                date: r.date,
+                pointVente: r.pointVente,
+                produit: r.produit,
+                quantite: parseFloat(r.quantite),
+                prixUnitaire: parseFloat(r.prixUnitaire),
+                total: parseFloat(r.total),
+                impact: typeof r.impact === 'string' ? parseInt(r.impact, 10) : r.impact,
+                commentaire: r.commentaire || '',
+                extension: r.extension || null
+            }));
+        };
+
         if (date) {
-            // Obtenir le chemin du fichier spécifique à la date
             const filePath = getPathByDate(TRANSFERTS_PATH, date);
-            
-            // Vérifier si le fichier spécifique existe
             if (fs.existsSync(filePath)) {
                 const content = await fsPromises.readFile(filePath, 'utf8');
                 const transferts = JSON.parse(content || '[]');
                 return res.json({ success: true, transferts });
             }
-            
-            // Si le fichier spécifique n'existe pas, chercher dans le fichier principal
             if (fs.existsSync(TRANSFERTS_PATH)) {
                 const content = await fsPromises.readFile(TRANSFERTS_PATH, 'utf8');
                 const allTransferts = JSON.parse(content || '[]');
-                // Filtrer les transferts par date
                 const transferts = allTransferts.filter(t => t.date === date);
-                return res.json({ success: true, transferts });
+                if (transferts.length > 0) return res.json({ success: true, transferts });
             }
-            
-            // Si aucun fichier n'existe, retourner un tableau vide
-            return res.json({ success: true, transferts: [] });
+            // Fallback BDD (typiquement apres un redeploiement Render qui a
+            // efface le filesystem ephemere).
+            try {
+                const { formatDate, parseDate } = require('./db/utils');
+                const dateBdd = formatDate(parseDate(date));
+                const transferts = await lireDepuisBDD(dateBdd);
+                return res.json({ success: true, transferts });
+            } catch (dbError) {
+                console.warn('⚠️  Fallback BDD transferts echoue:', dbError.message);
+                return res.json({ success: true, transferts: [] });
+            }
         } else {
-            // Retourner tous les transferts depuis le fichier principal
             if (fs.existsSync(TRANSFERTS_PATH)) {
                 const content = await fsPromises.readFile(TRANSFERTS_PATH, 'utf8');
                 const transferts = JSON.parse(content || '[]');
                 return res.json({ success: true, transferts });
             }
-            
-            // Si le fichier n'existe pas, retourner un tableau vide
-            return res.json({ success: true, transferts: [] });
+            try {
+                const transferts = await lireDepuisBDD(null);
+                return res.json({ success: true, transferts });
+            } catch (dbError) {
+                console.warn('⚠️  Fallback BDD transferts echoue:', dbError.message);
+                return res.json({ success: true, transferts: [] });
+            }
         }
     } catch (error) {
         console.error('Erreur lors de la récupération des transferts:', error);
@@ -2908,6 +3013,35 @@ app.delete('/api/transferts', checkAuth, checkWriteAccess, async (req, res) => {
                 console.log('Transfert vu dans le fichier principal (legacy).');
                 foundAndRemoved = true;
             }
+        }
+
+        // Suppression cote BDD aussi (dual-write). Match strict sur les memes
+        // champs que cote JSON: si le filesystem ephemere a deja ete nettoye,
+        // c'est ici qu'on supprime reellement la ligne.
+        try {
+            const { Transfert } = require('./db/models');
+            const { formatDate, parseDate } = require('./db/utils');
+            const dateBdd = formatDate(parseDate(transfertData.date));
+            const all = await Transfert.findAll({
+                where: {
+                    date: dateBdd,
+                    pointVente: transfertData.pointVente,
+                    produit: transfertData.produit
+                }
+            });
+            const toDelete = all.find((r) => {
+                const sameImpact = String(r.impact) === String(transfertData.impact);
+                const sameQte = parseFloat(r.quantite) === parseFloat(transfertData.quantite);
+                const samePrix = parseFloat(r.prixUnitaire) === parseFloat(transfertData.prixUnitaire);
+                return sameImpact && sameQte && samePrix;
+            });
+            if (toDelete) {
+                await toDelete.destroy();
+                foundAndRemoved = true;
+                console.log('Transfert supprime aussi en BDD.');
+            }
+        } catch (dbError) {
+            console.warn('⚠️  Suppression BDD transfert echouee (JSON OK):', dbError.message);
         }
 
         if (!foundAndRemoved) {
