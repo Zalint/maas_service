@@ -2852,67 +2852,68 @@ app.delete('/api/transferts', checkAuth, checkWriteAccess, async (req, res) => {
 
         // Obtenir le chemin du fichier spécifique à la date
         const dateFilePath = getPathByDate(TRANSFERTS_PATH, transfertData.date);
-        
+
         // Tableau pour stocker les transferts mis à jour
         let dateTransferts = [];
         let indexToRemove = -1;
-        
+        // En PROD (Render filesystem ephemere), seul le fichier par-date existe
+        // de maniere fiable: le POST ne maintient plus le fichier maitre
+        // data/transferts.json (cf. plus haut "fichier principal non mis à
+        // jour en production"). On considere donc la suppression comme
+        // reussie des qu'une des deux sources a vu la ligne, et on ne
+        // renvoie 404 que si AUCUNE n'avait la ligne.
+        let foundAndRemoved = false;
+
         // Mise à jour du fichier spécifique à la date s'il existe
         if (fs.existsSync(dateFilePath)) {
             const content = await fsPromises.readFile(dateFilePath, 'utf8');
             dateTransferts = JSON.parse(content || '[]');
-            
+
             // Rechercher l'index du transfert à supprimer
-            indexToRemove = dateTransferts.findIndex(t => 
-                t.pointVente === transfertData.pointVente && 
+            indexToRemove = dateTransferts.findIndex(t =>
+                t.pointVente === transfertData.pointVente &&
                 t.produit === transfertData.produit &&
                 t.impact === transfertData.impact &&
                 parseFloat(t.quantite) === parseFloat(transfertData.quantite) &&
                 parseFloat(t.prixUnitaire) === parseFloat(transfertData.prixUnitaire)
             );
-            
+
             if (indexToRemove !== -1) {
                 // Supprimer le transfert
                 dateTransferts.splice(indexToRemove, 1);
-                
+
                 // Sauvegarder les transferts mis à jour
                 await fsPromises.writeFile(dateFilePath, JSON.stringify(dateTransferts, null, 2));
+                foundAndRemoved = true;
             }
         }
-        
-        // Mettre également à jour le fichier principal
-        let allTransferts = [];
+
+        // Vérifier également le fichier principal (legacy / dev local).
+        // Sur PROD ce fichier n'existe pas et c'est attendu.
         if (fs.existsSync(TRANSFERTS_PATH)) {
             const content = await fsPromises.readFile(TRANSFERTS_PATH, 'utf8');
-            allTransferts = JSON.parse(content || '[]');
-            
-            // Rechercher l'index du transfert à supprimer
-            indexToRemove = allTransferts.findIndex(t => 
+            const allTransferts = JSON.parse(content || '[]');
+
+            indexToRemove = allTransferts.findIndex(t =>
                 t.date === transfertData.date &&
-                t.pointVente === transfertData.pointVente && 
+                t.pointVente === transfertData.pointVente &&
                 t.produit === transfertData.produit &&
                 t.impact === transfertData.impact &&
                 parseFloat(t.quantite) === parseFloat(transfertData.quantite) &&
                 parseFloat(t.prixUnitaire) === parseFloat(transfertData.prixUnitaire)
             );
-            
+
             if (indexToRemove !== -1) {
-                // Supprimer le transfert
-                allTransferts.splice(indexToRemove, 1);
-                
-                // Note: Le fichier principal n'est pas mis à jour en production pour éviter les erreurs de permissions
-                // La suppression est effectuée uniquement dans le fichier par date
-                console.log(`Transfert supprimé du fichier par date, fichier principal non mis à jour (production)`);
-            } else {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Transfert non trouvé'
-                });
+                // Note: en prod le fichier principal n'est pas reecrit (read-only).
+                console.log('Transfert vu dans le fichier principal (legacy).');
+                foundAndRemoved = true;
             }
-        } else {
+        }
+
+        if (!foundAndRemoved) {
             return res.status(404).json({
                 success: false,
-                message: 'Aucun transfert trouvé'
+                message: 'Transfert non trouvé'
             });
         }
 
