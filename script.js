@@ -3,6 +3,124 @@
 // Variables globales pour les points de vente (déclarées en premier pour éviter les erreurs de temporal dead zone)
 var POINTS_VENTE_PHYSIQUES = [];
 
+/**
+ * Toast minimal base sur Bootstrap 5. Remplace alert() pour les messages non
+ * bloquants (info / erreur / succes). Pour les confirmations (OK/Cancel),
+ * utiliser showConfirmModal() qui retourne une Promise<boolean>.
+ *
+ * Si le type n'est pas fourni, devine d'apres le texte: erreur -> danger,
+ * attention/veuillez -> warning, sinon success.
+ */
+function showToast(message, type = null, durationMs = 4000) {
+    const text = String(message == null ? '' : message);
+    if (!type) {
+        type = /erreur|error|échec|echec|impossible|invalide/i.test(text) ? 'danger'
+             : /attention|warning|veuillez|prudent/i.test(text) ? 'warning'
+             : 'success';
+    }
+    let container = document.getElementById('appToastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'appToastContainer';
+        container.className = 'toast-container position-fixed top-0 end-0 p-3';
+        container.style.zIndex = '1100';
+        document.body.appendChild(container);
+    }
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const toastEl = document.createElement('div');
+    toastEl.className = `toast align-items-center text-bg-${type} border-0`;
+    toastEl.setAttribute('role', 'alert');
+    toastEl.innerHTML = `
+        <div class="d-flex">
+            <div class="toast-body" style="white-space: pre-line;">${safe}</div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+        </div>
+    `;
+    container.appendChild(toastEl);
+    if (typeof bootstrap !== 'undefined' && bootstrap.Toast) {
+        const t = new bootstrap.Toast(toastEl, { delay: durationMs });
+        t.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    } else {
+        toastEl.classList.add('show');
+        setTimeout(() => toastEl.remove(), durationMs);
+    }
+}
+
+/**
+ * Modal de confirmation Bootstrap (remplace confirm() natif). Affiche un
+ * titre + le message + boutons OK/Cancel. Resout la Promise avec true si
+ * l'utilisateur confirme, false sinon (Cancel ou fermeture).
+ *
+ * @param {string} message - texte (les retours a la ligne sont preserves).
+ * @param {{title?: string, okLabel?: string, cancelLabel?: string, okVariant?: string}=} options
+ * @returns {Promise<boolean>}
+ */
+function showConfirmModal(message, options = {}) {
+    const {
+        title = 'Confirmation',
+        okLabel = 'OK',
+        cancelLabel = 'Annuler',
+        okVariant = 'primary'
+    } = options;
+    const safe = String(message == null ? '' : message)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    return new Promise((resolve) => {
+        const modalEl = document.createElement('div');
+        modalEl.className = 'modal fade';
+        modalEl.tabIndex = -1;
+        modalEl.innerHTML = `
+            <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">${title}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body" style="white-space: pre-line;">${safe}</div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-action="cancel">${cancelLabel}</button>
+                        <button type="button" class="btn btn-${okVariant}" data-action="ok">${okLabel}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modalEl);
+
+        let settled = false;
+        const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+
+        modalEl.querySelector('[data-action="ok"]').addEventListener('click', () => {
+            settle(true);
+            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            } else {
+                modalEl.remove();
+            }
+        });
+        modalEl.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+            settle(false);
+        });
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            settle(false); // fermeture sans clic OK = annulation
+            modalEl.remove();
+        });
+
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            const m = new bootstrap.Modal(modalEl);
+            m.show();
+        } else {
+            // Fallback ultra-simple si Bootstrap absent.
+            modalEl.style.display = 'block';
+            modalEl.classList.add('show');
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Vérifier si le gestionnaire de réconciliation est disponible
     if (typeof ReconciliationManager === 'undefined') {
@@ -5945,17 +6063,22 @@ async function sauvegarderDonneesStock() {
     }
 
     if (Object.keys(donnees).length === 0) {
-        alert('Aucune donnée à sauvegarder. Veuillez saisir au moins une quantité.');
+        showToast('Aucune donnée à sauvegarder. Veuillez saisir au moins une quantité.', 'warning');
         return;
     }
 
-    // Demander confirmation avec résumé
+    // Modal de confirmation avec resume (remplace confirm() natif)
     const message = `Voulez-vous sauvegarder les données suivantes pour le stock ${typeStock} du ${date} ?\n\n` +
                    `${resume.join('\n')}\n\n` +
                    `Total général: ${totalGeneral.toLocaleString('fr-FR')} FCFA\n\n` +
                    `Cette action écrasera les données existantes pour ce type de stock.`;
-
-    if (!confirm(message)) {
+    const confirmed = await showConfirmModal(message, {
+        title: `Sauvegarde stock ${typeStock} — ${date}`,
+        okLabel: 'Sauvegarder',
+        cancelLabel: 'Annuler',
+        okVariant: 'success'
+    });
+    if (!confirmed) {
         return;
     }
 
@@ -5973,8 +6096,8 @@ async function sauvegarderDonneesStock() {
         const result = await response.json();
         if (result.success) {
             console.log('%cDonnées sauvegardées avec succès', 'color: #00ff00; font-weight: bold;');
-            alert('Données sauvegardées avec succès');
-            
+            showToast('Données sauvegardées avec succès', 'success');
+
             // Mettre à jour stockData après la sauvegarde
             if (typeStock === 'matin') {
                 stockData.matin = new Map(Object.entries(donnees));
@@ -5987,7 +6110,7 @@ async function sauvegarderDonneesStock() {
         }
     } catch (error) {
         console.error('%cErreur lors de la sauvegarde:', 'color: #ff0000; font-weight: bold;', error);
-        alert('Erreur lors de la sauvegarde des données: ' + error.message);
+        showToast('Erreur lors de la sauvegarde des données: ' + error.message, 'danger', 6000);
     }
 }
 // Fonction pour initialiser le tableau de stock
