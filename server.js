@@ -786,6 +786,16 @@ const STOCK_SOIR_PATH = path.join(__dirname, 'data', 'stock-soir.json');
 const TRANSFERTS_PATH = path.join(__dirname, 'data', 'transferts.json');
 
 /**
+ * Stringifie une valeur numerique en evitant "NaN" si la source SQL est NULL
+ * ou non-parseable. Le frontend traite les chaines vides comme 0 mais affiche
+ * "NaN" tel quel, ce qui pollue l'UI.
+ */
+function numToStringSafe(value) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? String(n) : '';
+}
+
+/**
  * Reconstruit le fichier JSON stock-{matin,soir}.json pour une date donnee
  * a partir des lignes presentes en BDD (table stocks). Utilise apres un
  * recompute auto: la BDD est la source de verite, on resynchronise le JSON
@@ -814,9 +824,9 @@ async function syncStockJsonFromBDD(dateInput, type) {
             typeStock: typeStockLabel,
             'Point de Vente': r.pointVente,
             Produit: r.produit,
-            Nombre: String(parseFloat(r.quantite)),
-            PU: String(parseFloat(r.prixUnitaire)),
-            Montant: String(parseFloat(r.total)),
+            Nombre: numToStringSafe(r.quantite),
+            PU: numToStringSafe(r.prixUnitaire),
+            Montant: numToStringSafe(r.total),
             Commentaire: r.commentaire || '',
             auto: !!r.is_auto_calculated
         };
@@ -2246,9 +2256,9 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
                     typeStock: typeStockLabel,
                     'Point de Vente': r.pointVente,
                     Produit: r.produit,
-                    Nombre: String(parseFloat(r.quantite)),
-                    PU: String(parseFloat(r.prixUnitaire)),
-                    Montant: String(parseFloat(r.total)),
+                    Nombre: numToStringSafe(r.quantite),
+                    PU: numToStringSafe(r.prixUnitaire),
+                    Montant: numToStringSafe(r.total),
                     Commentaire: r.commentaire || '',
                     auto: !!r.is_auto_calculated
                 };
@@ -2671,8 +2681,6 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
                 };
             }
 
-            await Stock.destroy({ where: { date: dateBdd, typeStock: type } });
-
             // Le shape du body cote stock est { "key1": { date, "Point de Vente",
             // Produit, Nombre, PU, Montant, Commentaire, ... }, ... } — flat,
             // chaque valeur portant tous les champs.
@@ -2694,8 +2702,16 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
                         is_auto_calculated: classify ? classify(pv, produit, quantite) : false
                     };
                 });
+
+            // Transaction: si bulkCreate echoue apres destroy, rollback pour
+            // ne pas perdre les anciennes lignes.
+            await sequelize.transaction(async (tx) => {
+                await Stock.destroy({ where: { date: dateBdd, typeStock: type }, transaction: tx });
+                if (rows.length > 0) {
+                    await Stock.bulkCreate(rows, { transaction: tx });
+                }
+            });
             if (rows.length > 0) {
-                await Stock.bulkCreate(rows);
                 console.log(`✅ Stock ${type} persiste en BDD: ${rows.length} lignes pour ${dateBdd}.`);
             }
         } catch (dbError) {
@@ -3050,8 +3066,10 @@ app.delete('/api/transferts', checkAuth, checkWriteAccess, async (req, res) => {
             });
             const toDelete = all.find((r) => {
                 const sameImpact = String(r.impact) === String(transfertData.impact);
-                const sameQte = parseFloat(r.quantite) === parseFloat(transfertData.quantite);
-                const samePrix = parseFloat(r.prixUnitaire) === parseFloat(transfertData.prixUnitaire);
+                // Tolerance flotante: les montants stockes en FLOAT peuvent
+                // diverger de la valeur saisie au-dela de la 6e decimale.
+                const sameQte = Math.abs(parseFloat(r.quantite) - parseFloat(transfertData.quantite)) < 0.001;
+                const samePrix = Math.abs(parseFloat(r.prixUnitaire) - parseFloat(transfertData.prixUnitaire)) < 0.001;
                 return sameImpact && sameQte && samePrix;
             });
             if (toDelete) {

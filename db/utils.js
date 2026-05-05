@@ -1,4 +1,5 @@
 const { Vente, Stock, Transfert, Produit } = require('./models');
+const { sequelize } = require('./index');
 const { Op } = require('sequelize');
 
 /**
@@ -229,14 +230,10 @@ async function saveTransferts(transferts) {
       transfertsByDate[formattedDate].push(transfert);
     });
     
-    // Pour chaque date, supprimer les anciens transferts et ajouter les nouveaux
+    // Pour chaque date, supprimer les anciens transferts et ajouter les nouveaux.
+    // Wrap dans une transaction par date: si bulkCreate echoue apres destroy,
+    // on rollback pour eviter une perte de donnees.
     for (const [date, dateTransferts] of Object.entries(transfertsByDate)) {
-      // Supprimer les anciens transferts pour cette date
-      await Transfert.destroy({
-        where: { date }
-      });
-      
-      // Préparer les nouveaux transferts
       const transfertsToSave = dateTransferts.map(t => ({
         date,
         pointVente: t.pointVente,
@@ -248,11 +245,15 @@ async function saveTransferts(transferts) {
         commentaire: t.commentaire || '',
         extension: t.extension || null
       }));
-      
-      // Sauvegarder les nouveaux transferts
-      await Transfert.bulkCreate(transfertsToSave);
+
+      await sequelize.transaction(async (t) => {
+        await Transfert.destroy({ where: { date }, transaction: t });
+        if (transfertsToSave.length > 0) {
+          await Transfert.bulkCreate(transfertsToSave, { transaction: t });
+        }
+      });
     }
-    
+
     return true;
   } catch (error) {
     console.error('Erreur lors de la sauvegarde des transferts:', error);
@@ -271,7 +272,11 @@ async function saveTransferts(transferts) {
  * (qui classifie chaque ligne saisie en auto vs override sans ecraser).
  */
 async function computeStockSoirAutoValues(dateInput) {
-  const dateBdd = formatDate(parseDate(dateInput));
+  const parsed = parseDate(dateInput);
+  if (!parsed || isNaN(parsed.getTime())) {
+    throw new Error(`Date invalide pour computeStockSoirAutoValues: "${dateInput}"`);
+  }
+  const dateBdd = formatDate(parsed);
 
   const autoProduits = await Produit.findAll({
     where: { mode_stock: 'automatique', type_catalogue: 'inventaire' },
@@ -345,56 +350,67 @@ async function recomputeStockSoirForAuto(dateInput) {
     return { updated: 0, created: 0, skippedOverride: 0 };
   }
 
-  // Indexer le stock soir existant
-  const allSoir = await Stock.findAll({ where: { date: dateBdd, typeStock: 'soir' } });
-  const soirByKey = new Map();
-  for (const s of allSoir) {
-    soirByKey.set(`${s.pointVente}|${s.produit}`, s);
-  }
-
-  let updated = 0;
-  let created = 0;
-  let skippedOverride = 0;
-
-  for (const [key, calc] of calcByKey) {
-    const [pv, produit] = key.split('|');
-
-    const existing = soirByKey.get(key);
-    if (existing && existing.is_auto_calculated === false) {
-      skippedOverride++;
-      continue; // override utilisateur: respecter
+  // Toutes les ecritures (lock + update + create) se font dans une seule
+  // transaction pour eviter qu'un POST /api/ventes parallele ne lise un
+  // etat partiel et duplique des lignes ou perdle des updates.
+  return await sequelize.transaction(async (t) => {
+    // Lock-on-read pour serialiser les recomputes concurrents sur le meme
+    // (date, soir). LOCK.UPDATE empeche un autre tx de toucher ces lignes
+    // jusqu'au commit/rollback de celle-ci.
+    const allSoir = await Stock.findAll({
+      where: { date: dateBdd, typeStock: 'soir' },
+      lock: t.LOCK.UPDATE,
+      transaction: t
+    });
+    const soirByKey = new Map();
+    for (const s of allSoir) {
+      soirByKey.set(`${s.pointVente}|${s.produit}`, s);
     }
 
-    const prixUnitaire = existing
-      ? parseFloat(existing.prixUnitaire) || prixByProduit.get(produit) || 0
-      : (prixByProduit.get(produit) || 0);
-    const total = calc * prixUnitaire;
+    let updated = 0;
+    let created = 0;
+    let skippedOverride = 0;
 
-    if (existing) {
-      await existing.update({
-        quantite: calc,
-        prixUnitaire,
-        total,
-        is_auto_calculated: true
-      });
-      updated++;
-    } else {
-      await Stock.create({
-        date: dateBdd,
-        typeStock: 'soir',
-        pointVente: pv,
-        produit,
-        quantite: calc,
-        prixUnitaire,
-        total,
-        commentaire: '',
-        is_auto_calculated: true
-      });
-      created++;
+    for (const [key, calc] of calcByKey) {
+      const [pv, produit] = key.split('|');
+
+      const existing = soirByKey.get(key);
+      if (existing && existing.is_auto_calculated === false) {
+        skippedOverride++;
+        continue; // override utilisateur: respecter
+      }
+
+      const prixUnitaire = existing
+        ? parseFloat(existing.prixUnitaire) || prixByProduit.get(produit) || 0
+        : (prixByProduit.get(produit) || 0);
+      const total = calc * prixUnitaire;
+
+      if (existing) {
+        await existing.update({
+          quantite: calc,
+          prixUnitaire,
+          total,
+          is_auto_calculated: true
+        }, { transaction: t });
+        updated++;
+      } else {
+        await Stock.create({
+          date: dateBdd,
+          typeStock: 'soir',
+          pointVente: pv,
+          produit,
+          quantite: calc,
+          prixUnitaire,
+          total,
+          commentaire: '',
+          is_auto_calculated: true
+        }, { transaction: t });
+        created++;
+      }
     }
-  }
 
-  return { updated, created, skippedOverride };
+    return { updated, created, skippedOverride };
+  });
 }
 
 module.exports = {
