@@ -76,6 +76,13 @@ const Produit = sequelize.define('Produit', {
     defaultValue: false,
     field: 'prix_personnalise',
     comment: 'Vente uniquement: true si le prix a été personnalisé par l\'admin et ne doit plus être propagé depuis le parent inventaire'
+  },
+  ventilation_poids: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'ventilation_poids',
+    comment: 'Inventaire: si TRUE, les transferts de ce produit acceptent une ventilation par calibre (poids_kg + quantite) dans transferts.extension.calibres'
   }
 }, {
   tableName: 'produits',

@@ -4519,14 +4519,21 @@ async function chargerTransferts(date) {
                     });
                     tdImpact.appendChild(selectImpact);
                     
-                    // Quantité
+                    // Quantité (+ affichage kg si ventilation)
                     const tdQuantite = document.createElement('td');
                     const inputQuantite = document.createElement('input');
                     inputQuantite.type = 'number';
                     inputQuantite.className = 'form-control form-control-sm quantite-input';
                     inputQuantite.value = transfert.quantite;
                     tdQuantite.appendChild(inputQuantite);
-                    
+                    const kgDisplay = document.createElement('small');
+                    kgDisplay.className = 'text-muted kg-display d-block';
+                    tdQuantite.appendChild(kgDisplay);
+
+                    // Détails (calibres) — peuplé après ajout au DOM
+                    const tdDetails = document.createElement('td');
+                    tdDetails.className = 'details-cell';
+
                     // Prix unitaire
                     const tdPrixUnitaire = document.createElement('td');
                     const inputPrixUnitaire = document.createElement('input');
@@ -4534,12 +4541,12 @@ async function chargerTransferts(date) {
                     inputPrixUnitaire.className = 'form-control form-control-sm prix-unitaire-input';
                     inputPrixUnitaire.value = transfert.prixUnitaire;
                     tdPrixUnitaire.appendChild(inputPrixUnitaire);
-                    
+
                     // Total
                     const tdTotal = document.createElement('td');
                     tdTotal.className = 'total-cell';
                     tdTotal.textContent = transfert.total.toLocaleString('fr-FR');
-                    
+
                     // Commentaire
                     const tdCommentaire = document.createElement('td');
                     const inputCommentaire = document.createElement('input');
@@ -4588,9 +4595,9 @@ async function chargerTransferts(date) {
                     });
                     tdActions.appendChild(btnSupprimer);
                     
-                    // Ajouter les cellules à la ligne
-                    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
-                    
+                    // Ajouter les cellules à la ligne (PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
+                    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+
                     // Ajouter les écouteurs d'événements pour le calcul automatique du total
                     const calculateTotal = () => {
                         const quantite = parseFloat(inputQuantite.value) || 0;
@@ -4599,12 +4606,25 @@ async function chargerTransferts(date) {
                         const total = quantite * prixUnitaire * impact;
                         tdTotal.textContent = total.toLocaleString('fr-FR');
                     };
-                    
+
                     inputQuantite.addEventListener('input', calculateTotal);
                     inputPrixUnitaire.addEventListener('input', calculateTotal);
                     selectImpact.addEventListener('change', calculateTotal);
-                    
+
+                    // Re-configurer la cellule détails si le produit change en cours d'édition
+                    selectProduit.addEventListener('change', function() {
+                        configurerVentilationLigneTransfert(row, this.value);
+                        calculateTotal();
+                    });
+
                     tbody.appendChild(row);
+
+                    // État initial des détails: pré-remplir avec les calibres déjà persistés
+                    const calibresInit =
+                        transfert.extension && Array.isArray(transfert.extension.calibres)
+                            ? transfert.extension.calibres
+                            : null;
+                    configurerVentilationLigneTransfert(row, transfert.produit, calibresInit);
                 });
             } else {
                 console.log('Aucun transfert trouvé pour cette date, ajout d\'une ligne vide');
@@ -4621,6 +4641,193 @@ async function chargerTransferts(date) {
         console.error('Erreur lors du chargement des transferts:', error);
         // En cas d'erreur, retourner un tableau vide
         return [];
+    }
+}
+
+/**
+ * Configure la cellule "Détails (calibres)" et le mode quantité d'une ligne
+ * de transfert en fonction du produit sélectionné.
+ *
+ * Comportement:
+ *   - Produit avec PRODUITS_VENTILATION_POIDS (ex: Poulet):
+ *       - Affiche un mini-éditeur (poids_kg + qté + prix unitaire par ligne).
+ *       - inputQuantite passe en lecture seule, recalculé = Σ qte des calibres.
+ *       - kgDisplay affiche Σ (qte × poids_kg) à 2 décimales.
+ *       - Si au moins un calibre a un prix saisi, inputPrixUnitaire est
+ *         auto-rempli avec la moyenne pondérée Σ(qte×prix)/Σ qte. Reste
+ *         editable (l'utilisateur peut overrider).
+ *   - Produit sans ventilation:
+ *       - Affiche "—" et libère inputQuantite.
+ *
+ * @param {HTMLElement} row - <tr> du transfert
+ * @param {string} produit - nom canonique du produit
+ * @param {Array<{poids_kg:number,quantite:number,prix_unitaire?:number}>=} calibresInit
+ */
+function configurerVentilationLigneTransfert(row, produit, calibresInit) {
+    const tdDetails = row.querySelector('.details-cell');
+    const inputQuantite = row.querySelector('.quantite-input');
+    const inputPrixUnitaire = row.querySelector('.prix-unitaire-input');
+    const kgDisplay = row.querySelector('.kg-display');
+    if (!tdDetails || !inputQuantite) return;
+
+    const aVentilation = PRODUITS_VENTILATION_POIDS.has(produit);
+    tdDetails.innerHTML = '';
+
+    if (!aVentilation) {
+        const span = document.createElement('span');
+        span.className = 'text-muted';
+        span.textContent = '—';
+        tdDetails.appendChild(span);
+        inputQuantite.readOnly = false;
+        if (kgDisplay) kgDisplay.textContent = '';
+        // Pas de ventilation: prix non recalculé, retour au style normal.
+        if (inputPrixUnitaire) inputPrixUnitaire.style.fontStyle = '';
+        return;
+    }
+
+    // Editeur calibres
+    inputQuantite.readOnly = true;
+    // Reset du style à chaque (re)configuration; l'italique se réappliquera
+    // si l'utilisateur écrase la valeur auto-remplie après coup.
+    if (inputPrixUnitaire) inputPrixUnitaire.style.fontStyle = '';
+
+    // Listener "italique sur override" attaché une seule fois par input.
+    // Le flag _isAutoFilling permet de distinguer un input dispatché par
+    // recalc (auto-remplissage) d'une saisie clavier de l'utilisateur.
+    if (inputPrixUnitaire && !inputPrixUnitaire._italicOnOverrideAttached) {
+        inputPrixUnitaire.addEventListener('input', () => {
+            if (!inputPrixUnitaire._isAutoFilling) {
+                inputPrixUnitaire.style.fontStyle = 'italic';
+            }
+        });
+        inputPrixUnitaire._italicOnOverrideAttached = true;
+    }
+
+    const editor = document.createElement('div');
+    editor.className = 'calibres-editor';
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm mb-1 calibres-table';
+    table.innerHTML = `
+        <thead><tr>
+            <th style="font-size:0.75rem;">Poids (kg)</th>
+            <th style="font-size:0.75rem;">Qté</th>
+            <th style="font-size:0.75rem;">Prix unitaire</th>
+            <th></th>
+        </tr></thead>
+        <tbody></tbody>`;
+    const calibresBody = table.querySelector('tbody');
+
+    const recalc = () => {
+        let sumQte = 0;
+        let sumKg = 0;
+        let sumValeur = 0;
+        let qteAvecPrix = 0;
+        calibresBody.querySelectorAll('tr').forEach(tr => {
+            const poids = parseFloat(tr.querySelector('.calibre-poids').value) || 0;
+            const qte = parseFloat(tr.querySelector('.calibre-qte').value) || 0;
+            const prixRaw = tr.querySelector('.calibre-prix').value;
+            sumQte += qte;
+            sumKg += qte * poids;
+            if (prixRaw !== '' && !isNaN(parseFloat(prixRaw))) {
+                sumValeur += qte * parseFloat(prixRaw);
+                qteAvecPrix += qte;
+            }
+        });
+        // Mettre à jour la quantité totale (lecture seule pour ces produits)
+        inputQuantite.value = sumQte;
+        inputQuantite.dispatchEvent(new Event('input', { bubbles: true }));
+        if (kgDisplay) {
+            kgDisplay.textContent = sumKg > 0 ? `${sumKg.toFixed(2)} kg` : '';
+        }
+        // Auto-remplir le prix unitaire global si au moins un calibre a un
+        // prix saisi. Reste editable: l'utilisateur peut overrider apres
+        // (auquel cas le champ passe en italique via le listener).
+        if (inputPrixUnitaire && qteAvecPrix > 0) {
+            const moyennePonderee = sumValeur / qteAvecPrix;
+            inputPrixUnitaire._isAutoFilling = true;
+            inputPrixUnitaire.value = parseFloat(moyennePonderee.toFixed(2));
+            inputPrixUnitaire.style.fontStyle = '';
+            inputPrixUnitaire.dispatchEvent(new Event('input', { bubbles: true }));
+            inputPrixUnitaire._isAutoFilling = false;
+        }
+    };
+
+    // Construit chaque ligne via les APIs DOM plutot que innerHTML pour
+    // eviter d'injecter une valeur non echappee si calibresInit vient un
+    // jour d'une source non validee.
+    const buildNumberInput = (className, value, attrs) => {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.className = `form-control form-control-sm ${className}`;
+        for (const [k, v] of Object.entries(attrs || {})) input.setAttribute(k, v);
+        input.value = value === '' || value === null || value === undefined ? '' : String(value);
+        return input;
+    };
+    const ajouterCalibre = (poids = '', qte = '', prix = '') => {
+        const tr = document.createElement('tr');
+
+        const tdPoids = document.createElement('td');
+        const inputPoids = buildNumberInput('calibre-poids', poids, { min: '0.01', step: '0.01' });
+        tdPoids.appendChild(inputPoids);
+
+        const tdQte = document.createElement('td');
+        const inputQte = buildNumberInput('calibre-qte', qte, { min: '0', step: '1' });
+        tdQte.appendChild(inputQte);
+
+        const tdPrix = document.createElement('td');
+        const inputPrix = buildNumberInput('calibre-prix', prix, { min: '0', step: '1', placeholder: 'optionnel' });
+        tdPrix.appendChild(inputPrix);
+
+        const tdAction = document.createElement('td');
+        const btnRemove = document.createElement('button');
+        btnRemove.type = 'button';
+        btnRemove.className = 'btn btn-sm btn-outline-danger calibre-remove';
+        btnRemove.title = 'Supprimer';
+        btnRemove.textContent = '×';
+        tdAction.appendChild(btnRemove);
+
+        tr.append(tdPoids, tdQte, tdPrix, tdAction);
+
+        inputPoids.addEventListener('input', recalc);
+        inputQte.addEventListener('input', recalc);
+        inputPrix.addEventListener('input', recalc);
+        btnRemove.addEventListener('click', () => {
+            tr.remove();
+            recalc();
+        });
+
+        calibresBody.appendChild(tr);
+    };
+
+    editor.appendChild(table);
+
+    const btnAdd = document.createElement('button');
+    btnAdd.type = 'button';
+    btnAdd.className = 'btn btn-sm btn-outline-secondary';
+    btnAdd.innerHTML = '<i class="fas fa-plus"></i> Ajouter calibre';
+    btnAdd.addEventListener('click', () => {
+        ajouterCalibre();
+    });
+    editor.appendChild(btnAdd);
+
+    tdDetails.appendChild(editor);
+
+    // Pré-remplir si on a des calibres existants
+    if (Array.isArray(calibresInit) && calibresInit.length > 0) {
+        calibresInit.forEach(c => ajouterCalibre(
+            c.poids_kg,
+            c.quantite,
+            (c.prix_unitaire !== undefined && c.prix_unitaire !== null) ? c.prix_unitaire : ''
+        ));
+        recalc();
+    } else if (parseFloat(inputQuantite.value) > 0) {
+        // Transfert existant sans ventilation persistée: on respecte la
+        // quantité saisie, l'utilisateur peut opt-in en cliquant "Ajouter calibre".
+        // L'éditeur reste vide pour ne pas écraser la valeur.
+    } else {
+        // Nouvelle ligne / quantité 0: démarrer avec une ligne vide.
+        ajouterCalibre();
     }
 }
 
@@ -4672,7 +4879,7 @@ function ajouterLigneTransfert() {
     });
     tdImpact.appendChild(selectImpact);
     
-    // Quantité
+    // Quantité (avec affichage kg pour les produits ventilés)
     const tdQuantite = document.createElement('td');
     const inputQuantite = document.createElement('input');
     inputQuantite.type = 'number';
@@ -4681,7 +4888,14 @@ function ajouterLigneTransfert() {
     inputQuantite.step = '0.001';
     inputQuantite.value = '0';
     tdQuantite.appendChild(inputQuantite);
-    
+    const kgDisplay = document.createElement('small');
+    kgDisplay.className = 'text-muted kg-display d-block';
+    tdQuantite.appendChild(kgDisplay);
+
+    // Détails (calibres) — peuplé par configurerVentilationLigneTransfert
+    const tdDetails = document.createElement('td');
+    tdDetails.className = 'details-cell';
+
     // Prix unitaire
     const tdPrixUnitaire = document.createElement('td');
     const inputPrixUnitaire = document.createElement('input');
@@ -4691,19 +4905,19 @@ function ajouterLigneTransfert() {
     inputPrixUnitaire.step = '0.01';
     inputPrixUnitaire.value = '0';
     tdPrixUnitaire.appendChild(inputPrixUnitaire);
-    
+
     // Total
     const tdTotal = document.createElement('td');
     tdTotal.className = 'total-cell';
     tdTotal.textContent = '0';
-    
+
     // Commentaire
     const tdCommentaire = document.createElement('td');
     const inputCommentaire = document.createElement('input');
     inputCommentaire.type = 'text';
     inputCommentaire.className = 'form-control form-control-sm commentaire-input';
     tdCommentaire.appendChild(inputCommentaire);
-    
+
     // Actions
     const tdActions = document.createElement('td');
     const btnSupprimer = document.createElement('button');
@@ -4716,10 +4930,10 @@ function ajouterLigneTransfert() {
         }
     });
     tdActions.appendChild(btnSupprimer);
-    
-    // Ajouter les cellules à la ligne
-    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
-    
+
+    // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
+    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+
     // Ajouter les écouteurs d'événements pour le calcul automatique du total
     const calculateTotal = () => {
         const quantite = parseFloat(inputQuantite.value) || 0;
@@ -4728,19 +4942,23 @@ function ajouterLigneTransfert() {
         const total = quantite * prixUnitaire * impact;
         tdTotal.textContent = total.toLocaleString('fr-FR');
     };
-    
+
     inputQuantite.addEventListener('input', calculateTotal);
     inputPrixUnitaire.addEventListener('input', calculateTotal);
     selectImpact.addEventListener('change', calculateTotal);
-    
-    // Gestionnaire pour la mise à jour du prix unitaire par défaut
+
+    // Gestionnaire pour la mise à jour du prix unitaire par défaut + ventilation
     selectProduit.addEventListener('change', function() {
         const nouveauProduit = this.value;
         inputPrixUnitaire.value = PRIX_DEFAUT_INVENTAIRE[nouveauProduit] || '0';
+        configurerVentilationLigneTransfert(row, nouveauProduit);
         calculateTotal();
     });
-    
+
     tbody.appendChild(row);
+
+    // État initial de la cellule Détails selon le produit sélectionné
+    configurerVentilationLigneTransfert(row, selectProduit.value);
 }
 
 // Fonction pour sauvegarder les transferts
@@ -4769,8 +4987,11 @@ async function sauvegarderTransfert() {
             console.error('Erreur lors de la vérification de session:', error);
         }
         
-        // Récupérer les données du tableau
-        const rows = document.querySelectorAll('#transfertTable tbody tr');
+        // Récupérer les données du tableau (enfant direct uniquement: les
+        // <tr> du <tbody> imbriqué de l'éditeur de calibres ne doivent pas
+        // être ramassés ici, sinon on accède a `.point-vente-select` qui
+        // n'existe pas et on plante avec "reading 'value' of null").
+        const rows = document.querySelectorAll('#transfertTable > tbody > tr');
         const transferts = [];
         
         rows.forEach(row => {
@@ -4780,13 +5001,36 @@ async function sauvegarderTransfert() {
             const quantite = parseFloat(row.querySelector('.quantite-input').value);
             const prixUnitaire = parseFloat(row.querySelector('.prix-unitaire-input').value);
             const commentaire = row.querySelector('.commentaire-input').value;
-            
+
             // Calcul du total
             const total = quantite * prixUnitaire * impact;
-            
+
+            // Récolter la ventilation par calibre si le produit en a une
+            let extension = null;
+            if (PRODUITS_VENTILATION_POIDS.has(produit)) {
+                const calibreRows = row.querySelectorAll('.calibres-table tbody tr');
+                const calibres = [];
+                calibreRows.forEach(cr => {
+                    const poids = parseFloat(cr.querySelector('.calibre-poids').value);
+                    const qte = parseFloat(cr.querySelector('.calibre-qte').value);
+                    const prixRaw = cr.querySelector('.calibre-prix') ? cr.querySelector('.calibre-prix').value : '';
+                    if (poids > 0 && qte > 0) {
+                        const calibre = { poids_kg: poids, quantite: qte };
+                        const prix = parseFloat(prixRaw);
+                        if (!isNaN(prix) && prix >= 0) {
+                            calibre.prix_unitaire = prix;
+                        }
+                        calibres.push(calibre);
+                    }
+                });
+                if (calibres.length > 0) {
+                    extension = { calibres };
+                }
+            }
+
             // Vérifier que les données sont valides
             if (pointVente && produit && !isNaN(quantite) && !isNaN(prixUnitaire) && quantite > 0) {
-                transferts.push({
+                const payload = {
                     date,
                     pointVente,
                     produit,
@@ -4795,7 +5039,9 @@ async function sauvegarderTransfert() {
                     prixUnitaire,
                     total,
                     commentaire
-                });
+                };
+                if (extension) payload.extension = extension;
+                transferts.push(payload);
             }
         });
         
@@ -6184,6 +6430,7 @@ const PRODUITS_INVENTAIRE = [];
 const PRIX_DEFAUT_INVENTAIRE = {};
 const PRODUITS_MODE_STOCK = {}; // Stocke le mode_stock pour chaque produit ('manuel' ou 'automatique')
 const PRODUITS_UNITE_STOCK = {}; // Stocke l'unite_stock pour chaque produit ('unite' ou 'kilo')
+const PRODUITS_VENTILATION_POIDS = new Set(); // Set des produits avec ventilation par calibre (transferts)
 // Stocke les données de stock (les produits auto sont maintenant dans le JSON)
 let stockAutoData = new Map(); // DEPRECATED - Plus utilisé
 
@@ -6214,7 +6461,9 @@ async function chargerModesStock() {
                             const config = valeur;
                             PRODUITS_MODE_STOCK[cle] = config.mode_stock || 'manuel';
                             PRODUITS_UNITE_STOCK[cle] = config.unite_stock || 'unite';
-                            
+                            if (config.ventilation_poids) PRODUITS_VENTILATION_POIDS.add(cle);
+                            else PRODUITS_VENTILATION_POIDS.delete(cle);
+
                             if (!PRODUITS_INVENTAIRE.includes(cle)) {
                                 PRODUITS_INVENTAIRE.push(cle);
                                 PRIX_DEFAUT_INVENTAIRE[cle] = parseFloat(config.prixDefault) || 0;
@@ -6223,12 +6472,14 @@ async function chargerModesStock() {
                             // C'est une catégorie contenant des produits
                             for (const nomProduit in valeur) {
                                 const config = valeur[nomProduit];
-                                
+
                                 // Vérifier que c'est bien un produit (pas une propriété technique)
                                 if (config && typeof config === 'object' && config.prixDefault !== undefined) {
                                     PRODUITS_MODE_STOCK[nomProduit] = config.mode_stock || 'manuel';
                                     PRODUITS_UNITE_STOCK[nomProduit] = config.unite_stock || 'unite';
-                                    
+                                    if (config.ventilation_poids) PRODUITS_VENTILATION_POIDS.add(nomProduit);
+                                    else PRODUITS_VENTILATION_POIDS.delete(nomProduit);
+
                                     if (!PRODUITS_INVENTAIRE.includes(nomProduit)) {
                                         PRODUITS_INVENTAIRE.push(nomProduit);
                                         PRIX_DEFAUT_INVENTAIRE[nomProduit] = parseFloat(config.prixDefault) || 0;
@@ -9736,7 +9987,8 @@ window.addEventListener('DOMContentLoaded', function() {
                 }
 
                 // --- TRANSFERT TABLE ---
-                const transfertRows = Array.from(document.querySelectorAll('#transfertTable tbody tr'));
+                // Enfant direct uniquement: ignorer les <tr> de l'éditeur calibres imbriqué.
+                const transfertRows = Array.from(document.querySelectorAll('#transfertTable > tbody > tr'));
                 console.log('Transfert rows found:', transfertRows.length);
                 
                 for (const row of transfertRows) {

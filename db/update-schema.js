@@ -76,9 +76,31 @@ async function updateSchema() {
             await sequelize.query(`
                 ALTER TABLE produits
                 ADD COLUMN IF NOT EXISTS "ventes" TEXT[] DEFAULT '{}',
-                ADD COLUMN IF NOT EXISTS "prix_personnalise" BOOLEAN NOT NULL DEFAULT FALSE
+                ADD COLUMN IF NOT EXISTS "prix_personnalise" BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS "ventilation_poids" BOOLEAN NOT NULL DEFAULT FALSE
             `);
-            console.log('Colonnes ventes / prix_personnalise vérifiées/ajoutées dans la table produits');
+            console.log('Colonnes ventes / prix_personnalise / ventilation_poids vérifiées/ajoutées dans la table produits');
+
+            // Activer la ventilation par défaut pour Poulet (inventaire) sur les
+            // tenants existants. Idempotent: ne touche rien si déjà à TRUE.
+            await sequelize.query(`
+                UPDATE produits
+                   SET ventilation_poids = TRUE
+                 WHERE nom = 'Poulet'
+                   AND type_catalogue = 'inventaire'
+                   AND ventilation_poids = FALSE
+            `);
+        }
+
+        // Ajouter la colonne extension JSONB sur transferts pour stocker la
+        // ventilation par calibre (poids+quantité) des produits Poulet & co.
+        const transfertsTableExists = await checkTableExists('transferts');
+        if (transfertsTableExists) {
+            await sequelize.query(`
+                ALTER TABLE transferts
+                ADD COLUMN IF NOT EXISTS "extension" JSONB DEFAULT NULL
+            `);
+            console.log('Colonne extension vérifiée/ajoutée dans la table transferts');
         }
 
         // Table inventaire_categories: persistance par tenant du mapping

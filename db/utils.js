@@ -245,7 +245,8 @@ async function saveTransferts(transferts) {
         prixUnitaire: parseFloat(t.prixUnitaire) || 0,
         total: parseFloat(t.total) || 0,
         impact: t.impact || '',
-        commentaire: t.commentaire || ''
+        commentaire: t.commentaire || '',
+        extension: t.extension || null
       }));
       
       // Sauvegarder les nouveaux transferts
