@@ -991,7 +991,7 @@ app.post('/api/login', async (req, res) => {
             canWrite: ['user', 'admin', 'superutilisateur', 'superviseur'].includes(user.role),
             canManageReconciliation: ['admin', 'superutilisateur', 'superviseur'].includes(user.role),
             canAccessAllPointsVente: ['admin', 'superutilisateur', 'superviseur'].includes(user.role),
-            canCopyStock: ['admin', 'superutilisateur', 'superviseur'].includes(user.role),
+            canCopyStock: ['user', 'admin', 'superutilisateur', 'superviseur'].includes(user.role),
             canManageAdvanced: ['admin', 'superutilisateur', 'superviseur'].includes(user.role),
             canManageEstimation: ['admin', 'superutilisateur', 'superviseur'].includes(user.role)
         };

@@ -851,8 +851,10 @@ async function checkAuth() {
             importTabContainer.style.display = currentUser.canManageAdvanced ? 'block' : 'none';
         }
         
-        // Onglet Stock inventaire - module stock + accès à tous les points de vente
-        setElementVisibility(stockInventaireItem, 'stock-inventaire-item', currentUser.canAccessAllPointsVente);
+        // Onglet Stock inventaire - accessible aux utilisateurs avec lecture
+        // (lecteur, user, super*, admin). Les actions d'ecriture restent
+        // gatees par checkWriteAccess cote API (canWrite).
+        setElementVisibility(stockInventaireItem, 'stock-inventaire-item', currentUser.canRead);
         
         // Onglet Copier Stock - module stock + permission copier stock
         setElementVisibility(copierStockItem, 'copier-stock-item', currentUser.canCopyStock);
@@ -5545,9 +5547,10 @@ async function afficherOngletsSuivantDroits(userData) {
     const abonnementsItem = document.getElementById('abonnements-item');
     const stockAlerteItem = document.getElementById('stock-alerte-item');
     
-    // Onglet Stock inventaire - pour utilisateurs avec accès à tous les points de vente
+    // Onglet Stock inventaire - accessible aux utilisateurs avec lecture
+    // (lecteur, user, super*, admin). Les writes restent gates cote API.
     if (stockInventaireItem) {
-        stockInventaireItem.style.display = shouldShowElement('stock-inventaire-item', userData.canAccessAllPointsVente) ? 'block' : 'none';
+        stockInventaireItem.style.display = shouldShowElement('stock-inventaire-item', userData.canRead) ? 'block' : 'none';
     }
     
     // Onglet Copier Stock - pour utilisateurs qui peuvent copier le stock
