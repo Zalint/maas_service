@@ -957,6 +957,20 @@ async function checkAuth() {
             btnSupprimerVentesJourAuth.style.display = canDelete ? 'inline-block' : 'none';
         }
 
+        // Boutons RAZ Matin / RAZ Soir - reserve a l'admin (action destructive
+        // qui met TOUTES les quantites a 0). Le marqueur class="admin-element"
+        // dans l'HTML est aussi pose, mais on cache explicitement ici pour
+        // gerer le cas ou la classe ne suffit pas.
+        const btnResetStockMatin = document.getElementById('btn-reset-stock-matin');
+        const btnResetStockSoir = document.getElementById('btn-reset-stock-soir');
+        const canResetStock = currentUser.role === 'admin';
+        if (btnResetStockMatin) {
+            btnResetStockMatin.style.display = canResetStock ? 'inline-block' : 'none';
+        }
+        if (btnResetStockSoir) {
+            btnResetStockSoir.style.display = canResetStock ? 'inline-block' : 'none';
+        }
+
         // Vérifier l'accès au chat Relevance AI
         if (!currentUser.canAccessChat) {
             // Désactiver le chat pour les utilisateurs non autorisés
@@ -6826,9 +6840,17 @@ async function onTypeStockChange() {
         });
 
         console.log('%cTableau mis à jour avec succès', 'color: #00ff00; font-weight: bold;');
-        
+
         // Mettre à jour l'état des boutons et champs selon les restrictions
         updateStockButtonsState();
+
+        // Reappliquer les filtres (notamment "Masquer les produits en mode
+        // stock automatique") aux lignes qu'on vient de recreer. Sans ca,
+        // les lignes auto restent visibles meme avec la case cochee jusqu'a
+        // ce que l'utilisateur touche un autre filtre.
+        if (typeof filtrerStock === 'function') {
+            try { filtrerStock(); } catch (e) { console.warn('filtrerStock post-typeChange:', e); }
+        }
     } catch (error) {
         console.error('%cErreur lors du chargement des données:', 'color: #ff0000; font-weight: bold;', error);
         alert('Erreur lors du chargement des données du stock');
