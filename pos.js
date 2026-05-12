@@ -4332,15 +4332,32 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
         // Get brand config and use its footer (pass commandeId to detect brand)
         const config = getBrandConfig(commandeId);
 
+        // Recuperer le lot tracabilite via le proxy local (non-bloquant).
+        // /api/tracabilite-lot renvoie null si la commande n'a pas de Bovin
+        // ou si DATA est indisponible.
+        let tracabiliteLot = null;
+        try {
+            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
+            if (tracResp.ok) {
+                const tracJson = await tracResp.json();
+                tracabiliteLot = tracJson.success ? tracJson.data : null;
+            }
+        } catch (e) {
+            console.warn('Tracabilite lot WhatsApp indisponible (non-bloquant):', e.message);
+        }
+
         // Tracabilite — lien vers le portail. Desactivable via
         // afficher_tracabilite=false dans brand-config.json. Defaut = true.
-        // Format aligne sur DATA (TRAÇABILITÉ VIANDE) mais sans les details
-        // origine/dateAbattage/lot puisque pas d'API correspondante.
+        // Si DATA a renvoye un lot, on l'affiche avec la date d'abattage.
         const afficherTracabiliteWA = !config || config.afficher_tracabilite !== false;
         if (afficherTracabiliteWA) {
             message += `━━━━━━━━━━━━━━━━━━━━━\n`;
             message += `🥩 TRAÇABILITÉ VIANDE\n`;
             message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            if (tracabiliteLot && tracabiliteLot.lot) {
+                message += `📅 Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+                message += `🏷️  Lot : ${tracabiliteLot.lot}\n`;
+            }
             message += `🔍 Vérifier en ligne : https://www.maas-tracabilite.com\n\n`;
             message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
         }
@@ -7097,7 +7114,21 @@ async function imprimerTicketThermique(commandeId) {
     } catch (error) {
         console.warn('Impossible de récupérer le statut de paiement:', error);
     }
-    
+
+    // Récupérer le lot tracabilite si la commande contient un produit Bovin.
+    // /api/tracabilite-lot interroge DATA cote serveur et renvoie null si
+    // pas de bovin dans la commande (ou si DATA indisponible). Non-bloquant.
+    let tracabiliteData = null;
+    try {
+        const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
+        if (tracResp.ok) {
+            const tracJson = await tracResp.json();
+            tracabiliteData = tracJson.success ? tracJson.data : null;
+        }
+    } catch (e) {
+        console.warn('Tracabilite lot indisponible (non-bloquant):', e.message);
+    }
+
     // Get client info
     const firstItem = commande.items[0] || {};
     const clientName = firstItem.nomClient || firstItem['Client Name'] || '';
@@ -7253,12 +7284,20 @@ async function imprimerTicketThermique(commandeId) {
     // Tracabilite — QR code pointant vers le portail tracabilite.
     // Configurable par brand: afficher_tracabilite=false dans brand-config.json
     // pour desactiver. Defaut = true (section affichee).
+    // Si DATA a renvoye un lot (commande contient du Bovin), on l'affiche
+    // au-dessus du QR (origine / date abattage / lot) — sinon section
+    // generique sans details.
     const afficherTracabilite = !config || config.afficher_tracabilite !== false;
     if (afficherTracabilite) {
         ticket += SEPARATEUR + '\n';
         ticket += centrer('VERIFIEZ VOTRE PRODUIT') + '\n';
         ticket += SEPARATEUR + '\n';
         ticket += '\n';
+        if (tracabiliteData && tracabiliteData.lot) {
+            ticket += `Date d'abattage : ${tracabiliteData.dateAbattage || 'N/A'}\n`;
+            ticket += `Lot : ${tracabiliteData.lot}\n`;
+            ticket += '\n';
+        }
         ticket += centrer('Scannez le QR code ci-dessous') + '\n';
         ticket += centrer('pour verifier la tracabilite') + '\n';
         ticket += '\n';
@@ -7419,6 +7458,16 @@ async function _genererTicketPourBT(commandeId) {
         montantRestantDu = pd.montantRestantDu || 0;
     } catch (e) { /* ignore */ }
 
+    // Recuperer le lot tracabilite (non-bloquant, null si pas de Bovin).
+    let tracabiliteLot = null;
+    try {
+        const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
+        if (tracResp.ok) {
+            const tracJson = await tracResp.json();
+            tracabiliteLot = tracJson.success ? tracJson.data : null;
+        }
+    } catch (e) { /* ignore */ }
+
     const firstItem = commande.items[0] || {};
     const clientName = firstItem.nomClient || firstItem['Client Name'] || '';
     const clientPhone = firstItem.numeroClient || firstItem['Client Phone'] || '';
@@ -7476,6 +7525,10 @@ async function _genererTicketPourBT(commandeId) {
     const afficherTracabiliteBT = !config || config.afficher_tracabilite !== false;
     if (afficherTracabiliteBT) {
         tk += SEP+'\n'+c('VERIFIEZ VOTRE PRODUIT')+'\n'+SEP+'\n\n';
+        if (tracabiliteLot && tracabiliteLot.lot) {
+            tk += `Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+            tk += `Lot : ${tracabiliteLot.lot}\n\n`;
+        }
         tk += c('Scannez le QR code ci-dessous')+'\n';
         tk += c('pour verifier la tracabilite')+'\n\n';
         tk += c('[QR Tracabilite]')+'\n\n';
