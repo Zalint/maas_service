@@ -131,7 +131,7 @@ describe('escpos-qr helper', () => {
         const posJsPath = path.join(__dirname, '..', 'pos.js');
         const posJsSource = fs.readFileSync(posJsPath, 'utf8');
 
-        test('pos.js contient les 4 patterns de commande QR ESC/POS', () => {
+        test('pos.js contient tous les patterns de commande QR ESC/POS', () => {
             // Verifie que les 4 sequences statiques de buildQrCommand sont
             // presentes (sous forme d\\x echappee) dans le source de pos.js.
             // Si quelqu'un casse la copie inline (typo dans les bytes), ce
@@ -163,10 +163,10 @@ describe('escpos-qr helper', () => {
 
     describe('end-to-end: ticket fixture realiste', () => {
         // Simule exactement la chaine de pos.js: ticket texte avec
-        // placeholder, puis injection QR avant envoi a RawBT.
-        const samplePath = path.join(__dirname, 'fixtures', 'ticket-sample.txt');
+        // placeholder, puis injection QR avant envoi a RawBT. Le ticket
+        // est construit inline (pas de fichier fixture externe a maintenir).
 
-        test('fixture: parse l\'URL apres injection', () => {
+        test('parse l\'URL apres injection sur ticket inline', () => {
             const baseTicket = [
                 '================================',
                 '         MBAO POS TEST',

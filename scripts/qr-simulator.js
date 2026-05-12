@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Simulateur RawBT minimal. Prend en entree:
- *   - un fichier (`node scripts/test-ticket-qr.js ticket.bin`)
- *   - ou du contenu sur stdin (`type ticket.bin | node scripts/test-ticket-qr.js`)
+ *   - un fichier (`node scripts/qr-simulator.js ticket.bin`)
+ *   - ou du contenu sur stdin (`type ticket.bin | node scripts/qr-simulator.js`)
  *   - ou la sortie de `copy(window.currentTicketEscPos)` collee dans un .txt
  *
  * Le script:
@@ -49,8 +49,8 @@ async function lireInput() {
         if (process.stdin.isTTY) {
             console.error('❌ Aucun fichier en argument ET pas de stdin pipe.');
             console.error('   Usage:');
-            console.error('     node scripts/test-ticket-qr.js ticket.bin');
-            console.error('     type ticket.bin | node scripts/test-ticket-qr.js');
+            console.error('     node scripts/qr-simulator.js ticket.bin');
+            console.error('     type ticket.bin | node scripts/qr-simulator.js');
             process.exit(1);
         }
     });

@@ -70,6 +70,11 @@ ticket += SEPARATEUR;
 // que dans pos.js imprimerTicketThermique).
 const qrPlaceholder = centrer('[QR Code]') + '\n';
 const qrCodePos = ticket.indexOf(qrPlaceholder);
+if (qrCodePos === -1) {
+    console.error('❌ Placeholder "[QR Code]" introuvable dans le ticket genere.');
+    console.error('   Le script qr-simulator-sample.js est desynchronise. Verifier le format.');
+    process.exit(1);
+}
 const qrUrl = 'https://www.maas-tracabilite.com';
 const urlLength = qrUrl.length;
 

@@ -4333,17 +4333,27 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
         const config = getBrandConfig(commandeId);
 
         // Recuperer le lot tracabilite via le proxy local (non-bloquant).
-        // /api/tracabilite-lot renvoie null si la commande n'a pas de Bovin
-        // ou si DATA est indisponible.
+        // Timeout court (2s): si l'API trace, on continue sans le lot plutot
+        // que de bloquer l'ouverture de WhatsApp. /api/tracabilite-lot renvoie
+        // null si la commande n'a pas de Bovin ou si DATA est indisponible.
         let tracabiliteLot = null;
-        try {
-            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
-            if (tracResp.ok) {
-                const tracJson = await tracResp.json();
-                tracabiliteLot = tracJson.success ? tracJson.data : null;
+        {
+            const ctl = new AbortController();
+            const to = setTimeout(() => ctl.abort(), 2000);
+            try {
+                const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                    credentials: 'include',
+                    signal: ctl.signal
+                });
+                if (tracResp.ok) {
+                    const tracJson = await tracResp.json();
+                    tracabiliteLot = tracJson.success ? tracJson.data : null;
+                }
+            } catch (e) {
+                console.warn('Tracabilite lot WhatsApp indisponible (non-bloquant):', e.message);
+            } finally {
+                clearTimeout(to);
             }
-        } catch (e) {
-            console.warn('Tracabilite lot WhatsApp indisponible (non-bloquant):', e.message);
         }
 
         // Tracabilite — lien vers le portail. Desactivable via
@@ -7117,16 +7127,26 @@ async function imprimerTicketThermique(commandeId) {
 
     // Récupérer le lot tracabilite si la commande contient un produit Bovin.
     // /api/tracabilite-lot interroge DATA cote serveur et renvoie null si
-    // pas de bovin dans la commande (ou si DATA indisponible). Non-bloquant.
+    // pas de bovin dans la commande (ou si DATA indisponible). Non-bloquant,
+    // timeout 2s pour ne pas retarder l'impression du ticket.
     let tracabiliteData = null;
-    try {
-        const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
-        if (tracResp.ok) {
-            const tracJson = await tracResp.json();
-            tracabiliteData = tracJson.success ? tracJson.data : null;
+    {
+        const ctl = new AbortController();
+        const to = setTimeout(() => ctl.abort(), 2000);
+        try {
+            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                credentials: 'include',
+                signal: ctl.signal
+            });
+            if (tracResp.ok) {
+                const tracJson = await tracResp.json();
+                tracabiliteData = tracJson.success ? tracJson.data : null;
+            }
+        } catch (e) {
+            console.warn('Tracabilite lot indisponible (non-bloquant):', e.message);
+        } finally {
+            clearTimeout(to);
         }
-    } catch (e) {
-        console.warn('Tracabilite lot indisponible (non-bloquant):', e.message);
     }
 
     // Get client info
@@ -7459,14 +7479,22 @@ async function _genererTicketPourBT(commandeId) {
     } catch (e) { /* ignore */ }
 
     // Recuperer le lot tracabilite (non-bloquant, null si pas de Bovin).
+    // Timeout 2s: ne pas retarder l'impression Bluetooth si DATA stall.
     let tracabiliteLot = null;
-    try {
-        const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, { credentials: 'include' });
-        if (tracResp.ok) {
-            const tracJson = await tracResp.json();
-            tracabiliteLot = tracJson.success ? tracJson.data : null;
-        }
-    } catch (e) { /* ignore */ }
+    {
+        const ctl = new AbortController();
+        const to = setTimeout(() => ctl.abort(), 2000);
+        try {
+            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                credentials: 'include',
+                signal: ctl.signal
+            });
+            if (tracResp.ok) {
+                const tracJson = await tracResp.json();
+                tracabiliteLot = tracJson.success ? tracJson.data : null;
+            }
+        } catch (e) { /* ignore */ } finally { clearTimeout(to); }
+    }
 
     const firstItem = commande.items[0] || {};
     const clientName = firstItem.nomClient || firstItem['Client Name'] || '';

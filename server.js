@@ -461,7 +461,15 @@ app.get('/api/produits-abonnement', async (req, res) => {
 // Reponse: { success: true, data: { origine, dateAbattage, lot } | null }
 app.get('/api/tracabilite-lot', async (req, res) => {
     try {
-        const { commandeId } = req.query;
+        // Coercion stricte: req.query.commandeId peut etre un tableau ou un
+        // objet si quelqu'un passe ?commandeId[]=X. On force a une string
+        // simple et on trim pour eviter une query Sequelize qui ferait un
+        // SQL IN inattendu.
+        const rawCommandeId = req.query.commandeId;
+        if (typeof rawCommandeId !== 'string') {
+            return res.status(400).json({ success: false, error: 'commandeId requis (string)' });
+        }
+        const commandeId = rawCommandeId.trim();
         if (!commandeId) {
             return res.status(400).json({ success: false, error: 'commandeId requis' });
         }
