@@ -467,9 +467,11 @@ app.get('/api/tracabilite-lot', async (req, res) => {
         }
 
         // 1. Verifier qu'au moins une vente de la commande est en categorie Bovin.
+        // Sequelize where utilise l'attribut du modele (camelCase), pas le nom
+        // de colonne SQL (commande_id) — sinon la query plante silencieusement.
         const { Vente } = require('./db/models');
         const venteBovin = await Vente.findOne({
-            where: { commande_id: commandeId, categorie: 'Bovin' },
+            where: { commandeId: commandeId, categorie: 'Bovin' },
             attributes: ['id']
         });
         if (!venteBovin) {
