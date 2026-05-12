@@ -4345,6 +4345,21 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
             message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
         }
 
+        // Feedback — lien vers le formulaire externe (Google Forms/Tally).
+        // L'URL provient de config.feedback_url avec substitution
+        // {commande_id} -> identifiant URL-encode. Si non configure, bloc
+        // omis. Meme logique que la section feedback du ticket imprime.
+        const feedbackUrlTemplateWA = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+        if (feedbackUrlTemplateWA) {
+            const feedbackUrlWA = feedbackUrlTemplateWA.replace('{commande_id}', encodeURIComponent(commandeId));
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `⭐ VOTRE AVIS NOUS INTERESSE\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            message += `Notez votre experience en 30 sec :\n`;
+            message += `${feedbackUrlWA}\n\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+
         if (config && config.footer_whatsapp) {
             message += config.footer_whatsapp;
         } else {
