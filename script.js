@@ -6840,9 +6840,17 @@ async function onTypeStockChange() {
         });
 
         console.log('%cTableau mis à jour avec succès', 'color: #00ff00; font-weight: bold;');
-        
+
         // Mettre à jour l'état des boutons et champs selon les restrictions
         updateStockButtonsState();
+
+        // Reappliquer les filtres (notamment "Masquer les produits en mode
+        // stock automatique") aux lignes qu'on vient de recreer. Sans ca,
+        // les lignes auto restent visibles meme avec la case cochee jusqu'a
+        // ce que l'utilisateur touche un autre filtre.
+        if (typeof filtrerStock === 'function') {
+            try { filtrerStock(); } catch (e) { console.warn('filtrerStock post-typeChange:', e); }
+        }
     } catch (error) {
         console.error('%cErreur lors du chargement des données:', 'color: #ff0000; font-weight: bold;', error);
         alert('Erreur lors du chargement des données du stock');
