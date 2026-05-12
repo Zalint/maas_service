@@ -449,6 +449,54 @@ app.get('/api/produits-abonnement', async (req, res) => {
     }
 });
 
+// =====================================================
+// TRACABILITE — LOT DU JOUR
+// =====================================================
+// Proxy entre pos.js et DATA. Logique:
+//   1. Verifie que la commande contient au moins un produit de categorie
+//      "Bovin" (= viande qui justifie l'affichage du lot/origine).
+//   2. Si oui, recupere le lot du jour depuis DATA (cache 30 min).
+//   3. Sinon, renvoie data: null (= pas d'affichage cote ticket).
+// L'API key vers DATA reste cote serveur, jamais expose au navigateur.
+// Reponse: { success: true, data: { origine, dateAbattage, lot } | null }
+app.get('/api/tracabilite-lot', async (req, res) => {
+    try {
+        // Coercion stricte: req.query.commandeId peut etre un tableau ou un
+        // objet si quelqu'un passe ?commandeId[]=X. On force a une string
+        // simple et on trim pour eviter une query Sequelize qui ferait un
+        // SQL IN inattendu.
+        const rawCommandeId = req.query.commandeId;
+        if (typeof rawCommandeId !== 'string') {
+            return res.status(400).json({ success: false, error: 'commandeId requis (string)' });
+        }
+        const commandeId = rawCommandeId.trim();
+        if (!commandeId) {
+            return res.status(400).json({ success: false, error: 'commandeId requis' });
+        }
+
+        // 1. Verifier qu'au moins une vente de la commande est en categorie Bovin.
+        // Sequelize where utilise l'attribut du modele (camelCase), pas le nom
+        // de colonne SQL (commande_id) — sinon la query plante silencieusement.
+        const { Vente } = require('./db/models');
+        const venteBovin = await Vente.findOne({
+            where: { commandeId: commandeId, categorie: 'Bovin' },
+            attributes: ['id']
+        });
+        if (!venteBovin) {
+            return res.json({ success: true, data: null });
+        }
+
+        // 2. Recuperer le lot du jour depuis DATA.
+        const { getLotActuel } = require('./lib/data-tracabilite-client');
+        const data = await getLotActuel();
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Erreur /api/tracabilite-lot:', error);
+        // Non-bloquant: renvoie null pour ne pas casser l'impression du ticket.
+        res.json({ success: true, data: null });
+    }
+});
+
 // Route pour obtenir tous les points de vente (physiques + virtuels) pour les transferts
 app.get('/api/points-vente/transferts', async (req, res) => {
     try {

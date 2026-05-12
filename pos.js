@@ -4331,13 +4331,69 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
         
         // Get brand config and use its footer (pass commandeId to detect brand)
         const config = getBrandConfig(commandeId);
+
+        // Recuperer le lot tracabilite via le proxy local (non-bloquant).
+        // Timeout court (2s): si l'API trace, on continue sans le lot plutot
+        // que de bloquer l'ouverture de WhatsApp. /api/tracabilite-lot renvoie
+        // null si la commande n'a pas de Bovin ou si DATA est indisponible.
+        let tracabiliteLot = null;
+        {
+            const ctl = new AbortController();
+            const to = setTimeout(() => ctl.abort(), 2000);
+            try {
+                const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                    credentials: 'include',
+                    signal: ctl.signal
+                });
+                if (tracResp.ok) {
+                    const tracJson = await tracResp.json();
+                    tracabiliteLot = tracJson.success ? tracJson.data : null;
+                }
+            } catch (e) {
+                console.warn('Tracabilite lot WhatsApp indisponible (non-bloquant):', e.message);
+            } finally {
+                clearTimeout(to);
+            }
+        }
+
+        // Tracabilite — lien vers le portail. Desactivable via
+        // afficher_tracabilite=false dans brand-config.json. Defaut = true.
+        // Si DATA a renvoye un lot, on l'affiche avec la date d'abattage.
+        const afficherTracabiliteWA = !config || config.afficher_tracabilite !== false;
+        if (afficherTracabiliteWA) {
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `🥩 TRAÇABILITÉ VIANDE\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            if (tracabiliteLot && tracabiliteLot.lot) {
+                message += `📅 Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+                message += `🏷️  Lot : ${tracabiliteLot.lot}\n`;
+            }
+            message += `🔍 Vérifier en ligne : https://www.maas-tracabilite.com\n\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+
+        // Feedback — lien vers le formulaire externe (Google Forms/Tally).
+        // L'URL provient de config.feedback_url avec substitution
+        // {commande_id} -> identifiant URL-encode. Si non configure, bloc
+        // omis. Meme logique que la section feedback du ticket imprime.
+        const feedbackUrlTemplateWA = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+        if (feedbackUrlTemplateWA) {
+            const feedbackUrlWA = feedbackUrlTemplateWA.replace('{commande_id}', encodeURIComponent(commandeId));
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `⭐ VOTRE AVIS NOUS INTERESSE\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            message += `Notez votre experience en 30 sec :\n`;
+            message += `${feedbackUrlWA}\n\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+
         if (config && config.footer_whatsapp) {
             message += config.footer_whatsapp;
         } else {
             // Fallback
             message += `Merci de votre confiance !`;
         }
-        
+
         // Encoder le message pour l'URL
         const messageEncode = encodeURIComponent(message);
         
@@ -7068,7 +7124,31 @@ async function imprimerTicketThermique(commandeId) {
     } catch (error) {
         console.warn('Impossible de récupérer le statut de paiement:', error);
     }
-    
+
+    // Récupérer le lot tracabilite si la commande contient un produit Bovin.
+    // /api/tracabilite-lot interroge DATA cote serveur et renvoie null si
+    // pas de bovin dans la commande (ou si DATA indisponible). Non-bloquant,
+    // timeout 2s pour ne pas retarder l'impression du ticket.
+    let tracabiliteData = null;
+    {
+        const ctl = new AbortController();
+        const to = setTimeout(() => ctl.abort(), 2000);
+        try {
+            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                credentials: 'include',
+                signal: ctl.signal
+            });
+            if (tracResp.ok) {
+                const tracJson = await tracResp.json();
+                tracabiliteData = tracJson.success ? tracJson.data : null;
+            }
+        } catch (e) {
+            console.warn('Tracabilite lot indisponible (non-bloquant):', e.message);
+        } finally {
+            clearTimeout(to);
+        }
+    }
+
     // Get client info
     const firstItem = commande.items[0] || {};
     const clientName = firstItem.nomClient || firstItem['Client Name'] || '';
@@ -7220,8 +7300,61 @@ async function imprimerTicketThermique(commandeId) {
         ticket += centrer(`Deja paye: ${formatCurrency(dejaPaye)}`) + '\n';
         ticket += '\n';
     }
-    
-    
+
+    // Tracabilite — QR code pointant vers le portail tracabilite.
+    // Configurable par brand: afficher_tracabilite=false dans brand-config.json
+    // pour desactiver. Defaut = true (section affichee).
+    // Si DATA a renvoye un lot (commande contient du Bovin), on l'affiche
+    // au-dessus du QR (origine / date abattage / lot) — sinon section
+    // generique sans details.
+    const afficherTracabilite = !config || config.afficher_tracabilite !== false;
+    if (afficherTracabilite) {
+        ticket += SEPARATEUR + '\n';
+        ticket += centrer('VERIFIEZ VOTRE PRODUIT') + '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+        if (tracabiliteData && tracabiliteData.lot) {
+            ticket += `Date d'abattage : ${tracabiliteData.dateAbattage || 'N/A'}\n`;
+            ticket += `Lot : ${tracabiliteData.lot}\n`;
+            ticket += '\n';
+        }
+        ticket += centrer('Scannez le QR code ci-dessous') + '\n';
+        ticket += centrer('pour verifier la tracabilite') + '\n';
+        ticket += '\n';
+        ticket += centrer('[QR Tracabilite]') + '\n';
+        ticket += '\n';
+        ticket += centrer('www.maas-tracabilite.com') + '\n';
+        ticket += '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+    }
+
+    // Feedback client — QR vers un formulaire externe (Tally / Google Forms).
+    // Configurable par brand dans brand-config.json:
+    //   "feedback_url": "https://tally.so/r/XXX?cmd={commande_id}"
+    // Le token {commande_id} (si present) est remplace par l'identifiant de
+    // la commande encode URL. Si le champ est vide ou absent, la section
+    // n'est pas affichee. On choisit deliberement un service externe pour
+    // ne pas exposer l'URL interne de l'app POS aux clients finaux.
+    const feedbackUrlTemplate = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+    const afficherFeedback = !!feedbackUrlTemplate;
+    const feedbackUrl = afficherFeedback
+        ? feedbackUrlTemplate.replace('{commande_id}', encodeURIComponent(commandeId))
+        : '';
+    if (afficherFeedback) {
+        ticket += SEPARATEUR + '\n';
+        ticket += centrer('VOTRE AVIS NOUS INTERESSE') + '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+        ticket += centrer('Notez votre experience') + '\n';
+        ticket += centrer('en 30 secondes') + '\n';
+        ticket += '\n';
+        ticket += centrer('[QR Feedback]') + '\n';
+        ticket += '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+    }
+
     // Footer - use config if available
     if (config && config.footer_facture) {
         ticket += centrer(config.footer_facture) + '\n';
@@ -7239,8 +7372,37 @@ async function imprimerTicketThermique(commandeId) {
     // 🖨️ Create ESC/POS version for thermal printers (with QR code)
     // This version contains control bytes and should ONLY be used for RawBT/USB/Bluetooth printing
     let ticketEscPos = ticket; // Start with the clean text version
-    
-    
+
+    // Helper inline: remplace un placeholder texte par les commandes ESC/POS
+    // GS ( k de generation QR natif sur imprimante thermique. Duplique la
+    // logique de lib/escpos-qr.js (browser ne peut pas require()). Le test
+    // automatique tests/escpos-qr.test.js valide que les bytes restent
+    // alignes (drift detection).
+    const injectQr = (currentTicket, placeholder, url) => {
+        const ph = centrer(placeholder) + '\n';
+        const pos = currentTicket.indexOf(ph);
+        if (pos === -1 || !url) return currentTicket;
+        const urlBytes = url; // string en UTF-8 (latin1-safe pour ASCII URL)
+        const total = urlBytes.length + 3;
+        const pl = total % 256;
+        const phByte = Math.floor(total / 256);
+        let escPosQR = '';
+        escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // Set QR model (Model 2)
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08';     // Set QR size (8 = medium)
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30';     // Set error correction (L = 7%)
+        escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, phByte) + '\x31\x50\x30' + urlBytes; // Store data
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';     // Print QR
+        escPosQR += '\n';
+        return currentTicket.substring(0, pos) + escPosQR + currentTicket.substring(pos + ph.length);
+    };
+
+    if (afficherTracabilite) {
+        ticketEscPos = injectQr(ticketEscPos, '[QR Tracabilite]', 'https://www.maas-tracabilite.com');
+    }
+    if (afficherFeedback && feedbackUrl) {
+        ticketEscPos = injectQr(ticketEscPos, '[QR Feedback]', feedbackUrl);
+    }
+
     // Store both versions globally for use by share functions
     window.currentTicketText = ticket;
     window.currentTicketEscPos = ticketEscPos;
@@ -7316,6 +7478,24 @@ async function _genererTicketPourBT(commandeId) {
         montantRestantDu = pd.montantRestantDu || 0;
     } catch (e) { /* ignore */ }
 
+    // Recuperer le lot tracabilite (non-bloquant, null si pas de Bovin).
+    // Timeout 2s: ne pas retarder l'impression Bluetooth si DATA stall.
+    let tracabiliteLot = null;
+    {
+        const ctl = new AbortController();
+        const to = setTimeout(() => ctl.abort(), 2000);
+        try {
+            const tracResp = await fetch(`/api/tracabilite-lot?commandeId=${encodeURIComponent(commandeId)}`, {
+                credentials: 'include',
+                signal: ctl.signal
+            });
+            if (tracResp.ok) {
+                const tracJson = await tracResp.json();
+                tracabiliteLot = tracJson.success ? tracJson.data : null;
+            }
+        } catch (e) { /* ignore */ } finally { clearTimeout(to); }
+    }
+
     const firstItem = commande.items[0] || {};
     const clientName = firstItem.nomClient || firstItem['Client Name'] || '';
     const clientPhone = firstItem.numeroClient || firstItem['Client Phone'] || '';
@@ -7367,12 +7547,69 @@ async function _genererTicketPourBT(commandeId) {
     if (paymentStatus==='P') tk += c('*** PAYE ***')+'\n\n';
     else if (paymentStatus==='M') tk += c('*** PAYE (CASH/MANUEL) ***')+'\n\n';
     else if (paymentStatus==='C') { const dp=commande.totalAmount-montantRestantDu; tk += c('*** CREANCE ***')+'\n'+c(`Montant du: ${formatCurrency(montantRestantDu)}`)+'\n'+c(`Deja paye: ${formatCurrency(dp)}`)+'\n\n'; }
+
+    // Tracabilite + Feedback — meme sections que imprimerTicketThermique
+    // pour que l'impression Bluetooth/RawBT contienne les QR scannables.
+    const afficherTracabiliteBT = !config || config.afficher_tracabilite !== false;
+    if (afficherTracabiliteBT) {
+        tk += SEP+'\n'+c('VERIFIEZ VOTRE PRODUIT')+'\n'+SEP+'\n\n';
+        if (tracabiliteLot && tracabiliteLot.lot) {
+            tk += `Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+            tk += `Lot : ${tracabiliteLot.lot}\n\n`;
+        }
+        tk += c('Scannez le QR code ci-dessous')+'\n';
+        tk += c('pour verifier la tracabilite')+'\n\n';
+        tk += c('[QR Tracabilite]')+'\n\n';
+        tk += c('www.maas-tracabilite.com')+'\n\n';
+        tk += SEP+'\n\n';
+    }
+
+    const feedbackUrlTemplate = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+    const afficherFeedbackBT = !!feedbackUrlTemplate;
+    const feedbackUrlBT = afficherFeedbackBT
+        ? feedbackUrlTemplate.replace('{commande_id}', encodeURIComponent(commandeId))
+        : '';
+    if (afficherFeedbackBT) {
+        tk += SEP+'\n'+c('VOTRE AVIS NOUS INTERESSE')+'\n'+SEP+'\n\n';
+        tk += c('Notez votre experience')+'\n';
+        tk += c('en 30 secondes')+'\n\n';
+        tk += c('[QR Feedback]')+'\n\n';
+        tk += SEP+'\n\n';
+    }
+
     if (config&&config.footer_facture) tk += c(config.footer_facture)+'\n'; else tk += c('Merci de votre confiance!')+'\n';
     if (config&&config.slogan) tk += c(config.slogan)+'\n'; else tk += c('Bon appetit!')+'\n';
     tk += SEP;
 
+    // Helper inline pour injecter les bytes ESC/POS du QR a la place d'un
+    // placeholder texte (meme logique que imprimerTicketThermique).
+    const injectQrBT = (currentTicket, placeholder, url) => {
+        const ph = c(placeholder) + '\n';
+        const pos = currentTicket.indexOf(ph);
+        if (pos === -1 || !url) return currentTicket;
+        const total = url.length + 3;
+        const pl = total % 256;
+        const phByte = Math.floor(total / 256);
+        let escPosQR = '';
+        escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00';
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08';
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30';
+        escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, phByte) + '\x31\x50\x30' + url;
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';
+        escPosQR += '\n';
+        return currentTicket.substring(0, pos) + escPosQR + currentTicket.substring(pos + ph.length);
+    };
+
+    let tkEscPos = tk;
+    if (afficherTracabiliteBT) {
+        tkEscPos = injectQrBT(tkEscPos, '[QR Tracabilite]', 'https://www.maas-tracabilite.com');
+    }
+    if (afficherFeedbackBT && feedbackUrlBT) {
+        tkEscPos = injectQrBT(tkEscPos, '[QR Feedback]', feedbackUrlBT);
+    }
+
     window.currentTicketText = tk;
-    window.currentTicketEscPos = tk;
+    window.currentTicketEscPos = tkEscPos;
     window.currentCommandeId = commandeId;
 }
 
