@@ -957,6 +957,20 @@ async function checkAuth() {
             btnSupprimerVentesJourAuth.style.display = canDelete ? 'inline-block' : 'none';
         }
 
+        // Boutons RAZ Matin / RAZ Soir - reserve a l'admin (action destructive
+        // qui met TOUTES les quantites a 0). Le marqueur class="admin-element"
+        // dans l'HTML est aussi pose, mais on cache explicitement ici pour
+        // gerer le cas ou la classe ne suffit pas.
+        const btnResetStockMatin = document.getElementById('btn-reset-stock-matin');
+        const btnResetStockSoir = document.getElementById('btn-reset-stock-soir');
+        const canResetStock = currentUser.role === 'admin';
+        if (btnResetStockMatin) {
+            btnResetStockMatin.style.display = canResetStock ? 'inline-block' : 'none';
+        }
+        if (btnResetStockSoir) {
+            btnResetStockSoir.style.display = canResetStock ? 'inline-block' : 'none';
+        }
+
         // Vérifier l'accès au chat Relevance AI
         if (!currentUser.canAccessChat) {
             // Désactiver le chat pour les utilisateurs non autorisés
