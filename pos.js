@@ -7429,12 +7429,48 @@ async function _genererTicketPourBT(commandeId) {
     if (paymentStatus==='P') tk += c('*** PAYE ***')+'\n\n';
     else if (paymentStatus==='M') tk += c('*** PAYE (CASH/MANUEL) ***')+'\n\n';
     else if (paymentStatus==='C') { const dp=commande.totalAmount-montantRestantDu; tk += c('*** CREANCE ***')+'\n'+c(`Montant du: ${formatCurrency(montantRestantDu)}`)+'\n'+c(`Deja paye: ${formatCurrency(dp)}`)+'\n\n'; }
+
+    // Tracabilite — meme section que imprimerTicketThermique pour que
+    // l'impression Bluetooth/RawBT contienne aussi le QR scannable.
+    const afficherTracabiliteBT = !config || config.afficher_tracabilite !== false;
+    if (afficherTracabiliteBT) {
+        tk += SEP+'\n'+c('VERIFIEZ VOTRE PRODUIT')+'\n'+SEP+'\n\n';
+        tk += c('Scannez le QR code ci-dessous')+'\n';
+        tk += c('pour verifier la tracabilite')+'\n\n';
+        tk += c('[QR Code]')+'\n\n';
+        tk += c('www.maas-tracabilite.com')+'\n\n';
+        tk += SEP+'\n\n';
+    }
+
     if (config&&config.footer_facture) tk += c(config.footer_facture)+'\n'; else tk += c('Merci de votre confiance!')+'\n';
     if (config&&config.slogan) tk += c(config.slogan)+'\n'; else tk += c('Bon appetit!')+'\n';
     tk += SEP;
 
+    // Construire la version ESC/POS avec QR natif pour RawBT/USB/Bluetooth.
+    // Le placeholder "[QR Code]" est remplace par les commandes GS ( k de
+    // l'imprimante thermique. Si pas de tracabilite, ticketEscPos = ticket.
+    let tkEscPos = tk;
+    if (afficherTracabiliteBT) {
+        const qrPlaceholder = c('[QR Code]')+'\n';
+        const qrCodePos = tkEscPos.indexOf(qrPlaceholder);
+        if (qrCodePos !== -1) {
+            const qrUrl = 'https://www.maas-tracabilite.com';
+            const urlLength = qrUrl.length;
+            let escPosQR = '';
+            escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // QR model 2
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08'; // QR size 8
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30'; // Error correction L
+            const pl = (urlLength + 3) % 256;
+            const ph = Math.floor((urlLength + 3) / 256);
+            escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, ph) + '\x31\x50\x30' + qrUrl;
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30'; // Print QR
+            escPosQR += '\n';
+            tkEscPos = tkEscPos.substring(0, qrCodePos) + escPosQR + tkEscPos.substring(qrCodePos + qrPlaceholder.length);
+        }
+    }
+
     window.currentTicketText = tk;
-    window.currentTicketEscPos = tk;
+    window.currentTicketEscPos = tkEscPos;
     window.currentCommandeId = commandeId;
 }
 
