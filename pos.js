@@ -2710,7 +2710,10 @@ function addPaidStampIfNeeded(commandeId, status, montantRestantDu = 0, montantP
 }
 
 async function supprimerTransaction(venteId) {
-    if (!confirm('Voulez-vous vraiment supprimer cette transaction ?')) {
+    const ok = await showConfirmModal('Voulez-vous vraiment supprimer cette transaction ?', {
+        title: 'Supprimer la transaction', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         return;
     }
     
@@ -2810,12 +2813,13 @@ async function confirmerSuppressionCommande(commandeId) {
                 console.error('❌ Erreur remboursement crédit:', refundError);
                 
                 // Demander confirmation à l'utilisateur
-                const continueDelete = confirm(
+                const continueDelete = await showConfirmModal(
                     `⚠️ Le remboursement du crédit (${creditUsed} FCFA) a échoué.\n\n` +
                     `Erreur: ${refundError.message}\n\n` +
-                    `Voulez-vous quand même supprimer la commande ?`
+                    `Voulez-vous quand même supprimer la commande ?`,
+                    { title: 'Remboursement crédit échoué', okLabel: 'Supprimer quand même', okVariant: 'danger' }
                 );
-                
+
                 if (!continueDelete) {
                     showToast('Suppression annulée', 'info');
                     return; // Annuler la suppression
@@ -5330,14 +5334,15 @@ async function assignerLivreur(commandeId) {
     // Vérifier si un livreur est déjà assigné et si on essaie de le changer
     const livreurActuel = livreurDejaAssigne[commandeId];
     if (livreurActuel && livreurActuel !== livreurNom) {
-        const confirmation = confirm(
+        const confirmation = await showConfirmModal(
             `⚠️ ATTENTION\n\n` +
             `Un livreur est déjà assigné à cette commande :\n` +
             `▶ Livreur actuel : ${livreurActuel}\n` +
             `▶ Nouveau livreur : ${livreurNom}\n\n` +
-            `Voulez-vous vraiment changer le livreur ?`
+            `Voulez-vous vraiment changer le livreur ?`,
+            { title: 'Changer le livreur', okLabel: 'Changer', okVariant: 'warning' }
         );
-        
+
         if (!confirmation) {
             // L'utilisateur a annulé, remettre l'ancien livreur
             selectElement.value = livreurActuel;
@@ -5653,14 +5658,15 @@ async function assignerLivreurKanban(commandeId) {
     // Vérifier si un livreur est déjà assigné et si on essaie de le changer
     const livreurActuel = livreurDejaAssigne[commandeId];
     if (livreurActuel && livreurActuel !== livreurNom) {
-        const confirmation = confirm(
+        const confirmation = await showConfirmModal(
             `⚠️ ATTENTION\n\n` +
             `Un livreur est déjà assigné à cette commande :\n` +
             `▶ Livreur actuel : ${livreurActuel}\n` +
             `▶ Nouveau livreur : ${livreurNom}\n\n` +
-            `Voulez-vous vraiment changer le livreur ?`
+            `Voulez-vous vraiment changer le livreur ?`,
+            { title: 'Changer le livreur', okLabel: 'Changer', okVariant: 'warning' }
         );
-        
+
         if (!confirmation) {
             // L'utilisateur a annulé, remettre l'ancien livreur
             selectElement.value = livreurActuel;

@@ -118,7 +118,7 @@ async function verifyCredentials(username, password) {
             canManageUsers: ['admin'].includes(role),
             
             // Droits spécifiques selon la hiérarchie actuelle
-            canCopyStock: ['superutilisateur', 'superviseur', 'admin'].includes(role),
+            canCopyStock: ['user', 'superutilisateur', 'superviseur', 'admin'].includes(role),
             canManageEstimation: ['superutilisateur', 'superviseur', 'admin'].includes(role),
             canAccessAllPointsVente: ['superutilisateur', 'superviseur', 'admin', 'lecteur'].includes(role) || user.acces_tous_points,
             canManageReconciliation: ['superutilisateur', 'superviseur', 'admin'].includes(role),

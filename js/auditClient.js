@@ -148,8 +148,11 @@ function displayHistory() {
 /**
  * Efface l'historique
  */
-function clearHistory() {
-    if (confirm('Êtes-vous sûr de vouloir effacer l\'historique du jour ?')) {
+async function clearHistory() {
+    const ok = await showConfirmModal('Êtes-vous sûr de vouloir effacer l\'historique du jour ?', {
+        title: 'Effacer l\'historique', okLabel: 'Effacer', okVariant: 'danger'
+    });
+    if (ok) {
         localStorage.removeItem(STORAGE_KEY);
         displayHistory();
         showNotification('Historique effacé', 'success');

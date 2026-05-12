@@ -1,4 +1,6 @@
 // Démarrage du script
+// showToast et showConfirmModal sont fournis par js/ui-helpers.js (charge avant
+// ce fichier). window.alert est aussi override la-bas pour devenir un toast.
 
 // Variables globales pour les points de vente (déclarées en premier pour éviter les erreurs de temporal dead zone)
 var POINTS_VENTE_PHYSIQUES = [];
@@ -849,8 +851,10 @@ async function checkAuth() {
             importTabContainer.style.display = currentUser.canManageAdvanced ? 'block' : 'none';
         }
         
-        // Onglet Stock inventaire - module stock + accès à tous les points de vente
-        setElementVisibility(stockInventaireItem, 'stock-inventaire-item', currentUser.canAccessAllPointsVente);
+        // Onglet Stock inventaire - accessible aux utilisateurs avec lecture
+        // (lecteur, user, super*, admin). Les actions d'ecriture restent
+        // gatees par checkWriteAccess cote API (canWrite).
+        setElementVisibility(stockInventaireItem, 'stock-inventaire-item', currentUser.canRead);
         
         // Onglet Copier Stock - module stock + permission copier stock
         setElementVisibility(copierStockItem, 'copier-stock-item', currentUser.canCopyStock);
@@ -2658,8 +2662,11 @@ function dvRenderRows(ventes) {
             deleteButton.setAttribute('data-id', vente.id);
             deleteButton.innerHTML = '<i class="fas fa-trash"></i>';
             deleteButton.addEventListener('click', async () => {
-                if (confirm('Êtes-vous sûr de vouloir supprimer cette vente ?')) {
-                    await supprimerVente(vente.id); 
+                const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette vente ?', {
+                    title: 'Supprimer la vente', okLabel: 'Supprimer', okVariant: 'danger'
+                });
+                if (ok) {
+                    await supprimerVente(vente.id);
                 }
             });
             actionsCell.appendChild(deleteButton);
@@ -4562,7 +4569,10 @@ async function chargerTransferts(date) {
                     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
                     btnSupprimer.addEventListener('click', async (e) => {
                         e.preventDefault();
-                        if (confirm('Voulez-vous vraiment supprimer ce transfert ?')) {
+                        const okDel = await showConfirmModal('Voulez-vous vraiment supprimer ce transfert ?', {
+                            title: 'Supprimer le transfert', okLabel: 'Supprimer', okVariant: 'danger'
+                        });
+                        if (okDel) {
                             try {
                                 // Supprimer le transfert via l'API
                                 const response = await fetch(`/api/transferts`, {
@@ -4923,9 +4933,12 @@ function ajouterLigneTransfert() {
     const btnSupprimer = document.createElement('button');
     btnSupprimer.className = 'btn btn-danger btn-sm';
     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-    btnSupprimer.addEventListener('click', (e) => {
+    btnSupprimer.addEventListener('click', async (e) => {
         e.preventDefault();
-        if (confirm('Voulez-vous vraiment supprimer cette ligne ?')) {
+        const ok = await showConfirmModal('Voulez-vous vraiment supprimer cette ligne ?', {
+            title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+        });
+        if (ok) {
             row.remove();
         }
     });
@@ -5362,7 +5375,11 @@ async function copierStock() {
 
         // Demander confirmation
         const commentaireSuffix = copyComments ? ' (commentaires inclus)' : ' (sans les commentaires)';
-        if (!confirm(`Voulez-vous copier les données du stock ${sourceTypeStock} du ${sourceDate} vers le stock ${targetTypeStock} du ${targetDate}${commentaireSuffix}? Cette action remplacera les données existantes.`)) {
+        const okCopy = await showConfirmModal(
+            `Voulez-vous copier les données du stock ${sourceTypeStock} du ${sourceDate} vers le stock ${targetTypeStock} du ${targetDate}${commentaireSuffix}? Cette action remplacera les données existantes.`,
+            { title: 'Copier le stock', okLabel: 'Copier', okVariant: 'warning' }
+        );
+        if (!okCopy) {
             return;
         }
 
@@ -5530,9 +5547,10 @@ async function afficherOngletsSuivantDroits(userData) {
     const abonnementsItem = document.getElementById('abonnements-item');
     const stockAlerteItem = document.getElementById('stock-alerte-item');
     
-    // Onglet Stock inventaire - pour utilisateurs avec accès à tous les points de vente
+    // Onglet Stock inventaire - accessible aux utilisateurs avec lecture
+    // (lecteur, user, super*, admin). Les writes restent gates cote API.
     if (stockInventaireItem) {
-        stockInventaireItem.style.display = shouldShowElement('stock-inventaire-item', userData.canAccessAllPointsVente) ? 'block' : 'none';
+        stockInventaireItem.style.display = shouldShowElement('stock-inventaire-item', userData.canRead) ? 'block' : 'none';
     }
     
     // Onglet Copier Stock - pour utilisateurs qui peuvent copier le stock
@@ -5754,13 +5772,13 @@ function ajouterLigneStock() {
     const btnSupprimer = document.createElement('button');
     btnSupprimer.className = 'btn btn-danger btn-sm';
     btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-    btnSupprimer.addEventListener('click', (e) => {
+    btnSupprimer.addEventListener('click', async (e) => {
         e.preventDefault();
-        
+
         // Vérifier les restrictions temporelles pour la suppression
         const dateInput = document.getElementById('date-inventaire');
         const typeStockSelect = document.getElementById('type-stock');
-        
+
         if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
             alert('Vous ne pouvez pas supprimer cette ligne pour cette date. Les utilisateurs peuvent modifier le stock seulement le jour J et jusqu\'au lendemain avant 4h00 du matin. Seuls administrateurs sont exemptés de cette restriction.');
             return;
@@ -5771,8 +5789,11 @@ function ajouterLigneStock() {
             alert('Le stock matin est rempli automatiquement par le système. Seuls les administrateurs peuvent supprimer des lignes manuellement.');
             return;
         }
-        
-        if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+        const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+            title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+        });
+        if (ok) {
             row.remove();
         }
     });
@@ -5945,17 +5966,22 @@ async function sauvegarderDonneesStock() {
     }
 
     if (Object.keys(donnees).length === 0) {
-        alert('Aucune donnée à sauvegarder. Veuillez saisir au moins une quantité.');
+        showToast('Aucune donnée à sauvegarder. Veuillez saisir au moins une quantité.', 'warning');
         return;
     }
 
-    // Demander confirmation avec résumé
+    // Modal de confirmation avec resume (remplace confirm() natif)
     const message = `Voulez-vous sauvegarder les données suivantes pour le stock ${typeStock} du ${date} ?\n\n` +
                    `${resume.join('\n')}\n\n` +
                    `Total général: ${totalGeneral.toLocaleString('fr-FR')} FCFA\n\n` +
                    `Cette action écrasera les données existantes pour ce type de stock.`;
-
-    if (!confirm(message)) {
+    const confirmed = await showConfirmModal(message, {
+        title: `Sauvegarde stock ${typeStock} — ${date}`,
+        okLabel: 'Sauvegarder',
+        cancelLabel: 'Annuler',
+        okVariant: 'success'
+    });
+    if (!confirmed) {
         return;
     }
 
@@ -5973,8 +5999,8 @@ async function sauvegarderDonneesStock() {
         const result = await response.json();
         if (result.success) {
             console.log('%cDonnées sauvegardées avec succès', 'color: #00ff00; font-weight: bold;');
-            alert('Données sauvegardées avec succès');
-            
+            showToast('Données sauvegardées avec succès', 'success');
+
             // Mettre à jour stockData après la sauvegarde
             if (typeStock === 'matin') {
                 stockData.matin = new Map(Object.entries(donnees));
@@ -5987,7 +6013,7 @@ async function sauvegarderDonneesStock() {
         }
     } catch (error) {
         console.error('%cErreur lors de la sauvegarde:', 'color: #ff0000; font-weight: bold;', error);
-        alert('Erreur lors de la sauvegarde des données: ' + error.message);
+        showToast('Erreur lors de la sauvegarde des données: ' + error.message, 'danger', 6000);
     }
 }
 // Fonction pour initialiser le tableau de stock
@@ -6167,23 +6193,26 @@ function initTableauStock() {
             const btnSupprimer = document.createElement('button');
             btnSupprimer.className = 'btn btn-danger btn-sm';
             btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-            btnSupprimer.addEventListener('click', (e) => {
+            btnSupprimer.addEventListener('click', async (e) => {
                 e.preventDefault();
-                
+
                 const dateInput = document.getElementById('date-inventaire');
                 const typeStockSelect = document.getElementById('type-stock');
-                
+
                 if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
                     alert('Vous ne pouvez pas supprimer cette ligne pour cette date.');
                     return;
                 }
-                
+
                 if (typeStockSelect && typeStockSelect.value === 'matin' && currentUser && !canModifyStockMatinFields(currentUser.username)) {
                     alert('Seuls les administrateurs peuvent supprimer des lignes du stock matin.');
                     return;
                 }
-                
-                if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+                const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                    title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                });
+                if (ok) {
                     row.remove();
                 }
             });
@@ -6376,9 +6405,12 @@ function initTableauStock() {
                 const btnSupprimer = document.createElement('button');
                 btnSupprimer.className = 'btn btn-danger btn-sm';
                 btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-                btnSupprimer.addEventListener('click', (e) => {
+                btnSupprimer.addEventListener('click', async (e) => {
                     e.preventDefault();
-                    if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+                    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                        title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                    if (ok) {
                         row.remove();
                     }
                 });
@@ -6715,23 +6747,26 @@ async function onTypeStockChange() {
                 const btnSupprimer = document.createElement('button');
                 btnSupprimer.className = 'btn btn-danger btn-sm';
                 btnSupprimer.innerHTML = '<i class="fas fa-trash"></i>';
-                btnSupprimer.onclick = () => {
+                btnSupprimer.onclick = async () => {
                     // Vérifier les restrictions temporelles pour la suppression
                     const dateInput = document.getElementById('date-inventaire');
                     const typeStockSelect = document.getElementById('type-stock');
-                    
+
                     if (dateInput && currentUser && !canModifyStockForDate(dateInput.value, currentUser.username)) {
                         alert('Vous ne pouvez pas supprimer cette ligne pour cette date. Les utilisateurs peuvent modifier le stock seulement le jour J et jusqu\'au lendemain avant 4h00 du matin. Seuls administrateurs sont exemptés de cette restriction.');
                         return;
                     }
-                    
+
                     // Vérifier les restrictions spécifiques au stock matin
                     if (typeStockSelect && typeStockSelect.value === 'matin' && currentUser && !canModifyStockMatinFields(currentUser.username)) {
                         alert('Le stock matin est rempli automatiquement par le système. Seuls les administrateurs peuvent supprimer des lignes manuellement.');
                         return;
                     }
-                    
-                    if (confirm('Êtes-vous sûr de vouloir supprimer cette ligne ?')) {
+
+                    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette ligne ?', {
+                        title: 'Supprimer la ligne', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                    if (ok) {
                         tr.remove();
                     }
                 };
@@ -6836,12 +6871,18 @@ async function supprimerVentesJour() {
     });
     
     // Double confirmation
-    const firstConfirm = confirm(`⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de supprimer TOUTES les ventes du ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`);
-    
+    const firstConfirm = await showConfirmModal(
+        `⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de supprimer TOUTES les ventes du ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`,
+        { title: 'Supprimer toutes les ventes', okLabel: 'Continuer', okVariant: 'warning' }
+    );
+
     if (!firstConfirm) return;
-    
-    const secondConfirm = confirm(`🔴 DERNIÈRE CONFIRMATION 🔴\n\nTapez OK pour confirmer la suppression de TOUTES les ventes du ${dateFormatted}.`);
-    
+
+    const secondConfirm = await showConfirmModal(
+        `🔴 DERNIÈRE CONFIRMATION 🔴\n\nConfirmer la suppression de TOUTES les ventes du ${dateFormatted}.`,
+        { title: 'Dernière confirmation', okLabel: 'OUI, supprimer tout', okVariant: 'danger' }
+    );
+
     if (!secondConfirm) return;
     
     try {
@@ -8669,12 +8710,18 @@ async function resetStock(type) {
     const typeName = type === 'matin' ? 'Stock Matin' : 'Stock Soir';
     
     // Double confirmation
-    const firstConfirm = confirm(`⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de mettre TOUTES les quantités du ${typeName} à 0 pour le ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`);
-    
+    const firstConfirm = await showConfirmModal(
+        `⚠️ ATTENTION ⚠️\n\nVous êtes sur le point de mettre TOUTES les quantités du ${typeName} à 0 pour le ${dateFormatted}.\n\nCette action est IRRÉVERSIBLE.\n\nContinuer ?`,
+        { title: `Réinitialiser ${typeName}`, okLabel: 'Continuer', okVariant: 'warning' }
+    );
+
     if (!firstConfirm) return;
-    
-    const secondConfirm = confirm(`🔴 DERNIÈRE CONFIRMATION 🔴\n\nTapez OK pour confirmer la réinitialisation du ${typeName} du ${dateFormatted}.`);
-    
+
+    const secondConfirm = await showConfirmModal(
+        `🔴 DERNIÈRE CONFIRMATION 🔴\n\nConfirmer la réinitialisation du ${typeName} du ${dateFormatted}.`,
+        { title: 'Dernière confirmation', okLabel: 'OUI, réinitialiser', okVariant: 'danger' }
+    );
+
     if (!secondConfirm) return;
     
     try {
@@ -11615,7 +11662,10 @@ async function confirmerConversion() {
         return;
     }
     
-    if (!confirm('Êtes-vous sûr de vouloir convertir cette pré-commande en vente réelle ?')) {
+    const okConv = await showConfirmModal('Êtes-vous sûr de vouloir convertir cette pré-commande en vente réelle ?', {
+        title: 'Convertir pré-commande', okLabel: 'Convertir', okVariant: 'success'
+    });
+    if (!okConv) {
         return;
     }
     
@@ -12094,7 +12144,10 @@ async function supprimerPrecommande(precommandeId) {
         return;
     }
     
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cette pré-commande ?')) {
+    const okDelPre = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette pré-commande ?', {
+        title: 'Supprimer pré-commande', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!okDelPre) {
         return;
     }
     

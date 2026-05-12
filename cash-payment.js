@@ -957,7 +957,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const clearButton = document.getElementById('clear-cash-payment-data');
     if (clearButton) {
         clearButton.addEventListener('click', async function() {
-            if (!confirm('Êtes-vous sûr de vouloir supprimer toutes les données de paiement? Cette action est irréversible.')) {
+            const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer toutes les données de paiement? Cette action est irréversible.', {
+                title: 'Effacer données paiement', okLabel: 'Tout supprimer', okVariant: 'danger'
+            });
+            if (!ok) {
                 return;
             }
             

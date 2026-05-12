@@ -206,7 +206,10 @@ async function supprimerVente(venteId) {
     }
     
     // Demander confirmation avant suppression
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cette vente ?')) {
+    const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette vente ?', {
+        title: 'Supprimer la vente', okLabel: 'Supprimer', okVariant: 'danger'
+    });
+    if (!ok) {
         return;
     }
     
