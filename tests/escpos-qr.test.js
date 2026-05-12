@@ -145,9 +145,19 @@ describe('escpos-qr helper', () => {
             expect(posJsSource).toContain(TRACABILITE_URL);
         });
 
-        test('pos.js contient le placeholder [QR Code] dans la section tracabilite', () => {
-            // Le placeholder doit etre present pour pouvoir etre remplace.
-            expect(posJsSource).toContain('[QR Code]');
+        test('pos.js contient les placeholders [QR Tracabilite] et [QR Feedback]', () => {
+            // Deux QRs distincts: tracabilite (URL fixe) et feedback (URL
+            // configurable via brand-config.feedback_url). Les deux
+            // placeholders doivent etre presents pour qu'ils soient
+            // remplaces par les bytes ESC/POS au build.
+            expect(posJsSource).toContain('[QR Tracabilite]');
+            expect(posJsSource).toContain('[QR Feedback]');
+        });
+
+        test('pos.js lit config.feedback_url et substitue {commande_id}', () => {
+            // Le pattern de lecture: config.feedback_url + replace placeholder.
+            expect(posJsSource).toContain('config.feedback_url');
+            expect(posJsSource).toContain('{commande_id}');
         });
     });
 

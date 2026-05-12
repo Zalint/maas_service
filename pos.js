@@ -7247,9 +7247,35 @@ async function imprimerTicketThermique(commandeId) {
         ticket += centrer('Scannez le QR code ci-dessous') + '\n';
         ticket += centrer('pour verifier la tracabilite') + '\n';
         ticket += '\n';
-        ticket += centrer('[QR Code]') + '\n';
+        ticket += centrer('[QR Tracabilite]') + '\n';
         ticket += '\n';
         ticket += centrer('www.maas-tracabilite.com') + '\n';
+        ticket += '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+    }
+
+    // Feedback client — QR vers un formulaire externe (Tally / Google Forms).
+    // Configurable par brand dans brand-config.json:
+    //   "feedback_url": "https://tally.so/r/XXX?cmd={commande_id}"
+    // Le token {commande_id} (si present) est remplace par l'identifiant de
+    // la commande encode URL. Si le champ est vide ou absent, la section
+    // n'est pas affichee. On choisit deliberement un service externe pour
+    // ne pas exposer l'URL interne de l'app POS aux clients finaux.
+    const feedbackUrlTemplate = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+    const afficherFeedback = !!feedbackUrlTemplate;
+    const feedbackUrl = afficherFeedback
+        ? feedbackUrlTemplate.replace('{commande_id}', encodeURIComponent(commandeId))
+        : '';
+    if (afficherFeedback) {
+        ticket += SEPARATEUR + '\n';
+        ticket += centrer('VOTRE AVIS NOUS INTERESSE') + '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+        ticket += centrer('Notez votre experience') + '\n';
+        ticket += centrer('en 30 secondes') + '\n';
+        ticket += '\n';
+        ticket += centrer('[QR Feedback]') + '\n';
         ticket += '\n';
         ticket += SEPARATEUR + '\n';
         ticket += '\n';
@@ -7273,34 +7299,34 @@ async function imprimerTicketThermique(commandeId) {
     // This version contains control bytes and should ONLY be used for RawBT/USB/Bluetooth printing
     let ticketEscPos = ticket; // Start with the clean text version
 
-    // Remplace le placeholder "[QR Code]" par les commandes ESC/POS de
-    // generation d'un QR code natif imprimante. URL fixe pour l'instant.
-    // L'imprimante doit supporter GS ( k commands (la plupart des modeles
-    // 58mm Bluetooth + RawBT le supportent).
+    // Helper inline: remplace un placeholder texte par les commandes ESC/POS
+    // GS ( k de generation QR natif sur imprimante thermique. Duplique la
+    // logique de lib/escpos-qr.js (browser ne peut pas require()). Le test
+    // automatique tests/escpos-qr.test.js valide que les bytes restent
+    // alignes (drift detection).
+    const injectQr = (currentTicket, placeholder, url) => {
+        const ph = centrer(placeholder) + '\n';
+        const pos = currentTicket.indexOf(ph);
+        if (pos === -1 || !url) return currentTicket;
+        const urlBytes = url; // string en UTF-8 (latin1-safe pour ASCII URL)
+        const total = urlBytes.length + 3;
+        const pl = total % 256;
+        const phByte = Math.floor(total / 256);
+        let escPosQR = '';
+        escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // Set QR model (Model 2)
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08';     // Set QR size (8 = medium)
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30';     // Set error correction (L = 7%)
+        escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, phByte) + '\x31\x50\x30' + urlBytes; // Store data
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';     // Print QR
+        escPosQR += '\n';
+        return currentTicket.substring(0, pos) + escPosQR + currentTicket.substring(pos + ph.length);
+    };
+
     if (afficherTracabilite) {
-        const qrPlaceholder = centrer('[QR Code]') + '\n';
-        const qrCodePos = ticketEscPos.indexOf(qrPlaceholder);
-
-        if (qrCodePos !== -1) {
-            const qrUrl = 'https://www.maas-tracabilite.com';
-            const urlLength = qrUrl.length;
-
-            let escPosQR = '';
-            escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // Set QR model (Model 2)
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08'; // Set QR size (8 = medium)
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30'; // Set error correction (L = 7%)
-
-            // Store QR data: GS ( k pL pH cn fn m d1..dn
-            const pl = (urlLength + 3) % 256;
-            const ph = Math.floor((urlLength + 3) / 256);
-            escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, ph) + '\x31\x50\x30' + qrUrl;
-
-            // Print QR
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';
-            escPosQR += '\n';
-
-            ticketEscPos = ticketEscPos.substring(0, qrCodePos) + escPosQR + ticketEscPos.substring(qrCodePos + qrPlaceholder.length);
-        }
+        ticketEscPos = injectQr(ticketEscPos, '[QR Tracabilite]', 'https://www.maas-tracabilite.com');
+    }
+    if (afficherFeedback && feedbackUrl) {
+        ticketEscPos = injectQr(ticketEscPos, '[QR Feedback]', feedbackUrl);
     }
 
     // Store both versions globally for use by share functions
@@ -7430,15 +7456,28 @@ async function _genererTicketPourBT(commandeId) {
     else if (paymentStatus==='M') tk += c('*** PAYE (CASH/MANUEL) ***')+'\n\n';
     else if (paymentStatus==='C') { const dp=commande.totalAmount-montantRestantDu; tk += c('*** CREANCE ***')+'\n'+c(`Montant du: ${formatCurrency(montantRestantDu)}`)+'\n'+c(`Deja paye: ${formatCurrency(dp)}`)+'\n\n'; }
 
-    // Tracabilite — meme section que imprimerTicketThermique pour que
-    // l'impression Bluetooth/RawBT contienne aussi le QR scannable.
+    // Tracabilite + Feedback — meme sections que imprimerTicketThermique
+    // pour que l'impression Bluetooth/RawBT contienne les QR scannables.
     const afficherTracabiliteBT = !config || config.afficher_tracabilite !== false;
     if (afficherTracabiliteBT) {
         tk += SEP+'\n'+c('VERIFIEZ VOTRE PRODUIT')+'\n'+SEP+'\n\n';
         tk += c('Scannez le QR code ci-dessous')+'\n';
         tk += c('pour verifier la tracabilite')+'\n\n';
-        tk += c('[QR Code]')+'\n\n';
+        tk += c('[QR Tracabilite]')+'\n\n';
         tk += c('www.maas-tracabilite.com')+'\n\n';
+        tk += SEP+'\n\n';
+    }
+
+    const feedbackUrlTemplate = (config && typeof config.feedback_url === 'string') ? config.feedback_url.trim() : '';
+    const afficherFeedbackBT = !!feedbackUrlTemplate;
+    const feedbackUrlBT = afficherFeedbackBT
+        ? feedbackUrlTemplate.replace('{commande_id}', encodeURIComponent(commandeId))
+        : '';
+    if (afficherFeedbackBT) {
+        tk += SEP+'\n'+c('VOTRE AVIS NOUS INTERESSE')+'\n'+SEP+'\n\n';
+        tk += c('Notez votre experience')+'\n';
+        tk += c('en 30 secondes')+'\n\n';
+        tk += c('[QR Feedback]')+'\n\n';
         tk += SEP+'\n\n';
     }
 
@@ -7446,27 +7485,31 @@ async function _genererTicketPourBT(commandeId) {
     if (config&&config.slogan) tk += c(config.slogan)+'\n'; else tk += c('Bon appetit!')+'\n';
     tk += SEP;
 
-    // Construire la version ESC/POS avec QR natif pour RawBT/USB/Bluetooth.
-    // Le placeholder "[QR Code]" est remplace par les commandes GS ( k de
-    // l'imprimante thermique. Si pas de tracabilite, ticketEscPos = ticket.
+    // Helper inline pour injecter les bytes ESC/POS du QR a la place d'un
+    // placeholder texte (meme logique que imprimerTicketThermique).
+    const injectQrBT = (currentTicket, placeholder, url) => {
+        const ph = c(placeholder) + '\n';
+        const pos = currentTicket.indexOf(ph);
+        if (pos === -1 || !url) return currentTicket;
+        const total = url.length + 3;
+        const pl = total % 256;
+        const phByte = Math.floor(total / 256);
+        let escPosQR = '';
+        escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00';
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08';
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30';
+        escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, phByte) + '\x31\x50\x30' + url;
+        escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';
+        escPosQR += '\n';
+        return currentTicket.substring(0, pos) + escPosQR + currentTicket.substring(pos + ph.length);
+    };
+
     let tkEscPos = tk;
     if (afficherTracabiliteBT) {
-        const qrPlaceholder = c('[QR Code]')+'\n';
-        const qrCodePos = tkEscPos.indexOf(qrPlaceholder);
-        if (qrCodePos !== -1) {
-            const qrUrl = 'https://www.maas-tracabilite.com';
-            const urlLength = qrUrl.length;
-            let escPosQR = '';
-            escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // QR model 2
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08'; // QR size 8
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30'; // Error correction L
-            const pl = (urlLength + 3) % 256;
-            const ph = Math.floor((urlLength + 3) / 256);
-            escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, ph) + '\x31\x50\x30' + qrUrl;
-            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30'; // Print QR
-            escPosQR += '\n';
-            tkEscPos = tkEscPos.substring(0, qrCodePos) + escPosQR + tkEscPos.substring(qrCodePos + qrPlaceholder.length);
-        }
+        tkEscPos = injectQrBT(tkEscPos, '[QR Tracabilite]', 'https://www.maas-tracabilite.com');
+    }
+    if (afficherFeedbackBT && feedbackUrlBT) {
+        tkEscPos = injectQrBT(tkEscPos, '[QR Feedback]', feedbackUrlBT);
     }
 
     window.currentTicketText = tk;

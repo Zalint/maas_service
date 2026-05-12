@@ -8,6 +8,7 @@
     "footer_facture": "Merci de votre confiance !",
     "footer_whatsapp": "Merci de votre confiance !",
     "afficher_tracabilite": true,
+    "feedback_url": "",
     "points_vente_codes": []
   }
 }
