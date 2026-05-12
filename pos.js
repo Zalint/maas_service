@@ -4331,13 +4331,27 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
         
         // Get brand config and use its footer (pass commandeId to detect brand)
         const config = getBrandConfig(commandeId);
+
+        // Tracabilite — lien vers le portail. Desactivable via
+        // afficher_tracabilite=false dans brand-config.json. Defaut = true.
+        // Format aligne sur DATA (TRAÇABILITÉ VIANDE) mais sans les details
+        // origine/dateAbattage/lot puisque pas d'API correspondante.
+        const afficherTracabiliteWA = !config || config.afficher_tracabilite !== false;
+        if (afficherTracabiliteWA) {
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `🥩 TRAÇABILITÉ VIANDE\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            message += `🔍 Vérifier en ligne : https://www.maas-tracabilite.com\n\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+
         if (config && config.footer_whatsapp) {
             message += config.footer_whatsapp;
         } else {
             // Fallback
             message += `Merci de votre confiance !`;
         }
-        
+
         // Encoder le message pour l'URL
         const messageEncode = encodeURIComponent(message);
         
@@ -7220,8 +7234,27 @@ async function imprimerTicketThermique(commandeId) {
         ticket += centrer(`Deja paye: ${formatCurrency(dejaPaye)}`) + '\n';
         ticket += '\n';
     }
-    
-    
+
+    // Tracabilite — QR code pointant vers le portail tracabilite.
+    // Configurable par brand: afficher_tracabilite=false dans brand-config.json
+    // pour desactiver. Defaut = true (section affichee).
+    const afficherTracabilite = !config || config.afficher_tracabilite !== false;
+    if (afficherTracabilite) {
+        ticket += SEPARATEUR + '\n';
+        ticket += centrer('VERIFIEZ VOTRE PRODUIT') + '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+        ticket += centrer('Scannez le QR code ci-dessous') + '\n';
+        ticket += centrer('pour verifier la tracabilite') + '\n';
+        ticket += '\n';
+        ticket += centrer('[QR Code]') + '\n';
+        ticket += '\n';
+        ticket += centrer('www.maas-tracabilite.com') + '\n';
+        ticket += '\n';
+        ticket += SEPARATEUR + '\n';
+        ticket += '\n';
+    }
+
     // Footer - use config if available
     if (config && config.footer_facture) {
         ticket += centrer(config.footer_facture) + '\n';
@@ -7239,8 +7272,37 @@ async function imprimerTicketThermique(commandeId) {
     // 🖨️ Create ESC/POS version for thermal printers (with QR code)
     // This version contains control bytes and should ONLY be used for RawBT/USB/Bluetooth printing
     let ticketEscPos = ticket; // Start with the clean text version
-    
-    
+
+    // Remplace le placeholder "[QR Code]" par les commandes ESC/POS de
+    // generation d'un QR code natif imprimante. URL fixe pour l'instant.
+    // L'imprimante doit supporter GS ( k commands (la plupart des modeles
+    // 58mm Bluetooth + RawBT le supportent).
+    if (afficherTracabilite) {
+        const qrPlaceholder = centrer('[QR Code]') + '\n';
+        const qrCodePos = ticketEscPos.indexOf(qrPlaceholder);
+
+        if (qrCodePos !== -1) {
+            const qrUrl = 'https://www.maas-tracabilite.com';
+            const urlLength = qrUrl.length;
+
+            let escPosQR = '';
+            escPosQR += '\x1D\x28\x6B\x04\x00\x31\x41\x32\x00'; // Set QR model (Model 2)
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x43\x08'; // Set QR size (8 = medium)
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x45\x30'; // Set error correction (L = 7%)
+
+            // Store QR data: GS ( k pL pH cn fn m d1..dn
+            const pl = (urlLength + 3) % 256;
+            const ph = Math.floor((urlLength + 3) / 256);
+            escPosQR += '\x1D\x28\x6B' + String.fromCharCode(pl, ph) + '\x31\x50\x30' + qrUrl;
+
+            // Print QR
+            escPosQR += '\x1D\x28\x6B\x03\x00\x31\x51\x30';
+            escPosQR += '\n';
+
+            ticketEscPos = ticketEscPos.substring(0, qrCodePos) + escPosQR + ticketEscPos.substring(qrCodePos + qrPlaceholder.length);
+        }
+    }
+
     // Store both versions globally for use by share functions
     window.currentTicketText = ticket;
     window.currentTicketEscPos = ticketEscPos;

@@ -3,18 +3,11 @@
     "nom_complet": "Mbao",
     "slogan": "",
     "site_web": "",
-    "telephones": [
-      { "point_vente": "Mbao", "numeros": ["77 858 96 96"] },
-      { "point_vente": "Keur Massar", "numeros": ["78 777 26 26"] },
-      { "point_vente": "Sacre Coeur", "numeros": ["78 104 18 18"] }
-    ],
+    "telephones": [],
     "adresse_siege": "",
     "footer_facture": "Merci de votre confiance !",
     "footer_whatsapp": "Merci de votre confiance !",
-    "points_vente_codes": {
-      "Mbao": "MBA",
-      "Keur Massar": "KMA",
-      "Sacre Coeur": "SAC"
-    }
+    "afficher_tracabilite": true,
+    "points_vente_codes": []
   }
 }
