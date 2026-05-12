@@ -56,43 +56,12 @@ async function lireInput() {
     });
 }
 
-// ===== Parseur ESC/POS QR =====
+// ===== Parseur ESC/POS QR (delegue au module partage avec les tests) =====
 
-/**
- * Cherche la commande "store QR data": 1D 28 6B pL pH 31 50 30 <data>.
- * pL + pH*256 = longueur des donnees + 3 (les 3 octets 31 50 30).
- *
- * Retourne { url, modelStart, modelEnd, dataStart, dataEnd, printEnd } pour
- * pouvoir reconstruire un ticket "lisible" sans les bytes de commande.
- */
+const { parseQrCommands } = require('../lib/escpos-qr');
+
 function extraireQR(buffer) {
-    // Pattern: 1D 28 6B pL pH 31 50 30
-    const sig = Buffer.from([0x1D, 0x28, 0x6B]);
-    let pos = 0;
-    const trouves = [];
-    while (pos < buffer.length) {
-        const idx = buffer.indexOf(sig, pos);
-        if (idx === -1) break;
-        // Apres 1D 28 6B il y a pL pH puis (m, fn, ...)
-        if (idx + 5 >= buffer.length) break;
-        const pL = buffer[idx + 3];
-        const pH = buffer[idx + 4];
-        const m  = buffer[idx + 5]; // toujours 0x31 dans nos commandes QR
-        const fn = buffer[idx + 6]; // 41=model, 43=size, 45=err, 50=data, 51=print
-        const total = pL + pH * 256;
-        // Longueur totale de la commande = 5 octets header (1D 28 6B pL pH) + total
-        const cmdEnd = idx + 5 + total;
-        if (m === 0x31 && fn === 0x50) {
-            // Store data: les donnees commencent apres 31 50 30 (donc idx+8)
-            // et font total - 3 octets.
-            const dataStart = idx + 8;
-            const dataLen = total - 3;
-            const data = buffer.slice(dataStart, dataStart + dataLen).toString('utf8');
-            trouves.push({ urlStart: idx, urlEnd: cmdEnd, url: data });
-        }
-        pos = cmdEnd > pos ? cmdEnd : pos + 1;
-    }
-    return trouves;
+    return parseQrCommands(buffer);
 }
 
 /**
