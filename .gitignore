@@ -64,5 +64,10 @@ FINAL-TEST-*.js
 test-*.json
 api-performance-achat-*.json
 
-# Local startup script (contains API keys)
+# Local startup scripts (peuvent contenir des secrets/API keys)
 start_matix.ps1
+start_maas_*.ps1
+
+# Postgres local control scripts (chemins specifiques a la machine)
+start_postgres.ps1
+stop_postgres.ps1
