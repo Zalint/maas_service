@@ -71,3 +71,7 @@ start_maas_*.ps1
 # Postgres local control scripts (chemins specifiques a la machine)
 start_postgres.ps1
 stop_postgres.ps1
+
+# Artefacts du simulateur RawBT (scripts/test-ticket-qr*.js)
+ticket-sample.bin
+qr-*.png
