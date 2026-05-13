@@ -8961,20 +8961,35 @@ app.listen(PORT, async () => {
 
     // Cron in-process: chaque jour a 5h UTC, copier Stock Soir J -> Stock Matin J+1.
     // Equivalent au service cron Render (qui est payant), evite cette dependance.
-    cron.schedule('0 5 * * *', () => {
-        const ts = new Date().toISOString();
-        console.log(`[cron-stock-copy] ${ts} start`);
-        const child = spawn('node', ['scripts/copy-stock-cron.js'], {
-            cwd: __dirname,
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-        child.stdout.on('data', d => process.stdout.write(`[cron-stock-copy] ${d}`));
-        child.stderr.on('data', d => process.stderr.write(`[cron-stock-copy] ${d}`));
-        child.on('close', code => console.log(`[cron-stock-copy] exit ${code}`));
-        child.on('error', err => console.error('[cron-stock-copy] spawn error:', err.message));
-    }, { timezone: 'UTC' });
-    console.log('Cron stock-copy programme: 0 5 * * * UTC');
+    //
+    // Single-instance par design: chaque tenant Maas (mbao, keur-massar,
+    // sacre-coeur) a son propre service Render avec 1 instance. Pas de scale
+    // horizontal. Le cron opere sur des fichiers locaux (data/by-date/...) qui
+    // sont propres a chaque instance, donc meme un scale futur ne provoquerait
+    // pas de "double traitement" — chaque instance verrait ses propres fichiers.
+    //
+    // Opt-out defensif: poser DISABLE_STOCK_CRON=true sur une instance pour
+    // skipper l'enregistrement du cron (utile en dev, sur une replique de
+    // staging, ou si tu scale a plusieurs instances et veux centraliser sur
+    // une seule).
+    if (process.env.DISABLE_STOCK_CRON === 'true') {
+        console.log('Cron stock-copy DESACTIVE (DISABLE_STOCK_CRON=true)');
+    } else {
+        cron.schedule('0 5 * * *', () => {
+            const ts = new Date().toISOString();
+            console.log(`[cron-stock-copy] ${ts} start`);
+            const child = spawn('node', ['scripts/copy-stock-cron.js'], {
+                cwd: __dirname,
+                env: process.env,
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            child.stdout.on('data', d => process.stdout.write(`[cron-stock-copy] ${d}`));
+            child.stderr.on('data', d => process.stderr.write(`[cron-stock-copy] ${d}`));
+            child.on('close', code => console.log(`[cron-stock-copy] exit ${code}`));
+            child.on('error', err => console.error('[cron-stock-copy] spawn error:', err.message));
+        }, { timezone: 'UTC' });
+        console.log('Cron stock-copy programme: 0 5 * * * UTC');
+    }
 });
 
 // API endpoint for showing estimation section
