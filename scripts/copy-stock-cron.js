@@ -358,11 +358,11 @@ class StockCopyProcessor {
 
         // Vérifier si le fichier existe déjà
         const targetExists = await this.fileManager.fileExists(stockMatinPath);
-        
+
         if (targetExists) {
             if (CONFIG.OVERRIDE_EXISTING) {
                 logger.info('📁 Stock matin existant détecté - écrasement autorisé');
-                
+
                 if (CONFIG.BACKUP_BEFORE_COPY) {
                     await this.fileManager.backupFile(stockMatinPath);
                 }
@@ -378,9 +378,64 @@ class StockCopyProcessor {
             return;
         }
 
-        // Écriture effective
+        // 1. Ecriture JSON (filesystem ephemere Render)
         await this.fileManager.writeJsonFile(stockMatinPath, stockMatinData);
-        logger.info(`💾 Stock matin sauvegardé: ${stockMatinPath}`);
+        logger.info(`💾 Stock matin sauvegarde JSON: ${stockMatinPath}`);
+
+        // 2. Ecriture BDD (persiste aux redeploiements). Memes regles que
+        //    POST /api/stock/:type pour type='matin' dans server.js: destroy
+        //    puis bulkCreate dans une transaction.
+        await this.saveTargetStockToDB(stockMatinData);
+    }
+
+    async saveTargetStockToDB(stockMatinData) {
+        // Import paresseux pour eviter de charger Sequelize en mode dry-run.
+        let Stock, sequelize, formatDate, parseDate;
+        try {
+            ({ Stock } = require('../db/models'));
+            ({ sequelize } = require('../db'));
+            ({ formatDate, parseDate } = require('../db/utils'));
+        } catch (e) {
+            logger.warn(`⚠️  Modeles BDD indisponibles, skip dual-write: ${e.message}`);
+            return;
+        }
+
+        try {
+            // formatDate(parseDate('JJ/MM/YYYY')) -> 'JJ-MM-YYYY' (format BDD).
+            const targetDateFormatted = DateUtils.formatDate(this.stats.targetDate);
+            const dateBdd = formatDate(parseDate(targetDateFormatted));
+
+            const rows = Object.values(stockMatinData || {})
+                .filter((e) => e && (e['Point de Vente'] || e.pointVente) && (e.Produit || e.produit))
+                .map((e) => ({
+                    date: dateBdd,
+                    typeStock: 'matin',
+                    pointVente: e['Point de Vente'] || e.pointVente,
+                    produit: e.Produit || e.produit,
+                    quantite: parseFloat(e.Nombre || e.quantite) || 0,
+                    prixUnitaire: parseFloat(e.PU || e.prixUnitaire) || 0,
+                    total: parseFloat(e.Montant || e.total) || 0,
+                    commentaire: e.Commentaire || e.commentaire || '',
+                    // is_auto_calculated reste false: c'est une copie d'un
+                    // soir saisi/derive, pas une auto-derivation matin.
+                    is_auto_calculated: false
+                }));
+
+            await sequelize.transaction(async (tx) => {
+                await Stock.destroy({
+                    where: { date: dateBdd, typeStock: 'matin' },
+                    transaction: tx
+                });
+                if (rows.length > 0) {
+                    await Stock.bulkCreate(rows, { transaction: tx });
+                }
+            });
+
+            logger.info(`💾 Stock matin persiste en BDD: ${rows.length} lignes pour ${dateBdd}`);
+        } catch (dbError) {
+            // Non-bloquant: si BDD KO, le JSON est deja ecrit.
+            logger.warn(`⚠️  Echec persistance BDD stock matin (JSON OK): ${dbError.message}`);
+        }
     }
 }
 
