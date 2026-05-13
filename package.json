@@ -63,6 +63,7 @@
     "express-session": "^1.18.1",
     "ml-regression-simple-linear": "^2.0.5",
     "natural": "^6.12.0",
+    "node-cron": "^4.2.1",
     "openai": "^6.8.1",
     "pg": "^8.11.3",
     "pg-hstore": "^2.3.4",
