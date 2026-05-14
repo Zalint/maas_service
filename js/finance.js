@@ -1386,6 +1386,10 @@
     async function loadPl() {
         const resultEl = document.getElementById('fin-pl-result');
         if (!resultEl) return;
+        // Garde-fou: pre-remplir les dates si vides (1er du mois -> today).
+        // Le subnav click handler appelle ensureDefaultDates au clic Finance
+        // mais on le re-appelle ici par securite (ex: deep link direct PL).
+        ensureDefaultDates();
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
             const dateDebut = document.getElementById('fin-pl-date-debut').value;
