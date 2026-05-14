@@ -2703,7 +2703,11 @@ function dvRenderRows(ventes) {
             deleteButton.addEventListener('click', async () => {
                 const isCdc = typeof vente.id === 'string' && vente.id.startsWith('cdc-');
                 const msg = isCdc
-                    ? `Supprimer la commande Centre de Découpe ${vente._commandeRef || ''} ?\n\nToutes les lignes produit de cette commande disparaitront du tableau.`
+                    ? `Supprimer la commande Centre de Découpe ${vente._commandeRef || ''} ?
+
+Toutes les lignes produit de cette commande disparaitront du tableau.
+
+⚠️ Côté Centre de Découpe : la commande reste active. Si tu veux aussi l'annuler chez Mata, il faut le faire manuellement dans l'app Mata.`
                     : 'Êtes-vous sûr de vouloir supprimer cette vente ?';
                 const ok = await showConfirmModal(msg, {
                     title: isCdc ? 'Supprimer commande CDC' : 'Supprimer la vente',
