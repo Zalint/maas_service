@@ -543,16 +543,34 @@
                                 * Champs obligatoires
                             </div>
 
-                            <div class="row">
-                                <div class="col-md-6">
-                                    <div class="card">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <div class="card border-primary">
                                         <div class="card-body">
-                                            <h6>Total Général</h6>
-                                            <h3 id="total-general">0 FCFA</h3>
+                                            <h6 class="card-subtitle mb-2 text-muted">Montant Total des Ventes</h6>
+                                            <h3 id="total-general" class="text-primary mb-0">0 FCFA</h3>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="col-md-6">
+                                <div class="col-md-4">
+                                    <div class="card border-info">
+                                        <div class="card-body">
+                                            <h6 class="card-subtitle mb-2 text-muted">Commandes Découpe</h6>
+                                            <h3 id="total-general-decoupe" class="text-info mb-0">0 FCFA</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card border-success">
+                                        <div class="card-body">
+                                            <h6 class="card-subtitle mb-2 text-muted">Total Ventes + Découpe</h6>
+                                            <h3 id="total-general-combine" class="text-success mb-0">0 FCFA</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt-3">
+                                <div class="col-md-12">
                                     <button type="submit" class="btn btn-primary w-100">Enregistrer</button>
                                 </div>
                             </div>

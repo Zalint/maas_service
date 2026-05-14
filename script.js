@@ -1487,7 +1487,8 @@ function calculerTotalGeneral() {
     document.getElementById('total-general').textContent = 'Calcul en cours...';
     
     // 2. Calculer le total asynchrone pour ne pas bloquer l'UI
-    setTimeout(() => {
+    // (async callback pour permettre fetch await commandes decoupe)
+    setTimeout(async () => {
         try {
             // Obtenir toutes les lignes de vente
             const tbody = document.querySelector('#dernieres-ventes tbody');
@@ -1528,16 +1529,48 @@ function calculerTotalGeneral() {
                 }
             }
             
-            // 3. Calculer et afficher le total général
+            // 3. Calculer et afficher le total général (= ventes seulement,
+            //    sans les commandes envoyees au CDC)
             const totalGeneral = totalSaisie + totalDernieresVentes;
             document.getElementById('total-general').textContent = `${totalGeneral.toLocaleString('fr-FR')} FCFA`;
-            
+
+            // 4. Fetch commandes decoupe pour la meme date + PV. Best-effort:
+            //    si l'API ne repond pas, on affiche 0 et on garde le total
+            //    "Ventes" inchange (l'enregistrement de saisie reste valide).
+            try {
+                const params = new URLSearchParams();
+                if (dateSelectionneeComparable) {
+                    // dateSelectionneeComparable = DD-MM-YYYY; sum-range veut YYYY-MM-DD.
+                    const [d, m, y] = dateSelectionneeComparable.split('-');
+                    const isoDate = `${y}-${m}-${d}`;
+                    params.set('dateDebut', isoDate);
+                    params.set('dateFin', isoDate);
+                }
+                if (pointVenteSelectionnee && pointVenteSelectionnee !== 'tous' && pointVenteSelectionnee !== '') {
+                    params.set('pointVente', pointVenteSelectionnee);
+                }
+                const respDecoupe = await fetch('/api/decoupe/sum-range?' + params.toString(), {
+                    credentials: 'include'
+                });
+                let totalDecoupe = 0;
+                if (respDecoupe.ok) {
+                    const dataD = await respDecoupe.json();
+                    totalDecoupe = (dataD && dataD.success) ? (Number(dataD.total) || 0) : 0;
+                }
+                document.getElementById('total-general-decoupe').textContent = `${totalDecoupe.toLocaleString('fr-FR')} FCFA`;
+                document.getElementById('total-general-combine').textContent = `${(totalGeneral + totalDecoupe).toLocaleString('fr-FR')} FCFA`;
+            } catch (errDecoupe) {
+                console.warn('Echec fetch commandes decoupe (non-bloquant):', errDecoupe);
+                document.getElementById('total-general-decoupe').textContent = '0 FCFA';
+                document.getElementById('total-general-combine').textContent = `${totalGeneral.toLocaleString('fr-FR')} FCFA`;
+            }
+
         } catch (error) {
             console.error('Erreur lors du calcul du total:', error);
             document.getElementById('total-general').textContent = 'Erreur de calcul';
         }
     }, 50);
-    
+
     return totalSaisie;
 }
 // Fonction pour créer une nouvelle entrée de produit
