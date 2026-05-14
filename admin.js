@@ -1754,32 +1754,24 @@ function syncInventaireSearchInputValue() {
     }
 }
 
-// Init UNE SEULE FOIS au load de la page: attache un listener stable sur
-// l'input du header (qui ne sera jamais detruit par les re-renders).
-// Sans ca, l'ancien comportement (input + listener recrees a chaque
-// afficherInventaireConfig) perdait la frappe en cours -> "search not working".
+// Init du listener via EVENT DELEGATION sur document: capte les events
+// 'input' qui ciblent #inventaire-search-input, peu importe quand l'input
+// est cree ou recree. Bullet-proof contre les re-renders et l'ordre de
+// chargement (admin.js peut s'executer avant que l'input existe).
 function initInventaireHeaderControls() {
-    const input = document.getElementById('inventaire-search-input');
-    if (!input) {
-        console.log('[inventaire-search] input not found at init');
-        return;
-    }
-    if (input.dataset.bound === 'true') return;
-    input.dataset.bound = 'true';
-    input.addEventListener('input', (e) => {
-        currentInventaireSearchQuery = e.target.value || '';
-        console.log('[inventaire-search] input event, query=', currentInventaireSearchQuery);
+    if (document._inventaireSearchBound) return;
+    document._inventaireSearchBound = true;
+    document.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!t || t.id !== 'inventaire-search-input') return;
+        currentInventaireSearchQuery = t.value || '';
+        console.warn('[inventaire-search] input event, query=', currentInventaireSearchQuery);
         filtrerProduitsInventaire(currentInventaireSearchQuery);
     });
-    console.log('[inventaire-search] listener attached');
+    console.warn('[inventaire-search] delegated listener attached on document');
 }
-// Attacher au DOMContentLoaded ET de maniere defensive au prochain appel
-// d'afficherInventaireConfig si DOMContentLoaded a deja eu lieu.
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initInventaireHeaderControls);
-} else {
-    initInventaireHeaderControls();
-}
+// Attacher immediatement (idempotent via _inventaireSearchBound guard).
+initInventaireHeaderControls();
 
 // Afficher la configuration des produits d'inventaire avec accordéon
 function afficherInventaireConfig() {
