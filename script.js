@@ -2701,8 +2701,8 @@ function dvRenderRows(ventes) {
                 deleteButton.title = 'Supprimer la commande Centre de Découpe (toutes les lignes du log)';
             }
             deleteButton.addEventListener('click', async () => {
-                const isCdc = typeof vente.id === 'string' && vente.id.startsWith('cdc-');
-                const msg = isCdc
+                // Reuse isDecoupeLine du scope parent (deja calcule plus haut).
+                const msg = isDecoupeLine
                     ? `Supprimer la commande Centre de Découpe ${vente._commandeRef || ''} ?
 
 Toutes les lignes produit de cette commande disparaitront du tableau.
@@ -2710,7 +2710,7 @@ Toutes les lignes produit de cette commande disparaitront du tableau.
 ⚠️ Côté Centre de Découpe : la commande reste active. Si tu veux aussi l'annuler chez Mata, il faut le faire manuellement dans l'app Mata.`
                     : 'Êtes-vous sûr de vouloir supprimer cette vente ?';
                 const ok = await showConfirmModal(msg, {
-                    title: isCdc ? 'Supprimer commande CDC' : 'Supprimer la vente',
+                    title: isDecoupeLine ? 'Supprimer commande CDC' : 'Supprimer la vente',
                     okLabel: 'Supprimer', okVariant: 'danger'
                 });
                 if (ok) {

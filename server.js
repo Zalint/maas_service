@@ -1963,6 +1963,16 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                     pointVente: pvFilter
                 });
                 formattedVentes.push(...decoupeVentes);
+                // Re-trier l'ensemble par Date desc (ventes BDD format texte
+                // DD-MM-YYYY ou YYYY-MM-DD, decoupeVentes en DD-MM-YYYY).
+                // On convertit en ISO comparable pour le tri stable.
+                const toIso = (d) => {
+                    if (!d) return '';
+                    if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d;
+                    const m = d.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+                    return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+                };
+                formattedVentes.sort((a, b) => toIso(b.Date).localeCompare(toIso(a.Date)));
             } catch (cdErr) {
                 console.warn('⚠️ Échec fusion decoupe_order_logs (non-bloquant):', cdErr.message);
             }
@@ -2026,6 +2036,15 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                 pointVente: pvFilter
             });
             formattedVentes.push(...decoupeVentes);
+            // Re-trier chronologiquement (ventes triees par sequelize ORDER BY,
+            // CDC ajoutees apres, donc le merge casse l'ordre global).
+            const toIso = (d) => {
+                if (!d) return '';
+                if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d;
+                const m = d.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+                return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+            };
+            formattedVentes.sort((a, b) => toIso(b.Date).localeCompare(toIso(a.Date)));
         } catch (cdErr) {
             console.warn('⚠️ Échec fusion decoupe_order_logs (non-bloquant):', cdErr.message);
         }
@@ -3560,8 +3579,15 @@ app.delete('/api/decoupe-log/:id', checkAuth, async (req, res) => {
                 message: 'Seuls les administrateurs peuvent supprimer une commande Centre de Decoupe'
             });
         }
-        const id = parseInt(req.params.id, 10);
-        if (!Number.isFinite(id)) {
+        // Validation stricte: refuser "12abc" qui parseInt accepterait comme 12.
+        // L'ID en BDD est SERIAL (entier positif), donc on n'accepte que les
+        // chaines purement numeriques.
+        const rawId = String(req.params.id || '');
+        if (!/^\d+$/.test(rawId)) {
+            return res.status(400).json({ success: false, message: 'id invalide (entier requis)' });
+        }
+        const id = parseInt(rawId, 10);
+        if (!Number.isFinite(id) || id <= 0) {
             return res.status(400).json({ success: false, message: 'id invalide' });
         }
         const { DecoupeOrderLog } = require('./db/models');

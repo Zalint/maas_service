@@ -163,14 +163,18 @@ async function updateSchema() {
         // (avec d'éventuelles personnalisations admin) ne sont pas écrasées,
         // et les manquantes sont ajoutées même sur des bases déjà créées
         // avant cette commit.
+        // created_at/updated_at fournis explicitement: si la table a ete
+        // creee par Sequelize sync (timestamps: true) avant cette migration,
+        // elle n'a pas le DEFAULT NOW() — l'INSERT sans timestamps echouait
+        // alors avec NOT NULL constraint sur created_at.
         await sequelize.query(`
-            INSERT INTO inventaire_categories (nom, famille) VALUES
-              ('Viandes', 'Boucherie'),
-              ('Abats et Sous-produits', 'Boucherie'),
-              ('Produits sur Pieds', 'Boucherie'),
-              ('Œufs et Produits Laitiers', 'Epicerie'),
-              ('Déchets', 'Autres'),
-              ('Autres', 'Autres')
+            INSERT INTO inventaire_categories (nom, famille, created_at, updated_at) VALUES
+              ('Viandes', 'Boucherie', NOW(), NOW()),
+              ('Abats et Sous-produits', 'Boucherie', NOW(), NOW()),
+              ('Produits sur Pieds', 'Boucherie', NOW(), NOW()),
+              ('Œufs et Produits Laitiers', 'Epicerie', NOW(), NOW()),
+              ('Déchets', 'Autres', NOW(), NOW()),
+              ('Autres', 'Autres', NOW(), NOW())
             ON CONFLICT (nom) DO NOTHING
         `);
 
@@ -286,13 +290,16 @@ async function updateSchema() {
                 END IF;
             END $$;
         `);
+        // updated_at fourni explicitement (cf rationale inventaire_categories
+        // plus haut: la table peut avoir ete creee par Sequelize sync sans
+        // DEFAULT NOW(), provoquant une NOT NULL violation au seed).
         await sequelize.query(`
-            INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
-              ('Boeuf',  4350, 3835),
-              ('Veau',   4600, 4035),
-              ('Agneau', 5300, 4500),
-              ('Poulet', 3500, NULL),
-              ('Laxass',  300,  200)
+            INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat, updated_at) VALUES
+              ('Boeuf',  4350, 3835, NOW()),
+              ('Veau',   4600, 4035, NOW()),
+              ('Agneau', 5300, 4500, NOW()),
+              ('Poulet', 3500, NULL, NOW()),
+              ('Laxass',  300,  200, NOW())
             ON CONFLICT (produit) DO NOTHING
         `);
         console.log('Table fournisseur_prix verifiee (seed 5 produits par defaut)');
@@ -308,9 +315,9 @@ async function updateSchema() {
         // est stocke comme CSV pour rester JSON-libre. Modifiable via l'UI
         // finance (PUT /api/finance/config).
         await sequelize.query(`
-            INSERT INTO finance_config (key, value) VALUES
-              ('commission_pct', '3.0'),
-              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson')
+            INSERT INTO finance_config (key, value, updated_at) VALUES
+              ('commission_pct', '3.0', NOW()),
+              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW())
             ON CONFLICT (key) DO NOTHING
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');

@@ -242,21 +242,27 @@ async function computeCreances(opts = {}) {
     // marge "Il me doit". On NE LES INSERE PAS dans ventes (eviterait le
     // double counting cote "Montant Total des Ventes" du dashboard).
     // Filtre par created_at sur la periode + centre dans la liste autorisee.
+    // Bornes: [dateDebut 00:00:00Z, dateFin+1J 00:00:00Z) pour inclure
+    // toutes les ms de dateFin (T23:59:59Z manquerait les .500/.999ms).
+    const nextDay = new Date(`${dateFin}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
     const decoupeLogs = await DecoupeOrderLog.findAll({
         where: {
             created_at: {
                 [Op.gte]: `${dateDebut}T00:00:00Z`,
-                [Op.lte]: `${dateFin}T23:59:59Z`
+                [Op.lt]: nextDay.toISOString()
             }
         }
     });
 
     for (const log of decoupeLogs) {
-        const centre = log.point_vente_executant;
-        // Verifier que le centre est dans la liste autorisee (sinon log
-        // legacy ou autre, on skip).
-        if (!centre || !centreLowerToOriginal.has(centre.toLowerCase())) continue;
-        const centreOriginal = centreLowerToOriginal.get(centre.toLowerCase());
+        // Normaliser: trim + lowercase. Les valeurs peuvent avoir des
+        // espaces de bord ("Centre de Découpe Banlieue ") qui rateraient
+        // le match strict toLowerCase.
+        const rawCentre = log.point_vente_executant;
+        const normalizedCentre = rawCentre ? String(rawCentre).trim().toLowerCase() : '';
+        if (!normalizedCentre || !centreLowerToOriginal.has(normalizedCentre)) continue;
+        const centreOriginal = centreLowerToOriginal.get(normalizedCentre);
 
         const produits = Array.isArray(log.produits) ? log.produits : [];
         for (const p of produits) {
