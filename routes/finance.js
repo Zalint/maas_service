@@ -12,6 +12,7 @@
  * Routes exposees:
  *   GET    /api/finance/prix
  *   PUT    /api/finance/prix
+ *   DELETE /api/finance/prix/:produit
  *   GET    /api/finance/config
  *   PUT    /api/finance/config
  *   GET    /api/finance/depenses
@@ -112,6 +113,24 @@ router.put('/prix', async (req, res) => {
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('PUT /api/finance/prix:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Supprime une ligne du catalogue (par produit, PK).
+router.delete('/prix/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const n = await FournisseurPrix.destroy({ where: { produit } });
+        if (n === 0) {
+            return res.status(404).json({ success: false, error: 'Produit introuvable' });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/finance/prix/:produit:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

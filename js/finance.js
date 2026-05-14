@@ -391,24 +391,74 @@
     function addPrixRow(produit, prixVente, prixAchat) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
+
         const tdP = document.createElement('td');
         const inP = document.createElement('input');
         inP.type = 'text'; inP.className = 'form-control form-control-sm'; inP.value = produit || '';
         inP.dataset.col = 'produit';
         tdP.appendChild(inP);
+
         const tdV = document.createElement('td');
         const inV = document.createElement('input');
         inV.type = 'number'; inV.min = '0'; inV.step = '1'; inV.className = 'form-control form-control-sm';
         inV.value = prixVente == null ? '' : prixVente;
         inV.dataset.col = 'prix_vente';
         tdV.appendChild(inV);
+
         const tdA = document.createElement('td');
         const inA = document.createElement('input');
         inA.type = 'number'; inA.min = '0'; inA.step = '1'; inA.className = 'form-control form-control-sm';
         inA.value = prixAchat == null ? '' : prixAchat;
         inA.dataset.col = 'prix_achat';
         tdA.appendChild(inA);
-        tr.append(tdP, tdV, tdA);
+
+        // Bouton supprimer. Si la ligne vient de la BDD (produit existant),
+        // on appelle DELETE /api/finance/prix/:produit. Sinon (ligne ajoutee
+        // localement via "+ Ajouter une ligne"), on retire juste du DOM.
+        const tdDel = document.createElement('td');
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'btn btn-sm btn-outline-danger';
+        btnDel.title = 'Supprimer ce produit';
+        btnDel.textContent = '×';
+        if (produit) {
+            // Ligne existante: capture l'identifiant pour la suppression server-side.
+            btnDel.dataset.originalProduit = produit;
+        }
+        btnDel.addEventListener('click', async () => {
+            const originalProduit = btnDel.dataset.originalProduit;
+            if (originalProduit) {
+                // Confirme + appel DELETE
+                const msg = `Supprimer "${originalProduit}" du catalogue ?`;
+                let ok;
+                if (typeof showConfirmModal === 'function') {
+                    ok = await showConfirmModal(msg, {
+                        title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                } else {
+                    ok = confirm(msg);
+                }
+                if (!ok) return;
+                try {
+                    const res = await fetch('/api/finance/prix/' + encodeURIComponent(originalProduit), {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') showToast('Produit supprimé', 'success');
+                    loadPrix();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            } else {
+                // Ligne locale: juste retirer du DOM
+                tr.remove();
+            }
+        });
+        tdDel.appendChild(btnDel);
+
+        tr.append(tdP, tdV, tdA, tdDel);
         tbody.appendChild(tr);
     }
 
