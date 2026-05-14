@@ -302,7 +302,106 @@ async function updateSchema() {
               ('Laxass',  300,  200, NOW())
             ON CONFLICT (produit) DO NOTHING
         `);
-        console.log('Table fournisseur_prix verifiee (seed 5 produits par defaut)');
+        // Colonne prix_vente_cdc: prix de vente convenu avec le Centre de
+        // Decoupe (negociation B2B), utilise pour le calcul de marge "Il
+        // me doit". Default = prix_vente (= prix catalogue fournisseur)
+        // pour un upgrade transparent. Editable depuis l'UI Finance CDC.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_prix
+            ADD COLUMN IF NOT EXISTS prix_vente_cdc NUMERIC(12, 2)
+                CHECK (prix_vente_cdc IS NULL OR prix_vente_cdc >= 0)
+        `);
+        await sequelize.query(`
+            UPDATE fournisseur_prix
+            SET prix_vente_cdc = prix_vente
+            WHERE prix_vente_cdc IS NULL
+        `);
+        console.log('Table fournisseur_prix verifiee (seed 5 produits + prix_vente_cdc)');
+
+        // Historique des modifications de prix_vente_cdc.
+        // Chaque sauvegarde insere une ligne (point-in-time pricing).
+        // Le calcul de marge utilise la valeur effective a la date de la
+        // vente (= derniere entree history.created_at <= vente_date),
+        // donc changer le prix aujourd'hui ne reecrit PAS les ventes
+        // passees.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_vente_cdc_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_vente_cdc NUMERIC(12, 2) NOT NULL CHECK (prix_vente_cdc >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_vente_cdc_history_produit ON prix_vente_cdc_history(produit, created_at DESC)`);
+
+        // Genesis: chaque produit doit avoir au moins UNE entree history
+        // pour que le lookup point-in-time fonctionne. created_at=epoch
+        // 1970 signifie "cette valeur s'applique depuis le debut des
+        // temps" — toutes les ventes anciennes resoudront sur cette
+        // entree. Seedee une seule fois (skip si une entree existe deja).
+        await sequelize.query(`
+            INSERT INTO prix_vente_cdc_history (produit, prix_vente_cdc, changed_by, created_at)
+            SELECT fp.produit, fp.prix_vente_cdc, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE fp.prix_vente_cdc IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM prix_vente_cdc_history h WHERE h.produit = fp.produit
+              )
+        `);
+        console.log('Table prix_vente_cdc_history verifiee (genesis seedee)');
+
+        // Historique des modifications de prix_achat (point-in-time).
+        // Meme pattern que prix_vente_cdc_history: chaque changement est
+        // une nouvelle ligne, et le calcul de marge utilise la valeur
+        // effective a la date de la vente.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_achat_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_achat NUMERIC(12, 2) NOT NULL CHECK (prix_achat >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_achat_history_produit ON prix_achat_history(produit, created_at DESC)`);
+        // Genesis seed pour prix_achat (uniquement pour produits avec
+        // prix_achat IS NOT NULL, e.g. Poulet n'en a pas).
+        await sequelize.query(`
+            INSERT INTO prix_achat_history (produit, prix_achat, changed_by, created_at)
+            SELECT fp.produit, fp.prix_achat, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE fp.prix_achat IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM prix_achat_history h WHERE h.produit = fp.produit
+              )
+        `);
+        console.log('Table prix_achat_history verifiee (genesis seedee)');
+
+        // Historique des modifications de prix_vente (point-in-time).
+        // Base du calcul commission 3% dans l'onglet "Creances fournisseur".
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_vente_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_vente NUMERIC(12, 2) NOT NULL CHECK (prix_vente >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_vente_history_produit ON prix_vente_history(produit, created_at DESC)`);
+        await sequelize.query(`
+            INSERT INTO prix_vente_history (produit, prix_vente, changed_by, created_at)
+            SELECT fp.produit, fp.prix_vente, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE NOT EXISTS (
+                SELECT 1 FROM prix_vente_history h WHERE h.produit = fp.produit
+            )
+        `);
+        console.log('Table prix_vente_history verifiee (genesis seedee)');
 
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS finance_config (
@@ -317,7 +416,8 @@ async function updateSchema() {
         await sequelize.query(`
             INSERT INTO finance_config (key, value, updated_at) VALUES
               ('commission_pct', '3.0', NOW()),
-              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW())
+              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW()),
+              ('stock_pertes_decoupe_pct', '5', NOW())
             ON CONFLICT (key) DO NOTHING
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');
@@ -344,6 +444,56 @@ async function updateSchema() {
             END $$;
         `);
         console.log('Table fournisseur_paiements verifiee');
+
+        // Charges mensuelles fixes pour le calcul PL (Profit/Loss).
+        // Editables depuis l'UI Finance > Charges. Le PL applique au
+        // prorata des jours lineaires (30 jours conventionnels).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges (
+                nom VARCHAR(100) PRIMARY KEY,
+                libelle VARCHAR(150) NOT NULL,
+                montant_mensuel NUMERIC(12, 2) NOT NULL DEFAULT 0
+                    CHECK (montant_mensuel >= 0),
+                ordre INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`
+            INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
+                ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
+                ('loyer',           'Loyer',           125000, 2, NOW()),
+                ('elec',            'Électricité',      30000, 3, NOW()),
+                ('internet',        'Internet',         15000, 4, NOW())
+            ON CONFLICT (nom) DO NOTHING
+        `);
+        console.log('Table finance_charges verifiee (seed 4 charges par defaut)');
+
+        // Historique des modifications de finance_charges.montant_mensuel.
+        // Meme pattern point-in-time que prix_vente_cdc_history etc. : chaque
+        // sauvegarde insere une ligne (uniquement si valeur change cote
+        // bulk save), permettant de retracer l'evolution des charges fixes.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges_history (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL
+                    REFERENCES finance_charges(nom) ON DELETE CASCADE,
+                libelle VARCHAR(150),
+                montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_charges_history_nom ON finance_charges_history(nom, created_at DESC)`);
+        // Genesis seed pour les charges existantes (epoch 1970).
+        await sequelize.query(`
+            INSERT INTO finance_charges_history (nom, libelle, montant_mensuel, changed_by, created_at)
+            SELECT fc.nom, fc.libelle, fc.montant_mensuel, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM finance_charges fc
+            WHERE NOT EXISTS (
+                SELECT 1 FROM finance_charges_history h WHERE h.nom = fc.nom
+            )
+        `);
+        console.log('Table finance_charges_history verifiee (genesis seedee)');
 
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias

@@ -24,6 +24,16 @@ const FournisseurPrix = sequelize.define('FournisseurPrix', {
         allowNull: true,
         field: 'prix_achat'
     },
+    // Prix de vente convenu pour les ventes via Centre de Decoupe.
+    // Different de prix_vente (= ce que le fournisseur facture a Maas);
+    // sert au calcul de marge "Il me doit" sur les commandes CDC.
+    // Editable depuis l'UI Finance > Centre de Decoupe, chaque
+    // modification est historisee dans prix_vente_cdc_history.
+    prix_vente_cdc: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        field: 'prix_vente_cdc'
+    },
     updated_at: {
         type: DataTypes.DATE,
         allowNull: false,

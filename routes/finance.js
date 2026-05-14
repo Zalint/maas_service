@@ -13,10 +13,21 @@
  *   GET    /api/finance/prix
  *   PUT    /api/finance/prix
  *   DELETE /api/finance/prix/:produit
+ *   PUT    /api/finance/prix-cdc/:produit         (prix vente Centre de Decoupe)
+ *   GET    /api/finance/prix-cdc/:produit/history (historique des changements)
+ *   PUT    /api/finance/prix-achat/:produit       (prix achat fournisseur)
+ *   GET    /api/finance/prix-achat/:produit/history
+ *   PUT    /api/finance/prix-vente-fournisseur/:produit  (prix vente catalogue)
+ *   GET    /api/finance/prix-vente-fournisseur/:produit/history
  *   GET    /api/finance/alias                  (mapping vente -> catalog)
  *   PUT    /api/finance/alias                  (upsert)
  *   DELETE /api/finance/alias/:alias
  *   POST   /api/finance/alias/bulk-from-prefix (snap tous les prefix en aliases)
+ *   GET    /api/finance/charges                    (charges mensuelles fixes)
+ *   PUT    /api/finance/charges                    (bulk upsert)
+ *   POST   /api/finance/charges                    (ajout)
+ *   DELETE /api/finance/charges/:nom
+ *   GET    /api/finance/pl?dateDebut=&dateFin=     (Profit/Loss - admin/superviseur only)
  *   GET    /api/finance/config
  *   PUT    /api/finance/config
  *   GET    /api/finance/depenses
@@ -41,6 +52,11 @@ const {
     FinanceConfig,
     FournisseurPaiement,
     ProduitAlias,
+    PrixVenteCdcHistory,
+    PrixAchatHistory,
+    PrixVenteHistory,
+    FinanceCharge,
+    FinanceChargeHistory,
     Produit,
     Vente,
     sequelize
@@ -103,13 +119,19 @@ router.get('/prix', async (req, res) => {
 });
 
 // Body: { items: [{ produit, prix_vente, prix_achat? }, ...] }
-// Upsert ligne par ligne (preserve les autres entrees).
+// Upsert ligne par ligne. Insere dans prix_vente_history /
+// prix_achat_history UNIQUEMENT pour les produits dont la valeur a
+// effectivement change (evite de polluer l'historique avec des
+// non-changements lors d'un save bulk depuis l'editeur catalogue).
 router.put('/prix', async (req, res) => {
     try {
         const items = Array.isArray(req.body?.items) ? req.body.items : null;
         if (!items) {
             return res.status(400).json({ success: false, error: 'items: array requis' });
         }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
         const now = new Date();
         for (const item of items) {
             const produit = String(item.produit || '').trim();
@@ -130,11 +152,50 @@ router.put('/prix', async (req, res) => {
                     error: `prix_achat invalide pour ${produit}`
                 });
             }
-            await FournisseurPrix.upsert({
-                produit,
-                prix_vente: prixVente,
-                prix_achat: prixAchat,
-                updated_at: now
+
+            // Transaction atomique: lire l'ancien etat AVEC FOR UPDATE, puis
+            // upsert + inserts history conditionnels. Le lock evite que deux
+            // saves concurrents sur le meme produit voient tous les deux
+            // l'ancienne valeur et inserent un doublon dans l'historique.
+            await sequelize.transaction(async (t) => {
+                const existing = await FournisseurPrix.findByPk(produit, {
+                    transaction: t,
+                    lock: t.LOCK.UPDATE
+                });
+                const oldPrixVente = existing ? parseFloat(existing.prix_vente) : null;
+                const oldPrixAchat = existing && existing.prix_achat != null
+                    ? parseFloat(existing.prix_achat)
+                    : null;
+
+                await FournisseurPrix.upsert({
+                    produit,
+                    prix_vente: prixVente,
+                    prix_achat: prixAchat,
+                    updated_at: now
+                }, { transaction: t });
+
+                // History prix_vente: seulement si change (ou si nouveau produit).
+                if (oldPrixVente == null || Math.abs(oldPrixVente - prixVente) > 0.001) {
+                    await PrixVenteHistory.create({
+                        produit,
+                        prix_vente: prixVente,
+                        changed_by: username
+                    }, { transaction: t });
+                }
+
+                // History prix_achat: seulement si change ET prix_achat != null
+                // (l'historique ne traite pas les nullifications).
+                if (prixAchat !== null) {
+                    const changed = oldPrixAchat == null
+                        || Math.abs(oldPrixAchat - prixAchat) > 0.001;
+                    if (changed) {
+                        await PrixAchatHistory.create({
+                            produit,
+                            prix_achat: prixAchat,
+                            changed_by: username
+                        }, { transaction: t });
+                    }
+                }
             });
             audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
         }
@@ -143,6 +204,213 @@ router.put('/prix', async (req, res) => {
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('PUT /api/finance/prix:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX VENTE CDC (negocie avec le Centre de Decoupe)
+// =====================================================
+// Distinct de prix_vente (= ce que le fournisseur me facture).
+// Sert UNIQUEMENT au calcul de marge "Il me doit" cote CDC.
+// Chaque save est historise dans prix_vente_cdc_history.
+
+// Body: { prix_vente_cdc: number }
+router.put('/prix-cdc/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_vente_cdc);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_vente_cdc doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        // Transaction: update + insert history en atomique.
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_vente_cdc: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixVenteCdcHistory.create({
+                produit,
+                prix_vente_cdc: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_cdc.upsert', { produit, prix_vente_cdc: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-cdc/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Liste les changements historiques de prix_vente_cdc pour un produit.
+router.get('/prix-cdc/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixVenteCdcHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-cdc/:produit/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX ACHAT (point-in-time, meme pattern que prix_vente_cdc)
+// =====================================================
+// Le prix achat fournisseur est aussi editable + historise. Sert au
+// calcul de marge "Il me doit" = prix_vente_cdc_effectif - prix_achat_effectif.
+// Changer le prix achat aujourd'hui n'impacte pas les calculs des
+// ventes passees (chaque vente utilise le prix_achat effectif a sa date).
+
+router.put('/prix-achat/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_achat);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_achat doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_achat: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixAchatHistory.create({
+                produit,
+                prix_achat: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_achat.upsert', { produit, prix_achat: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-achat/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.get('/prix-achat/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixAchatHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-achat/:produit/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX VENTE FOURNISSEUR (point-in-time)
+// =====================================================
+// Prix catalogue du fournisseur, base de la commission 3% sur ventes
+// boucherie. Editable + historise, meme pattern que prix_achat/prix_vente_cdc.
+
+router.put('/prix-vente-fournisseur/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_vente);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_vente doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_vente: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixVenteHistory.create({
+                produit,
+                prix_vente: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_vente.upsert', { produit, prix_vente: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-vente-fournisseur/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.get('/prix-vente-fournisseur/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixVenteHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-vente-fournisseur/:produit/history:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -287,6 +555,9 @@ router.put('/alias', async (req, res) => {
             });
         }
 
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
         const result = await sequelize.transaction(async (t) => {
             const [, createdCatalog] = await FournisseurPrix.findOrCreate({
                 where: { produit: produitCatalog },
@@ -298,6 +569,18 @@ router.put('/alias', async (req, res) => {
                 },
                 transaction: t
             });
+            // Si auto-creation: seedee une entree prix_vente_history pour
+            // que le lookup point-in-time des ventes futures sur ce nouveau
+            // produit trouve une valeur (sans attendre le prochain restart
+            // serveur ou le genesis seed via update-schema). prix_achat
+            // reste NULL donc pas d'entree history (CHECK >= 0).
+            if (createdCatalog) {
+                await PrixVenteHistory.create({
+                    produit: produitCatalog,
+                    prix_vente: 0,
+                    changed_by: username || '_autocreate_alias_'
+                }, { transaction: t });
+            }
             await ProduitAlias.upsert({
                 alias_produit: aliasProduit,
                 produit_catalog: produitCatalog,
@@ -401,6 +684,400 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
 });
 
 // =====================================================
+// CHARGES MENSUELLES FIXES (pour le calcul PL)
+// =====================================================
+
+router.get('/charges', async (req, res) => {
+    try {
+        const rows = await FinanceCharge.findAll({
+            order: [['ordre', 'ASC'], ['nom', 'ASC']]
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/charges:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Body: { items: [{ nom, libelle, montant_mensuel, ordre? }, ...] }
+// Upsert ligne par ligne (preserve les autres entrees).
+// Historise chaque CHANGEMENT effectif de montant_mensuel (meme pattern
+// que prix_vente / prix_achat / prix_vente_cdc). Une entree history par
+// modification reelle uniquement (pas de doublon si valeur identique).
+//
+// Atomicite: tout le batch tourne dans UNE seule transaction. Si une
+// ligne echoue, aucune ligne du batch n'est commitee (pas de partial save).
+// Performance: une seule requete pre-fetch les rows existantes (pas de N+1).
+router.put('/charges', async (req, res) => {
+    try {
+        const items = Array.isArray(req.body?.items) ? req.body.items : null;
+        if (!items) {
+            return res.status(400).json({ success: false, error: 'items: array requis' });
+        }
+        const now = new Date();
+        const rawUsername = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        // Tronque a 150 chars pour matcher VARCHAR(150) cote BDD (evite
+        // un 500 sequelize si un nom de session est anormalement long).
+        const username = rawUsername ? String(rawUsername).slice(0, 150) : null;
+
+        // 1) Validation prealable de TOUS les items avant toute ecriture.
+        //    Une seule ligne invalide -> 400, rien n'est ecrit.
+        //    Detection de doublons sur nom: rejet avant tout write.
+        const validated = [];
+        const seenNoms = new Set();
+        for (const item of items) {
+            const nom = String(item.nom || '').trim();
+            if (!nom) continue; // ligne vide silencieusement skippee
+            if (nom.length > 100) {
+                return res.status(400).json({
+                    success: false, error: `nom trop long (max 100): ${nom.slice(0, 30)}...`
+                });
+            }
+            if (seenNoms.has(nom)) {
+                return res.status(400).json({
+                    success: false, error: `nom dupliqué dans le batch: ${nom}`
+                });
+            }
+            seenNoms.add(nom);
+            const libelleRaw = String(item.libelle || nom).trim();
+            if (libelleRaw.length > 150) {
+                return res.status(400).json({
+                    success: false, error: `libelle trop long (max 150) pour ${nom}`
+                });
+            }
+            const montant = parseFloat(item.montant_mensuel);
+            if (!Number.isFinite(montant) || montant < 0) {
+                return res.status(400).json({
+                    success: false, error: `montant_mensuel invalide pour ${nom}`
+                });
+            }
+            const ordre = Number.isFinite(parseInt(item.ordre, 10))
+                ? parseInt(item.ordre, 10)
+                : 0;
+            validated.push({ nom, libelle: libelleRaw, montant, ordre });
+        }
+
+        // 2) Tout le batch dans UNE seule transaction, avec read sous FOR UPDATE
+        //    pour serialiser les writes concurrents sur les memes nom (evite
+        //    duplicate history entries si deux saves frappent en parallele).
+        const auditEntries = [];
+        await sequelize.transaction(async (t) => {
+            const nomsToFetch = validated.map((v) => v.nom);
+            const existingRows = nomsToFetch.length
+                ? await FinanceCharge.findAll({
+                    where: { nom: nomsToFetch },
+                    transaction: t,
+                    lock: t.LOCK.UPDATE
+                })
+                : [];
+            const existingByNom = new Map(
+                existingRows.map((r) => [r.nom, r])
+            );
+
+            for (const v of validated) {
+                const existing = existingByNom.get(v.nom);
+                const oldMontant = existing
+                    ? parseFloat(existing.montant_mensuel)
+                    : null;
+                const oldLibelle = existing ? existing.libelle : null;
+                const oldOrdre = existing ? existing.ordre : null;
+
+                const montantChanged = oldMontant == null
+                    || Math.abs(oldMontant - v.montant) > 0.001;
+                const libelleChanged = oldLibelle !== v.libelle;
+                const ordreChanged = oldOrdre !== v.ordre;
+                const anyChange = montantChanged || libelleChanged || ordreChanged;
+
+                // updated_at ne bouge QUE si quelque chose a change.
+                if (!existing || anyChange) {
+                    await FinanceCharge.upsert({
+                        nom: v.nom,
+                        libelle: v.libelle,
+                        montant_mensuel: v.montant,
+                        ordre: v.ordre,
+                        updated_at: anyChange ? now : (existing ? existing.updated_at : now)
+                    }, { transaction: t });
+                }
+
+                // History: seulement si le montant a change (ou nouvelle charge).
+                if (montantChanged) {
+                    await FinanceChargeHistory.create({
+                        nom: v.nom,
+                        libelle: v.libelle,
+                        montant_mensuel: v.montant,
+                        changed_by: username
+                    }, { transaction: t });
+                }
+
+                if (anyChange || !existing) {
+                    auditEntries.push({ nom: v.nom, montant_mensuel: v.montant });
+                }
+            }
+        });
+
+        // 4) Audit log apres commit (les entries refletent ce qui a effectivement change).
+        for (const a of auditEntries) {
+            audit.log(req, 'charge.upsert', a);
+        }
+
+        const rows = await FinanceCharge.findAll({ order: [['ordre', 'ASC'], ['nom', 'ASC']] });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('PUT /api/finance/charges:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Liste les changements historiques de montant_mensuel pour une charge.
+// CASCADE: si la charge est supprimee, son historique l'est aussi (FK).
+router.get('/charges/:nom/history', async (req, res) => {
+    try {
+        const nom = String(req.params.nom || '').trim();
+        if (!nom) {
+            return res.status(400).json({ success: false, error: 'nom requis' });
+        }
+        const rows = await FinanceChargeHistory.findAll({
+            where: { nom },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/charges/:nom/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Supprime une charge (par nom, PK).
+router.delete('/charges/:nom', async (req, res) => {
+    try {
+        const nom = String(req.params.nom || '').trim();
+        if (!nom) {
+            return res.status(400).json({ success: false, error: 'nom requis' });
+        }
+        const n = await FinanceCharge.destroy({ where: { nom } });
+        if (n > 0) {
+            audit.log(req, 'charge.delete', { nom });
+        }
+        res.json({ success: true, deleted: n });
+    } catch (e) {
+        console.error('DELETE /api/finance/charges/:nom:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PL (Profit/Loss) — reserve aux admin / superviseur
+// =====================================================
+// Formule:
+//   PL = total_ventes
+//      - total_avances (sur la periode, depuis MataBanq)
+//      - commission_maas (3% sur ventes elligibles)
+//      + marge_cdc (Il me doit)
+//      - charges_proratisees (charges_mensuelles × nb_jours_periode / 30)
+//      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
+//      + variation_stock_nette
+//
+// total_avances: filtre sur la periode automatiquement (MataBanq
+// applique dateDebut/dateFin a sa requete et retourne le total des
+// operations type='avance' dans cette fenetre).
+//
+// variation_stock_brute = stock_soir_fin - stock_matin_debut
+// variation_stock_nette = ((100 - stock_pertes_decoupe_pct) / 100) × variation_stock_brute
+//
+// Stock qui augmente = actif latent positif. Le coefficient (default
+// 95% = 5% pertes decoupe) compense la perte de volume entre achat
+// brut et produit fini decoupe. Configurable via finance_config.
+// Si pas de saisie stock pile aux dates demandees, on prend la date
+// la plus proche <= demandee (fallback).
+//
+// Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
+router.get('/pl', async (req, res) => {
+    try {
+        // Auth: seuls admin et superviseur
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        // Periode (defaut: 1er du mois -> aujourd'hui)
+        const today = new Date();
+        const defaultDebut = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
+        const defaultFin = today.toISOString().slice(0, 10);
+        const toISO = (s) => {
+            if (!s) return null;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+        };
+        // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
+        const rawDebut = req.query.dateDebut;
+        const rawFin = req.query.dateFin;
+        const dateDebut = rawDebut ? toISO(rawDebut) : defaultDebut;
+        const dateFin = rawFin ? toISO(rawFin) : defaultFin;
+        if (rawDebut && !dateDebut) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut' });
+        }
+        if (rawFin && !dateFin) {
+            return res.status(400).json({ success: false, error: 'invalid dateFin' });
+        }
+
+        // Nombre de jours dans la periode (inclus). Convention 30 jours/mois.
+        const startD = new Date(dateDebut + 'T00:00:00Z');
+        const endD = new Date(dateFin + 'T00:00:00Z');
+        if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+        if (startD > endD) {
+            return res.status(400).json({
+                success: false,
+                error: 'dateDebut must be <= dateFin'
+            });
+        }
+        const nbDaysPeriod = Math.floor((endD - startD) / 86400000) + 1;
+
+        // 1. Total ventes sur la periode (= Vente.date IN periode, montant)
+        const { Op: SeqOp } = require('sequelize');
+        // Vente.date stocke en string YYYY-MM-DD (cf finance-creances notes).
+        const ventes = await Vente.findAll({
+            where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
+            attributes: ['montant']
+        });
+        const totalVentes = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
+
+        // 2. Commission MaaS + Marge CDC via computeCreances
+        const { computeCreances } = require('./finance-creances');
+        const creances = await computeCreances({ dateDebut, dateFin });
+        const commission = creances.ce_que_je_dois || 0;
+        const margeCdc = creances.ce_qu_il_me_doit || 0;
+
+        // 3. Total avances depuis MataBanq (deja filtre par dateDebut/dateFin
+        //    cote API externe, donc = avances du mois choisi).
+        let totalAvances = 0;
+        try {
+            const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+            const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
+            if (cdb && Array.isArray(cdb.details) && cdb.details[0]
+                && Array.isArray(cdb.details[0].status) && cdb.details[0].status[0]) {
+                totalAvances = parseFloat(cdb.details[0].status[0].total_avances) || 0;
+            }
+        } catch (e) {
+            console.warn('[PL] fetch CDB avances echoue:', e.message);
+        }
+
+        // 4. Paiements faits au fournisseur sur la periode (table locale).
+        const paiements = await FournisseurPaiement.findAll({
+            where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
+            attributes: ['montant']
+        });
+        const totalPaiementsFournisseur = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
+
+        // 5. Charges proratisees (30 jours conventionnels)
+        const chargesRows = await FinanceCharge.findAll({ order: [['ordre', 'ASC']] });
+        const ratio = nbDaysPeriod / 30;
+        const chargesDetail = chargesRows.map((c) => ({
+            nom: c.nom,
+            libelle: c.libelle,
+            montant_mensuel: parseFloat(c.montant_mensuel) || 0,
+            prorata: round2((parseFloat(c.montant_mensuel) || 0) * ratio)
+        }));
+        const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
+        const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
+
+        // 6. Variation de stock = stock_soir_fin - stock_matin_debut.
+        // Si pas de saisie pile aux dates: prendre la date la plus
+        // proche <= demandee (sinon 0). On somme sum(total) pour tous
+        // les produits / PV (variation globale entreprise).
+        const stockMatinRows = await sequelize.query(
+            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
+             FROM stocks
+             WHERE type_stock = 'matin'
+               AND date = (
+                 SELECT MAX(date) FROM stocks
+                 WHERE type_stock = 'matin' AND date <= :dateDebut
+               )`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
+        );
+        const stockSoirRows = await sequelize.query(
+            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
+             FROM stocks
+             WHERE type_stock = 'soir'
+               AND date = (
+                 SELECT MAX(date) FROM stocks
+                 WHERE type_stock = 'soir' AND date <= :dateFin
+               )`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
+        );
+        const stockMatinDebut = parseFloat(stockMatinRows[0].total) || 0;
+        const stockMatinDate = stockMatinRows[0].date_utilisee || null;
+        const stockSoirFin = parseFloat(stockSoirRows[0].total) || 0;
+        const stockSoirDate = stockSoirRows[0].date_utilisee || null;
+        const variationStockBrute = stockSoirFin - stockMatinDebut;
+        // Coefficient pertes decoupe (default 5%): la viande perd du
+        // volume lors de la decoupe, donc on ne valorise que (100-X)%
+        // de la variation brute.
+        const cfgRows = await FinanceConfig.findAll();
+        const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
+        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
+            ? pertesPct
+            : 5;
+        const coeffStock = (100 - safePertesPct) / 100;
+        const variationStockNette = coeffStock * variationStockBrute;
+
+        // 7. PL final
+        const pl = totalVentes
+            - totalAvances
+            - commission
+            + margeCdc
+            - chargesProratisees
+            - totalPaiementsFournisseur
+            + variationStockNette;
+
+        res.json({
+            success: true,
+            data: {
+                periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
+                total_ventes: round2(totalVentes),
+                total_avances: round2(totalAvances),
+                commission_maas: round2(commission),
+                marge_cdc: round2(margeCdc),
+                paiements_fournisseur: round2(totalPaiementsFournisseur),
+                charges: {
+                    total_mensuel: round2(chargesTotalMensuel),
+                    ratio_jours: round2(ratio),
+                    total_prorata: round2(chargesProratisees),
+                    detail: chargesDetail
+                },
+                stock: {
+                    matin_debut: round2(stockMatinDebut),
+                    matin_date: stockMatinDate,
+                    soir_fin: round2(stockSoirFin),
+                    soir_date: stockSoirDate,
+                    variation_brute: round2(variationStockBrute),
+                    pertes_decoupe_pct: safePertesPct,
+                    coeff: round2(coeffStock),
+                    variation_nette: round2(variationStockNette)
+                },
+                pl: round2(pl)
+            }
+        });
+    } catch (e) {
+        console.error('GET /api/finance/pl:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+function round2(n) {
+    return Math.round(n * 100) / 100;
+}
+
+// =====================================================
 // CONFIG
 // =====================================================
 
@@ -416,18 +1093,21 @@ router.get('/config', async (req, res) => {
     }
 });
 
-// Body: { commission_pct?, categories_eligibles? }
+// Body: { commission_pct?, categories_eligibles?, stock_pertes_decoupe_pct? }
 router.put('/config', async (req, res) => {
     try {
-        const allowedKeys = ['commission_pct', 'categories_eligibles'];
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct'];
         const now = new Date();
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
                 const value = String(req.body[key]);
-                if (key === 'commission_pct' && !(parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
+                // Validations numeriques (commission_pct, stock_pertes_decoupe_pct):
+                // doivent etre entre 0 et 100 inclus.
+                if ((key === 'commission_pct' || key === 'stock_pertes_decoupe_pct')
+                    && !(parseFloat(value) >= 0 && parseFloat(value) <= 100)) {
                     return res.status(400).json({
                         success: false,
-                        error: 'commission_pct doit etre entre 0 et 100'
+                        error: `${key} doit etre entre 0 et 100`
                     });
                 }
                 await FinanceConfig.upsert({ key, value, updated_at: now });

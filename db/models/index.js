@@ -43,6 +43,11 @@ const FournisseurPrix = require('./FournisseurPrix');
 const FinanceConfig = require('./FinanceConfig');
 const FournisseurPaiement = require('./FournisseurPaiement');
 const ProduitAlias = require('./ProduitAlias');
+const PrixVenteCdcHistory = require('./PrixVenteCdcHistory');
+const PrixAchatHistory = require('./PrixAchatHistory');
+const PrixVenteHistory = require('./PrixVenteHistory');
+const FinanceCharge = require('./FinanceCharge');
+const FinanceChargeHistory = require('./FinanceChargeHistory');
 
 const { sequelize } = require('../index');
 
@@ -225,6 +230,11 @@ module.exports = {
   FinanceConfig,
   FournisseurPaiement,
   ProduitAlias,
+  PrixVenteCdcHistory,
+  PrixAchatHistory,
+  PrixVenteHistory,
+  FinanceCharge,
+  FinanceChargeHistory,
 
   // Fonctions utilitaires
   syncDatabase,

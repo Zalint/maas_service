@@ -793,8 +793,76 @@ CREATE TABLE IF NOT EXISTS fournisseur_prix (
     produit VARCHAR(100) PRIMARY KEY,
     prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
     prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
+    prix_vente_cdc NUMERIC(12, 2) CHECK (prix_vente_cdc IS NULL OR prix_vente_cdc >= 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Historique des modifications du prix vente CDC.
+CREATE TABLE IF NOT EXISTS prix_vente_cdc_history (
+    id SERIAL PRIMARY KEY,
+    produit VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    prix_vente_cdc NUMERIC(12, 2) NOT NULL CHECK (prix_vente_cdc >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prix_vente_cdc_history_produit ON prix_vente_cdc_history(produit, created_at DESC);
+
+-- Historique des modifications du prix d'achat fournisseur.
+CREATE TABLE IF NOT EXISTS prix_achat_history (
+    id SERIAL PRIMARY KEY,
+    produit VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    prix_achat NUMERIC(12, 2) NOT NULL CHECK (prix_achat >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prix_achat_history_produit ON prix_achat_history(produit, created_at DESC);
+
+-- Charges mensuelles fixes (utilise par le PL au prorata).
+CREATE TABLE IF NOT EXISTS finance_charges (
+    nom VARCHAR(100) PRIMARY KEY,
+    libelle VARCHAR(150) NOT NULL,
+    montant_mensuel NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (montant_mensuel >= 0),
+    ordre INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
+    ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
+    ('loyer',           'Loyer',           125000, 2, NOW()),
+    ('elec',            'Électricité',      30000, 3, NOW()),
+    ('internet',        'Internet',         15000, 4, NOW())
+ON CONFLICT (nom) DO NOTHING;
+
+-- Historique des modifications des charges (point-in-time).
+-- Une entree par modification reelle du montant_mensuel.
+CREATE TABLE IF NOT EXISTS finance_charges_history (
+    id SERIAL PRIMARY KEY,
+    nom VARCHAR(100) NOT NULL
+        REFERENCES finance_charges(nom) ON DELETE CASCADE,
+    libelle VARCHAR(150),
+    montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_charges_history_nom ON finance_charges_history(nom, created_at DESC);
+-- Genesis seed: une entree epoch 1970 par charge existante (eviter timeline vide).
+INSERT INTO finance_charges_history (nom, libelle, montant_mensuel, changed_by, created_at)
+SELECT fc.nom, fc.libelle, fc.montant_mensuel, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM finance_charges fc
+WHERE NOT EXISTS (
+    SELECT 1 FROM finance_charges_history h WHERE h.nom = fc.nom
+);
+
+-- Historique des modifications du prix vente fournisseur (catalogue).
+CREATE TABLE IF NOT EXISTS prix_vente_history (
+    id SERIAL PRIMARY KEY,
+    produit VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    prix_vente NUMERIC(12, 2) NOT NULL CHECK (prix_vente >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prix_vente_history_produit ON prix_vente_history(produit, created_at DESC);
 INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
   ('Boeuf',  4350, 3835),
   ('Veau',   4600, 4035),
@@ -802,6 +870,31 @@ INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
   ('Poulet', 3500, NULL),
   ('Laxass',  300,  200)
 ON CONFLICT (produit) DO NOTHING;
+
+-- Genesis seeds des 3 tables history (point-in-time).
+-- Chaque produit doit avoir au moins UNE entree pour que le lookup
+-- point-in-time fonctionne. created_at=epoch 1970 = "applicable depuis
+-- toujours". Skip si une entree existe deja (idempotent).
+INSERT INTO prix_vente_history (produit, prix_vente, changed_by, created_at)
+SELECT fp.produit, fp.prix_vente, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE NOT EXISTS (
+    SELECT 1 FROM prix_vente_history h WHERE h.produit = fp.produit
+);
+INSERT INTO prix_achat_history (produit, prix_achat, changed_by, created_at)
+SELECT fp.produit, fp.prix_achat, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE fp.prix_achat IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM prix_achat_history h WHERE h.produit = fp.produit
+  );
+INSERT INTO prix_vente_cdc_history (produit, prix_vente_cdc, changed_by, created_at)
+SELECT fp.produit, fp.prix_vente_cdc, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE fp.prix_vente_cdc IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM prix_vente_cdc_history h WHERE h.produit = fp.produit
+  );
 
 CREATE TABLE IF NOT EXISTS finance_config (
     key VARCHAR(50) PRIMARY KEY,

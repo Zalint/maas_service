@@ -68,7 +68,7 @@
             loadCreances();
         });
 
-        // Subnav (creances / cdc / depenses / prix / mapping)
+        // Subnav (creances / cdc / depenses / prix / mapping / charges / pl)
         document.querySelectorAll('#finance-subnav [data-fin-tab]').forEach((link) => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -79,8 +79,31 @@
                 if (target === 'depenses') loadDepenses();
                 if (target === 'prix') loadPrix();
                 if (target === 'mapping') loadMapping();
+                if (target === 'charges') loadCharges();
+                if (target === 'pl') loadPl();
             });
         });
+
+        // Visibilité onglet PL: gerée cote script.js updateMenuVisibility
+        // (meme pattern que finance-item et les autres elements menu).
+        // Voir script.js apres "Onglet Finance - reserve a admin..."
+
+        // Boutons Charges + PL
+        const chargesSave = document.getElementById('fin-charges-save');
+        if (chargesSave) chargesSave.addEventListener('click', onChargesSave);
+        const chargesAdd = document.getElementById('fin-charges-add');
+        if (chargesAdd) chargesAdd.addEventListener('click', () => addChargeRow('', '', 0, 99));
+        const plRefresh = document.getElementById('fin-pl-refresh');
+        if (plRefresh) plRefresh.addEventListener('click', loadPl);
+        const stockPertesSave = document.getElementById('fin-stock-pertes-save');
+        if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
+        const stockPertesInput = document.getElementById('fin-stock-pertes-pct');
+        if (stockPertesInput) {
+            stockPertesInput.addEventListener('input', () => {
+                const v = parseFloat(stockPertesInput.value);
+                if (Number.isFinite(v)) updateStockCoeffDisplay(v);
+            });
+        }
 
         // Form paiement
         const paiementForm = document.getElementById('fin-paiement-form');
@@ -125,11 +148,11 @@
         const dd = String(now.getDate()).padStart(2, '0');
         const todayISO = `${yyyy}-${mm}-${dd}`;
         const firstISO = `${yyyy}-${mm}-01`;
-        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut']) {
+        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-pl-date-debut']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = firstISO;
         }
-        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin']) {
+        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-pl-date-fin']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = todayISO;
         }
@@ -385,12 +408,62 @@
             const isOpen = idx === 0;
             const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
             const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
-            const rows = c.detail.map((d, lineIdx) => `
-                <tr>
-                    <td>${esc(d.produit)}</td>
+            // Helper: rend une cellule editable (input + save + history btns)
+            // commun aux 3 prix: vente fournisseur, achat, vente CDC. Le
+            // data-attribute "kind" identifie le type pour le wiring JS.
+            const editablePrixCell = (kind, courant, moyenPit, title) => {
+                const courantVal = courant != null ? courant : '';
+                const differs = (moyenPit != null && courantVal !== ''
+                    && Math.abs(moyenPit - courantVal) > 0.01);
+                const moyenBadge = differs
+                    ? `<span class="badge bg-warning text-dark mt-1" style="font-size:0.65rem" title="Moyenne pondérée effective (point-in-time) pour les ventes de la période. Différente du courant car des ventes anciennes ont utilisé un autre prix.">moy. ${fmtMoney(moyenPit)}</span>`
+                    : '';
+                return `
+                    <td class="text-end" style="min-width:175px">
+                        <div class="d-inline-flex flex-column align-items-end gap-1" style="white-space:nowrap">
+                            <div class="d-inline-flex align-items-center gap-1">
+                                <input type="number" min="0" step="1" class="form-control form-control-sm text-end"
+                                       style="width:85px"
+                                       value="${esc(courantVal)}"
+                                       data-prix-input="${kind}"
+                                       title="${title}">
+                                <button type="button" class="btn btn-sm btn-success py-0 px-1"
+                                        data-prix-save="${kind}"
+                                        title="Sauvegarder">
+                                    <i class="bi bi-check2"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                        data-prix-history="${kind}"
+                                        title="Voir l'historique">
+                                    <i class="bi bi-clock-history"></i>
+                                </button>
+                            </div>
+                            ${moyenBadge}
+                        </div>
+                    </td>
+                `;
+            };
+
+            const rows = c.detail.map((d, lineIdx) => {
+                // Cible des PUT prix-* = entree catalogue (ex: "Boeuf"), pas
+                // le libelle vente (ex: "Boeuf en detail" qui resout vers Boeuf
+                // via alias/prefix).
+                const produitCatalog = d.produit_catalog || d.produit;
+                // Hint visuel quand le libelle vente differe du nom catalogue
+                // (= ce produit passe par alias ou prefix matching).
+                const catalogHint = (d.produit_catalog && d.produit_catalog !== d.produit)
+                    ? `<div class="small text-muted" title="Les prix edites ici modifient l'entree catalogue '${esc(d.produit_catalog)}', qui s'applique a toutes les variantes de ce produit (ex: en gros/en detail).">→ catalogue: <span class="fw-medium">${esc(d.produit_catalog)}</span></div>`
+                    : '';
+                return `
+                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(produitCatalog)}" data-produit-vente="${esc(d.produit)}">
+                    <td>
+                        ${esc(d.produit)}
+                        ${catalogHint}
+                    </td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
-                    <td class="text-end">${d.prix_achat == null ? '<span class="text-muted">—</span>' : esc(fmtMoney(d.prix_achat))}</td>
-                    <td class="text-end">${esc(fmtMoney(d.mon_prix_moyen))}</td>
+                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (commission 3%) — édite l\'entrée catalogue ' + produitCatalog)}
+                    ${editablePrixCell('prix_achat', d.prix_achat_courant, d.prix_achat, 'Prix achat fournisseur — édite l\'entrée catalogue ' + produitCatalog)}
+                    ${editablePrixCell('prix_vente_cdc', d.prix_vente_cdc_courant, d.prix_vente_cdc, 'Prix vente CDC (négocié B2B) — édite l\'entrée catalogue ' + produitCatalog)}
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
                     <td class="text-end">
@@ -402,7 +475,8 @@
                         </button>
                     </td>
                 </tr>
-            `).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune ligne</td></tr>';
+            `;
+            }).join('') || '<tr><td colspan="8" class="text-muted text-center">Aucune ligne</td></tr>';
             return `
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -419,8 +493,9 @@
                                     <tr>
                                         <th>Produit</th>
                                         <th class="text-end">Quantité</th>
-                                        <th class="text-end">Prix achat fournisseur</th>
-                                        <th class="text-end">Mon prix moyen</th>
+                                        <th class="text-end">Prix vente fourn.</th>
+                                        <th class="text-end">Prix achat fourn.</th>
+                                        <th class="text-end">Prix vente CDC</th>
                                         <th class="text-end">Marge unitaire</th>
                                         <th class="text-end">Il me doit</th>
                                         <th class="text-end"></th>
@@ -442,6 +517,117 @@
                 showCdcDetailsModal(centreIdx, lineIdx);
             });
         });
+
+        // Config commune des 3 kinds editables.
+        // endpoint = chemin REST, bodyField = nom du field dans le PUT body,
+        // label = libelle utilisateur.
+        const PRIX_CONFIG = {
+            'prix_vente':     { endpoint: 'prix-vente-fournisseur', bodyField: 'prix_vente',     label: 'Prix vente fournisseur' },
+            'prix_achat':     { endpoint: 'prix-achat',             bodyField: 'prix_achat',     label: 'Prix achat fournisseur' },
+            'prix_vente_cdc': { endpoint: 'prix-cdc',               bodyField: 'prix_vente_cdc', label: 'Prix vente CDC' }
+        };
+
+        // Wire les boutons "Save" pour les 3 prix (vente / achat / vente CDC).
+        accordion.querySelectorAll('[data-prix-save]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const kind = btn.dataset.prixSave;
+                const cfg = PRIX_CONFIG[kind];
+                if (!cfg) return;
+                const tr = btn.closest('[data-cdc-row]');
+                if (!tr) return;
+                const produit = tr.dataset.produit;
+                const input = tr.querySelector(`[data-prix-input="${kind}"]`);
+                const val = parseFloat(input ? input.value : 0);
+                if (!Number.isFinite(val) || val < 0) {
+                    if (typeof showToast === 'function') showToast('Prix invalide', 'warning');
+                    return;
+                }
+                try {
+                    const res = await fetch('/api/finance/' + cfg.endpoint + '/' + encodeURIComponent(produit), {
+                        method: 'PUT',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ [cfg.bodyField]: val })
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') {
+                        showToast(`${cfg.label} mis à jour pour ${produit}`, 'success');
+                    }
+                    loadCdc();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+
+        // Wire les boutons "History" pour les 3 prix.
+        accordion.querySelectorAll('[data-prix-history]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const kind = btn.dataset.prixHistory;
+                const cfg = PRIX_CONFIG[kind];
+                if (!cfg) return;
+                const tr = btn.closest('[data-cdc-row]');
+                if (!tr) return;
+                const produit = tr.dataset.produit;
+                try {
+                    const res = await fetch('/api/finance/' + cfg.endpoint + '/' + encodeURIComponent(produit) + '/history', {
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    showPrixHistoryModal(cfg.label, produit, cfg.bodyField, j.data);
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+    }
+
+    // Modale historique générique pour les 3 types de prix.
+    // labelPrix = libellé affiché (ex: "Prix vente CDC").
+    // bodyField = nom du champ dans les rows (ex: "prix_vente_cdc").
+    function showPrixHistoryModal(labelPrix, produit, bodyField, rows) {
+        const title = document.getElementById('fin-cdc-details-title');
+        const body = document.getElementById('fin-cdc-details-body');
+        const modalEl = document.getElementById('fin-cdc-details-modal');
+        if (!title || !body || !modalEl) return;
+        title.innerHTML = `<i class="bi bi-clock-history me-2"></i>Historique ${esc(labelPrix)} — <strong>${esc(produit)}</strong>`;
+        const list = Array.isArray(rows) ? rows : [];
+        const rowsHtml = list.map((h) => {
+            const when = h.created_at ? new Date(h.created_at).toLocaleString('fr-FR') : '—';
+            const isSeed = h.changed_by === '_seed_';
+            const whenLabel = isSeed ? 'Valeur initiale' : when;
+            const whoLabel = isSeed ? '(seed migration)' : (h.changed_by || 'anonymous');
+            return `
+                <tr${isSeed ? ' class="text-muted"' : ''}>
+                    <td class="text-nowrap">${esc(whenLabel)}</td>
+                    <td class="text-end fw-medium">${esc(fmtMoney(h[bodyField]))}</td>
+                    <td>${esc(whoLabel)}</td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="3" class="text-muted text-center py-3">Aucun changement enregistré.</td></tr>';
+        body.innerHTML = `
+            <div class="alert alert-light border small mb-3">
+                <i class="bi bi-info-circle"></i> Chaque sauvegarde est historisée (point-in-time).
+                La valeur la plus récente (en haut) s'applique aux futures ventes; les ventes passées
+                conservent le prix effectif à leur date.
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th class="text-end">${esc(labelPrix)}</th>
+                            <th>Modifié par</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>
+        `;
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
     }
 
     // Affiche la modale avec le detail des ventes individuelles ayant
@@ -491,11 +677,12 @@
                     <td class="text-end">${esc(v.nombre)} <span class="fin-kpi-currency">kg</span></td>
                     <td class="text-end">${esc(fmtMoney(v.prix_unit))}</td>
                     <td class="text-end">${esc(fmtMoney(v.prix_achat))}</td>
+                    <td class="text-end fw-medium" title="Prix CDC effectif au moment de la vente (point-in-time)">${esc(fmtMoney(v.prix_vente_cdc_effectif))}</td>
                     <td class="text-end">${esc(fmtMoney(v.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(v.recevable_ligne))}</td>
                 </tr>
             `;
-        }).join('') || '<tr><td colspan="7" class="text-muted text-center py-3">Aucune vente individuelle dans le payload — pense à redémarrer le serveur après le dernier déploiement.</td></tr>';
+        }).join('') || '<tr><td colspan="8" class="text-muted text-center py-3">Aucune vente individuelle dans le payload — pense à redémarrer le serveur après le dernier déploiement.</td></tr>';
 
         body.innerHTML = `
             <!-- Bandeau récapitulatif -->
@@ -525,21 +712,28 @@
             <!-- Formule + agrégat -->
             <div class="p-3 mb-3" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
                 <div class="fin-kpi-label mb-1">Formule</div>
-                <div class="mb-2"><code>recevable_par_vente = (mon_prix − prix_achat_fournisseur) × quantité</code></div>
+                <div class="mb-2"><code>recevable_par_vente = (prix_vente_cdc_effectif − prix_achat_fournisseur) × quantité</code></div>
+                <div class="small text-muted mb-2">
+                    <i class="bi bi-info-circle"></i>
+                    <strong>Point-in-time pricing</strong> : chaque vente utilise le prix vente CDC effectif à sa date.
+                    Changer le prix aujourd'hui n'impacte pas les ventes passées.
+                </div>
                 <div class="fin-kpi-label mb-1">Agrégat ${esc(line.produit)} chez ${esc(centre.centre)}</div>
                 <div>
                     Quantité <strong>${esc(line.quantite_cdc)} kg</strong>
-                    × marge moyenne <strong>${esc(fmtMoney(line.marge_unitaire))}</strong>
+                    × marge moyenne pondérée <strong>${esc(fmtMoney(line.marge_unitaire))}</strong>
                     = <strong class="text-success">${esc(fmtMoney(line.recevable))}</strong>
                 </div>
                 <div class="small text-muted mt-1">
                     Prix d'achat fournisseur référence : <strong>${esc(fmtMoney(line.prix_achat))}</strong>
-                    • Mon prix moyen pondéré : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
+                    • Prix vente CDC courant (catalogue) : <strong>${esc(fmtMoney(line.prix_vente_cdc_courant))}</strong>
+                    • Prix CDC moyen pondéré (point-in-time) : <strong>${esc(fmtMoney(line.prix_vente_cdc))}</strong>
+                    • Mon prix moyen POS (info) : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
                 </div>
             </div>
 
             <!-- Détail des ventes individuelles -->
-            <div class="fin-subheading">Détail des ventes individuelles</div>
+            <div class="fin-subheading">Détail des ventes individuelles (prix effectifs point-in-time à la date de chaque vente)</div>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
@@ -547,8 +741,9 @@
                             <th>Date</th>
                             <th>Client / Commande</th>
                             <th class="text-end">Quantité</th>
-                            <th class="text-end">Mon prix</th>
-                            <th class="text-end">Prix achat</th>
+                            <th class="text-end">Mon prix POS</th>
+                            <th class="text-end" title="Prix achat fournisseur effectif à la date de la vente">Achat eff.</th>
+                            <th class="text-end" title="Prix vente CDC effectif à la date de la vente">CDC eff.</th>
                             <th class="text-end">Marge unit.</th>
                             <th class="text-end">Recevable</th>
                         </tr>
@@ -556,7 +751,7 @@
                     <tbody>${rowsHtml}</tbody>
                     <tfoot>
                         <tr style="background:#f8fafc">
-                            <th colspan="6" class="text-end">Total</th>
+                            <th colspan="7" class="text-end">Total</th>
                             <th class="text-end">${esc(fmtMoney(line.recevable))}</th>
                         </tr>
                     </tfoot>
@@ -999,6 +1194,447 @@
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
+    }
+
+    // ===== Charges mensuelles (pour calcul PL) =====
+
+    async function loadCharges() {
+        try {
+            // Parallel: charges list + config (pour stock_pertes_decoupe_pct)
+            const [resCharges, resCfg] = await Promise.all([
+                fetch('/api/finance/charges', { credentials: 'include' }),
+                fetch('/api/finance/config', { credentials: 'include' })
+            ]);
+            const jCharges = await resCharges.json();
+            const jCfg = await resCfg.json();
+            if (!jCharges.success) throw new Error(jCharges.error || 'Erreur charges');
+            renderCharges(jCharges.data);
+            // Hydrater le champ pertes %
+            if (jCfg.success) {
+                const pct = parseFloat(jCfg.data.stock_pertes_decoupe_pct);
+                const input = document.getElementById('fin-stock-pertes-pct');
+                if (input) input.value = Number.isFinite(pct) ? pct : 5;
+                updateStockCoeffDisplay(Number.isFinite(pct) ? pct : 5);
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur charges: ' + e.message, 'danger');
+        }
+    }
+
+    function updateStockCoeffDisplay(pct) {
+        const el = document.getElementById('fin-stock-coeff');
+        if (el) el.textContent = (100 - pct).toFixed(1) + '%';
+    }
+
+    async function onStockPertesSave() {
+        const input = document.getElementById('fin-stock-pertes-pct');
+        if (!input) return;
+        const pct = parseFloat(input.value);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+            if (typeof showToast === 'function') showToast('% invalide (0-100)', 'warning');
+            return;
+        }
+        try {
+            const res = await fetch('/api/finance/config', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_pertes_decoupe_pct: pct })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            updateStockCoeffDisplay(pct);
+            if (typeof showToast === 'function') showToast(`Pertes découpe = ${pct}% sauvegardé`, 'success');
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    function renderCharges(rows) {
+        const tbody = document.querySelector('#fin-charges-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        for (const r of rows) {
+            addChargeRow(r.nom, r.libelle, parseFloat(r.montant_mensuel) || 0, r.ordre || 0, true);
+        }
+        updateChargesTotal();
+    }
+
+    // Combining diacritical marks (U+0300..U+036F). Construit via RegExp(string)
+    // pour eviter qu'un editeur ne re-normalize les caracteres combinants si
+    // le range etait ecrit en litteral dans la source.
+    const DIACRITICS_RE = new RegExp('[\\u0300-\\u036f]', 'g');
+
+    // Genere un identifiant snake_case ascii a partir d'un libelle libre.
+    // Ex: "Loyer Local" -> "loyer_local"; "Électricité" -> "electricite".
+    function slugifyChargeNom(libelle) {
+        return String(libelle || '')
+            .normalize('NFD')
+            .replace(DIACRITICS_RE, '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 100);
+    }
+
+    function addChargeRow(nom, libelle, montant, ordre, fromBdd) {
+        const tbody = document.querySelector('#fin-charges-table tbody');
+        if (!tbody) return;
+        const tr = document.createElement('tr');
+
+        const tdOrdre = document.createElement('td');
+        const inOrdre = document.createElement('input');
+        inOrdre.type = 'number'; inOrdre.className = 'form-control form-control-sm text-end';
+        inOrdre.style.width = '70px';
+        inOrdre.value = ordre || 0;
+        inOrdre.dataset.col = 'ordre';
+        tdOrdre.appendChild(inOrdre);
+
+        const tdLibelle = document.createElement('td');
+        const inLib = document.createElement('input');
+        inLib.type = 'text'; inLib.className = 'form-control form-control-sm';
+        inLib.value = libelle || '';
+        inLib.dataset.col = 'libelle';
+        inLib.placeholder = 'Ex: Eau, Maintenance, Assurance...';
+        tdLibelle.appendChild(inLib);
+
+        const tdNom = document.createElement('td');
+        const inNom = document.createElement('input');
+        inNom.type = 'text'; inNom.className = 'form-control form-control-sm';
+        inNom.value = nom || '';
+        inNom.dataset.col = 'nom';
+        inNom.placeholder = 'auto';
+        if (fromBdd) {
+            // PK existant: on n'autorise pas le rename (sinon delete+create).
+            inNom.readOnly = true;
+            inNom.style.background = '#f8fafc';
+        } else {
+            // Nouvelle charge: derive le nom (PK) en snake_case depuis le libelle
+            // tant que l'utilisateur n'a pas tape un nom custom.
+            let nomManuallyEdited = false;
+            inNom.addEventListener('input', () => { nomManuallyEdited = true; });
+            inLib.addEventListener('input', () => {
+                if (!nomManuallyEdited) {
+                    inNom.value = slugifyChargeNom(inLib.value);
+                }
+            });
+        }
+        tdNom.appendChild(inNom);
+
+        const tdMontant = document.createElement('td');
+        const inM = document.createElement('input');
+        inM.type = 'number'; inM.min = '0'; inM.step = '1';
+        inM.className = 'form-control form-control-sm text-end';
+        inM.value = montant == null ? '' : montant;
+        inM.dataset.col = 'montant_mensuel';
+        inM.addEventListener('input', updateChargesTotal);
+        tdMontant.appendChild(inM);
+
+        const tdActions = document.createElement('td');
+        tdActions.className = 'text-nowrap';
+
+        // Bouton historique (uniquement pour les charges deja en BDD).
+        if (fromBdd && nom) {
+            const btnHist = document.createElement('button');
+            btnHist.type = 'button';
+            btnHist.className = 'btn btn-sm btn-outline-secondary me-1';
+            btnHist.innerHTML = '<i class="bi bi-clock-history"></i>';
+            btnHist.title = 'Historique du montant';
+            btnHist.addEventListener('click', async () => {
+                try {
+                    const res = await fetch('/api/finance/charges/' + encodeURIComponent(nom) + '/history', {
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    showPrixHistoryModal('Montant mensuel', libelle || nom, 'montant_mensuel', j.data);
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+            tdActions.appendChild(btnHist);
+        }
+
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'btn btn-sm btn-outline-danger';
+        btnDel.textContent = '×';
+        btnDel.title = 'Supprimer cette charge';
+        if (nom && fromBdd) btnDel.dataset.originalNom = nom;
+        btnDel.addEventListener('click', async () => {
+            const original = btnDel.dataset.originalNom;
+            if (original) {
+                let ok;
+                if (typeof showConfirmModal === 'function') {
+                    ok = await showConfirmModal(`Supprimer la charge "${libelle}" ?`, {
+                        title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                } else {
+                    ok = confirm(`Supprimer la charge "${libelle}" ?`);
+                }
+                if (!ok) return;
+                try {
+                    const res = await fetch('/api/finance/charges/' + encodeURIComponent(original), {
+                        method: 'DELETE', credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') showToast('Charge supprimée', 'success');
+                    loadCharges();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            } else {
+                tr.remove();
+                updateChargesTotal();
+            }
+        });
+        tdActions.appendChild(btnDel);
+
+        tr.append(tdOrdre, tdLibelle, tdNom, tdMontant, tdActions);
+        tbody.appendChild(tr);
+        updateChargesTotal();
+
+        // UX: focus auto sur le libelle pour une nouvelle ligne.
+        if (!fromBdd) {
+            setTimeout(() => inLib.focus(), 0);
+        }
+    }
+
+    function updateChargesTotal() {
+        const total = Array.from(document.querySelectorAll('#fin-charges-table tbody tr')).reduce((sum, tr) => {
+            const v = parseFloat(tr.querySelector('[data-col="montant_mensuel"]').value);
+            return sum + (Number.isFinite(v) ? v : 0);
+        }, 0);
+        const el = document.getElementById('fin-charges-total');
+        if (el) el.textContent = fmtMoney(total);
+    }
+
+    async function onChargesSave() {
+        const items = [];
+        const invalidRows = [];
+        const rows = Array.from(document.querySelectorAll('#fin-charges-table tbody tr'));
+        for (const tr of rows) {
+            const obj = {};
+            tr.querySelectorAll('input').forEach((inp) => { obj[inp.dataset.col] = inp.value; });
+            const libelle = String(obj.libelle || '').trim();
+            const nom = String(obj.nom || '').trim();
+            // Ligne completement vide: skip silencieusement.
+            if (!libelle && !nom) continue;
+            // Libelle saisi mais nom vide (slugify a echoue, ex: "!!!"):
+            // on alerte plutot que de silencieusement perdre la ligne.
+            if (!nom) {
+                invalidRows.push(libelle || '(sans libelle)');
+                tr.querySelector('[data-col="nom"]').classList.add('is-invalid');
+                continue;
+            }
+            // Nom present mais libelle vide: idem, alerte explicite.
+            if (!libelle) {
+                invalidRows.push(nom);
+                tr.querySelector('[data-col="libelle"]').classList.add('is-invalid');
+                continue;
+            }
+            // Validation explicite du montant: blanc / non-numerique / negatif
+            // -> alerte plutot que coercition silencieuse a 0.
+            const montantRaw = String(obj.montant_mensuel || '').trim();
+            const montantNum = parseFloat(montantRaw);
+            const montantCell = tr.querySelector('[data-col="montant_mensuel"]');
+            if (montantRaw === '' || !Number.isFinite(montantNum) || montantNum < 0) {
+                invalidRows.push(`${libelle} (montant)`);
+                if (montantCell) montantCell.classList.add('is-invalid');
+                continue;
+            }
+            if (montantCell) montantCell.classList.remove('is-invalid');
+            tr.querySelector('[data-col="nom"]').classList.remove('is-invalid');
+            tr.querySelector('[data-col="libelle"]').classList.remove('is-invalid');
+            items.push({
+                nom,
+                libelle,
+                montant_mensuel: montantNum,
+                ordre: parseInt(obj.ordre, 10) || 0
+            });
+        }
+        if (invalidRows.length) {
+            if (typeof showToast === 'function') {
+                showToast(
+                    `Identifiant ou libellé manquant pour: ${invalidRows.join(', ')}`,
+                    'warning'
+                );
+            }
+            return;
+        }
+        try {
+            const res = await fetch('/api/finance/charges', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            if (typeof showToast === 'function') showToast('Charges sauvegardées', 'success');
+            loadCharges();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    // ===== PL (Profit/Loss) =====
+
+    async function loadPl() {
+        const resultEl = document.getElementById('fin-pl-result');
+        if (!resultEl) return;
+        // Garde-fou: pre-remplir les dates si vides (1er du mois -> today).
+        // Le subnav click handler appelle ensureDefaultDates au clic Finance
+        // mais on le re-appelle ici par securite (ex: deep link direct PL).
+        ensureDefaultDates();
+        resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
+        try {
+            const dateDebut = document.getElementById('fin-pl-date-debut').value;
+            const dateFin = document.getElementById('fin-pl-date-fin').value;
+            const qs = new URLSearchParams();
+            if (dateDebut) qs.set('dateDebut', dateDebut);
+            if (dateFin) qs.set('dateFin', dateFin);
+            const res = await fetch('/api/finance/pl?' + qs.toString(), { credentials: 'include' });
+            const json = await res.json();
+            if (res.status === 403) {
+                resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
+                return;
+            }
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderPl(json.data);
+        } catch (e) {
+            resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    function renderPl(d) {
+        const resultEl = document.getElementById('fin-pl-result');
+        if (!resultEl) return;
+        const ch = d.charges || { detail: [] };
+        const stock = d.stock || { matin_debut: 0, soir_fin: 0, variation_brute: 0, variation_nette: 0, coeff: 0.95, pertes_decoupe_pct: 5 };
+        const pl = d.pl || 0;
+        const plColor = pl >= 0 ? 'success' : 'danger';
+
+        const chargesRows = (ch.detail || []).map((c) => `
+            <tr>
+                <td>${esc(c.libelle)}</td>
+                <td class="text-end">${esc(fmtMoney(c.montant_mensuel))}</td>
+                <td class="text-end">${esc(fmtMoney(c.prorata))}</td>
+            </tr>
+        `).join('');
+
+        // Tooltip stock avec dates effectivement utilisees (fallback si pas pile aux dates demandees)
+        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+        const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
+        const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
+
+        resultEl.innerHTML = `
+            <!-- Carte PL principale -->
+            <div class="card border-${plColor} mb-3">
+                <div class="card-body text-center">
+                    <h6 class="card-subtitle mb-2 text-muted">Profit / Loss (${esc(d.periode.dateDebut)} → ${esc(d.periode.dateFin)}, ${esc(d.periode.nb_jours)} jours)</h6>
+                    <h2 class="text-${plColor} mb-0">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</h2>
+                </div>
+            </div>
+
+            <!-- Décomposition -->
+            <h6 class="fin-subheading">Décomposition</h6>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <td><i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes</td>
+                            <td class="text-end fw-medium text-primary">+ ${esc(fmtMoney(d.total_ventes))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-bank text-danger"></i> Total avances (MataBanq)</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.total_avances))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-percent text-warning"></i> Commission MaaS (3%)</td>
+                            <td class="text-end fw-medium text-warning">− ${esc(fmtMoney(d.commission_maas))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)</td>
+                            <td class="text-end fw-medium text-success">+ ${esc(fmtMoney(d.marge_cdc))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-receipt text-info"></i> Charges proratisées (${esc(ch.total_mensuel)} × ${esc(ch.ratio_jours)})</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(ch.total_prorata))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.paiements_fournisseur))}</td>
+                        </tr>
+                        <tr>
+                            <td title="${esc(stockTooltip)}">
+                                <i class="bi bi-box-seam text-${stockColorNet}"></i>
+                                Variation stock ×
+                                <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
+                                <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>
+                            </td>
+                            <td class="text-end fw-medium text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>PL</td>
+                            <td class="text-end text-${plColor}">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Detail stock -->
+            <h6 class="fin-subheading">Détail variation stock</h6>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <td>Stock matin <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
+                            <td class="text-end">${esc(fmtMoney(stock.matin_debut))}</td>
+                        </tr>
+                        <tr>
+                            <td>Stock soir <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
+                            <td class="text-end">${esc(fmtMoney(stock.soir_fin))}</td>
+                        </tr>
+                        <tr>
+                            <td>Variation brute</td>
+                            <td class="text-end">${esc(fmtMoney(stock.variation_brute))}</td>
+                        </tr>
+                        <tr>
+                            <td>× Coefficient (1 − ${esc(stock.pertes_decoupe_pct)}%)</td>
+                            <td class="text-end">× ${esc(stock.coeff)}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>= Variation stock nette</td>
+                            <td class="text-end text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Detail charges -->
+            <h6 class="fin-subheading">Détail des charges (au prorata des ${esc(d.periode.nb_jours)} jours / 30)</h6>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Charge</th>
+                            <th class="text-end">Mensuel</th>
+                            <th class="text-end">Prorata période</th>
+                        </tr>
+                    </thead>
+                    <tbody>${chargesRows || '<tr><td colspan="3" class="text-muted text-center py-2">Aucune charge configurée</td></tr>'}</tbody>
+                    <tfoot>
+                        <tr style="background:#f8fafc">
+                            <th>Total</th>
+                            <th class="text-end">${esc(fmtMoney(ch.total_mensuel))}</th>
+                            <th class="text-end">${esc(fmtMoney(ch.total_prorata))}</th>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        `;
     }
 
 })();
