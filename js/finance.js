@@ -386,28 +386,45 @@
             const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
             const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
             const rows = c.detail.map((d, lineIdx) => {
-                const prixCdcVal = d.prix_vente_cdc != null ? d.prix_vente_cdc : '';
+                // Input edite = valeur courante du catalogue (le prix qui
+                // sera applique aux FUTURES ventes apres save).
+                const prixCdcCourant = d.prix_vente_cdc_courant != null
+                    ? d.prix_vente_cdc_courant
+                    : (d.prix_vente_cdc != null ? d.prix_vente_cdc : '');
+                // Cellule affiche aussi la moyenne ponderee point-in-time
+                // (= ce qui est utilise dans le calcul, peut differer du
+                // courant si une vente passee a utilise un autre prix).
+                const moyenPointInTime = d.prix_vente_cdc;
+                const differs = (moyenPointInTime != null && prixCdcCourant !== ''
+                    && Math.abs(moyenPointInTime - prixCdcCourant) > 0.01);
+                const moyenBadge = differs
+                    ? `<span class="badge bg-warning text-dark mt-1" title="Moyenne pondérée des prix effectifs (point-in-time) pour les ventes de la période. Différente du prix courant car des ventes ont eu lieu avant un changement de prix.">moy. ${fmtMoney(moyenPointInTime)}</span>`
+                    : '';
                 return `
                 <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(d.produit)}">
                     <td>${esc(d.produit)}</td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
                     <td class="text-end">${d.prix_achat == null ? '<span class="text-muted">—</span>' : esc(fmtMoney(d.prix_achat))}</td>
-                    <td class="text-end" style="min-width:170px">
-                        <div class="d-inline-flex align-items-center gap-1" style="white-space:nowrap">
-                            <input type="number" min="0" step="1" class="form-control form-control-sm text-end"
-                                   style="width:90px; display:inline-block"
-                                   value="${esc(prixCdcVal)}"
-                                   data-prix-cdc-input>
-                            <button type="button" class="btn btn-sm btn-success py-0 px-1"
-                                    data-prix-cdc-save
-                                    title="Sauvegarder le nouveau prix vente CDC">
-                                <i class="bi bi-check2"></i>
-                            </button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                    data-prix-cdc-history
-                                    title="Voir l'historique des changements">
-                                <i class="bi bi-clock-history"></i>
-                            </button>
+                    <td class="text-end" style="min-width:180px">
+                        <div class="d-inline-flex flex-column align-items-end gap-1" style="white-space:nowrap">
+                            <div class="d-inline-flex align-items-center gap-1">
+                                <input type="number" min="0" step="1" class="form-control form-control-sm text-end"
+                                       style="width:90px"
+                                       value="${esc(prixCdcCourant)}"
+                                       data-prix-cdc-input
+                                       title="Prix courant — appliqué aux futures ventes après sauvegarde">
+                                <button type="button" class="btn btn-sm btn-success py-0 px-1"
+                                        data-prix-cdc-save
+                                        title="Sauvegarder (les ventes passées gardent leur prix historique)">
+                                    <i class="bi bi-check2"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                        data-prix-cdc-history
+                                        title="Voir l'historique des changements">
+                                    <i class="bi bi-clock-history"></i>
+                                </button>
+                            </div>
+                            ${moyenBadge}
                         </div>
                     </td>
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
@@ -603,11 +620,12 @@
                     <td class="text-end">${esc(v.nombre)} <span class="fin-kpi-currency">kg</span></td>
                     <td class="text-end">${esc(fmtMoney(v.prix_unit))}</td>
                     <td class="text-end">${esc(fmtMoney(v.prix_achat))}</td>
+                    <td class="text-end fw-medium" title="Prix CDC effectif au moment de la vente (point-in-time)">${esc(fmtMoney(v.prix_vente_cdc_effectif))}</td>
                     <td class="text-end">${esc(fmtMoney(v.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(v.recevable_ligne))}</td>
                 </tr>
             `;
-        }).join('') || '<tr><td colspan="7" class="text-muted text-center py-3">Aucune vente individuelle dans le payload — pense à redémarrer le serveur après le dernier déploiement.</td></tr>';
+        }).join('') || '<tr><td colspan="8" class="text-muted text-center py-3">Aucune vente individuelle dans le payload — pense à redémarrer le serveur après le dernier déploiement.</td></tr>';
 
         body.innerHTML = `
             <!-- Bandeau récapitulatif -->
@@ -637,22 +655,28 @@
             <!-- Formule + agrégat -->
             <div class="p-3 mb-3" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
                 <div class="fin-kpi-label mb-1">Formule</div>
-                <div class="mb-2"><code>recevable_par_vente = (mon_prix − prix_achat_fournisseur) × quantité</code></div>
+                <div class="mb-2"><code>recevable_par_vente = (prix_vente_cdc_effectif − prix_achat_fournisseur) × quantité</code></div>
+                <div class="small text-muted mb-2">
+                    <i class="bi bi-info-circle"></i>
+                    <strong>Point-in-time pricing</strong> : chaque vente utilise le prix vente CDC effectif à sa date.
+                    Changer le prix aujourd'hui n'impacte pas les ventes passées.
+                </div>
                 <div class="fin-kpi-label mb-1">Agrégat ${esc(line.produit)} chez ${esc(centre.centre)}</div>
                 <div>
                     Quantité <strong>${esc(line.quantite_cdc)} kg</strong>
-                    × marge moyenne <strong>${esc(fmtMoney(line.marge_unitaire))}</strong>
+                    × marge moyenne pondérée <strong>${esc(fmtMoney(line.marge_unitaire))}</strong>
                     = <strong class="text-success">${esc(fmtMoney(line.recevable))}</strong>
                 </div>
                 <div class="small text-muted mt-1">
                     Prix d'achat fournisseur référence : <strong>${esc(fmtMoney(line.prix_achat))}</strong>
-                    • Prix vente CDC (configuré) : <strong>${esc(fmtMoney(line.prix_vente_cdc))}</strong>
+                    • Prix vente CDC courant (catalogue) : <strong>${esc(fmtMoney(line.prix_vente_cdc_courant))}</strong>
+                    • Prix CDC moyen pondéré (point-in-time) : <strong>${esc(fmtMoney(line.prix_vente_cdc))}</strong>
                     • Mon prix moyen POS (info) : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
                 </div>
             </div>
 
             <!-- Détail des ventes individuelles -->
-            <div class="fin-subheading">Détail des ventes individuelles</div>
+            <div class="fin-subheading">Détail des ventes individuelles (prix CDC effectif point-in-time)</div>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
@@ -660,8 +684,9 @@
                             <th>Date</th>
                             <th>Client / Commande</th>
                             <th class="text-end">Quantité</th>
-                            <th class="text-end">Mon prix</th>
+                            <th class="text-end">Mon prix POS</th>
                             <th class="text-end">Prix achat</th>
+                            <th class="text-end">Prix CDC effectif</th>
                             <th class="text-end">Marge unit.</th>
                             <th class="text-end">Recevable</th>
                         </tr>
@@ -669,7 +694,7 @@
                     <tbody>${rowsHtml}</tbody>
                     <tfoot>
                         <tr style="background:#f8fafc">
-                            <th colspan="6" class="text-end">Total</th>
+                            <th colspan="7" class="text-end">Total</th>
                             <th class="text-end">${esc(fmtMoney(line.recevable))}</th>
                         </tr>
                     </tfoot>

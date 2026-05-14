@@ -319,8 +319,11 @@ async function updateSchema() {
         console.log('Table fournisseur_prix verifiee (seed 5 produits + prix_vente_cdc)');
 
         // Historique des modifications de prix_vente_cdc.
-        // Chaque sauvegarde insere une ligne avec l'ancienne valeur + qui
-        // l'a fait. Permet de retracer les renegociations B2B.
+        // Chaque sauvegarde insere une ligne (point-in-time pricing).
+        // Le calcul de marge utilise la valeur effective a la date de la
+        // vente (= derniere entree history.created_at <= vente_date),
+        // donc changer le prix aujourd'hui ne reecrit PAS les ventes
+        // passees.
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS prix_vente_cdc_history (
                 id SERIAL PRIMARY KEY,
@@ -332,7 +335,22 @@ async function updateSchema() {
             )
         `);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_vente_cdc_history_produit ON prix_vente_cdc_history(produit, created_at DESC)`);
-        console.log('Table prix_vente_cdc_history verifiee');
+
+        // Genesis: chaque produit doit avoir au moins UNE entree history
+        // pour que le lookup point-in-time fonctionne. created_at=epoch
+        // 1970 signifie "cette valeur s'applique depuis le debut des
+        // temps" — toutes les ventes anciennes resoudront sur cette
+        // entree. Seedee une seule fois (skip si une entree existe deja).
+        await sequelize.query(`
+            INSERT INTO prix_vente_cdc_history (produit, prix_vente_cdc, changed_by, created_at)
+            SELECT fp.produit, fp.prix_vente_cdc, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE fp.prix_vente_cdc IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM prix_vente_cdc_history h WHERE h.produit = fp.produit
+              )
+        `);
+        console.log('Table prix_vente_cdc_history verifiee (genesis seedee)');
 
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS finance_config (
