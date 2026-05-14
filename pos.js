@@ -3710,6 +3710,32 @@ async function validerClotureCaisse() {
         return;
     }
 
+    // Rappel: si le "Montant total en caisse" n'est pas saisi, on alerte
+    // l'utilisateur avant de soumettre. Le champ reste OPTIONNEL — on
+    // permet de continuer sans, mais on rend l'oubli visible (sinon le
+    // calcul Finance > Cash et Stock sera incomplet pour cette date).
+    if (montantTotalCaisse == null) {
+        const continuer = typeof showConfirmModal === 'function'
+            ? await showConfirmModal(
+                'Vous n\'avez pas saisi le "Montant total en caisse". '
+                + 'Cette information est utilisée pour le calcul de la Valeur '
+                + '(Finance > Cash et Stock). Voulez-vous quand même clôturer sans le renseigner ?',
+                {
+                    title: 'Montant total en caisse manquant',
+                    okLabel: 'Clôturer quand même',
+                    cancelLabel: 'Revenir saisir',
+                    okVariant: 'warning'
+                }
+            )
+            : confirm('Vous n\'avez pas saisi le "Montant total en caisse". Clôturer quand même ?');
+        if (!continuer) {
+            // Focus sur le champ manquant pour faciliter la saisie.
+            const el = document.getElementById('clotureMontantTotalCaisse');
+            if (el) el.focus();
+            return;
+        }
+    }
+
     // Récupérer l'estimatif affiché pour le stocker
     const estimatifText = document.getElementById('clotureEstimatifDisplay')?.textContent || '';
     const estimatifMatch = estimatifText.match(/[\d\s]+/);
