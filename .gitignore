@@ -51,6 +51,7 @@ sal.txt
 copy-prod-db*.ps1
 copy-prod-db*.sh
 copy-prod-db*.js
+scripts/dump-prod-*.js
 update-preprod-db.bat
 DATABASE_COPY_README.md
 db_backups/
