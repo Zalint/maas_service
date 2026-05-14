@@ -454,36 +454,91 @@
         title.innerHTML = `<i class="bi bi-zoom-in me-2"></i>${esc(line.produit)} <small class="text-muted">— ${esc(centre.centre)}</small>`;
 
         const ventes = Array.isArray(line.ventes) ? line.ventes : [];
-        const rowsHtml = ventes.map((v) => `
-            <tr>
-                <td>${esc(v.date)}</td>
-                <td>${esc(v.nom_client || '—')}</td>
-                <td class="text-end">${esc(v.nombre)}</td>
-                <td class="text-end">${esc(fmtMoney(v.prix_unit))}</td>
-                <td class="text-end">${esc(fmtMoney(v.prix_achat))}</td>
-                <td class="text-end">${esc(fmtMoney(v.marge_unitaire))}</td>
-                <td class="text-end fw-bold">${esc(fmtMoney(v.recevable_ligne))}</td>
-            </tr>
-        `).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune vente</td></tr>';
+        const rowsHtml = ventes.map((v) => {
+            // Client + telephone + commande
+            const clientLine = v.nom_client
+                ? `<div class="fw-medium">${esc(v.nom_client)}</div>`
+                : '<div class="text-muted">—</div>';
+            const clientMeta = [];
+            if (v.numero_client) clientMeta.push(`<i class="bi bi-telephone me-1"></i>${esc(v.numero_client)}`);
+            if (v.commande_id) clientMeta.push(`<i class="bi bi-receipt me-1"></i>${esc(v.commande_id)}`);
+            const clientMetaHtml = clientMeta.length
+                ? `<div class="small text-muted">${clientMeta.join(' • ')}</div>`
+                : '';
+
+            // Le produit "brut" tel que saisi peut differer du libelle agrege
+            // (ex: vente="Boeuf en gros" mais agreget aussi "Boeuf en détail"
+            // sous la cle prefix "Boeuf"). On l'affiche en petit pour clarte.
+            const produitBrut = v.produit_brut && v.produit_brut !== line.produit
+                ? `<div class="small text-muted">${esc(v.produit_brut)}</div>`
+                : '';
+
+            return `
+                <tr>
+                    <td class="text-nowrap">${esc(v.date)}</td>
+                    <td>
+                        ${clientLine}
+                        ${clientMetaHtml}
+                        ${produitBrut}
+                    </td>
+                    <td class="text-end">${esc(v.nombre)} <span class="fin-kpi-currency">kg</span></td>
+                    <td class="text-end">${esc(fmtMoney(v.prix_unit))}</td>
+                    <td class="text-end">${esc(fmtMoney(v.prix_achat))}</td>
+                    <td class="text-end">${esc(fmtMoney(v.marge_unitaire))}</td>
+                    <td class="text-end fw-bold">${esc(fmtMoney(v.recevable_ligne))}</td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="7" class="text-muted text-center py-3">Aucune vente individuelle dans le payload — pense à redémarrer le serveur après le dernier déploiement.</td></tr>';
 
         body.innerHTML = `
-            <div class="alert alert-light border small mb-3">
-                <div><strong>Formule par vente :</strong>
-                    <code>recevable = (mon_prix_vente − prix_achat_fournisseur) × quantité</code>
+            <!-- Bandeau récapitulatif -->
+            <div class="row g-2 mb-3">
+                <div class="col-md-3">
+                    <div class="fin-kpi-label">Centre</div>
+                    <div class="fw-semibold">${esc(centre.centre)}</div>
                 </div>
-                <div class="mt-1">
-                    <strong>Agrégat ${esc(line.produit)} :</strong>
-                    quantité ${esc(line.quantite_cdc)} kg
-                    × marge moyenne ${esc(fmtMoney(line.marge_unitaire))}
-                    = <strong>${esc(fmtMoney(line.recevable))}</strong>
+                <div class="col-md-3">
+                    <div class="fin-kpi-label">Produit (agrégé)</div>
+                    <div class="fw-semibold">${esc(line.produit)}</div>
+                </div>
+                <div class="col-md-2">
+                    <div class="fin-kpi-label">Nb ventes</div>
+                    <div class="fw-semibold">${ventes.length}</div>
+                </div>
+                <div class="col-md-2">
+                    <div class="fin-kpi-label">Quantité totale</div>
+                    <div class="fw-semibold">${esc(line.quantite_cdc)} kg</div>
+                </div>
+                <div class="col-md-2">
+                    <div class="fin-kpi-label">Il me doit</div>
+                    <div class="fw-bold text-success">${esc(fmtMoney(line.recevable))}</div>
                 </div>
             </div>
+
+            <!-- Formule + agrégat -->
+            <div class="p-3 mb-3" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
+                <div class="fin-kpi-label mb-1">Formule</div>
+                <div class="mb-2"><code>recevable_par_vente = (mon_prix − prix_achat_fournisseur) × quantité</code></div>
+                <div class="fin-kpi-label mb-1">Agrégat ${esc(line.produit)} chez ${esc(centre.centre)}</div>
+                <div>
+                    Quantité <strong>${esc(line.quantite_cdc)} kg</strong>
+                    × marge moyenne <strong>${esc(fmtMoney(line.marge_unitaire))}</strong>
+                    = <strong class="text-success">${esc(fmtMoney(line.recevable))}</strong>
+                </div>
+                <div class="small text-muted mt-1">
+                    Prix d'achat fournisseur référence : <strong>${esc(fmtMoney(line.prix_achat))}</strong>
+                    • Mon prix moyen pondéré : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
+                </div>
+            </div>
+
+            <!-- Détail des ventes individuelles -->
+            <div class="fin-subheading">Détail des ventes individuelles</div>
             <div class="table-responsive">
-                <table class="table table-sm table-striped mb-0">
+                <table class="table table-sm mb-0">
                     <thead>
                         <tr>
                             <th>Date</th>
-                            <th>Client</th>
+                            <th>Client / Commande</th>
                             <th class="text-end">Quantité</th>
                             <th class="text-end">Mon prix</th>
                             <th class="text-end">Prix achat</th>
@@ -493,7 +548,7 @@
                     </thead>
                     <tbody>${rowsHtml}</tbody>
                     <tfoot>
-                        <tr class="table-light">
+                        <tr style="background:#f8fafc">
                             <th colspan="6" class="text-end">Total</th>
                             <th class="text-end">${esc(fmtMoney(line.recevable))}</th>
                         </tr>

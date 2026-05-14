@@ -138,14 +138,17 @@ async function computeCreances(opts = {}) {
     };
 
     // 3. Charger toutes les ventes de la periode.
-    // nomClient sert au drill-down (bouton "Details" cote UI) pour pouvoir
-    // tracer la marge encaissable a la commande client qui l'a generee.
+    // commandeId + numeroClient sont ajoutes au drill-down pour tracer
+    // la marge encaissable a la commande client qui l'a generee.
     const ventes = await Vente.findAll({
         where: {
             date: { [Op.in]: dateList },
             categorie: { [Op.in]: categoriesEligibles }
         },
-        attributes: ['date', 'produit', 'categorie', 'preparation', 'nombre', 'prixUnit', 'nomClient']
+        attributes: [
+            'date', 'produit', 'categorie', 'preparation', 'nombre', 'prixUnit',
+            'nomClient', 'numeroClient', 'commandeId', 'pointVente'
+        ]
     });
 
     // 4. Filtrer les ventes "Centre de Decoupe" pour le calcul "ce qu'il me doit".
@@ -226,12 +229,18 @@ async function computeCreances(opts = {}) {
             cAgg.recevable += recevableLigne;
             cAgg.ventes.push({
                 date: v.date,
+                produit_brut: v.produit,
+                categorie: v.categorie,
+                preparation: v.preparation,
+                point_vente: v.pointVente || null,
                 nombre: qte,
                 prix_unit: monPrix,
                 prix_achat: prix.prix_achat,
                 marge_unitaire: monPrix - prix.prix_achat,
                 recevable_ligne: round2(recevableLigne),
-                nom_client: v.nomClient || null
+                nom_client: v.nomClient || null,
+                numero_client: v.numeroClient || null,
+                commande_id: v.commandeId || null
             });
             parProd.set(key, cAgg);
         }
