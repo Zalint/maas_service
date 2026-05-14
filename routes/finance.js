@@ -943,9 +943,28 @@ router.get('/pl', async (req, res) => {
 
         // 1. Total ventes sur la periode (= Vente.date IN periode, montant)
         const { Op: SeqOp } = require('sequelize');
-        // Vente.date stocke en string YYYY-MM-DD (cf finance-creances notes).
+        // ATTENTION: Vente.date est un texte libre avec format MIXTE selon
+        // l'epoque d'insertion: YYYY-MM-DD (recent) ET DD-MM-YYYY (legacy).
+        // SQL BETWEEN avec une borne ISO matche seulement les ventes ISO et
+        // rate silencieusement les ventes DD-MM-YYYY (la comparaison lex
+        // sur "13-05-2026" vs "2026-05-01" est fausse). Visualisation/
+        // GET /api/ventes contourne en filtrant cote JS apres normalisation
+        // — on reproduit cette tolerance ici via Op.in enumerant les jours
+        // dans les 2 formats. Indexable + correct.
+        const dateList = [];
+        {
+            const cursor = new Date(dateDebut + 'T00:00:00Z');
+            const endCursor = new Date(dateFin + 'T00:00:00Z');
+            while (cursor <= endCursor) {
+                const iso = cursor.toISOString().slice(0, 10); // YYYY-MM-DD
+                dateList.push(iso);
+                // DD-MM-YYYY (format historique).
+                dateList.push(`${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`);
+                cursor.setUTCDate(cursor.getUTCDate() + 1);
+            }
+        }
         const ventes = await Vente.findAll({
-            where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
+            where: { date: { [SeqOp.in]: dateList } },
             attributes: ['montant']
         });
         const totalVentes = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
