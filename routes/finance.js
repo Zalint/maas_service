@@ -46,9 +46,25 @@ const {
     sequelize
 } = require('../db/models');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
+const financeCache = require('../lib/finance-cache');
+const audit = require('../lib/finance-audit');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
 const ALIAS_PRODUIT_MAX_LENGTH = 150;
+
+// Regex de filtrage inventaire boucherie. Configurable par env pour
+// permettre a un tenant (Keur Massar, Sacre Coeur) d'ajuster sans
+// toucher au code. Defaut: mots-cles viande senegalais.
+//
+// Note: pattern type "tete" matchera aussi des noms d'epicerie type
+// "Tetes de violon" si jamais ils existent dans l'inventaire. C'est un
+// risque connu de cette heuristique simple. Solution propre future:
+// marquer les produits inventaire avec une categorie famille=Boucherie
+// explicite.
+const BOUCHERIE_INCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_INCLUDE_REGEX
+    || '(boeuf|veau|agneau|mouton|chevre|chèvre|poulet|foie|abats|yell|sans os|mergez|merguez|tete|tête|laxass|jarret|peaux?)';
+const BOUCHERIE_EXCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_EXCLUDE_REGEX
+    || '(en gros|en détail|en detail|en dEtail|corne)';
 const { parseCentres } = require('./decoupe-helpers');
 
 const router = express.Router();
@@ -120,7 +136,9 @@ router.put('/prix', async (req, res) => {
                 prix_achat: prixAchat,
                 updated_at: now
             });
+            audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
         }
+        financeCache.invalidate();
         const rows = await FournisseurPrix.findAll({ order: [['produit', 'ASC']] });
         res.json({ success: true, data: rows });
     } catch (e) {
@@ -130,6 +148,7 @@ router.put('/prix', async (req, res) => {
 });
 
 // Supprime une ligne du catalogue (par produit, PK).
+// Idempotent: retourne 200 + deleted=0 si le produit n'existait pas.
 router.delete('/prix/:produit', async (req, res) => {
     try {
         const produit = String(req.params.produit || '').trim();
@@ -137,10 +156,11 @@ router.delete('/prix/:produit', async (req, res) => {
             return res.status(400).json({ success: false, error: 'produit requis' });
         }
         const n = await FournisseurPrix.destroy({ where: { produit } });
-        if (n === 0) {
-            return res.status(404).json({ success: false, error: 'Produit introuvable' });
+        if (n > 0) {
+            audit.log(req, 'prix.delete', { produit });
+            financeCache.invalidate();
         }
-        res.json({ success: true });
+        res.json({ success: true, deleted: n });
     } catch (e) {
         console.error('DELETE /api/finance/prix/:produit:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -162,22 +182,22 @@ router.get('/alias', async (req, res) => {
         const sinceISO = since.toISOString().slice(0, 10);
 
         // 4 requetes en parallele (gain ~150-200ms vs sequentiel).
+        // Regex include/exclude configurables via env FINANCE_BOUCHERIE_*
+        // (cf en-tete de fichier). Defaut couvre les viandes courantes Maas.
         const [catalog, aliases, invRows, distinctRows] = await Promise.all([
             FournisseurPrix.findAll({ order: [['produit', 'ASC']] }),
             ProduitAlias.findAll({ order: [['alias_produit', 'ASC']] }),
-            // Inventaire boucherie: regex include + exclude (cf README feature).
-            // INCLUT "sur pieds" comme variants conserves, EXCLUT "en gros|en detail|corne".
             Produit.findAll({
                 where: {
                     type_catalogue: 'inventaire',
                     [Op.and]: [
                         sequelize.where(
                             sequelize.fn('LOWER', sequelize.col('nom')),
-                            { [Op.regexp]: '(boeuf|veau|agneau|mouton|chevre|chèvre|poulet|foie|abats|yell|sans os|mergez|merguez|tete|tête|laxass|jarret|peaux?)' }
+                            { [Op.regexp]: BOUCHERIE_INCLUDE_REGEX }
                         ),
                         sequelize.where(
                             sequelize.fn('LOWER', sequelize.col('nom')),
-                            { [Op.notRegexp]: '(en gros|en détail|en detail|en dEtail|corne)' }
+                            { [Op.notRegexp]: BOUCHERIE_EXCLUDE_REGEX }
                         )
                     ]
                 },
@@ -215,10 +235,11 @@ router.get('/alias', async (req, res) => {
             };
         });
 
+        // Note: champ "catalog" supprime - le client utilisait "dropdown"
+        // qui contient deja l'union catalogue + inventaire boucherie.
         res.json({
             success: true,
             data: {
-                catalog: catalog.map((p) => p.produit),  // garde pour compat (peut etre supprime plus tard)
                 inventory: invRows.map((p) => ({ nom: p.nom })),
                 dropdown,
                 aliases: aliases.map((a) => ({
@@ -284,6 +305,14 @@ router.put('/alias', async (req, res) => {
             }, { transaction: t });
             return { catalog_created: createdCatalog };
         });
+        if (result.catalog_created) {
+            audit.log(req, 'prix.autocreate', { produit: produitCatalog, source: 'alias' });
+        }
+        audit.log(req, 'alias.upsert', {
+            alias_produit: aliasProduit,
+            produit_catalog: produitCatalog
+        });
+        financeCache.invalidate();
         res.json({ success: true, ...result });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
@@ -292,6 +321,8 @@ router.put('/alias', async (req, res) => {
 });
 
 // Supprime un alias (laisse retomber sur fallback prefix ou unmapped).
+// Idempotent: retourne 200 + deleted=0 si l'alias n'existait pas
+// (cf RFC 7231 7.4.2 - DELETE doit etre idempotent).
 router.delete('/alias/:alias', async (req, res) => {
     try {
         const alias = String(req.params.alias || '').trim();
@@ -299,10 +330,11 @@ router.delete('/alias/:alias', async (req, res) => {
             return res.status(400).json({ success: false, error: 'alias requis' });
         }
         const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
-        if (n === 0) {
-            return res.status(404).json({ success: false, error: 'Alias introuvable' });
+        if (n > 0) {
+            audit.log(req, 'alias.delete', { alias_produit: alias });
+            financeCache.invalidate();
         }
-        res.json({ success: true });
+        res.json({ success: true, deleted: n });
     } catch (e) {
         console.error('DELETE /api/finance/alias/:alias:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -355,6 +387,11 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
             await ProduitAlias.bulkCreate(toUpsert, {
                 updateOnDuplicate: ['produit_catalog', 'updated_at']
             });
+            audit.log(req, 'alias.bulk-from-prefix', {
+                count: created.length,
+                created
+            });
+            financeCache.invalidate();
         }
         res.json({ success: true, created });
     } catch (e) {

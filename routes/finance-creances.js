@@ -32,13 +32,12 @@
 const { Op } = require('sequelize');
 const {
     Vente,
-    FournisseurPrix,
     FinanceConfig,
-    FournisseurPaiement,
-    ProduitAlias
+    FournisseurPaiement
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
+const financeCache = require('../lib/finance-cache');
 
 // Normalise une date en string "YYYY-MM-DD" (format BDD Vente.date).
 // Vente.date est stocke comme texte libre (cf db/models/Vente.js) mais
@@ -115,11 +114,9 @@ async function computeCreances(opts = {}) {
         .map((s) => s.trim())
         .filter(Boolean);
 
-    // 2. Lire catalogue + aliases en parallele.
-    const [prixRows, aliasRows] = await Promise.all([
-        FournisseurPrix.findAll(),
-        ProduitAlias.findAll()
-    ]);
+    // 2. Lire catalogue + aliases depuis le cache memoire (TTL 60s).
+    //    Invalidation automatique sur toute mutation cote routes/finance.js.
+    const { catalog: prixRows, aliases: aliasRows } = await financeCache.getCatalogAndAliases();
 
     // Helper partage avec routes/finance.js (UI Mapping) pour eviter la
     // divergence statut affiche / calcul. Cf lib/produit-resolver.js.
