@@ -4037,8 +4037,16 @@ async function chargerVentes() {
             // Stocker toutes les ventes
             allVentes = ventesFormatees;
             
-            // Calculer le montant total des ventes
+            // Calculer le montant total des ventes REELLES UNIQUEMENT.
+            // GET /api/ventes appende les commandes envoyees au CDC en tant
+            // que virtual ventes (cf lib/decoupe-as-ventes.js). On les
+            // exclut ici sinon la card "Total Ventes + Decoupe" (calculee
+            // en ligne 4067 comme montantTotal + totalDecoupe) double-compte
+            // la portion CDC.
             const montantTotal = ventesFormatees.reduce((total, vente) => {
+                if (vente._source === 'decoupe') return total;
+                // Fallback defensif si _source manquant: id synthetique 'cdc-*'
+                if (typeof vente.id === 'string' && vente.id.startsWith('cdc-')) return total;
                 return total + (parseFloat(vente.Montant) || 0);
             }, 0);
             
@@ -5341,7 +5349,12 @@ function formaterDonneesVentes(ventes) {
             Produit: v.Produit || v.produit || '',
             PU: v.PU || v.prixUnit || '0',
             Nombre: v.Nombre || v.quantite || '0',
-            Montant: v.Montant || v.total || '0'
+            Montant: v.Montant || v.total || '0',
+            // Marqueur source preserve (server append les commandes envoyees
+            // au CDC en tant que virtual ventes avec _source: 'decoupe').
+            // Indispensable pour eviter de double-compter la portion CDC
+            // dans la card "Montant Total des Ventes" du dashboard.
+            _source: v._source || null
         };
     });
     
