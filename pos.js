@@ -3487,6 +3487,7 @@ async function ouvrirClotureCaisse() {
     // Réinitialiser le formulaire
     const elMontant    = document.getElementById('clotureMontantEspeces');
     const elFond       = document.getElementById('clotureFondCaisse');
+    const elTotalCaisse= document.getElementById('clotureMontantTotalCaisse');
     const elCommercial = document.getElementById('clotureCommercial');
     const elComment    = document.getElementById('clotureCommentaire');
     const elEstimatif  = document.getElementById('clotureEstimatifDisplay');
@@ -3495,6 +3496,7 @@ async function ouvrirClotureCaisse() {
 
     if (elMontant)    elMontant.value    = '';
     if (elFond)       elFond.value       = '0';
+    if (elTotalCaisse) elTotalCaisse.value = '';
     if (elCommercial) elCommercial.value = '';
     if (elComment)    elComment.value    = '';
     if (elEstimatif)  elEstimatif.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calcul en cours...';
@@ -3690,6 +3692,12 @@ async function validerClotureCaisse() {
 
     const montantEspeces = parseFloat(document.getElementById('clotureMontantEspeces').value);
     const fondDeCaisse = parseFloat(document.getElementById('clotureFondCaisse').value) || 0;
+    // Optionnel: total espèces physiquement présentes (Finance > Cash et Stock).
+    // Vide -> null cote API; sinon validation côté serveur (>= 0).
+    const montantTotalCaisseRaw = document.getElementById('clotureMontantTotalCaisse')?.value;
+    const montantTotalCaisse = (montantTotalCaisseRaw == null || String(montantTotalCaisseRaw).trim() === '')
+        ? null
+        : parseFloat(montantTotalCaisseRaw);
     const commercial = document.getElementById('clotureCommercial').value.trim();
     const commentaire = document.getElementById('clotureCommentaire').value.trim();
 
@@ -3718,7 +3726,7 @@ async function validerClotureCaisse() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, commercial, commentaire })
+            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, commercial, commentaire })
         });
         const data = await res.json();
 

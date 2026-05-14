@@ -511,6 +511,17 @@ async function updateSchema() {
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog)`);
         console.log('Table produit_alias verifiee');
 
+        // Ajouter montant_total_caisse a clotures_caisse pour l'ecran
+        // Finance > Cash et Stock. Optionnel (NULL autorise) — pas de
+        // back-fill, les cloture passees sans valeur seront "non renseigne".
+        // Idempotent via ADD COLUMN IF NOT EXISTS.
+        await sequelize.query(`
+            ALTER TABLE clotures_caisse
+            ADD COLUMN IF NOT EXISTS montant_total_caisse NUMERIC(12, 2)
+                CHECK (montant_total_caisse IS NULL OR montant_total_caisse >= 0)
+        `);
+        console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

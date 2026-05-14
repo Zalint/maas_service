@@ -903,10 +903,12 @@ async function checkAuth() {
         // garanti charge). Le serveur fait aussi une verif role qui retourne
         // 403 si bypass.
         const plTabItem = document.getElementById('fin-pl-tab-item');
-        if (plTabItem) {
+        const cashStockTabItem = document.getElementById('fin-cashstock-tab-item');
+        if (plTabItem || cashStockTabItem) {
             const isAdminOrSuperviseur = ['admin', 'superviseur']
                 .includes(String(currentUser.role || '').toLowerCase());
-            plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+            if (plTabItem) plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+            if (cashStockTabItem) cashStockTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
         }
 
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');

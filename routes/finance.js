@@ -57,6 +57,7 @@ const {
     PrixVenteHistory,
     FinanceCharge,
     FinanceChargeHistory,
+    ClotureCaisse,
     Produit,
     Vente,
     sequelize
@@ -1113,6 +1114,141 @@ router.get('/pl', async (req, res) => {
 function round2(n) {
     return Math.round(n * 100) / 100;
 }
+
+// =====================================================
+// CASH ET STOCK — reserve aux admin / superviseur
+// =====================================================
+// Formule:
+//   Valeur(D) = Stock_soir(D) × coeff
+//             + Σ cloture.montant_total_caisse where date=D, is_latest, NOT NULL
+//             − Σ commission_MaaS where date ≤ D (cumul depuis toujours)
+//
+// coeff = (100 - stock_pertes_decoupe_pct) / 100  (partage avec PL)
+// Stock soir: fallback au snapshot le plus proche <= D si pas pile a D.
+// Solde du fournisseur: cumul commission MaaS depuis 1970 jusqu'a D inclus
+// (vision bilan, pas vision flux).
+router.get('/cash-stock', async (req, res) => {
+    try {
+        // Auth: seuls admin et superviseur (meme regle que PL).
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        // Date (defaut: aujourd'hui).
+        const today = new Date();
+        const todayISO = today.toISOString().slice(0, 10);
+        const toISO = (s) => {
+            if (!s) return null;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+        };
+        const rawDate = req.query.date;
+        const dateD = rawDate ? toISO(rawDate) : todayISO;
+        if (rawDate && !dateD) {
+            return res.status(400).json({ success: false, error: 'invalid date' });
+        }
+        const dParsed = new Date(dateD + 'T00:00:00Z');
+        if (isNaN(dParsed.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid date' });
+        }
+        // Pas de Valeur dans le futur.
+        const todayParsed = new Date(todayISO + 'T00:00:00Z');
+        if (dParsed > todayParsed) {
+            return res.status(400).json({
+                success: false,
+                error: 'date ne peut pas etre dans le futur'
+            });
+        }
+
+        // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
+        const stockSoirRows = await sequelize.query(
+            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
+             FROM stocks
+             WHERE type_stock = 'soir'
+               AND date = (
+                 SELECT MAX(date) FROM stocks
+                 WHERE type_stock = 'soir' AND date <= :dateD
+               )`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }
+        );
+        const stockSoirBrut = parseFloat(stockSoirRows[0].total) || 0;
+        const stockSoirDateUtilisee = stockSoirRows[0].date_utilisee || null;
+
+        // 2) Coefficient (partage avec PL via finance_config).
+        const cfgRows = await FinanceConfig.findAll();
+        const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
+        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
+            ? pertesPct
+            : 5;
+        const coeff = (100 - safePertesPct) / 100;
+        const stockSoirNet = coeff * stockSoirBrut;
+
+        // 3) Cash en caisse = somme montant_total_caisse pour la derniere
+        //    cloture (is_latest) de chaque PV a la date D. NULL ignore.
+        const cashRows = await ClotureCaisse.findAll({
+            where: { date: dateD, is_latest: true },
+            attributes: ['point_de_vente', 'montant_total_caisse', 'updated_at'],
+            order: [['point_de_vente', 'ASC']]
+        });
+        const cashParPv = cashRows.map((c) => {
+            const m = c.montant_total_caisse;
+            return {
+                point_de_vente: c.point_de_vente,
+                montant: m == null ? null : round2(parseFloat(m)),
+                renseigne: m != null
+            };
+        });
+        const cashCaisseTotal = cashParPv.reduce(
+            (s, c) => s + (c.montant != null ? c.montant : 0), 0
+        );
+        const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
+
+        // 4) Solde du fournisseur = cumul commission MaaS depuis 1970-01-01
+        //    jusqu'a D (vision bilan, pas vision flux). On utilise une borne
+        //    inferieure tres ancienne pour capturer tout l'historique.
+        const { computeCreances } = require('./finance-creances');
+        const creancesCumul = await computeCreances({
+            dateDebut: '1970-01-01',
+            dateFin: dateD
+        });
+        const soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+
+        // 5) Valeur finale
+        const valeur = stockSoirNet + cashCaisseTotal - soldeDuFournisseur;
+
+        res.json({
+            success: true,
+            data: {
+                date: dateD,
+                stock: {
+                    soir_brut: round2(stockSoirBrut),
+                    soir_date_utilisee: stockSoirDateUtilisee,
+                    coeff: round2(coeff),
+                    pertes_decoupe_pct: safePertesPct,
+                    soir_net: round2(stockSoirNet)
+                },
+                cash: {
+                    total: round2(cashCaisseTotal),
+                    nb_pv_avec_cloture: cashParPv.length,
+                    nb_pv_renseigne: cashParPv.filter((c) => c.renseigne).length,
+                    pv_sans_saisie: pvSansSaisie,
+                    par_pv: cashParPv
+                },
+                solde_du_fournisseur: round2(soldeDuFournisseur),
+                valeur: round2(valeur)
+            }
+        });
+    } catch (e) {
+        console.error('GET /api/finance/cash-stock:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 // =====================================================
 // CONFIG
