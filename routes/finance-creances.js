@@ -33,7 +33,8 @@ const { Op } = require('sequelize');
 const {
     Vente,
     FinanceConfig,
-    FournisseurPaiement
+    FournisseurPaiement,
+    DecoupeOrderLog
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
@@ -144,9 +145,18 @@ async function computeCreances(opts = {}) {
     // de MATA_DECOUPE_CENTRE pour l'affichage UI).
     const centresOriginaux = parseCentres();
     const centreLowerToOriginal = new Map(centresOriginaux.map((c) => [c.toLowerCase(), c]));
+    // Garde defensif: dans le setup actuel, aucun PV ne s'appelle "Centre
+    // de Decoupe X". Mais si un futur tenant ouvre une boutique a cet
+    // emplacement (PV nomme comme un centre), pos.js:1730 met
+    // preparation=pointVente par defaut, et on classerait a tort cette
+    // vente locale comme une livraison CDC. Regle: une vente CDC doit
+    // avoir preparation DIFFERENTE du pointVente — sinon vente locale.
+    // No-op aujourd'hui, defensive pour demain.
     const getVenteCentre = (v) => {
-        const p = (v.preparation || '').trim().toLowerCase();
-        return centreLowerToOriginal.get(p) || null;
+        const prep = (v.preparation || '').trim().toLowerCase();
+        const pv = (v.pointVente || '').trim().toLowerCase();
+        if (!prep || prep === pv) return null;
+        return centreLowerToOriginal.get(prep) || null;
     };
     const isVenteCentreDecoupe = (v) => getVenteCentre(v) !== null;
 
@@ -228,9 +238,118 @@ async function computeCreances(opts = {}) {
                 recevable_ligne: round2(recevableLigne),
                 nom_client: v.nomClient || null,
                 numero_client: v.numeroClient || null,
-                commande_id: v.commandeId || null
+                commande_id: v.commandeId || null,
+                source: 'vente'
             });
             parProd.set(key, cAgg);
+        }
+    }
+
+    // 5bis. Charger les commandes envoyees au Centre de Decoupe.
+    // Ces commandes vivent dans decoupe_order_logs (PAS dans ventes) et
+    // doivent etre traitees comme des ventes CDC pour le calcul de la
+    // marge "Il me doit". On NE LES INSERE PAS dans ventes (eviterait le
+    // double counting cote "Montant Total des Ventes" du dashboard).
+    // Filtre par created_at sur la periode + centre dans la liste autorisee.
+    // Bornes: [dateDebut 00:00:00Z, dateFin+1J 00:00:00Z) pour inclure
+    // toutes les ms de dateFin (T23:59:59Z manquerait les .500/.999ms).
+    const nextDay = new Date(`${dateFin}T00:00:00Z`);
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const decoupeLogs = await DecoupeOrderLog.findAll({
+        where: {
+            created_at: {
+                [Op.gte]: `${dateDebut}T00:00:00Z`,
+                [Op.lt]: nextDay.toISOString()
+            }
+        }
+    });
+
+    for (const log of decoupeLogs) {
+        // Normaliser: trim + lowercase. Les valeurs peuvent avoir des
+        // espaces de bord ("Centre de Découpe Banlieue ") qui rateraient
+        // le match strict toLowerCase.
+        const rawCentre = log.point_vente_executant;
+        const normalizedCentre = rawCentre ? String(rawCentre).trim().toLowerCase() : '';
+        if (!normalizedCentre || !centreLowerToOriginal.has(normalizedCentre)) continue;
+        const centreOriginal = centreLowerToOriginal.get(normalizedCentre);
+
+        const produits = Array.isArray(log.produits) ? log.produits : [];
+        for (const p of produits) {
+            const qte = parseFloat(p.nombre != null ? p.nombre : p.quantity) || 0;
+            if (qte <= 0) continue;
+            const categorie = p.categorie || p.category || '';
+            // Verifier eligibilite categorie (meme regle que les ventes).
+            if (!categoriesEligibles.includes(categorie)) continue;
+            const produitNom = p.produit || p.name || '';
+            const prix = lookupPrix(produitNom);
+            if (!prix) continue;
+
+            const monPrix = parseFloat(p.prixUnit != null ? p.prixUnit : p.price) || 0;
+
+            // Commission 3% (dette envers le fournisseur)
+            const detteLigne = (commissionPct / 100) * prix.prix_vente * qte;
+            totalDette += detteLigne;
+
+            // Recevable: par definition les commandes decoupe SONT des
+            // ventes CDC, donc on accumule directement (pas besoin du
+            // check getVenteCentre comme pour les Ventes locales).
+            let recevableLigne = 0;
+            if (prix.prix_achat != null) {
+                recevableLigne = (monPrix - prix.prix_achat) * qte;
+                totalRecevable += recevableLigne;
+            }
+
+            // Agregat global par produit
+            const key = produitNom;
+            const agg = detail.get(key) || {
+                produit: key,
+                quantite: 0,
+                quantite_cdc: 0,
+                prix_achat: prix.prix_achat,
+                dette: 0,
+                recevable: 0
+            };
+            agg.quantite += qte;
+            if (prix.prix_achat != null) agg.quantite_cdc += qte;
+            agg.dette += detteLigne;
+            agg.recevable += recevableLigne;
+            detail.set(key, agg);
+
+            // Agregat par (centre, produit)
+            if (prix.prix_achat != null) {
+                if (!detailParCentre.has(centreOriginal)) {
+                    detailParCentre.set(centreOriginal, new Map());
+                }
+                const parProd = detailParCentre.get(centreOriginal);
+                const cAgg = parProd.get(key) || {
+                    produit: key,
+                    quantite_cdc: 0,
+                    prix_achat: prix.prix_achat,
+                    prix_vente_x_qte: 0,
+                    recevable: 0,
+                    ventes: []
+                };
+                cAgg.quantite_cdc += qte;
+                cAgg.prix_vente_x_qte += monPrix * qte;
+                cAgg.recevable += recevableLigne;
+                cAgg.ventes.push({
+                    date: log.created_at ? new Date(log.created_at).toISOString().slice(0, 10) : null,
+                    produit_brut: produitNom,
+                    categorie,
+                    preparation: centreOriginal,
+                    point_vente: log.point_vente || null,
+                    nombre: qte,
+                    prix_unit: monPrix,
+                    prix_achat: prix.prix_achat,
+                    marge_unitaire: monPrix - prix.prix_achat,
+                    recevable_ligne: round2(recevableLigne),
+                    nom_client: log.nom_client || null,
+                    numero_client: log.numero_client || null,
+                    commande_id: log.commande_ref || null,
+                    source: 'decoupe'
+                });
+                parProd.set(key, cAgg);
+            }
         }
     }
 

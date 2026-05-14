@@ -1947,9 +1947,36 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                 adresseClient: vente.adresseClient,
                 creance: vente.creance
             }));
-            
+
             console.log('Nombre de ventes filtrées:', formattedVentes.length);
-            
+
+            // Fusion avec commandes envoyées au Centre de Découpe (lecture
+            // seule, pas d'impact sur les KPI). Cf lib/decoupe-as-ventes.js.
+            try {
+                const { fetchDecoupeAsVentes } = require('./lib/decoupe-as-ventes');
+                const pvFilter = whereConditionsDate.pointVente
+                    ? (whereConditionsDate.pointVente[Op.in] || whereConditionsDate.pointVente)
+                    : (pointVente && pointVente !== 'tous' ? pointVente : null);
+                const decoupeVentes = await fetchDecoupeAsVentes({
+                    dateDebut,
+                    dateFin,
+                    pointVente: pvFilter
+                });
+                formattedVentes.push(...decoupeVentes);
+                // Re-trier l'ensemble par Date desc (ventes BDD format texte
+                // DD-MM-YYYY ou YYYY-MM-DD, decoupeVentes en DD-MM-YYYY).
+                // On convertit en ISO comparable pour le tri stable.
+                const toIso = (d) => {
+                    if (!d) return '';
+                    if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d;
+                    const m = d.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+                    return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+                };
+                formattedVentes.sort((a, b) => toIso(b.Date).localeCompare(toIso(a.Date)));
+            } catch (cdErr) {
+                console.warn('⚠️ Échec fusion decoupe_order_logs (non-bloquant):', cdErr.message);
+            }
+
             return res.json({ success: true, ventes: formattedVentes });
         }
         
@@ -1996,14 +2023,37 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
             adresseClient: vente.adresseClient,
             creance: vente.creance
         }));
-        
+
         console.log('Nombre de ventes filtrées:', formattedVentes.length);
-        
+
+        // Fusion avec commandes envoyées au Centre de Découpe (lecture seule).
+        try {
+            const { fetchDecoupeAsVentes } = require('./lib/decoupe-as-ventes');
+            const pvFilter = whereConditions.pointVente
+                ? (whereConditions.pointVente[Op.in] || whereConditions.pointVente)
+                : (pointVente && pointVente !== 'tous' ? pointVente : null);
+            const decoupeVentes = await fetchDecoupeAsVentes({
+                pointVente: pvFilter
+            });
+            formattedVentes.push(...decoupeVentes);
+            // Re-trier chronologiquement (ventes triees par sequelize ORDER BY,
+            // CDC ajoutees apres, donc le merge casse l'ordre global).
+            const toIso = (d) => {
+                if (!d) return '';
+                if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d;
+                const m = d.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+                return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+            };
+            formattedVentes.sort((a, b) => toIso(b.Date).localeCompare(toIso(a.Date)));
+        } catch (cdErr) {
+            console.warn('⚠️ Échec fusion decoupe_order_logs (non-bloquant):', cdErr.message);
+        }
+
         res.json({ success: true, ventes: formattedVentes });
     } catch (error) {
         console.error('Erreur lors de la récupération des ventes:', error);
-        res.status(500).json({ 
-            success: false, 
+        res.status(500).json({
+            success: false,
             message: 'Erreur lors de la récupération des ventes',
             error: error.message
         });
@@ -2017,7 +2067,7 @@ app.get('/api/dernieres-ventes', checkAuth, checkReadAccess, async (req, res) =>
         const ventes = await Vente.findAll({
             order: [['createdAt', 'DESC']]
         });
-        
+
         // Formater les données pour la réponse
         const formattedVentes = ventes.map(vente => ({
             id: vente.id,
@@ -2037,12 +2087,41 @@ app.get('/api/dernieres-ventes', checkAuth, checkReadAccess, async (req, res) =>
             creance: vente.creance,
             extension: vente.extension
         }));
-        
+
+        // Fusion avec les commandes envoyées au Centre de Découpe
+        // (table decoupe_order_logs). Lecture seule, aucun write dans
+        // ventes, donc pas d'impact sur les KPI dashboards. Cf
+        // lib/decoupe-as-ventes.js pour le format.
+        // Restrictions PV: si l'user n'a pas "tous", on filtre.
+        try {
+            const { fetchDecoupeAsVentes } = require('./lib/decoupe-as-ventes');
+            const userPV = req.session.user.pointVente;
+            const pvFilter = (userPV === 'tous' || (Array.isArray(userPV) && userPV.includes('tous')))
+                ? null
+                : userPV;
+            const decoupeVentes = await fetchDecoupeAsVentes({
+                pointVente: pvFilter,
+                limit: 200 // borner pour /dernieres-ventes
+            });
+            formattedVentes.push(...decoupeVentes);
+            // Re-trier l'ensemble par Date desc (string YYYY-MM-DD ou DD-MM-YYYY mixe -
+            // on convertit en ISO comparable pour le tri).
+            const toIsoComparable = (d) => {
+                if (!d) return '';
+                if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d;
+                const m = d.match(/^(\d{2})[-/](\d{2})[-/](\d{4})/);
+                return m ? `${m[3]}-${m[2]}-${m[1]}` : d;
+            };
+            formattedVentes.sort((a, b) => toIsoComparable(b.Date).localeCompare(toIsoComparable(a.Date)));
+        } catch (cdErr) {
+            console.warn('⚠️ Échec fusion decoupe_order_logs (non-bloquant):', cdErr.message);
+        }
+
         res.json({ success: true, dernieresVentes: formattedVentes });
     } catch (error) {
         console.error('Erreur lors de la récupération des dernières ventes:', error);
-        res.status(500).json({ 
-            success: false, 
+        res.status(500).json({
+            success: false,
             message: 'Erreur lors de la récupération des ventes',
             error: error.message
         });
@@ -3483,6 +3562,47 @@ app.delete('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
             success: false, 
             message: "Erreur lors de la suppression de la vente: " + error.message 
         });
+    }
+});
+
+// Route pour supprimer une commande envoyee au Centre de Decoupe.
+// Reservee aux admins. Ne touche que decoupe_order_logs (table de log
+// Maas) -- la commande reste active cote Mata (annulation Mata se fait
+// dans l'app Mata si besoin). Si tu veux aussi annuler cote Mata,
+// ajouter un appel HTTP a /api/commandes-decoupe/:id/annuler.
+app.delete('/api/decoupe-log/:id', checkAuth, async (req, res) => {
+    try {
+        const userRole = req.session.user.role;
+        if (userRole !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Seuls les administrateurs peuvent supprimer une commande Centre de Decoupe'
+            });
+        }
+        // Validation stricte: refuser "12abc" qui parseInt accepterait comme 12.
+        // L'ID en BDD est SERIAL (entier positif), donc on n'accepte que les
+        // chaines purement numeriques.
+        const rawId = String(req.params.id || '');
+        if (!/^\d+$/.test(rawId)) {
+            return res.status(400).json({ success: false, message: 'id invalide (entier requis)' });
+        }
+        const id = parseInt(rawId, 10);
+        if (!Number.isFinite(id) || id <= 0) {
+            return res.status(400).json({ success: false, message: 'id invalide' });
+        }
+        const { DecoupeOrderLog } = require('./db/models');
+        const log = await DecoupeOrderLog.findByPk(id);
+        if (!log) {
+            // Idempotent: pas d'erreur si deja supprimee
+            return res.json({ success: true, deleted: 0 });
+        }
+        const commandeRef = log.commande_ref;
+        await log.destroy();
+        console.log(`[decoupe-log] ${commandeRef} (id=${id}) supprime par ${req.session.user.username}`);
+        res.json({ success: true, deleted: 1, commande_ref: commandeRef });
+    } catch (e) {
+        console.error('DELETE /api/decoupe-log/:id:', e);
+        res.status(500).json({ success: false, message: e.message });
     }
 });
 
