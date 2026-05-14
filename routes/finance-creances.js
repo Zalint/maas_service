@@ -38,35 +38,43 @@ const {
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 
-// Normalise une date en string "DD-MM-YYYY" (format BDD Vente.date)
-// pour les comparaisons. Vente.date est stocke comme texte libre dans
-// cette app (cf. db/models/Vente.js), donc on compare en chaine.
-function toDDMMYYYY(input) {
+// Normalise une date en string "YYYY-MM-DD" (format BDD Vente.date).
+// Vente.date est stocke comme texte libre (cf db/models/Vente.js) mais
+// les enregistrements existants utilisent YYYY-MM-DD (ex: "2026-05-12"),
+// donc on compare en chaine sur ce format.
+function toISO(input) {
     if (!input) return null;
     const s = String(input).trim();
-    // YYYY-MM-DD
+    // YYYY-MM-DD (deja bon)
     let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-    // DD-MM-YYYY ou DD/MM/YYYY
+    if (m) return s;
+    // DD-MM-YYYY ou DD/MM/YYYY -> YYYY-MM-DD
     m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
     return null;
 }
 
-// Generer la liste des dates "DD-MM-YYYY" entre debut et fin (inclus).
-function generateDateRange(startDDMMYYYY, endDDMMYYYY) {
+// Alias retro-compatible: anciens callers attendaient DD-MM-YYYY. On
+// retourne maintenant YYYY-MM-DD (format BDD). Tests + UI affichent
+// formattent eux-memes si besoin.
+function toDDMMYYYY(input) {
+    return toISO(input);
+}
+
+// Generer la liste des dates "YYYY-MM-DD" entre debut et fin (inclus).
+function generateDateRange(startISO, endISO) {
     const parse = (s) => {
-        const [d, m, y] = s.split('-').map(Number);
+        const [y, m, d] = s.split('-').map(Number);
         return new Date(Date.UTC(y, m - 1, d));
     };
     const fmt = (date) => {
-        const dd = String(date.getUTCDate()).padStart(2, '0');
-        const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
         const yyyy = date.getUTCFullYear();
-        return `${dd}-${mm}-${yyyy}`;
+        const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(date.getUTCDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
     };
-    const start = parse(startDDMMYYYY);
-    const end = parse(endDDMMYYYY);
+    const start = parse(startISO);
+    const end = parse(endISO);
     const list = [];
     for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
         list.push(fmt(new Date(t)));
@@ -74,15 +82,15 @@ function generateDateRange(startDDMMYYYY, endDDMMYYYY) {
     return list;
 }
 
-// Defaut: 1er du mois courant -> aujourd'hui.
+// Defaut: 1er du mois courant -> aujourd'hui. Format YYYY-MM-DD.
 function defaultPeriode() {
     const now = new Date();
-    const dd = String(now.getUTCDate()).padStart(2, '0');
-    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
     const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
     return {
-        dateDebut: `01-${mm}-${yyyy}`,
-        dateFin: `${dd}-${mm}-${yyyy}`
+        dateDebut: `${yyyy}-${mm}-01`,
+        dateFin: `${yyyy}-${mm}-${dd}`
     };
 }
 
@@ -92,8 +100,8 @@ function defaultPeriode() {
  * @param {string} [opts.dateFin]
  */
 async function computeCreances(opts = {}) {
-    const dateDebut = toDDMMYYYY(opts.dateDebut) || defaultPeriode().dateDebut;
-    const dateFin = toDDMMYYYY(opts.dateFin) || defaultPeriode().dateFin;
+    const dateDebut = toISO(opts.dateDebut) || defaultPeriode().dateDebut;
+    const dateFin = toISO(opts.dateFin) || defaultPeriode().dateFin;
     const dateList = generateDateRange(dateDebut, dateFin);
 
     // 1. Lire la config (commission_pct, categories_eligibles).
@@ -179,11 +187,12 @@ async function computeCreances(opts = {}) {
     }
 
     // 6. Paiements faits AU fournisseur sur la periode (info brute, pas deduits).
+    // dateDebut/dateFin sont deja en YYYY-MM-DD (format DATEONLY Postgres).
     const paiements = await FournisseurPaiement.findAll({
         where: {
             date: {
-                [Op.gte]: opts.dateDebut ? toISODate(dateDebut) : toISODate(defaultPeriode().dateDebut),
-                [Op.lte]: opts.dateFin ? toISODate(dateFin) : toISODate(defaultPeriode().dateFin)
+                [Op.gte]: dateDebut,
+                [Op.lte]: dateFin
             }
         },
         order: [['date', 'ASC']]
@@ -227,12 +236,6 @@ async function computeCreances(opts = {}) {
 
 function round2(n) {
     return Math.round(n * 100) / 100;
-}
-
-// "DD-MM-YYYY" -> "YYYY-MM-DD" pour les colonnes DATEONLY/DATE Postgres
-function toISODate(ddmmyyyy) {
-    const m = ddmmyyyy.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-    return m ? `${m[3]}-${m[2]}-${m[1]}` : ddmmyyyy;
 }
 
 module.exports = {
