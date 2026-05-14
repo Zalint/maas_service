@@ -81,6 +81,7 @@
                 if (target === 'mapping') loadMapping();
                 if (target === 'charges') loadCharges();
                 if (target === 'pl') loadPl();
+                if (target === 'cashstock') loadCashStock();
             });
         });
 
@@ -95,6 +96,8 @@
         if (chargesAdd) chargesAdd.addEventListener('click', () => addChargeRow('', '', 0, 99));
         const plRefresh = document.getElementById('fin-pl-refresh');
         if (plRefresh) plRefresh.addEventListener('click', loadPl);
+        const cashStockRefresh = document.getElementById('fin-cashstock-refresh');
+        if (cashStockRefresh) cashStockRefresh.addEventListener('click', loadCashStock);
         const stockPertesSave = document.getElementById('fin-stock-pertes-save');
         if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
         const stockPertesInput = document.getElementById('fin-stock-pertes-pct');
@@ -1633,6 +1636,122 @@
                         </tr>
                     </tfoot>
                 </table>
+            </div>
+        `;
+    }
+
+    // ===== Cash et Stock =====
+
+    async function loadCashStock() {
+        const resultEl = document.getElementById('fin-cashstock-result');
+        if (!resultEl) return;
+        // Pre-remplir la date avec today si vide.
+        const dateEl = document.getElementById('fin-cashstock-date');
+        if (dateEl && !dateEl.value) {
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            dateEl.value = `${yyyy}-${mm}-${dd}`;
+        }
+        resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
+        try {
+            const date = dateEl ? dateEl.value : '';
+            const qs = new URLSearchParams();
+            if (date) qs.set('date', date);
+            const res = await fetch('/api/finance/cash-stock?' + qs.toString(), { credentials: 'include' });
+            const json = await res.json();
+            if (res.status === 403) {
+                resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
+                return;
+            }
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderCashStock(json.data);
+        } catch (e) {
+            resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    function renderCashStock(d) {
+        const resultEl = document.getElementById('fin-cashstock-result');
+        if (!resultEl) return;
+        const stock = d.stock || {};
+        const cash = d.cash || {};
+        const solde = d.solde_du_fournisseur || 0;
+        const valeur = d.valeur || 0;
+        const valColor = valeur >= 0 ? 'success' : 'danger';
+
+        const stockSnapshotInfo = stock.soir_date_utilisee && stock.soir_date_utilisee !== d.date
+            ? `<small class="text-warning"><i class="bi bi-exclamation-triangle"></i> Snapshot du ${esc(stock.soir_date_utilisee)} utilisé (pas de stock soir saisi le ${esc(d.date)})</small>`
+            : '';
+
+        const pvRows = (cash.par_pv || []).map((p) => {
+            const cls = p.renseigne ? '' : 'text-muted';
+            const val = p.renseigne ? esc(fmtMoney(p.montant)) : '<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> non renseigné</span>';
+            return `<tr class="${cls}"><td>${esc(p.point_de_vente)}</td><td class="text-end">${val}</td></tr>`;
+        }).join('');
+        const pvTable = pvRows
+            ? `<table class="table table-sm mb-0">
+                <thead><tr><th>Point de vente</th><th class="text-end">Cash en caisse</th></tr></thead>
+                <tbody>${pvRows}</tbody>
+                <tfoot><tr style="background:#f8fafc"><th>Total</th><th class="text-end">${esc(fmtMoney(cash.total))}</th></tr></tfoot>
+               </table>`
+            : '<div class="text-muted small">Aucune clôture de caisse trouvée pour cette date.</div>';
+
+        const warnPv = (cash.pv_sans_saisie && cash.pv_sans_saisie.length)
+            ? `<div class="alert alert-warning py-2 small mb-3"><i class="bi bi-exclamation-triangle"></i>
+               ${cash.pv_sans_saisie.length} point(s) de vente ont clôturé sans saisir "Montant total en caisse" :
+               <strong>${esc(cash.pv_sans_saisie.join(', '))}</strong>. Ces lignes comptent 0 dans le total.</div>`
+            : '';
+
+        resultEl.innerHTML = `
+            <div class="card border-${valColor} mb-3">
+                <div class="card-body text-center">
+                    <div class="text-muted small mb-1">Valeur au ${esc(d.date)}</div>
+                    <div class="display-5 text-${valColor} fw-bold">${esc(fmtMoney(valeur))}</div>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header bg-light"><strong>Décomposition</strong></div>
+                <div class="card-body">
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                            <tr>
+                                <td>Stock soir brut</td>
+                                <td class="text-end">${esc(fmtMoney(stock.soir_brut))}</td>
+                            </tr>
+                            <tr>
+                                <td>× coefficient <span class="text-muted">(1 − ${esc(stock.pertes_decoupe_pct)}% pertes découpe)</span></td>
+                                <td class="text-end">× ${esc(stock.coeff)}</td>
+                            </tr>
+                            <tr style="background:#f8fafc">
+                                <td><strong>= Stock soir net</strong></td>
+                                <td class="text-end"><strong>${esc(fmtMoney(stock.soir_net))}</strong></td>
+                            </tr>
+                            <tr>
+                                <td>+ Cash total en caisse <span class="text-muted">(${cash.nb_pv_renseigne}/${cash.nb_pv_avec_cloture} PV renseignés)</span></td>
+                                <td class="text-end text-success">+ ${esc(fmtMoney(cash.total))}</td>
+                            </tr>
+                            <tr>
+                                <td>− Solde dû fournisseur <span class="text-muted">(cumul commission MaaS)</span></td>
+                                <td class="text-end text-danger">− ${esc(fmtMoney(solde))}</td>
+                            </tr>
+                            <tr style="background:#e7f5ff;border-top:2px solid #339af0">
+                                <th>= Valeur</th>
+                                <th class="text-end text-${valColor}">${esc(fmtMoney(valeur))}</th>
+                            </tr>
+                        </tbody>
+                    </table>
+                    ${stockSnapshotInfo ? `<div class="mt-2">${stockSnapshotInfo}</div>` : ''}
+                </div>
+            </div>
+
+            ${warnPv}
+
+            <div class="card">
+                <div class="card-header bg-light"><strong>Détail cash par point de vente</strong></div>
+                <div class="card-body">${pvTable}</div>
             </div>
         `;
     }

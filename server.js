@@ -16203,10 +16203,19 @@ app.get('/api/clotures-caisse', checkAuth, async (req, res) => {
 
 app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
     try {
-        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, commercial, commentaire } = req.body;
+        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, commercial, commentaire } = req.body;
         const username = req.session?.user?.username || req.user?.username || 'inconnu';
         if (!date || !pointVente || montantEspeces === undefined || !commercial) {
             return res.status(400).json({ success: false, message: 'date, pointVente, montantEspeces et commercial sont requis' });
+        }
+        // montant_total_caisse: optionnel. Si fourni, doit etre un nombre >= 0.
+        let montantTotalCaisseValide = null;
+        if (montantTotalCaisse !== undefined && montantTotalCaisse !== null && montantTotalCaisse !== '') {
+            const v = parseFloat(montantTotalCaisse);
+            if (!Number.isFinite(v) || v < 0) {
+                return res.status(400).json({ success: false, message: 'montantTotalCaisse doit etre un nombre >= 0' });
+            }
+            montantTotalCaisseValide = v;
         }
         let isoDate = date;
         if (date.match(/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/)) { const parts = date.split(/[\/\-]/); isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`; }
@@ -16214,7 +16223,7 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         let cloture;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
-            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
+            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
                 const existing = await CashPayment.findOne({ where: { date: isoDate, point_de_vente: pointVente, payment_type: 'CASH', is_manual: true }, transaction });

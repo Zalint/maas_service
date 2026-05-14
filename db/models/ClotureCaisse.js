@@ -33,6 +33,11 @@ const ClotureCaisse = sequelize.define('ClotureCaisse', {
         allowNull: true,
         comment: 'Montant estimatif calculé (ventes - paiements Bictorys)'
     },
+    montant_total_caisse: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        comment: 'Total espèces physiquement présentes dans la caisse à la clôture (incluant fond de caisse). Optionnel, utilisé par Finance > Cash et Stock.'
+    },
     commercial: {
         type: DataTypes.STRING(150),
         allowNull: false,

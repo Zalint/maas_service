@@ -2219,6 +2219,10 @@
                             <li class="nav-item" id="fin-pl-tab-item" style="display:none">
                                 <a class="nav-link" href="#" data-fin-tab="pl">PL</a>
                             </li>
+                            <!-- Cash et Stock: meme visibilite que PL -->
+                            <li class="nav-item" id="fin-cashstock-tab-item" style="display:none">
+                                <a class="nav-link" href="#" data-fin-tab="cashstock">Cash et Stock</a>
+                            </li>
                         </ul>
                     </div>
                     <div class="card-body">
@@ -2615,6 +2619,29 @@
                                 </div>
                             </div>
                             <div id="fin-pl-result"></div>
+                        </div>
+
+                        <!-- Pane: Cash et Stock - admin/superviseur uniquement -->
+                        <div data-fin-pane="cashstock" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Formule Valeur :</strong> Stock soir × coeff
+                                + Cash total en caisse − Solde dû fournisseur (cumul commission MaaS).
+                                Le cash provient des clôtures de caisse (champ "Montant total en caisse").
+                                Réservé aux administrateurs et superviseurs.
+                            </div>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date</label>
+                                    <input type="date" id="fin-cashstock-date" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-cashstock-refresh">
+                                        <i class="bi bi-calculator"></i> Calculer
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="fin-cashstock-result"></div>
                         </div>
                     </div>
                 </div>
