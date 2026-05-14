@@ -941,6 +941,20 @@ router.get('/pl', async (req, res) => {
         }
         const nbDaysPeriod = Math.floor((endD - startD) / 86400000) + 1;
 
+        // Borner la periode pour eviter une croissance non controlee du
+        // IN(...) construit plus bas (2 entrees par jour) et plus
+        // generalement borner les ressources de la requete (charges,
+        // computeCreances, MataBanq, etc). Le PL est concu pour des
+        // periodes mensuelles/trimestrielles; 1 an + 1 (366) couvre les
+        // rapports annuels.
+        const MAX_DAYS_PERIOD = 366;
+        if (nbDaysPeriod > MAX_DAYS_PERIOD) {
+            return res.status(400).json({
+                success: false,
+                error: `periode trop longue (${nbDaysPeriod} jours, max ${MAX_DAYS_PERIOD})`
+            });
+        }
+
         // 1. Total ventes sur la periode (= Vente.date IN periode, montant)
         const { Op: SeqOp } = require('sequelize');
         // ATTENTION: Vente.date est un texte libre avec format MIXTE selon
