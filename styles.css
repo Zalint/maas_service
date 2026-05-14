@@ -62,6 +62,25 @@ body {
     font-weight: bold;
 }
 
+/* Override pour les sous-onglets Finance (card-header blanc).
+ * La regle globale .nav-link { color: white } est faite pour la
+ * navbar bleue principale; ici on est sur fond blanc donc il faut
+ * du texte fonce. */
+#finance-subnav .nav-link {
+    color: #495057 !important;
+    font-weight: 500;
+}
+#finance-subnav .nav-link:hover {
+    color: #0d6efd !important;
+    border-color: #e9ecef #e9ecef #dee2e6;
+}
+#finance-subnav .nav-link.active {
+    color: #0d6efd !important;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+
 #visualisation-section .card {
     margin-top: 1rem;
 }
