@@ -68,7 +68,7 @@
             loadCreances();
         });
 
-        // Subnav (creances / cdc / depenses / prix / mapping)
+        // Subnav (creances / cdc / depenses / prix / mapping / charges / pl)
         document.querySelectorAll('#finance-subnav [data-fin-tab]').forEach((link) => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -79,8 +79,34 @@
                 if (target === 'depenses') loadDepenses();
                 if (target === 'prix') loadPrix();
                 if (target === 'mapping') loadMapping();
+                if (target === 'charges') loadCharges();
+                if (target === 'pl') loadPl();
             });
         });
+
+        // Visibilité conditionnelle de l'onglet PL: admin + superviseur uniquement.
+        const plTabItem = document.getElementById('fin-pl-tab-item');
+        if (plTabItem && window.currentUser) {
+            const role = (window.currentUser.role || '').toLowerCase();
+            plTabItem.style.display = ['admin', 'superviseur'].includes(role) ? '' : 'none';
+        }
+
+        // Boutons Charges + PL
+        const chargesSave = document.getElementById('fin-charges-save');
+        if (chargesSave) chargesSave.addEventListener('click', onChargesSave);
+        const chargesAdd = document.getElementById('fin-charges-add');
+        if (chargesAdd) chargesAdd.addEventListener('click', () => addChargeRow('', '', 0, 99));
+        const plRefresh = document.getElementById('fin-pl-refresh');
+        if (plRefresh) plRefresh.addEventListener('click', loadPl);
+        const stockPertesSave = document.getElementById('fin-stock-pertes-save');
+        if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
+        const stockPertesInput = document.getElementById('fin-stock-pertes-pct');
+        if (stockPertesInput) {
+            stockPertesInput.addEventListener('input', () => {
+                const v = parseFloat(stockPertesInput.value);
+                if (Number.isFinite(v)) updateStockCoeffDisplay(v);
+            });
+        }
 
         // Form paiement
         const paiementForm = document.getElementById('fin-paiement-form');
@@ -125,11 +151,11 @@
         const dd = String(now.getDate()).padStart(2, '0');
         const todayISO = `${yyyy}-${mm}-${dd}`;
         const firstISO = `${yyyy}-${mm}-01`;
-        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut']) {
+        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-pl-date-debut']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = firstISO;
         }
-        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin']) {
+        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-pl-date-fin']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = todayISO;
         }
@@ -1171,6 +1197,345 @@
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
+    }
+
+    // ===== Charges mensuelles (pour calcul PL) =====
+
+    async function loadCharges() {
+        try {
+            // Parallel: charges list + config (pour stock_pertes_decoupe_pct)
+            const [resCharges, resCfg] = await Promise.all([
+                fetch('/api/finance/charges', { credentials: 'include' }),
+                fetch('/api/finance/config', { credentials: 'include' })
+            ]);
+            const jCharges = await resCharges.json();
+            const jCfg = await resCfg.json();
+            if (!jCharges.success) throw new Error(jCharges.error || 'Erreur charges');
+            renderCharges(jCharges.data);
+            // Hydrater le champ pertes %
+            if (jCfg.success) {
+                const pct = parseFloat(jCfg.data.stock_pertes_decoupe_pct);
+                const input = document.getElementById('fin-stock-pertes-pct');
+                if (input) input.value = Number.isFinite(pct) ? pct : 5;
+                updateStockCoeffDisplay(Number.isFinite(pct) ? pct : 5);
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur charges: ' + e.message, 'danger');
+        }
+    }
+
+    function updateStockCoeffDisplay(pct) {
+        const el = document.getElementById('fin-stock-coeff');
+        if (el) el.textContent = (100 - pct).toFixed(1) + '%';
+    }
+
+    async function onStockPertesSave() {
+        const input = document.getElementById('fin-stock-pertes-pct');
+        if (!input) return;
+        const pct = parseFloat(input.value);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+            if (typeof showToast === 'function') showToast('% invalide (0-100)', 'warning');
+            return;
+        }
+        try {
+            const res = await fetch('/api/finance/config', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock_pertes_decoupe_pct: pct })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            updateStockCoeffDisplay(pct);
+            if (typeof showToast === 'function') showToast(`Pertes découpe = ${pct}% sauvegardé`, 'success');
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    function renderCharges(rows) {
+        const tbody = document.querySelector('#fin-charges-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        for (const r of rows) {
+            addChargeRow(r.nom, r.libelle, parseFloat(r.montant_mensuel) || 0, r.ordre || 0, true);
+        }
+        updateChargesTotal();
+    }
+
+    function addChargeRow(nom, libelle, montant, ordre, fromBdd) {
+        const tbody = document.querySelector('#fin-charges-table tbody');
+        if (!tbody) return;
+        const tr = document.createElement('tr');
+
+        const tdOrdre = document.createElement('td');
+        const inOrdre = document.createElement('input');
+        inOrdre.type = 'number'; inOrdre.className = 'form-control form-control-sm text-end';
+        inOrdre.style.width = '70px';
+        inOrdre.value = ordre || 0;
+        inOrdre.dataset.col = 'ordre';
+        tdOrdre.appendChild(inOrdre);
+
+        const tdLibelle = document.createElement('td');
+        const inLib = document.createElement('input');
+        inLib.type = 'text'; inLib.className = 'form-control form-control-sm';
+        inLib.value = libelle || '';
+        inLib.dataset.col = 'libelle';
+        tdLibelle.appendChild(inLib);
+
+        const tdNom = document.createElement('td');
+        const inNom = document.createElement('input');
+        inNom.type = 'text'; inNom.className = 'form-control form-control-sm';
+        inNom.value = nom || '';
+        inNom.dataset.col = 'nom';
+        if (fromBdd) {
+            // PK existant: on n'autorise pas le rename (sinon delete+create).
+            inNom.readOnly = true;
+            inNom.style.background = '#f8fafc';
+        }
+        tdNom.appendChild(inNom);
+
+        const tdMontant = document.createElement('td');
+        const inM = document.createElement('input');
+        inM.type = 'number'; inM.min = '0'; inM.step = '1';
+        inM.className = 'form-control form-control-sm text-end';
+        inM.value = montant == null ? '' : montant;
+        inM.dataset.col = 'montant_mensuel';
+        inM.addEventListener('input', updateChargesTotal);
+        tdMontant.appendChild(inM);
+
+        const tdDel = document.createElement('td');
+        const btnDel = document.createElement('button');
+        btnDel.type = 'button';
+        btnDel.className = 'btn btn-sm btn-outline-danger';
+        btnDel.textContent = '×';
+        btnDel.title = 'Supprimer cette charge';
+        if (nom && fromBdd) btnDel.dataset.originalNom = nom;
+        btnDel.addEventListener('click', async () => {
+            const original = btnDel.dataset.originalNom;
+            if (original) {
+                let ok;
+                if (typeof showConfirmModal === 'function') {
+                    ok = await showConfirmModal(`Supprimer la charge "${libelle}" ?`, {
+                        title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                } else {
+                    ok = confirm(`Supprimer la charge "${libelle}" ?`);
+                }
+                if (!ok) return;
+                try {
+                    const res = await fetch('/api/finance/charges/' + encodeURIComponent(original), {
+                        method: 'DELETE', credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') showToast('Charge supprimée', 'success');
+                    loadCharges();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            } else {
+                tr.remove();
+                updateChargesTotal();
+            }
+        });
+        tdDel.appendChild(btnDel);
+
+        tr.append(tdOrdre, tdLibelle, tdNom, tdMontant, tdDel);
+        tbody.appendChild(tr);
+        updateChargesTotal();
+    }
+
+    function updateChargesTotal() {
+        const total = Array.from(document.querySelectorAll('#fin-charges-table tbody tr')).reduce((sum, tr) => {
+            const v = parseFloat(tr.querySelector('[data-col="montant_mensuel"]').value);
+            return sum + (Number.isFinite(v) ? v : 0);
+        }, 0);
+        const el = document.getElementById('fin-charges-total');
+        if (el) el.textContent = fmtMoney(total);
+    }
+
+    async function onChargesSave() {
+        const items = [];
+        for (const tr of document.querySelectorAll('#fin-charges-table tbody tr')) {
+            const obj = {};
+            tr.querySelectorAll('input').forEach((inp) => { obj[inp.dataset.col] = inp.value; });
+            if (!obj.nom || !obj.libelle) continue;
+            items.push({
+                nom: String(obj.nom).trim(),
+                libelle: String(obj.libelle).trim(),
+                montant_mensuel: parseFloat(obj.montant_mensuel) || 0,
+                ordre: parseInt(obj.ordre, 10) || 0
+            });
+        }
+        try {
+            const res = await fetch('/api/finance/charges', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            if (typeof showToast === 'function') showToast('Charges sauvegardées', 'success');
+            loadCharges();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    // ===== PL (Profit/Loss) =====
+
+    async function loadPl() {
+        const resultEl = document.getElementById('fin-pl-result');
+        if (!resultEl) return;
+        resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
+        try {
+            const dateDebut = document.getElementById('fin-pl-date-debut').value;
+            const dateFin = document.getElementById('fin-pl-date-fin').value;
+            const qs = new URLSearchParams();
+            if (dateDebut) qs.set('dateDebut', dateDebut);
+            if (dateFin) qs.set('dateFin', dateFin);
+            const res = await fetch('/api/finance/pl?' + qs.toString(), { credentials: 'include' });
+            const json = await res.json();
+            if (res.status === 403) {
+                resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
+                return;
+            }
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderPl(json.data);
+        } catch (e) {
+            resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    function renderPl(d) {
+        const resultEl = document.getElementById('fin-pl-result');
+        if (!resultEl) return;
+        const ch = d.charges || { detail: [] };
+        const stock = d.stock || { matin_debut: 0, soir_fin: 0, variation_brute: 0, variation_nette: 0, coeff: 0.95, pertes_decoupe_pct: 5 };
+        const pl = d.pl || 0;
+        const plColor = pl >= 0 ? 'success' : 'danger';
+
+        const chargesRows = (ch.detail || []).map((c) => `
+            <tr>
+                <td>${esc(c.libelle)}</td>
+                <td class="text-end">${esc(fmtMoney(c.montant_mensuel))}</td>
+                <td class="text-end">${esc(fmtMoney(c.prorata))}</td>
+            </tr>
+        `).join('');
+
+        // Tooltip stock avec dates effectivement utilisees (fallback si pas pile aux dates demandees)
+        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+        const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
+        const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
+
+        resultEl.innerHTML = `
+            <!-- Carte PL principale -->
+            <div class="card border-${plColor} mb-3">
+                <div class="card-body text-center">
+                    <h6 class="card-subtitle mb-2 text-muted">Profit / Loss (${esc(d.periode.dateDebut)} → ${esc(d.periode.dateFin)}, ${esc(d.periode.nb_jours)} jours)</h6>
+                    <h2 class="text-${plColor} mb-0">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</h2>
+                </div>
+            </div>
+
+            <!-- Décomposition -->
+            <h6 class="fin-subheading">Décomposition</h6>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <td><i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes</td>
+                            <td class="text-end fw-medium text-primary">+ ${esc(fmtMoney(d.total_ventes))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-bank text-danger"></i> Total avances (MataBanq)</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.total_avances))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-percent text-warning"></i> Commission MaaS (3%)</td>
+                            <td class="text-end fw-medium text-warning">− ${esc(fmtMoney(d.commission_maas))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)</td>
+                            <td class="text-end fw-medium text-success">+ ${esc(fmtMoney(d.marge_cdc))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-receipt text-info"></i> Charges proratisées (${esc(ch.total_mensuel)} × ${esc(ch.ratio_jours)})</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(ch.total_prorata))}</td>
+                        </tr>
+                        <tr>
+                            <td><i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.paiements_fournisseur))}</td>
+                        </tr>
+                        <tr>
+                            <td title="${esc(stockTooltip)}">
+                                <i class="bi bi-box-seam text-${stockColorNet}"></i>
+                                Variation stock ×
+                                <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
+                                <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>
+                            </td>
+                            <td class="text-end fw-medium text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>PL</td>
+                            <td class="text-end text-${plColor}">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Detail stock -->
+            <h6 class="fin-subheading">Détail variation stock</h6>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <td>Stock matin <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
+                            <td class="text-end">${esc(fmtMoney(stock.matin_debut))}</td>
+                        </tr>
+                        <tr>
+                            <td>Stock soir <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
+                            <td class="text-end">${esc(fmtMoney(stock.soir_fin))}</td>
+                        </tr>
+                        <tr>
+                            <td>Variation brute</td>
+                            <td class="text-end">${esc(fmtMoney(stock.variation_brute))}</td>
+                        </tr>
+                        <tr>
+                            <td>× Coefficient (1 − ${esc(stock.pertes_decoupe_pct)}%)</td>
+                            <td class="text-end">× ${esc(stock.coeff)}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>= Variation stock nette</td>
+                            <td class="text-end text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Detail charges -->
+            <h6 class="fin-subheading">Détail des charges (au prorata des ${esc(d.periode.nb_jours)} jours / 30)</h6>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Charge</th>
+                            <th class="text-end">Mensuel</th>
+                            <th class="text-end">Prorata période</th>
+                        </tr>
+                    </thead>
+                    <tbody>${chargesRows || '<tr><td colspan="3" class="text-muted text-center py-2">Aucune charge configurée</td></tr>'}</tbody>
+                    <tfoot>
+                        <tr style="background:#f8fafc">
+                            <th>Total</th>
+                            <th class="text-end">${esc(fmtMoney(ch.total_mensuel))}</th>
+                            <th class="text-end">${esc(fmtMoney(ch.total_prorata))}</th>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        `;
     }
 
 })();

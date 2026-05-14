@@ -818,6 +818,21 @@ CREATE TABLE IF NOT EXISTS prix_achat_history (
 );
 CREATE INDEX IF NOT EXISTS idx_prix_achat_history_produit ON prix_achat_history(produit, created_at DESC);
 
+-- Charges mensuelles fixes (utilise par le PL au prorata).
+CREATE TABLE IF NOT EXISTS finance_charges (
+    nom VARCHAR(100) PRIMARY KEY,
+    libelle VARCHAR(150) NOT NULL,
+    montant_mensuel NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (montant_mensuel >= 0),
+    ordre INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
+    ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
+    ('loyer',           'Loyer',           125000, 2, NOW()),
+    ('elec',            'Électricité',      30000, 3, NOW()),
+    ('internet',        'Internet',         15000, 4, NOW())
+ON CONFLICT (nom) DO NOTHING;
+
 -- Historique des modifications du prix vente fournisseur (catalogue).
 CREATE TABLE IF NOT EXISTS prix_vente_history (
     id SERIAL PRIMARY KEY,

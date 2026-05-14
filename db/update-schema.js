@@ -416,7 +416,8 @@ async function updateSchema() {
         await sequelize.query(`
             INSERT INTO finance_config (key, value, updated_at) VALUES
               ('commission_pct', '3.0', NOW()),
-              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW())
+              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW()),
+              ('stock_pertes_decoupe_pct', '5', NOW())
             ON CONFLICT (key) DO NOTHING
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');
@@ -443,6 +444,29 @@ async function updateSchema() {
             END $$;
         `);
         console.log('Table fournisseur_paiements verifiee');
+
+        // Charges mensuelles fixes pour le calcul PL (Profit/Loss).
+        // Editables depuis l'UI Finance > Charges. Le PL applique au
+        // prorata des jours lineaires (30 jours conventionnels).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges (
+                nom VARCHAR(100) PRIMARY KEY,
+                libelle VARCHAR(150) NOT NULL,
+                montant_mensuel NUMERIC(12, 2) NOT NULL DEFAULT 0
+                    CHECK (montant_mensuel >= 0),
+                ordre INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`
+            INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
+                ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
+                ('loyer',           'Loyer',           125000, 2, NOW()),
+                ('elec',            'Électricité',      30000, 3, NOW()),
+                ('internet',        'Internet',         15000, 4, NOW())
+            ON CONFLICT (nom) DO NOTHING
+        `);
+        console.log('Table finance_charges verifiee (seed 4 charges par defaut)');
 
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias

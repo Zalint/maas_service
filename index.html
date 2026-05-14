@@ -2212,6 +2212,13 @@
                             <li class="nav-item">
                                 <a class="nav-link" href="#" data-fin-tab="mapping">Mapping produits</a>
                             </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="charges">Charges</a>
+                            </li>
+                            <!-- PL: visibilité gerée en JS (admin + superviseur uniquement) -->
+                            <li class="nav-item" id="fin-pl-tab-item" style="display:none">
+                                <a class="nav-link" href="#" data-fin-tab="pl">PL</a>
+                            </li>
                         </ul>
                     </div>
                     <div class="card-body">
@@ -2526,6 +2533,88 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
+                        </div>
+
+                        <!-- Pane: Charges (mensuelles fixes pour calcul PL) -->
+                        <div data-fin-pane="charges" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                Charges mensuelles fixes. Utilisées par le PL au prorata des jours linéaires
+                                (30 jours conventionnels = 1 mois).
+                            </div>
+
+                            <!-- Réglage pertes découpe (% appliqué sur la variation stock dans le PL) -->
+                            <div class="row g-2 mb-3 align-items-end p-2" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
+                                <div class="col-md-4">
+                                    <label class="form-label small">Pertes découpe (%)</label>
+                                    <input type="number" id="fin-stock-pertes-pct"
+                                           class="form-control form-control-sm"
+                                           min="0" max="100" step="0.1"
+                                           title="La viande perd du volume lors de la découpe. Ce % réduit la variation stock dans le PL.">
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-primary" id="fin-stock-pertes-save">
+                                        <i class="bi bi-check2"></i> Sauvegarder %
+                                    </button>
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">
+                                        Coefficient appliqué : <span id="fin-stock-coeff" class="fw-bold">95%</span>
+                                        × (Stock soir − Stock matin)
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="fin-charges-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:80px">Ordre</th>
+                                            <th>Libellé</th>
+                                            <th>Identifiant interne</th>
+                                            <th class="text-end">Montant mensuel (FCFA)</th>
+                                            <th style="width:60px"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-sm btn-success" id="fin-charges-save">
+                                    <i class="bi bi-check2"></i> Sauvegarder
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" id="fin-charges-add">
+                                    + Ajouter une charge
+                                </button>
+                            </div>
+                            <div class="mt-3 small text-muted">
+                                <strong>Total mensuel actuel :</strong> <span id="fin-charges-total">0 FCFA</span>
+                            </div>
+                        </div>
+
+                        <!-- Pane: PL (Profit/Loss) - admin/superviseur uniquement -->
+                        <div data-fin-pane="pl" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Formule PL :</strong> Ventes − Total avances − Commission MaaS
+                                + Marge CDC − Charges proratisées − Paiements fournisseur.
+                                Réservé aux administrateurs et superviseurs.
+                            </div>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-pl-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-pl-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-pl-refresh">
+                                        <i class="bi bi-calculator"></i> Calculer
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="fin-pl-result"></div>
                         </div>
                     </div>
                 </div>
