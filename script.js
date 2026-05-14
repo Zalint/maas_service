@@ -2654,11 +2654,20 @@ function dvRenderRows(ventes) {
         actionsCell.style.textAlign = 'center';
 
         let showDeleteButton = false;
-        const currentUser = window.currentUser; 
+        const currentUser = window.currentUser;
         const userRole = currentUser ? currentUser.username.toUpperCase() : null;
         const privilegedUsers = ['SALIOU', 'OUSMANE'];
 
-        if (userRole && privilegedUsers.includes(userRole)) {
+        // Detection des "fake ventes" issues de decoupe_order_logs (id = "cdc-X-Y").
+        // Pour ces lignes, le delete touche le LOG entier (toutes les lignes
+        // produit du log disparaitront ensemble) et est reserve aux ADMIN.
+        const isDecoupeLine = typeof vente.id === 'string' && vente.id.startsWith('cdc-');
+        const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.isAdmin === true);
+
+        if (isDecoupeLine) {
+            // Pour les lignes CDC: admin uniquement, pas de restriction temporelle.
+            showDeleteButton = !!isAdmin;
+        } else if (userRole && privilegedUsers.includes(userRole)) {
             // Utilisateurs privilégiés : bouton toujours visible
             showDeleteButton = true;
         } else if (userRole) {
@@ -2686,9 +2695,19 @@ function dvRenderRows(ventes) {
             deleteButton.className = 'btn btn-danger btn-sm delete-vente';
             deleteButton.setAttribute('data-id', vente.id);
             deleteButton.innerHTML = '<i class="fas fa-trash"></i>';
+            // Tooltip explicite sur les lignes CDC pour que l'admin sache
+            // que ça supprime la commande entiere (toutes lignes produit).
+            if (isDecoupeLine) {
+                deleteButton.title = 'Supprimer la commande Centre de Découpe (toutes les lignes du log)';
+            }
             deleteButton.addEventListener('click', async () => {
-                const ok = await showConfirmModal('Êtes-vous sûr de vouloir supprimer cette vente ?', {
-                    title: 'Supprimer la vente', okLabel: 'Supprimer', okVariant: 'danger'
+                const isCdc = typeof vente.id === 'string' && vente.id.startsWith('cdc-');
+                const msg = isCdc
+                    ? `Supprimer la commande Centre de Découpe ${vente._commandeRef || ''} ?\n\nToutes les lignes produit de cette commande disparaitront du tableau.`
+                    : 'Êtes-vous sûr de vouloir supprimer cette vente ?';
+                const ok = await showConfirmModal(msg, {
+                    title: isCdc ? 'Supprimer commande CDC' : 'Supprimer la vente',
+                    okLabel: 'Supprimer', okVariant: 'danger'
                 });
                 if (ok) {
                     await supprimerVente(vente.id);
@@ -6868,28 +6887,48 @@ async function onTypeStockChange() {
     }
 }
 
-// Fonction pour supprimer une vente
+// Fonction pour supprimer une vente.
+// Detecte le type d'ID:
+//   - "cdc-X-Y" => commande Centre de Decoupe => DELETE /api/decoupe-log/X
+//     (admin uniquement cote serveur, supprime le log entier)
+//   - numerique => vente classique => DELETE /api/ventes/:id
 async function supprimerVente(venteId) {
     try {
-        const response = await fetch(`/api/ventes/${venteId}`, {
+        let url;
+        let isCdc = false;
+        if (typeof venteId === 'string' && venteId.startsWith('cdc-')) {
+            // Format: cdc-{logId}-{produitIndex}
+            const parts = venteId.split('-');
+            const logId = parseInt(parts[1], 10);
+            if (!Number.isFinite(logId)) {
+                alert('ID de commande Centre de Découpe invalide');
+                return;
+            }
+            url = `/api/decoupe-log/${logId}`;
+            isCdc = true;
+        } else {
+            url = `/api/ventes/${venteId}`;
+        }
+
+        const response = await fetch(url, {
             method: 'DELETE',
             credentials: 'include'
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok && data.success) {
             // Recharger les ventes après la suppression
-            alert('Vente supprimée avec succès');
+            alert(isCdc ? 'Commande Centre de Découpe supprimée' : 'Vente supprimée avec succès');
             chargerDernieresVentes();
         } else {
             // Afficher le message d'erreur du serveur
             console.error('Erreur de suppression:', data);
-            alert(data.message || 'Erreur lors de la suppression de la vente');
+            alert(data.message || 'Erreur lors de la suppression');
         }
     } catch (error) {
         console.error('Erreur lors de la suppression:', error);
-        alert('Erreur lors de la suppression de la vente');
+        alert('Erreur lors de la suppression');
     }
 }
 

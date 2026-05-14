@@ -3546,6 +3546,40 @@ app.delete('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
     }
 });
 
+// Route pour supprimer une commande envoyee au Centre de Decoupe.
+// Reservee aux admins. Ne touche que decoupe_order_logs (table de log
+// Maas) -- la commande reste active cote Mata (annulation Mata se fait
+// dans l'app Mata si besoin). Si tu veux aussi annuler cote Mata,
+// ajouter un appel HTTP a /api/commandes-decoupe/:id/annuler.
+app.delete('/api/decoupe-log/:id', checkAuth, async (req, res) => {
+    try {
+        const userRole = req.session.user.role;
+        if (userRole !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Seuls les administrateurs peuvent supprimer une commande Centre de Decoupe'
+            });
+        }
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isFinite(id)) {
+            return res.status(400).json({ success: false, message: 'id invalide' });
+        }
+        const { DecoupeOrderLog } = require('./db/models');
+        const log = await DecoupeOrderLog.findByPk(id);
+        if (!log) {
+            // Idempotent: pas d'erreur si deja supprimee
+            return res.json({ success: true, deleted: 0 });
+        }
+        const commandeRef = log.commande_ref;
+        await log.destroy();
+        console.log(`[decoupe-log] ${commandeRef} (id=${id}) supprime par ${req.session.user.username}`);
+        res.json({ success: true, deleted: 1, commande_ref: commandeRef });
+    } catch (e) {
+        console.error('DELETE /api/decoupe-log/:id:', e);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 // Route pour supprimer TOUTES les ventes d'une date (admin uniquement)
 app.delete('/api/ventes/jour/:date', checkAuth, checkWriteAccess, async (req, res) => {
     try {
