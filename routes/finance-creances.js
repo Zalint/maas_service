@@ -34,7 +34,8 @@ const {
     Vente,
     FournisseurPrix,
     FinanceConfig,
-    FournisseurPaiement
+    FournisseurPaiement,
+    ProduitAlias
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 
@@ -123,14 +124,29 @@ async function computeCreances(opts = {}) {
         });
     }
 
-    // Helper: lookup case/accent-insensitive sur le nom du produit. On
-    // tolere les variations "Boeuf en gros" / "Boeuf En Gros" / "boeuf"
-    // en cherchant une cle dont le nom commence par le mot d'animal.
+    // 2bis. Lire la table d'aliases (libelle vente -> entree catalogue).
+    // L'alias gagne sur le fallback prefix mais perd contre le match exact.
+    const aliasRows = await ProduitAlias.findAll();
+    const aliasByProduit = new Map();
+    for (const a of aliasRows) {
+        aliasByProduit.set(a.alias_produit.toLowerCase(), a.produit_catalog.toLowerCase());
+    }
+
+    // Helper: lookup case-insensitive sur le nom du produit avec priorite
+    //   1. match exact dans le catalogue (fournisseur_prix)
+    //   2. alias explicite (produit_alias)
+    //   3. fallback prefix (deprecated, mais conserve pour rester
+    //      compatible avec les ventes existantes non encore mappees)
     const lookupPrix = (produitNom) => {
         const lower = (produitNom || '').toLowerCase();
+        // 1. Exact
         if (prixByProduit.has(lower)) return prixByProduit.get(lower);
-        // Heuristique: cle si lower commence par le nom de la cle.
-        // Ex: "boeuf en detail" -> match cle "boeuf".
+        // 2. Alias explicite
+        const aliasCible = aliasByProduit.get(lower);
+        if (aliasCible && prixByProduit.has(aliasCible)) {
+            return prixByProduit.get(aliasCible);
+        }
+        // 3. Fallback prefix (a deprecate progressivement via UI mapping)
         for (const [key, value] of prixByProduit) {
             if (lower.startsWith(key)) return value;
         }

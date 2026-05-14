@@ -13,6 +13,10 @@
  *   GET    /api/finance/prix
  *   PUT    /api/finance/prix
  *   DELETE /api/finance/prix/:produit
+ *   GET    /api/finance/alias                  (mapping vente -> catalog)
+ *   PUT    /api/finance/alias                  (upsert)
+ *   DELETE /api/finance/alias/:alias
+ *   POST   /api/finance/alias/bulk-from-prefix (snap tous les prefix en aliases)
  *   GET    /api/finance/config
  *   PUT    /api/finance/config
  *   GET    /api/finance/depenses
@@ -35,7 +39,9 @@ const {
     FournisseurPrix,
     FinanceConfig,
     FournisseurPaiement,
-    Vente
+    ProduitAlias,
+    Vente,
+    sequelize
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 
@@ -131,6 +137,174 @@ router.delete('/prix/:produit', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/prix/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// MAPPING PRODUITS (alias libelle vente -> catalogue prix)
+// =====================================================
+// Vue d'ensemble: retourne le catalogue, les aliases definis, et la
+// liste des libelles distincts apparus dans Vente.produit sur les 90
+// derniers jours, avec leur statut de resolution (exact/alias/prefix/
+// unmapped). Permet a l'UI d'afficher un tableau de matching complet.
+router.get('/alias', async (req, res) => {
+    try {
+        const [catalog, aliases] = await Promise.all([
+            FournisseurPrix.findAll({ order: [['produit', 'ASC']] }),
+            ProduitAlias.findAll({ order: [['alias_produit', 'ASC']] })
+        ]);
+
+        // Distincts produits saisis dans ventes sur les ~90 derniers jours
+        // (limiter la fenetre evite de tirer 10 ans d'historique inutile).
+        // Vente.date est stocke en texte YYYY-MM-DD donc on filtre en chaine.
+        const since = new Date();
+        since.setUTCDate(since.getUTCDate() - 90);
+        const sinceISO = since.toISOString().slice(0, 10);
+
+        const distinctRows = await sequelize.query(
+            `SELECT produit, COUNT(*)::int AS n
+             FROM ventes
+             WHERE date >= :since
+             GROUP BY produit
+             ORDER BY n DESC, produit ASC`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
+        );
+
+        // Construire la table de resolution (la meme logique que lookupPrix
+        // cote computeCreances, pour que l'UI affiche le statut reel).
+        const catalogKeys = new Set(catalog.map((p) => p.produit.toLowerCase()));
+        const aliasMap = new Map(aliases.map((a) => [a.alias_produit.toLowerCase(), a.produit_catalog]));
+
+        const items = distinctRows.map((r) => {
+            const lower = (r.produit || '').toLowerCase();
+            // 1. Exact
+            if (catalogKeys.has(lower)) {
+                return { produit: r.produit, count: r.n, statut: 'exact', resolved: r.produit };
+            }
+            // 2. Alias
+            if (aliasMap.has(lower)) {
+                return { produit: r.produit, count: r.n, statut: 'alias', resolved: aliasMap.get(lower) };
+            }
+            // 3. Prefix fallback (deprecated mais encore actif cote calcul)
+            for (const cat of catalog) {
+                if (lower.startsWith(cat.produit.toLowerCase())) {
+                    return { produit: r.produit, count: r.n, statut: 'prefix', resolved: cat.produit };
+                }
+            }
+            // 4. Aucune resolution
+            return { produit: r.produit, count: r.n, statut: 'unmapped', resolved: null };
+        });
+
+        res.json({
+            success: true,
+            data: {
+                catalog: catalog.map((p) => p.produit),
+                aliases: aliases.map((a) => ({
+                    alias_produit: a.alias_produit,
+                    produit_catalog: a.produit_catalog
+                })),
+                items
+            }
+        });
+    } catch (e) {
+        console.error('GET /api/finance/alias:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Body: { alias_produit, produit_catalog }
+// Upsert: si l'alias existe, sa cible est mise a jour.
+router.put('/alias', async (req, res) => {
+    try {
+        const aliasProduit = String(req.body?.alias_produit || '').trim();
+        const produitCatalog = String(req.body?.produit_catalog || '').trim();
+        if (!aliasProduit || !produitCatalog) {
+            return res.status(400).json({
+                success: false,
+                error: 'alias_produit et produit_catalog requis'
+            });
+        }
+        // Verifier que la cible existe dans le catalogue (sinon la FK
+        // CASCADE renverrait une erreur Postgres peu lisible).
+        const cat = await FournisseurPrix.findByPk(produitCatalog);
+        if (!cat) {
+            return res.status(400).json({
+                success: false,
+                error: `produit_catalog "${produitCatalog}" introuvable dans le catalogue`
+            });
+        }
+        await ProduitAlias.upsert({
+            alias_produit: aliasProduit,
+            produit_catalog: produitCatalog,
+            updated_at: new Date()
+        });
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/alias:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Supprime un alias (laisse retomber sur fallback prefix ou unmapped).
+router.delete('/alias/:alias', async (req, res) => {
+    try {
+        const alias = String(req.params.alias || '').trim();
+        if (!alias) {
+            return res.status(400).json({ success: false, error: 'alias requis' });
+        }
+        const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
+        if (n === 0) {
+            return res.status(404).json({ success: false, error: 'Alias introuvable' });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/finance/alias/:alias:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Bulk: convertit tous les "prefix" actuellement actifs en aliases
+// explicites en figeant la resolution courante. Utile pour migrer d'un
+// coup l'historique sans cliquer ligne par ligne.
+router.post('/alias/bulk-from-prefix', async (req, res) => {
+    try {
+        const [catalog, aliases] = await Promise.all([
+            FournisseurPrix.findAll(),
+            ProduitAlias.findAll()
+        ]);
+        const catalogKeys = new Set(catalog.map((p) => p.produit.toLowerCase()));
+        const aliasSet = new Set(aliases.map((a) => a.alias_produit.toLowerCase()));
+
+        // Fenetre 90 jours pour cibler les produits "vivants".
+        const since = new Date();
+        since.setUTCDate(since.getUTCDate() - 90);
+        const sinceISO = since.toISOString().slice(0, 10);
+
+        const distinctRows = await sequelize.query(
+            `SELECT DISTINCT produit FROM ventes WHERE date >= :since`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
+        );
+
+        const now = new Date();
+        const created = [];
+        for (const r of distinctRows) {
+            const lower = (r.produit || '').toLowerCase();
+            if (catalogKeys.has(lower)) continue;   // exact match — pas besoin d'alias
+            if (aliasSet.has(lower)) continue;       // alias deja defini
+            // Cherche un match prefix
+            const cat = catalog.find((c) => lower.startsWith(c.produit.toLowerCase()));
+            if (!cat) continue;
+            await ProduitAlias.upsert({
+                alias_produit: r.produit,
+                produit_catalog: cat.produit,
+                updated_at: now
+            });
+            created.push({ alias_produit: r.produit, produit_catalog: cat.produit });
+        }
+        res.json({ success: true, created });
+    } catch (e) {
+        console.error('POST /api/finance/alias/bulk-from-prefix:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
