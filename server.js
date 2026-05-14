@@ -451,6 +451,77 @@ app.get('/api/produits-abonnement', async (req, res) => {
 });
 
 // =====================================================
+// FINANCE EXTERNAL: creance fournisseur (API key auth)
+// =====================================================
+// Endpoint expose pour qu'un consommateur externe (autre app / dashboard
+// consolide) recupere les creances par tenant. Auth par cle:
+//   x-api-key: MAAS_EXTERNAL_API_KEY  (meme cle que l'API tracabilite)
+// Validation du label vs identite du tenant courant.
+//   GET /api/external/creance?date=YYYY-MM-DD&label=Maas%20Mbao
+// La date peut etre une journee unique (date=) ou un intervalle
+// (dateDebut=..&dateFin=..).
+app.get('/api/external/creance', async (req, res) => {
+    try {
+        const apiKey = req.headers['x-api-key'] || req.query.api_key;
+        const expectedKey = process.env.MAAS_EXTERNAL_API_KEY;
+        if (!expectedKey || apiKey !== expectedKey) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        // Validation du label vs tenant courant. On lit nom_complet dans
+        // le brand-config (ex: "Mbao") et on compose "Maas <nom>" pour
+        // matcher le contrat ("Maas Mbao", "Maas Keur Massar", etc.).
+        const expectedLabel = computeFinanceLabel();
+        const providedLabel = typeof req.query.label === 'string' ? req.query.label.trim() : '';
+        if (!providedLabel) {
+            return res.status(400).json({ success: false, error: 'label requis' });
+        }
+        if (expectedLabel && providedLabel.toLowerCase() !== expectedLabel.toLowerCase()) {
+            return res.status(400).json({
+                success: false,
+                error: `label inattendu pour ce tenant (attendu: "${expectedLabel}")`
+            });
+        }
+
+        // Periode: date= journee unique, OU dateDebut/dateFin intervalle.
+        let dateDebut, dateFin;
+        if (req.query.date) {
+            dateDebut = req.query.date;
+            dateFin = req.query.date;
+        } else {
+            dateDebut = req.query.dateDebut;
+            dateFin = req.query.dateFin;
+        }
+
+        const { computeCreances } = require('./routes/finance-creances');
+        const data = await computeCreances({ dateDebut, dateFin });
+        res.json({ success: true, label: providedLabel, data });
+    } catch (e) {
+        console.error('GET /api/external/creance:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Helper local: derive le finance_label depuis brand-config.json (priorite
+// au champ explicite, sinon "Maas <nom_complet>").
+function computeFinanceLabel() {
+    try {
+        const cfgPath = path.join(__dirname, 'brand-config.json');
+        if (!fs.existsSync(cfgPath)) return null;
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const first = Object.values(cfg)[0];
+        if (!first) return null;
+        if (first.finance_label && typeof first.finance_label === 'string') {
+            return first.finance_label.trim();
+        }
+        if (first.nom_complet) return `Maas ${first.nom_complet}`;
+        return null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// =====================================================
 // TRACABILITE — LOT DU JOUR
 // =====================================================
 // Proxy entre pos.js et DATA. Logique:
@@ -569,6 +640,11 @@ app.use('/api/admin/config', configAdminRouter);
 // Auth session requise — pas d'admin-only, n'importe quel utilisateur connecté
 // du POS peut envoyer une commande au centre.
 app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
+
+// Onglet Finance: depenses + creances fournisseur + config prix/commission.
+// Gate par checkAdvancedAccess (admin + superutilisateur + superviseur).
+const financeRouter = require('./routes/finance');
+app.use('/api/finance', checkAuth, checkAdvancedAccess, financeRouter);
 
 // Routes pour la gestion du stock automatique
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON
