@@ -4357,17 +4357,19 @@ async function envoyerFactureWhatsAppFromList(commandeId) {
         }
 
         // Tracabilite — lien vers le portail. Desactivable via
-        // afficher_tracabilite=false dans brand-config.json. Defaut = true.
-        // Si DATA a renvoye un lot, on l'affiche avec la date d'abattage.
-        const afficherTracabiliteWA = !config || config.afficher_tracabilite !== false;
+        // afficher_tracabilite=false dans brand-config.json. La section
+        // entiere n'apparait QUE si la commande contient du Bovin
+        // (= tracabiliteLot.lot fourni par /api/tracabilite-lot). Sinon
+        // pas de lien pour eviter de pointer vers une fiche viande qui
+        // ne correspond pas a ce qu'a achete le client.
+        const tracabiliteDispoWA = tracabiliteLot && tracabiliteLot.lot;
+        const afficherTracabiliteWA = (!config || config.afficher_tracabilite !== false) && tracabiliteDispoWA;
         if (afficherTracabiliteWA) {
             message += `━━━━━━━━━━━━━━━━━━━━━\n`;
             message += `🥩 TRAÇABILITÉ VIANDE\n`;
             message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-            if (tracabiliteLot && tracabiliteLot.lot) {
-                message += `📅 Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
-                message += `🏷️  Lot : ${tracabiliteLot.lot}\n`;
-            }
+            message += `📅 Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+            message += `🏷️  Lot : ${tracabiliteLot.lot}\n`;
             message += `🔍 Vérifier en ligne : https://www.maas-tracabilite.com\n\n`;
             message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
         }
@@ -7303,21 +7305,20 @@ async function imprimerTicketThermique(commandeId) {
 
     // Tracabilite — QR code pointant vers le portail tracabilite.
     // Configurable par brand: afficher_tracabilite=false dans brand-config.json
-    // pour desactiver. Defaut = true (section affichee).
-    // Si DATA a renvoye un lot (commande contient du Bovin), on l'affiche
-    // au-dessus du QR (origine / date abattage / lot) — sinon section
-    // generique sans details.
-    const afficherTracabilite = !config || config.afficher_tracabilite !== false;
+    // pour desactiver. Sinon, la section ENTIERE (header + QR + URL) n'apparait
+    // QUE si la commande contient du Bovin (tracabiliteData.lot non null cote
+    // serveur via /api/tracabilite-lot). Eviter d'afficher un QR generique
+    // sur un ticket sans viande tracable (ex: que de la Volaille).
+    const tracabiliteDispo = tracabiliteData && tracabiliteData.lot;
+    const afficherTracabilite = (!config || config.afficher_tracabilite !== false) && tracabiliteDispo;
     if (afficherTracabilite) {
         ticket += SEPARATEUR + '\n';
         ticket += centrer('VERIFIEZ VOTRE PRODUIT') + '\n';
         ticket += SEPARATEUR + '\n';
         ticket += '\n';
-        if (tracabiliteData && tracabiliteData.lot) {
-            ticket += `Date d'abattage : ${tracabiliteData.dateAbattage || 'N/A'}\n`;
-            ticket += `Lot : ${tracabiliteData.lot}\n`;
-            ticket += '\n';
-        }
+        ticket += `Date d'abattage : ${tracabiliteData.dateAbattage || 'N/A'}\n`;
+        ticket += `Lot : ${tracabiliteData.lot}\n`;
+        ticket += '\n';
         ticket += centrer('Scannez le QR code ci-dessous') + '\n';
         ticket += centrer('pour verifier la tracabilite') + '\n';
         ticket += '\n';
@@ -7550,13 +7551,14 @@ async function _genererTicketPourBT(commandeId) {
 
     // Tracabilite + Feedback — meme sections que imprimerTicketThermique
     // pour que l'impression Bluetooth/RawBT contienne les QR scannables.
-    const afficherTracabiliteBT = !config || config.afficher_tracabilite !== false;
+    // La section entiere n'apparait QUE si la commande contient du Bovin
+    // (= tracabiliteLot.lot fourni par /api/tracabilite-lot).
+    const tracabiliteDispoBT = tracabiliteLot && tracabiliteLot.lot;
+    const afficherTracabiliteBT = (!config || config.afficher_tracabilite !== false) && tracabiliteDispoBT;
     if (afficherTracabiliteBT) {
         tk += SEP+'\n'+c('VERIFIEZ VOTRE PRODUIT')+'\n'+SEP+'\n\n';
-        if (tracabiliteLot && tracabiliteLot.lot) {
-            tk += `Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
-            tk += `Lot : ${tracabiliteLot.lot}\n\n`;
-        }
+        tk += `Date d'abattage : ${tracabiliteLot.dateAbattage || 'N/A'}\n`;
+        tk += `Lot : ${tracabiliteLot.lot}\n\n`;
         tk += c('Scannez le QR code ci-dessous')+'\n';
         tk += c('pour verifier la tracabilite')+'\n\n';
         tk += c('[QR Tracabilite]')+'\n\n';
