@@ -570,10 +570,14 @@ app.use('/api/admin/config', configAdminRouter);
 // du POS peut envoyer une commande au centre.
 app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
 
-// Onglet Finance: depenses + creances fournisseur + config prix/commission.
-// Gate par checkAdvancedAccess (admin + superutilisateur + superviseur).
+// Onglet Finance: ouvert aux utilisateurs authentifies (creances / cdc /
+// depenses). Les sous-routes sensibles (prix, alias, charges, config, pl,
+// cash-stock) sont gardees au cas par cas dans routes/finance.js via le
+// middleware checkAdvancedAccess (pour les sections admin/superutilisateur/
+// superviseur) et un check role explicite "admin|superviseur" pour PL et
+// Cash et Stock. Voir /routes/finance.js.
 const financeRouter = require('./routes/finance');
-app.use('/api/finance', checkAuth, checkAdvancedAccess, financeRouter);
+app.use('/api/finance', checkAuth, financeRouter);
 
 // Routes pour la gestion du stock automatique
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON

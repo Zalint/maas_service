@@ -83,8 +83,29 @@ const BOUCHERIE_INCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_INCLUDE_REGEX
 const BOUCHERIE_EXCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_EXCLUDE_REGEX
     || '(en gros|en détail|en detail|en dEtail|corne)';
 const { parseCentres } = require('./decoupe-helpers');
+const { checkAdvancedAccess } = require('../middlewares/auth');
 
 const router = express.Router();
+
+// ============================================================
+// Guards par prefixe: les utilisateurs simples (role 'utilisateur')
+// peuvent acceder a Creances / Centre de Decoupe / Depenses uniquement.
+// Les routes admin/superviseur/superutilisateur ci-dessous sont gardes
+// individuellement via checkAdvancedAccess.
+// PL et Cash et Stock font leur propre check (admin OR superviseur) dans
+// le handler — on ajoute aussi checkAdvancedAccess en defense en profondeur.
+// ============================================================
+router.use('/prix', checkAdvancedAccess);
+router.use('/prix-cdc', checkAdvancedAccess);
+router.use('/prix-achat', checkAdvancedAccess);
+router.use('/prix-vente-fournisseur', checkAdvancedAccess);
+router.use('/alias', checkAdvancedAccess);
+router.use('/charges', checkAdvancedAccess);
+router.use('/config', checkAdvancedAccess);
+router.use('/paiements', checkAdvancedAccess);
+router.use('/pl', checkAdvancedAccess);
+router.use('/cash-stock', checkAdvancedAccess);
+// DELETE /depenses/:id reste admin via inline check (cf le handler).
 
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
 // MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
@@ -1357,7 +1378,7 @@ router.post('/depenses', upload.single('justificatif'), async (req, res) => {
     }
 });
 
-router.delete('/depenses/:id', async (req, res) => {
+router.delete('/depenses/:id', checkAdvancedAccess, async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
         if (!Number.isInteger(id)) {
