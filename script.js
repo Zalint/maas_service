@@ -897,6 +897,18 @@ async function checkAuth() {
             financeItem.style.display = currentUser.canManageAdvanced ? '' : 'none';
         }
 
+        // Sous-onglet PL (Profit/Loss) dans Finance: reserve a admin et
+        // superviseur uniquement (superutilisateur exclu). Meme pattern
+        // que les autres visibility checks (a ce stade currentUser est
+        // garanti charge). Le serveur fait aussi une verif role qui retourne
+        // 403 si bypass.
+        const plTabItem = document.getElementById('fin-pl-tab-item');
+        if (plTabItem) {
+            const isAdminOrSuperviseur = ['admin', 'superviseur']
+                .includes(String(currentUser.role || '').toLowerCase());
+            plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+        }
+
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         
         // Section Analytics des Ventes - visible uniquement pour les superviseurs
