@@ -112,13 +112,91 @@
             const res = await fetch(url, { credentials: 'include' });
             const json = await res.json();
             if (!json.success) throw new Error(json.error || 'Erreur');
-            renderCreances(json.data);
+            // Nouvelle structure: { local, cdb, cdb_error }
+            renderCdb(json.data.cdb, json.data.cdb_error);
+            renderLocal(json.data.local);
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur creances: ' + e.message, 'danger');
         }
     }
 
-    function renderCreances(data) {
+    // ===== Bloc 1: Créance officielle CDB (depuis MataBanq) =====
+    function renderCdb(cdb, cdbError) {
+        const status = document.getElementById('fin-cdb-status');
+        const cards = document.getElementById('fin-cdb-cards');
+        const tbody = document.querySelector('#fin-cdb-operations tbody');
+        if (!status || !cards || !tbody) return;
+
+        if (!cdb) {
+            status.className = 'badge bg-warning';
+            status.textContent = cdbError ? ('Erreur: ' + cdbError) : 'API non configurée';
+            cards.innerHTML = '';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">Données CDB indisponibles</td></tr>';
+            return;
+        }
+
+        // L'API MataBanq retourne details[0].status[0] pour le client matche.
+        const detail = (cdb.details && cdb.details[0]) || null;
+        const clientStatus = (detail && detail.status && detail.status[0]) || null;
+        const operations = (detail && detail.operations) || [];
+        const summary = cdb.summary || null;
+        const meta = cdb.metadata || {};
+
+        const label = meta.label || (clientStatus && clientStatus.client_name) || '?';
+        const director = (detail && detail.assigned_director) || '—';
+        const dateSel = (summary && summary.date_selected) || '';
+        status.className = 'badge bg-success';
+        status.textContent = `Source: MataBanq • ${esc(label)} • ${esc(dateSel)} • Resp: ${esc(director)}`;
+
+        const solde = clientStatus ? clientStatus.solde_final : (summary ? summary.totals.current_balance : 0);
+        const avances = clientStatus ? clientStatus.total_avances : 0;
+        const remb = clientStatus ? clientStatus.total_remboursements : 0;
+        const diff = summary ? (summary.totals.total_difference || 0) : 0;
+
+        cards.innerHTML = `
+            <div class="col-md-3"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
+                <div class="small">Solde dû au fournisseur</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(solde))}</div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card text-bg-danger"><div class="card-body p-2 text-center">
+                <div class="small">Total avances</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(avances))}</div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card text-bg-success"><div class="card-body p-2 text-center">
+                <div class="small">Total remboursements</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(remb))}</div>
+            </div></div></div>
+            <div class="col-md-3"><div class="card text-bg-info"><div class="card-body p-2 text-center">
+                <div class="small">Δ vs veille</div>
+                <div class="fs-4 fw-bold">${diff >= 0 ? '+' : ''}${esc(fmtMoney(diff))}</div>
+            </div></div></div>
+        `;
+
+        // Operations: tri descendant (timestamp si dispo, sinon date)
+        const sorted = operations.slice().sort((a, b) => {
+            const ta = a.timestamp || a.date_operation || '';
+            const tb = b.timestamp || b.date_operation || '';
+            return tb.localeCompare(ta);
+        });
+        tbody.innerHTML = sorted.map((op) => {
+            const isAvance = String(op.type).toLowerCase() === 'avance';
+            const badge = isAvance
+                ? '<span class="badge bg-danger">Avance</span>'
+                : '<span class="badge bg-success">Remboursement</span>';
+            return `
+                <tr>
+                    <td>${esc(op.date_operation || '')}</td>
+                    <td>${badge}</td>
+                    <td class="text-end">${esc(fmtMoney(op.montant))}</td>
+                    <td>${esc(op.description || '')}</td>
+                    <td><small class="text-muted">${esc(op.created_by || '')}</small></td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="5" class="text-muted text-center">Aucune opération sur la période</td></tr>';
+    }
+
+    // ===== Bloc 2: Calcul Maas local (indicateur) =====
+    function renderLocal(data) {
         const cards = document.getElementById('fin-creances-cards');
         cards.innerHTML = `
             <div class="col-md-3"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
@@ -130,11 +208,11 @@
                 <div class="fs-4 fw-bold">${esc(fmtMoney(data.ce_qu_il_me_doit))}</div>
             </div></div></div>
             <div class="col-md-3"><div class="card text-bg-info"><div class="card-body p-2 text-center">
-                <div class="small">Paiements effectués</div>
+                <div class="small">Paiements locaux saisis</div>
                 <div class="fs-4 fw-bold">${esc(fmtMoney(data.paiements_effectues))}</div>
             </div></div></div>
             <div class="col-md-3"><div class="card text-bg-secondary"><div class="card-body p-2 text-center">
-                <div class="small">Reste à payer</div>
+                <div class="small">Solde théorique</div>
                 <div class="fs-4 fw-bold">${esc(fmtMoney(data.reste_a_payer))}</div>
             </div></div></div>
         `;

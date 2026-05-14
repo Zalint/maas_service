@@ -2206,6 +2206,33 @@
                                     <button class="btn btn-sm btn-primary" id="fin-creances-refresh">Calculer</button>
                                 </div>
                             </div>
+                            <!-- ===== Bloc 1: Créance officielle CDB (source MataBanq) ===== -->
+                            <div id="fin-cdb-block">
+                                <div class="d-flex align-items-center mb-2">
+                                    <h6 class="mb-0 me-2"><i class="bi bi-bank"></i> Créance officielle (CDB)</h6>
+                                    <span class="badge bg-secondary" id="fin-cdb-status">Chargement…</span>
+                                </div>
+                                <div class="row g-2 mb-3" id="fin-cdb-cards"></div>
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm table-striped" id="fin-cdb-operations">
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Type</th>
+                                                <th class="text-end">Montant</th>
+                                                <th>Description</th>
+                                                <th>Saisie par</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <!-- ===== Bloc 2: Calcul Maas (indicateur local) ===== -->
+                            <h6 class="mt-2"><i class="bi bi-calculator"></i> Calcul Maas <small class="text-muted">(indicateur basé sur les ventes locales)</small></h6>
                             <div class="row g-2 mb-3" id="fin-creances-cards"></div>
                             <h6 class="mt-3">Détail par produit</h6>
                             <div class="table-responsive">
@@ -2216,7 +2243,7 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
-                            <h6 class="mt-3">Paiements faits au fournisseur</h6>
+                            <h6 class="mt-3">Paiements faits au fournisseur (notes locales Maas)</h6>
                             <div class="table-responsive">
                                 <table class="table table-sm" id="fin-paiements-list">
                                     <thead>
