@@ -468,6 +468,33 @@ async function updateSchema() {
         `);
         console.log('Table finance_charges verifiee (seed 4 charges par defaut)');
 
+        // Historique des modifications de finance_charges.montant_mensuel.
+        // Meme pattern point-in-time que prix_vente_cdc_history etc. : chaque
+        // sauvegarde insere une ligne (uniquement si valeur change cote
+        // bulk save), permettant de retracer l'evolution des charges fixes.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges_history (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL
+                    REFERENCES finance_charges(nom) ON DELETE CASCADE,
+                libelle VARCHAR(150),
+                montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_charges_history_nom ON finance_charges_history(nom, created_at DESC)`);
+        // Genesis seed pour les charges existantes (epoch 1970).
+        await sequelize.query(`
+            INSERT INTO finance_charges_history (nom, libelle, montant_mensuel, changed_by, created_at)
+            SELECT fc.nom, fc.libelle, fc.montant_mensuel, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM finance_charges fc
+            WHERE NOT EXISTS (
+                SELECT 1 FROM finance_charges_history h WHERE h.nom = fc.nom
+            )
+        `);
+        console.log('Table finance_charges_history verifiee (genesis seedee)');
+
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias
         // explicite gere depuis l'UI Mapping produits.

@@ -56,6 +56,7 @@ const {
     PrixAchatHistory,
     PrixVenteHistory,
     FinanceCharge,
+    FinanceChargeHistory,
     Produit,
     Vente,
     sequelize
@@ -696,6 +697,13 @@ router.get('/charges', async (req, res) => {
 
 // Body: { items: [{ nom, libelle, montant_mensuel, ordre? }, ...] }
 // Upsert ligne par ligne (preserve les autres entrees).
+// Historise chaque CHANGEMENT effectif de montant_mensuel (meme pattern
+// que prix_vente / prix_achat / prix_vente_cdc). Une entree history par
+// modification reelle uniquement (pas de doublon si valeur identique).
+//
+// Atomicite: tout le batch tourne dans UNE seule transaction. Si une
+// ligne echoue, aucune ligne du batch n'est commitee (pas de partial save).
+// Performance: une seule requete pre-fetch les rows existantes (pas de N+1).
 router.put('/charges', async (req, res) => {
     try {
         const items = Array.isArray(req.body?.items) ? req.body.items : null;
@@ -703,29 +711,124 @@ router.put('/charges', async (req, res) => {
             return res.status(400).json({ success: false, error: 'items: array requis' });
         }
         const now = new Date();
+        const rawUsername = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        // Tronque a 150 chars pour matcher VARCHAR(150) cote BDD (evite
+        // un 500 sequelize si un nom de session est anormalement long).
+        const username = rawUsername ? String(rawUsername).slice(0, 150) : null;
+
+        // 1) Validation prealable de TOUS les items avant toute ecriture.
+        //    Une seule ligne invalide -> 400, rien n'est ecrit.
+        const validated = [];
         for (const item of items) {
             const nom = String(item.nom || '').trim();
-            if (!nom) continue;
-            const libelle = String(item.libelle || nom).trim();
+            if (!nom) continue; // ligne vide silencieusement skippee
+            if (nom.length > 100) {
+                return res.status(400).json({
+                    success: false, error: `nom trop long (max 100): ${nom.slice(0, 30)}...`
+                });
+            }
+            const libelleRaw = String(item.libelle || nom).trim();
+            if (libelleRaw.length > 150) {
+                return res.status(400).json({
+                    success: false, error: `libelle trop long (max 150) pour ${nom}`
+                });
+            }
             const montant = parseFloat(item.montant_mensuel);
             if (!Number.isFinite(montant) || montant < 0) {
                 return res.status(400).json({
-                    success: false,
-                    error: `montant_mensuel invalide pour ${nom}`
+                    success: false, error: `montant_mensuel invalide pour ${nom}`
                 });
             }
             const ordre = Number.isFinite(parseInt(item.ordre, 10))
                 ? parseInt(item.ordre, 10)
                 : 0;
-            await FinanceCharge.upsert({
-                nom, libelle, montant_mensuel: montant, ordre, updated_at: now
-            });
-            audit.log(req, 'charge.upsert', { nom, montant_mensuel: montant });
+            validated.push({ nom, libelle: libelleRaw, montant, ordre });
         }
+
+        // 2) Pre-fetch en une requete des charges existantes concernees.
+        const nomsToFetch = validated.map((v) => v.nom);
+        const existingRows = nomsToFetch.length
+            ? await FinanceCharge.findAll({ where: { nom: nomsToFetch } })
+            : [];
+        const existingByNom = new Map(
+            existingRows.map((r) => [r.nom, r])
+        );
+
+        // 3) Tout le batch dans UNE seule transaction.
+        const auditEntries = [];
+        await sequelize.transaction(async (t) => {
+            for (const v of validated) {
+                const existing = existingByNom.get(v.nom);
+                const oldMontant = existing
+                    ? parseFloat(existing.montant_mensuel)
+                    : null;
+                const oldLibelle = existing ? existing.libelle : null;
+                const oldOrdre = existing ? existing.ordre : null;
+
+                const montantChanged = oldMontant == null
+                    || Math.abs(oldMontant - v.montant) > 0.001;
+                const libelleChanged = oldLibelle !== v.libelle;
+                const ordreChanged = oldOrdre !== v.ordre;
+                const anyChange = montantChanged || libelleChanged || ordreChanged;
+
+                // updated_at ne bouge QUE si quelque chose a change.
+                if (!existing || anyChange) {
+                    await FinanceCharge.upsert({
+                        nom: v.nom,
+                        libelle: v.libelle,
+                        montant_mensuel: v.montant,
+                        ordre: v.ordre,
+                        updated_at: anyChange ? now : (existing ? existing.updated_at : now)
+                    }, { transaction: t });
+                }
+
+                // History: seulement si le montant a change (ou nouvelle charge).
+                if (montantChanged) {
+                    await FinanceChargeHistory.create({
+                        nom: v.nom,
+                        libelle: v.libelle,
+                        montant_mensuel: v.montant,
+                        changed_by: username
+                    }, { transaction: t });
+                }
+
+                if (anyChange || !existing) {
+                    auditEntries.push({ nom: v.nom, montant_mensuel: v.montant });
+                }
+            }
+        });
+
+        // 4) Audit log apres commit (les entries refletent ce qui a effectivement change).
+        for (const a of auditEntries) {
+            audit.log(req, 'charge.upsert', a);
+        }
+
         const rows = await FinanceCharge.findAll({ order: [['ordre', 'ASC'], ['nom', 'ASC']] });
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('PUT /api/finance/charges:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Liste les changements historiques de montant_mensuel pour une charge.
+// CASCADE: si la charge est supprimee, son historique l'est aussi (FK).
+router.get('/charges/:nom/history', async (req, res) => {
+    try {
+        const nom = String(req.params.nom || '').trim();
+        if (!nom) {
+            return res.status(400).json({ success: false, error: 'nom requis' });
+        }
+        const rows = await FinanceChargeHistory.findAll({
+            where: { nom },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/charges/:nom/history:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

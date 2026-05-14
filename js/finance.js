@@ -1260,6 +1260,23 @@
         updateChargesTotal();
     }
 
+    // Combining diacritical marks (U+0300..U+036F). Construit via RegExp(string)
+    // pour eviter qu'un editeur ne re-normalize les caracteres combinants si
+    // le range etait ecrit en litteral dans la source.
+    const DIACRITICS_RE = new RegExp('[\\u0300-\\u036f]', 'g');
+
+    // Genere un identifiant snake_case ascii a partir d'un libelle libre.
+    // Ex: "Loyer Local" -> "loyer_local"; "Électricité" -> "electricite".
+    function slugifyChargeNom(libelle) {
+        return String(libelle || '')
+            .normalize('NFD')
+            .replace(DIACRITICS_RE, '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 100);
+    }
+
     function addChargeRow(nom, libelle, montant, ordre, fromBdd) {
         const tbody = document.querySelector('#fin-charges-table tbody');
         if (!tbody) return;
@@ -1278,6 +1295,7 @@
         inLib.type = 'text'; inLib.className = 'form-control form-control-sm';
         inLib.value = libelle || '';
         inLib.dataset.col = 'libelle';
+        inLib.placeholder = 'Ex: Eau, Maintenance, Assurance...';
         tdLibelle.appendChild(inLib);
 
         const tdNom = document.createElement('td');
@@ -1285,10 +1303,21 @@
         inNom.type = 'text'; inNom.className = 'form-control form-control-sm';
         inNom.value = nom || '';
         inNom.dataset.col = 'nom';
+        inNom.placeholder = 'auto';
         if (fromBdd) {
             // PK existant: on n'autorise pas le rename (sinon delete+create).
             inNom.readOnly = true;
             inNom.style.background = '#f8fafc';
+        } else {
+            // Nouvelle charge: derive le nom (PK) en snake_case depuis le libelle
+            // tant que l'utilisateur n'a pas tape un nom custom.
+            let nomManuallyEdited = false;
+            inNom.addEventListener('input', () => { nomManuallyEdited = true; });
+            inLib.addEventListener('input', () => {
+                if (!nomManuallyEdited) {
+                    inNom.value = slugifyChargeNom(inLib.value);
+                }
+            });
         }
         tdNom.appendChild(inNom);
 
@@ -1301,7 +1330,31 @@
         inM.addEventListener('input', updateChargesTotal);
         tdMontant.appendChild(inM);
 
-        const tdDel = document.createElement('td');
+        const tdActions = document.createElement('td');
+        tdActions.className = 'text-nowrap';
+
+        // Bouton historique (uniquement pour les charges deja en BDD).
+        if (fromBdd && nom) {
+            const btnHist = document.createElement('button');
+            btnHist.type = 'button';
+            btnHist.className = 'btn btn-sm btn-outline-secondary me-1';
+            btnHist.innerHTML = '<i class="bi bi-clock-history"></i>';
+            btnHist.title = 'Historique du montant';
+            btnHist.addEventListener('click', async () => {
+                try {
+                    const res = await fetch('/api/finance/charges/' + encodeURIComponent(nom) + '/history', {
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    showPrixHistoryModal('Montant mensuel', libelle || nom, 'montant_mensuel', j.data);
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+            tdActions.appendChild(btnHist);
+        }
+
         const btnDel = document.createElement('button');
         btnDel.type = 'button';
         btnDel.className = 'btn btn-sm btn-outline-danger';
@@ -1336,11 +1389,16 @@
                 updateChargesTotal();
             }
         });
-        tdDel.appendChild(btnDel);
+        tdActions.appendChild(btnDel);
 
-        tr.append(tdOrdre, tdLibelle, tdNom, tdMontant, tdDel);
+        tr.append(tdOrdre, tdLibelle, tdNom, tdMontant, tdActions);
         tbody.appendChild(tr);
         updateChargesTotal();
+
+        // UX: focus auto sur le libelle pour une nouvelle ligne.
+        if (!fromBdd) {
+            setTimeout(() => inLib.focus(), 0);
+        }
     }
 
     function updateChargesTotal() {
@@ -1354,16 +1412,45 @@
 
     async function onChargesSave() {
         const items = [];
-        for (const tr of document.querySelectorAll('#fin-charges-table tbody tr')) {
+        const invalidRows = [];
+        const rows = Array.from(document.querySelectorAll('#fin-charges-table tbody tr'));
+        for (const tr of rows) {
             const obj = {};
             tr.querySelectorAll('input').forEach((inp) => { obj[inp.dataset.col] = inp.value; });
-            if (!obj.nom || !obj.libelle) continue;
+            const libelle = String(obj.libelle || '').trim();
+            const nom = String(obj.nom || '').trim();
+            // Ligne completement vide: skip silencieusement.
+            if (!libelle && !nom) continue;
+            // Libelle saisi mais nom vide (slugify a echoue, ex: "!!!"):
+            // on alerte plutot que de silencieusement perdre la ligne.
+            if (!nom) {
+                invalidRows.push(libelle || '(sans libelle)');
+                tr.querySelector('[data-col="nom"]').classList.add('is-invalid');
+                continue;
+            }
+            // Nom present mais libelle vide: idem, alerte explicite.
+            if (!libelle) {
+                invalidRows.push(nom);
+                tr.querySelector('[data-col="libelle"]').classList.add('is-invalid');
+                continue;
+            }
+            tr.querySelector('[data-col="nom"]').classList.remove('is-invalid');
+            tr.querySelector('[data-col="libelle"]').classList.remove('is-invalid');
             items.push({
-                nom: String(obj.nom).trim(),
-                libelle: String(obj.libelle).trim(),
+                nom,
+                libelle,
                 montant_mensuel: parseFloat(obj.montant_mensuel) || 0,
                 ordre: parseInt(obj.ordre, 10) || 0
             });
+        }
+        if (invalidRows.length) {
+            if (typeof showToast === 'function') {
+                showToast(
+                    `Identifiant ou libellé manquant pour: ${invalidRows.join(', ')}`,
+                    'warning'
+                );
+            }
+            return;
         }
         try {
             const res = await fetch('/api/finance/charges', {

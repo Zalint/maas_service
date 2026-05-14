@@ -833,6 +833,26 @@ INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) V
     ('internet',        'Internet',         15000, 4, NOW())
 ON CONFLICT (nom) DO NOTHING;
 
+-- Historique des modifications des charges (point-in-time).
+-- Une entree par modification reelle du montant_mensuel.
+CREATE TABLE IF NOT EXISTS finance_charges_history (
+    id SERIAL PRIMARY KEY,
+    nom VARCHAR(100) NOT NULL
+        REFERENCES finance_charges(nom) ON DELETE CASCADE,
+    libelle VARCHAR(150),
+    montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_finance_charges_history_nom ON finance_charges_history(nom, created_at DESC);
+-- Genesis seed: une entree epoch 1970 par charge existante (eviter timeline vide).
+INSERT INTO finance_charges_history (nom, libelle, montant_mensuel, changed_by, created_at)
+SELECT fc.nom, fc.libelle, fc.montant_mensuel, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM finance_charges fc
+WHERE NOT EXISTS (
+    SELECT 1 FROM finance_charges_history h WHERE h.nom = fc.nom
+);
+
 -- Historique des modifications du prix vente fournisseur (catalogue).
 CREATE TABLE IF NOT EXISTS prix_vente_history (
     id SERIAL PRIMARY KEY,
