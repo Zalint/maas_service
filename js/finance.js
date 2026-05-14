@@ -1434,12 +1434,23 @@
                 tr.querySelector('[data-col="libelle"]').classList.add('is-invalid');
                 continue;
             }
+            // Validation explicite du montant: blanc / non-numerique / negatif
+            // -> alerte plutot que coercition silencieuse a 0.
+            const montantRaw = String(obj.montant_mensuel || '').trim();
+            const montantNum = parseFloat(montantRaw);
+            const montantCell = tr.querySelector('[data-col="montant_mensuel"]');
+            if (montantRaw === '' || !Number.isFinite(montantNum) || montantNum < 0) {
+                invalidRows.push(`${libelle} (montant)`);
+                if (montantCell) montantCell.classList.add('is-invalid');
+                continue;
+            }
+            if (montantCell) montantCell.classList.remove('is-invalid');
             tr.querySelector('[data-col="nom"]').classList.remove('is-invalid');
             tr.querySelector('[data-col="libelle"]').classList.remove('is-invalid');
             items.push({
                 nom,
                 libelle,
-                montant_mensuel: parseFloat(obj.montant_mensuel) || 0,
+                montant_mensuel: montantNum,
                 ordre: parseInt(obj.ordre, 10) || 0
             });
         }

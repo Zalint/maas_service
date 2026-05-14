@@ -1448,7 +1448,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// Run token + timer pour eviter les writes obsoletes quand calculerTotalGeneral
+// est rappele avant que le precedent setTimeout/fetch ait fini (sinon les
+// trois DOM updates a la fin de la callback peuvent etre ecrasees par un
+// run plus ancien qui se termine apres un run plus recent).
+let _totalsRunId = 0;
+let _totalsTimerId = null;
 function calculerTotalGeneral() {
+    // Annule le run precedent (si encore en attente du setTimeout) et bump
+    // le runId; le runId capture dans la closure verifie qu'on est encore
+    // le run actif avant d'ecrire dans le DOM.
+    if (_totalsTimerId !== null) {
+        clearTimeout(_totalsTimerId);
+        _totalsTimerId = null;
+    }
+    _totalsRunId += 1;
+    const runId = _totalsRunId;
     // Récupérer la date sélectionnée
     const dateSelectionnee = document.getElementById('date').value;
     
@@ -1500,7 +1515,8 @@ function calculerTotalGeneral() {
     
     // 2. Calculer le total asynchrone pour ne pas bloquer l'UI
     // (async callback pour permettre fetch await commandes decoupe)
-    setTimeout(async () => {
+    _totalsTimerId = setTimeout(async () => {
+        _totalsTimerId = null;
         try {
             // Obtenir toutes les lignes de vente
             const tbody = document.querySelector('#dernieres-ventes tbody');
@@ -1544,6 +1560,10 @@ function calculerTotalGeneral() {
             // 3. Calculer et afficher le total général (= ventes seulement,
             //    sans les commandes envoyees au CDC)
             const totalGeneral = totalSaisie + totalDernieresVentes;
+            // Garde-fou stale write: si un run plus recent a ete declenche
+            // pendant qu'on calculait, on n'ecrit pas pour ne pas ecraser
+            // un resultat plus a jour.
+            if (runId !== _totalsRunId) return;
             document.getElementById('total-general').textContent = `${totalGeneral.toLocaleString('fr-FR')} FCFA`;
 
             // 4. Fetch commandes decoupe pour la meme date + PV. Best-effort:
@@ -1569,16 +1589,20 @@ function calculerTotalGeneral() {
                     const dataD = await respDecoupe.json();
                     totalDecoupe = (dataD && dataD.success) ? (Number(dataD.total) || 0) : 0;
                 }
+                // Re-verifier le runId apres l'await fetch.
+                if (runId !== _totalsRunId) return;
                 document.getElementById('total-general-decoupe').textContent = `${totalDecoupe.toLocaleString('fr-FR')} FCFA`;
                 document.getElementById('total-general-combine').textContent = `${(totalGeneral + totalDecoupe).toLocaleString('fr-FR')} FCFA`;
             } catch (errDecoupe) {
                 console.warn('Echec fetch commandes decoupe (non-bloquant):', errDecoupe);
+                if (runId !== _totalsRunId) return;
                 document.getElementById('total-general-decoupe').textContent = '0 FCFA';
                 document.getElementById('total-general-combine').textContent = `${totalGeneral.toLocaleString('fr-FR')} FCFA`;
             }
 
         } catch (error) {
             console.error('Erreur lors du calcul du total:', error);
+            if (runId !== _totalsRunId) return;
             document.getElementById('total-general').textContent = 'Erreur de calcul';
         }
     }, 50);

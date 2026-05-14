@@ -59,24 +59,35 @@ function buildTemporalResolver(historyRows, prixField) {
         const key = h.produit.toLowerCase();
         if (!byProduit.has(key)) byProduit.set(key, []);
         byProduit.get(key).push({
-            ts: new Date(h.created_at),
+            ts: new Date(h.created_at).getTime(),
             prix: parseFloat(h[prixField])
         });
     }
-    // Sort ASC pour iteration efficace.
+    // Sort ASC par timestamp (numerique) pour binary search.
     for (const arr of byProduit.values()) {
         arr.sort((a, b) => a.ts - b.ts);
+    }
+    // Binary search: dernier index i tel que arr[i].ts <= cutoffMs.
+    // Renvoie -1 si toutes les entrees sont posterieures au cutoff.
+    function lastIndexBefore(arr, cutoffMs) {
+        let lo = 0, hi = arr.length - 1, ans = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >>> 1;
+            if (arr[mid].ts <= cutoffMs) {
+                ans = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return ans;
     }
     return function getPrixAtDate(produitNomLower, dateISO) {
         const arr = byProduit.get(produitNomLower);
         if (!arr || arr.length === 0) return null;
-        const cutoff = new Date(dateISO + 'T23:59:59.999Z');
-        let effective = null;
-        for (const entry of arr) {
-            if (entry.ts <= cutoff) effective = entry.prix;
-            else break;
-        }
-        return effective;
+        const cutoffMs = new Date(dateISO + 'T23:59:59.999Z').getTime();
+        const i = lastIndexBefore(arr, cutoffMs);
+        return i < 0 ? null : arr[i].prix;
     };
 }
 

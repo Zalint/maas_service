@@ -153,16 +153,20 @@ router.put('/prix', async (req, res) => {
                 });
             }
 
-            // Lire l'ancien etat pour ne creer une entree history QUE si
-            // la valeur a effectivement change. Transaction atomique:
-            // upsert catalogue + inserts history conditionnels.
-            const existing = await FournisseurPrix.findByPk(produit);
-            const oldPrixVente = existing ? parseFloat(existing.prix_vente) : null;
-            const oldPrixAchat = existing && existing.prix_achat != null
-                ? parseFloat(existing.prix_achat)
-                : null;
-
+            // Transaction atomique: lire l'ancien etat AVEC FOR UPDATE, puis
+            // upsert + inserts history conditionnels. Le lock evite que deux
+            // saves concurrents sur le meme produit voient tous les deux
+            // l'ancienne valeur et inserent un doublon dans l'historique.
             await sequelize.transaction(async (t) => {
+                const existing = await FournisseurPrix.findByPk(produit, {
+                    transaction: t,
+                    lock: t.LOCK.UPDATE
+                });
+                const oldPrixVente = existing ? parseFloat(existing.prix_vente) : null;
+                const oldPrixAchat = existing && existing.prix_achat != null
+                    ? parseFloat(existing.prix_achat)
+                    : null;
+
                 await FournisseurPrix.upsert({
                     produit,
                     prix_vente: prixVente,
@@ -720,7 +724,9 @@ router.put('/charges', async (req, res) => {
 
         // 1) Validation prealable de TOUS les items avant toute ecriture.
         //    Une seule ligne invalide -> 400, rien n'est ecrit.
+        //    Detection de doublons sur nom: rejet avant tout write.
         const validated = [];
+        const seenNoms = new Set();
         for (const item of items) {
             const nom = String(item.nom || '').trim();
             if (!nom) continue; // ligne vide silencieusement skippee
@@ -729,6 +735,12 @@ router.put('/charges', async (req, res) => {
                     success: false, error: `nom trop long (max 100): ${nom.slice(0, 30)}...`
                 });
             }
+            if (seenNoms.has(nom)) {
+                return res.status(400).json({
+                    success: false, error: `nom dupliqué dans le batch: ${nom}`
+                });
+            }
+            seenNoms.add(nom);
             const libelleRaw = String(item.libelle || nom).trim();
             if (libelleRaw.length > 150) {
                 return res.status(400).json({
@@ -747,18 +759,23 @@ router.put('/charges', async (req, res) => {
             validated.push({ nom, libelle: libelleRaw, montant, ordre });
         }
 
-        // 2) Pre-fetch en une requete des charges existantes concernees.
-        const nomsToFetch = validated.map((v) => v.nom);
-        const existingRows = nomsToFetch.length
-            ? await FinanceCharge.findAll({ where: { nom: nomsToFetch } })
-            : [];
-        const existingByNom = new Map(
-            existingRows.map((r) => [r.nom, r])
-        );
-
-        // 3) Tout le batch dans UNE seule transaction.
+        // 2) Tout le batch dans UNE seule transaction, avec read sous FOR UPDATE
+        //    pour serialiser les writes concurrents sur les memes nom (evite
+        //    duplicate history entries si deux saves frappent en parallele).
         const auditEntries = [];
         await sequelize.transaction(async (t) => {
+            const nomsToFetch = validated.map((v) => v.nom);
+            const existingRows = nomsToFetch.length
+                ? await FinanceCharge.findAll({
+                    where: { nom: nomsToFetch },
+                    transaction: t,
+                    lock: t.LOCK.UPDATE
+                })
+                : [];
+            const existingByNom = new Map(
+                existingRows.map((r) => [r.nom, r])
+            );
+
             for (const v of validated) {
                 const existing = existingByNom.get(v.nom);
                 const oldMontant = existing
@@ -898,12 +915,30 @@ router.get('/pl', async (req, res) => {
             const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
             return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
         };
-        const dateDebut = toISO(req.query.dateDebut) || defaultDebut;
-        const dateFin = toISO(req.query.dateFin) || defaultFin;
+        // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
+        const rawDebut = req.query.dateDebut;
+        const rawFin = req.query.dateFin;
+        const dateDebut = rawDebut ? toISO(rawDebut) : defaultDebut;
+        const dateFin = rawFin ? toISO(rawFin) : defaultFin;
+        if (rawDebut && !dateDebut) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut' });
+        }
+        if (rawFin && !dateFin) {
+            return res.status(400).json({ success: false, error: 'invalid dateFin' });
+        }
 
         // Nombre de jours dans la periode (inclus). Convention 30 jours/mois.
         const startD = new Date(dateDebut + 'T00:00:00Z');
         const endD = new Date(dateFin + 'T00:00:00Z');
+        if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+        if (startD > endD) {
+            return res.status(400).json({
+                success: false,
+                error: 'dateDebut must be <= dateFin'
+            });
+        }
         const nbDaysPeriod = Math.floor((endD - startD) / 86400000) + 1;
 
         // 1. Total ventes sur la periode (= Vente.date IN periode, montant)

@@ -871,6 +871,31 @@ INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
   ('Laxass',  300,  200)
 ON CONFLICT (produit) DO NOTHING;
 
+-- Genesis seeds des 3 tables history (point-in-time).
+-- Chaque produit doit avoir au moins UNE entree pour que le lookup
+-- point-in-time fonctionne. created_at=epoch 1970 = "applicable depuis
+-- toujours". Skip si une entree existe deja (idempotent).
+INSERT INTO prix_vente_history (produit, prix_vente, changed_by, created_at)
+SELECT fp.produit, fp.prix_vente, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE NOT EXISTS (
+    SELECT 1 FROM prix_vente_history h WHERE h.produit = fp.produit
+);
+INSERT INTO prix_achat_history (produit, prix_achat, changed_by, created_at)
+SELECT fp.produit, fp.prix_achat, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE fp.prix_achat IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM prix_achat_history h WHERE h.produit = fp.produit
+  );
+INSERT INTO prix_vente_cdc_history (produit, prix_vente_cdc, changed_by, created_at)
+SELECT fp.produit, fp.prix_vente_cdc, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+FROM fournisseur_prix fp
+WHERE fp.prix_vente_cdc IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM prix_vente_cdc_history h WHERE h.produit = fp.produit
+  );
+
 CREATE TABLE IF NOT EXISTS finance_config (
     key VARCHAR(50) PRIMARY KEY,
     value TEXT NOT NULL,
