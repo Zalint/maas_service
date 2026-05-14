@@ -860,7 +860,10 @@
             }
         };
 
-        tbody.innerHTML = items.map((it) => {
+        // Index-based lookup: chaque ligne porte data-line-idx="N". Plus
+        // robuste qu'un selector base sur le nom du produit (qui peut
+        // contenir des guillemets / caracteres CSS-speciaux).
+        tbody.innerHTML = items.map((it, idx) => {
             // Si exact: pas de dropdown / pas de bouton (le libelle EST une
             // entree du catalogue, rien a mapper).
             if (it.statut === 'exact') {
@@ -879,7 +882,7 @@
                                   : '';
             const actionLabel = it.statut === 'alias' ? 'Mettre à jour' : 'Enregistrer';
             const deleteBtn = it.statut === 'alias'
-                ? `<button type="button" class="btn btn-sm btn-outline-danger" data-mapping-del="${esc(it.produit)}" title="Supprimer l'alias"><i class="bi bi-trash"></i></button>`
+                ? `<button type="button" class="btn btn-sm btn-outline-danger" data-mapping-del="${idx}" title="Supprimer l'alias"><i class="bi bi-trash"></i></button>`
                 : '';
             return `
                 <tr>
@@ -887,12 +890,12 @@
                     <td class="text-end">${esc(it.count)}</td>
                     <td>${statutPill(it.statut, it.resolved)}</td>
                     <td>
-                        <select class="form-select form-select-sm" data-mapping-select="${esc(it.produit)}">
+                        <select class="form-select form-select-sm" data-mapping-select="${idx}">
                             ${catalogOptions(selectedCatalog)}
                         </select>
                     </td>
                     <td class="d-flex gap-1">
-                        <button type="button" class="btn btn-sm btn-primary" data-mapping-save="${esc(it.produit)}" title="${actionLabel}">
+                        <button type="button" class="btn btn-sm btn-primary" data-mapping-save="${idx}" title="${actionLabel}">
                             <i class="bi bi-check2"></i>
                         </button>
                         ${deleteBtn}
@@ -901,11 +904,16 @@
             `;
         }).join('') || '<tr><td colspan="5" class="text-muted text-center py-3">Aucun produit vendu sur les 90 derniers jours.</td></tr>';
 
-        // Wire boutons "Enregistrer" (PUT /alias)
+        // Wire boutons "Enregistrer" (PUT /alias) — lookup par index dans
+        // items pour eviter tout escape CSS sur des noms a caracteres
+        // speciaux (guillemets, backslash, etc.).
         tbody.querySelectorAll('[data-mapping-save]').forEach((btn) => {
             btn.addEventListener('click', async () => {
-                const alias = btn.dataset.mappingSave;
-                const select = tbody.querySelector(`[data-mapping-select="${cssEsc(alias)}"]`);
+                const idx = parseInt(btn.dataset.mappingSave, 10);
+                const it = items[idx];
+                if (!it) return;
+                const alias = it.produit;
+                const select = tbody.querySelector(`select[data-mapping-select="${idx}"]`);
                 const target = select ? select.value : '';
                 if (!target) {
                     if (typeof showToast === 'function') showToast('Choisir un produit du catalogue', 'warning');
@@ -928,10 +936,13 @@
             });
         });
 
-        // Wire boutons "Supprimer alias" (DELETE /alias/:alias)
+        // Wire boutons "Supprimer alias" (DELETE /alias/:alias) — lookup par index.
         tbody.querySelectorAll('[data-mapping-del]').forEach((btn) => {
             btn.addEventListener('click', async () => {
-                const alias = btn.dataset.mappingDel;
+                const idx = parseInt(btn.dataset.mappingDel, 10);
+                const it = items[idx];
+                if (!it) return;
+                const alias = it.produit;
                 const msg = `Supprimer l'alias "${alias}" ? Le libellé retombera sur le fallback prefix ou sera ignoré.`;
                 let ok;
                 if (typeof showConfirmModal === 'function') {
@@ -990,8 +1001,4 @@
         }
     }
 
-    // Escape CSS pour selector attribute (querySelector + valeur dynamique)
-    function cssEsc(s) {
-        return String(s).replace(/(["\\\]\[])/g, '\\$1');
-    }
 })();

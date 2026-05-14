@@ -45,6 +45,10 @@ const {
     Vente,
     sequelize
 } = require('../db/models');
+const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
+
+// Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
+const ALIAS_PRODUIT_MAX_LENGTH = 150;
 const { parseCentres } = require('./decoupe-helpers');
 
 const router = express.Router();
@@ -152,93 +156,71 @@ router.delete('/prix/:produit', async (req, res) => {
 // unmapped). Permet a l'UI d'afficher un tableau de matching complet.
 router.get('/alias', async (req, res) => {
     try {
-        const [catalog, aliases] = await Promise.all([
-            FournisseurPrix.findAll({ order: [['produit', 'ASC']] }),
-            ProduitAlias.findAll({ order: [['alias_produit', 'ASC']] })
-        ]);
-
-        // Liste des produits inventaire "boucherie" (filtre par regex sur
-        // le nom car la BDD locale n'utilise pas les categories Bovin/Ovin/
-        // Caprin/Volaille pour l'inventaire). On INCLUT les "parents" et
-        // les variants "sur pieds" (Boeuf sur pieds, Chevre sur pieds,
-        // Mouton sur pieds sont conserves). On EXCLUT seulement les
-        // variants de presentation en gros / en detail qui seront mappes
-        // via produit_alias vers leur parent. CORNE BOEUF GM exclu car
-        // ce n'est pas un produit boucherie principal.
-        const invRows = await Produit.findAll({
-            where: {
-                type_catalogue: 'inventaire',
-                [Op.and]: [
-                    sequelize.where(
-                        sequelize.fn('LOWER', sequelize.col('nom')),
-                        { [Op.regexp]: '(boeuf|veau|agneau|mouton|chevre|chèvre|poulet|foie|abats|yell|sans os|mergez|merguez|tete|tête|laxass|jarret|peaux?)' }
-                    ),
-                    sequelize.where(
-                        sequelize.fn('LOWER', sequelize.col('nom')),
-                        { [Op.notRegexp]: '(en gros|en détail|en detail|en dEtail|corne)' }
-                    )
-                ]
-            },
-            attributes: ['nom'],
-            order: [['nom', 'ASC']]
-        });
-
-        // Le dropdown UI = union(inventaire boucherie, catalogue fournisseur_prix)
-        // pour permettre a l'admin d'ajouter manuellement un produit via
-        // l'onglet "Prix fournisseur" et le voir apparaitre ici aussi.
-        const set = new Set();
-        invRows.forEach((p) => set.add(p.nom));
-        catalog.forEach((p) => set.add(p.produit));
-        const dropdown = Array.from(set).sort((a, b) => a.localeCompare(b, 'fr'));
-        const inventory = invRows.map((p) => ({ nom: p.nom }));
-
-        // Distincts produits saisis dans ventes sur les ~90 derniers jours
-        // (limiter la fenetre evite de tirer 10 ans d'historique inutile).
-        // Vente.date est stocke en texte YYYY-MM-DD donc on filtre en chaine.
+        // Fenetre 90 jours pour les ventes (limite la requete distinct).
         const since = new Date();
         since.setUTCDate(since.getUTCDate() - 90);
         const sinceISO = since.toISOString().slice(0, 10);
 
-        const distinctRows = await sequelize.query(
-            `SELECT produit, COUNT(*)::int AS n
-             FROM ventes
-             WHERE date >= :since
-             GROUP BY produit
-             ORDER BY n DESC, produit ASC`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
-        );
+        // 4 requetes en parallele (gain ~150-200ms vs sequentiel).
+        const [catalog, aliases, invRows, distinctRows] = await Promise.all([
+            FournisseurPrix.findAll({ order: [['produit', 'ASC']] }),
+            ProduitAlias.findAll({ order: [['alias_produit', 'ASC']] }),
+            // Inventaire boucherie: regex include + exclude (cf README feature).
+            // INCLUT "sur pieds" comme variants conserves, EXCLUT "en gros|en detail|corne".
+            Produit.findAll({
+                where: {
+                    type_catalogue: 'inventaire',
+                    [Op.and]: [
+                        sequelize.where(
+                            sequelize.fn('LOWER', sequelize.col('nom')),
+                            { [Op.regexp]: '(boeuf|veau|agneau|mouton|chevre|chèvre|poulet|foie|abats|yell|sans os|mergez|merguez|tete|tête|laxass|jarret|peaux?)' }
+                        ),
+                        sequelize.where(
+                            sequelize.fn('LOWER', sequelize.col('nom')),
+                            { [Op.notRegexp]: '(en gros|en détail|en detail|en dEtail|corne)' }
+                        )
+                    ]
+                },
+                attributes: ['nom'],
+                order: [['nom', 'ASC']]
+            }),
+            // Distincts Vente.produit sur 90 derniers jours.
+            sequelize.query(
+                `SELECT produit, COUNT(*)::int AS n
+                 FROM ventes
+                 WHERE date >= :since
+                 GROUP BY produit
+                 ORDER BY n DESC, produit ASC`,
+                { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
+            )
+        ]);
 
-        // Construire la table de resolution (la meme logique que lookupPrix
-        // cote computeCreances, pour que l'UI affiche le statut reel).
-        const catalogKeys = new Set(catalog.map((p) => p.produit.toLowerCase()));
-        const aliasMap = new Map(aliases.map((a) => [a.alias_produit.toLowerCase(), a.produit_catalog]));
+        // Dropdown UI = union triee (inventaire boucherie ∪ catalogue).
+        const set = new Set();
+        invRows.forEach((p) => set.add(p.nom));
+        catalog.forEach((p) => set.add(p.produit));
+        const dropdown = Array.from(set).sort((a, b) => a.localeCompare(b, 'fr'));
 
+        // Resolution statut: utilise le helper partage avec computeCreances
+        // pour garantir que ce que l'UI affiche correspond exactement a ce
+        // que le calcul de creances utilise (zero divergence possible).
+        const resolverMaps = buildResolverMaps(catalog, aliases);
         const items = distinctRows.map((r) => {
-            const lower = (r.produit || '').toLowerCase();
-            // 1. Exact
-            if (catalogKeys.has(lower)) {
-                return { produit: r.produit, count: r.n, statut: 'exact', resolved: r.produit };
-            }
-            // 2. Alias
-            if (aliasMap.has(lower)) {
-                return { produit: r.produit, count: r.n, statut: 'alias', resolved: aliasMap.get(lower) };
-            }
-            // 3. Prefix fallback (deprecated mais encore actif cote calcul)
-            for (const cat of catalog) {
-                if (lower.startsWith(cat.produit.toLowerCase())) {
-                    return { produit: r.produit, count: r.n, statut: 'prefix', resolved: cat.produit };
-                }
-            }
-            // 4. Aucune resolution
-            return { produit: r.produit, count: r.n, statut: 'unmapped', resolved: null };
+            const resolved = resolveProduit(r.produit, resolverMaps);
+            return {
+                produit: r.produit,
+                count: r.n,
+                statut: resolved.statut,
+                resolved: resolved.resolved
+            };
         });
 
         res.json({
             success: true,
             data: {
-                catalog: catalog.map((p) => p.produit),  // entrees fournisseur_prix existantes
-                inventory,                                // produits inventaire boucherie (filtre regex)
-                dropdown,                                 // union triee inventaire ∪ catalogue (= source du <select> UI)
+                catalog: catalog.map((p) => p.produit),  // garde pour compat (peut etre supprime plus tard)
+                inventory: invRows.map((p) => ({ nom: p.nom })),
+                dropdown,
                 aliases: aliases.map((a) => ({
                     alias_produit: a.alias_produit,
                     produit_catalog: a.produit_catalog
@@ -258,6 +240,8 @@ router.get('/alias', async (req, res) => {
 // pas encore dans fournisseur_prix, on cree une entree avec prix=0
 // pour satisfaire la FK et permettre a l'admin de remplir le prix
 // ensuite dans l'onglet Prix fournisseur.
+// Transaction + findOrCreate pour eviter une race condition si deux
+// requetes concurrentes essaient de creer la meme entree catalogue.
 router.put('/alias', async (req, res) => {
     try {
         const aliasProduit = String(req.body?.alias_produit || '').trim();
@@ -268,23 +252,39 @@ router.put('/alias', async (req, res) => {
                 error: 'alias_produit et produit_catalog requis'
             });
         }
-        const cat = await FournisseurPrix.findByPk(produitCatalog);
-        let created = false;
-        if (!cat) {
-            await FournisseurPrix.create({
-                produit: produitCatalog,
-                prix_vente: 0,
-                prix_achat: null,
-                updated_at: new Date()
+        // Validation longueur (matche VARCHAR(150) PK + VARCHAR(100) FK).
+        if (aliasProduit.length > ALIAS_PRODUIT_MAX_LENGTH) {
+            return res.status(400).json({
+                success: false,
+                error: `alias_produit trop long (max ${ALIAS_PRODUIT_MAX_LENGTH} caracteres)`
             });
-            created = true;
         }
-        await ProduitAlias.upsert({
-            alias_produit: aliasProduit,
-            produit_catalog: produitCatalog,
-            updated_at: new Date()
+        if (produitCatalog.length > 100) {
+            return res.status(400).json({
+                success: false,
+                error: 'produit_catalog trop long (max 100 caracteres)'
+            });
+        }
+
+        const result = await sequelize.transaction(async (t) => {
+            const [, createdCatalog] = await FournisseurPrix.findOrCreate({
+                where: { produit: produitCatalog },
+                defaults: {
+                    produit: produitCatalog,
+                    prix_vente: 0,
+                    prix_achat: null,
+                    updated_at: new Date()
+                },
+                transaction: t
+            });
+            await ProduitAlias.upsert({
+                alias_produit: aliasProduit,
+                produit_catalog: produitCatalog,
+                updated_at: new Date()
+            }, { transaction: t });
+            return { catalog_created: createdCatalog };
         });
-        res.json({ success: true, catalog_created: created });
+        res.json({ success: true, ...result });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -312,40 +312,49 @@ router.delete('/alias/:alias', async (req, res) => {
 // Bulk: convertit tous les "prefix" actuellement actifs en aliases
 // explicites en figeant la resolution courante. Utile pour migrer d'un
 // coup l'historique sans cliquer ligne par ligne.
+// Utilise bulkCreate avec updateOnDuplicate pour ecrire en 1 round-trip
+// au lieu de N (cf code review).
 router.post('/alias/bulk-from-prefix', async (req, res) => {
     try {
-        const [catalog, aliases] = await Promise.all([
-            FournisseurPrix.findAll(),
-            ProduitAlias.findAll()
-        ]);
-        const catalogKeys = new Set(catalog.map((p) => p.produit.toLowerCase()));
-        const aliasSet = new Set(aliases.map((a) => a.alias_produit.toLowerCase()));
-
         // Fenetre 90 jours pour cibler les produits "vivants".
         const since = new Date();
         since.setUTCDate(since.getUTCDate() - 90);
         const sinceISO = since.toISOString().slice(0, 10);
 
-        const distinctRows = await sequelize.query(
-            `SELECT DISTINCT produit FROM ventes WHERE date >= :since`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
-        );
+        const [catalog, aliases, distinctRows] = await Promise.all([
+            FournisseurPrix.findAll(),
+            ProduitAlias.findAll(),
+            sequelize.query(
+                `SELECT DISTINCT produit FROM ventes WHERE date >= :since`,
+                { type: sequelize.QueryTypes.SELECT, replacements: { since: sinceISO } }
+            )
+        ]);
+
+        // Resoudre via le helper partage (statut prefix = candidat a la
+        // conversion). Tri prefix DESC pour matcher le plus specifique.
+        const resolverMaps = buildResolverMaps(catalog, aliases);
 
         const now = new Date();
+        const toUpsert = [];
         const created = [];
         for (const r of distinctRows) {
-            const lower = (r.produit || '').toLowerCase();
-            if (catalogKeys.has(lower)) continue;   // exact match — pas besoin d'alias
-            if (aliasSet.has(lower)) continue;       // alias deja defini
-            // Cherche un match prefix
-            const cat = catalog.find((c) => lower.startsWith(c.produit.toLowerCase()));
-            if (!cat) continue;
-            await ProduitAlias.upsert({
+            const resolved = resolveProduit(r.produit, resolverMaps);
+            if (resolved.statut !== 'prefix') continue;
+            toUpsert.push({
                 alias_produit: r.produit,
-                produit_catalog: cat.produit,
+                produit_catalog: resolved.resolved,
                 updated_at: now
             });
-            created.push({ alias_produit: r.produit, produit_catalog: cat.produit });
+            created.push({
+                alias_produit: r.produit,
+                produit_catalog: resolved.resolved
+            });
+        }
+
+        if (toUpsert.length > 0) {
+            await ProduitAlias.bulkCreate(toUpsert, {
+                updateOnDuplicate: ['produit_catalog', 'updated_at']
+            });
         }
         res.json({ success: true, created });
     } catch (e) {

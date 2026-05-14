@@ -38,6 +38,7 @@ const {
     ProduitAlias
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
+const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
 
 // Normalise une date en string "YYYY-MM-DD" (format BDD Vente.date).
 // Vente.date est stocke comme texte libre (cf db/models/Vente.js) mais
@@ -114,43 +115,18 @@ async function computeCreances(opts = {}) {
         .map((s) => s.trim())
         .filter(Boolean);
 
-    // 2. Lire le catalogue de prix fournisseur (Map produit -> {vente, achat}).
-    const prixRows = await FournisseurPrix.findAll();
-    const prixByProduit = new Map();
-    for (const r of prixRows) {
-        prixByProduit.set(r.produit.toLowerCase(), {
-            prix_vente: parseFloat(r.prix_vente) || 0,
-            prix_achat: r.prix_achat == null ? null : parseFloat(r.prix_achat)
-        });
-    }
+    // 2. Lire catalogue + aliases en parallele.
+    const [prixRows, aliasRows] = await Promise.all([
+        FournisseurPrix.findAll(),
+        ProduitAlias.findAll()
+    ]);
 
-    // 2bis. Lire la table d'aliases (libelle vente -> entree catalogue).
-    // L'alias gagne sur le fallback prefix mais perd contre le match exact.
-    const aliasRows = await ProduitAlias.findAll();
-    const aliasByProduit = new Map();
-    for (const a of aliasRows) {
-        aliasByProduit.set(a.alias_produit.toLowerCase(), a.produit_catalog.toLowerCase());
-    }
-
-    // Helper: lookup case-insensitive sur le nom du produit avec priorite
-    //   1. match exact dans le catalogue (fournisseur_prix)
-    //   2. alias explicite (produit_alias)
-    //   3. fallback prefix (deprecated, mais conserve pour rester
-    //      compatible avec les ventes existantes non encore mappees)
+    // Helper partage avec routes/finance.js (UI Mapping) pour eviter la
+    // divergence statut affiche / calcul. Cf lib/produit-resolver.js.
+    const resolverMaps = buildResolverMaps(prixRows, aliasRows);
     const lookupPrix = (produitNom) => {
-        const lower = (produitNom || '').toLowerCase();
-        // 1. Exact
-        if (prixByProduit.has(lower)) return prixByProduit.get(lower);
-        // 2. Alias explicite
-        const aliasCible = aliasByProduit.get(lower);
-        if (aliasCible && prixByProduit.has(aliasCible)) {
-            return prixByProduit.get(aliasCible);
-        }
-        // 3. Fallback prefix (a deprecate progressivement via UI mapping)
-        for (const [key, value] of prixByProduit) {
-            if (lower.startsWith(key)) return value;
-        }
-        return null;
+        const r = resolveProduit(produitNom, resolverMaps);
+        return r.value; // {prix_vente, prix_achat} ou null si unmapped
     };
 
     // 3. Charger toutes les ventes de la periode.
