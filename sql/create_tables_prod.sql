@@ -793,8 +793,19 @@ CREATE TABLE IF NOT EXISTS fournisseur_prix (
     produit VARCHAR(100) PRIMARY KEY,
     prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
     prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
+    prix_vente_cdc NUMERIC(12, 2) CHECK (prix_vente_cdc IS NULL OR prix_vente_cdc >= 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Historique des modifications du prix vente CDC.
+CREATE TABLE IF NOT EXISTS prix_vente_cdc_history (
+    id SERIAL PRIMARY KEY,
+    produit VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    prix_vente_cdc NUMERIC(12, 2) NOT NULL CHECK (prix_vente_cdc >= 0),
+    changed_by VARCHAR(150),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prix_vente_cdc_history_produit ON prix_vente_cdc_history(produit, created_at DESC);
 INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
   ('Boeuf',  4350, 3835),
   ('Veau',   4600, 4035),

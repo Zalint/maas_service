@@ -302,7 +302,37 @@ async function updateSchema() {
               ('Laxass',  300,  200, NOW())
             ON CONFLICT (produit) DO NOTHING
         `);
-        console.log('Table fournisseur_prix verifiee (seed 5 produits par defaut)');
+        // Colonne prix_vente_cdc: prix de vente convenu avec le Centre de
+        // Decoupe (negociation B2B), utilise pour le calcul de marge "Il
+        // me doit". Default = prix_vente (= prix catalogue fournisseur)
+        // pour un upgrade transparent. Editable depuis l'UI Finance CDC.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_prix
+            ADD COLUMN IF NOT EXISTS prix_vente_cdc NUMERIC(12, 2)
+                CHECK (prix_vente_cdc IS NULL OR prix_vente_cdc >= 0)
+        `);
+        await sequelize.query(`
+            UPDATE fournisseur_prix
+            SET prix_vente_cdc = prix_vente
+            WHERE prix_vente_cdc IS NULL
+        `);
+        console.log('Table fournisseur_prix verifiee (seed 5 produits + prix_vente_cdc)');
+
+        // Historique des modifications de prix_vente_cdc.
+        // Chaque sauvegarde insere une ligne avec l'ancienne valeur + qui
+        // l'a fait. Permet de retracer les renegociations B2B.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_vente_cdc_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_vente_cdc NUMERIC(12, 2) NOT NULL CHECK (prix_vente_cdc >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_vente_cdc_history_produit ON prix_vente_cdc_history(produit, created_at DESC)`);
+        console.log('Table prix_vente_cdc_history verifiee');
 
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS finance_config (

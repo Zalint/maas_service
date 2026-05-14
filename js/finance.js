@@ -385,12 +385,31 @@
             const isOpen = idx === 0;
             const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
             const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
-            const rows = c.detail.map((d, lineIdx) => `
-                <tr>
+            const rows = c.detail.map((d, lineIdx) => {
+                const prixCdcVal = d.prix_vente_cdc != null ? d.prix_vente_cdc : '';
+                return `
+                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(d.produit)}">
                     <td>${esc(d.produit)}</td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
                     <td class="text-end">${d.prix_achat == null ? '<span class="text-muted">—</span>' : esc(fmtMoney(d.prix_achat))}</td>
-                    <td class="text-end">${esc(fmtMoney(d.mon_prix_moyen))}</td>
+                    <td class="text-end" style="min-width:170px">
+                        <div class="d-inline-flex align-items-center gap-1" style="white-space:nowrap">
+                            <input type="number" min="0" step="1" class="form-control form-control-sm text-end"
+                                   style="width:90px; display:inline-block"
+                                   value="${esc(prixCdcVal)}"
+                                   data-prix-cdc-input>
+                            <button type="button" class="btn btn-sm btn-success py-0 px-1"
+                                    data-prix-cdc-save
+                                    title="Sauvegarder le nouveau prix vente CDC">
+                                <i class="bi bi-check2"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                    data-prix-cdc-history
+                                    title="Voir l'historique des changements">
+                                <i class="bi bi-clock-history"></i>
+                            </button>
+                        </div>
+                    </td>
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
                     <td class="text-end">
@@ -402,7 +421,8 @@
                         </button>
                     </td>
                 </tr>
-            `).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune ligne</td></tr>';
+            `;
+            }).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune ligne</td></tr>';
             return `
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -420,7 +440,7 @@
                                         <th>Produit</th>
                                         <th class="text-end">Quantité</th>
                                         <th class="text-end">Prix achat fournisseur</th>
-                                        <th class="text-end">Mon prix moyen</th>
+                                        <th class="text-end">Prix vente CDC</th>
                                         <th class="text-end">Marge unitaire</th>
                                         <th class="text-end">Il me doit</th>
                                         <th class="text-end"></th>
@@ -442,6 +462,98 @@
                 showCdcDetailsModal(centreIdx, lineIdx);
             });
         });
+
+        // Wire les boutons "Save" prix vente CDC inline (par row).
+        accordion.querySelectorAll('[data-prix-cdc-save]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const tr = btn.closest('[data-cdc-row]');
+                if (!tr) return;
+                const produit = tr.dataset.produit;
+                const input = tr.querySelector('[data-prix-cdc-input]');
+                const val = parseFloat(input ? input.value : 0);
+                if (!Number.isFinite(val) || val < 0) {
+                    if (typeof showToast === 'function') showToast('Prix invalide', 'warning');
+                    return;
+                }
+                try {
+                    const res = await fetch('/api/finance/prix-cdc/' + encodeURIComponent(produit), {
+                        method: 'PUT',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ prix_vente_cdc: val })
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') {
+                        showToast(`Prix vente CDC mis à jour pour ${produit}`, 'success');
+                    }
+                    // Re-fetch pour recalculer la marge + recevable avec le nouveau prix
+                    loadCdc();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+
+        // Wire les boutons "History" (affiche modale avec historique des changements).
+        accordion.querySelectorAll('[data-prix-cdc-history]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const tr = btn.closest('[data-cdc-row]');
+                if (!tr) return;
+                const produit = tr.dataset.produit;
+                try {
+                    const res = await fetch('/api/finance/prix-cdc/' + encodeURIComponent(produit) + '/history', {
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    showPrixCdcHistoryModal(produit, j.data);
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+    }
+
+    // Modale historique des changements de prix_vente_cdc pour un produit.
+    // Réutilise l'infrastructure modale CDC details (même DOM #fin-cdc-details-modal).
+    function showPrixCdcHistoryModal(produit, rows) {
+        const title = document.getElementById('fin-cdc-details-title');
+        const body = document.getElementById('fin-cdc-details-body');
+        const modalEl = document.getElementById('fin-cdc-details-modal');
+        if (!title || !body || !modalEl) return;
+        title.innerHTML = `<i class="bi bi-clock-history me-2"></i>Historique prix vente CDC — <strong>${esc(produit)}</strong>`;
+        const list = Array.isArray(rows) ? rows : [];
+        const rowsHtml = list.map((h) => {
+            const when = h.created_at ? new Date(h.created_at).toLocaleString('fr-FR') : '—';
+            return `
+                <tr>
+                    <td class="text-nowrap">${esc(when)}</td>
+                    <td class="text-end fw-medium">${esc(fmtMoney(h.prix_vente_cdc))}</td>
+                    <td>${esc(h.changed_by || 'anonymous')}</td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="3" class="text-muted text-center py-3">Aucun changement enregistré (valeur seedée par défaut).</td></tr>';
+        body.innerHTML = `
+            <div class="alert alert-light border small mb-3">
+                <i class="bi bi-info-circle"></i> Chaque sauvegarde du prix vente CDC est historisée.
+                La valeur la plus récente (en haut) est celle actuellement utilisée pour le calcul de marge.
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th class="text-end">Prix vente CDC</th>
+                            <th>Modifié par</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </div>
+        `;
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
     }
 
     // Affiche la modale avec le detail des ventes individuelles ayant
@@ -534,7 +646,8 @@
                 </div>
                 <div class="small text-muted mt-1">
                     Prix d'achat fournisseur référence : <strong>${esc(fmtMoney(line.prix_achat))}</strong>
-                    • Mon prix moyen pondéré : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
+                    • Prix vente CDC (configuré) : <strong>${esc(fmtMoney(line.prix_vente_cdc))}</strong>
+                    • Mon prix moyen POS (info) : <strong>${esc(fmtMoney(line.mon_prix_moyen))}</strong>
                 </div>
             </div>
 

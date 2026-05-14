@@ -179,11 +179,15 @@ async function computeCreances(opts = {}) {
 
         // Recevable: uniquement si vente passee par le Centre de Decoupe
         // ET si le fournisseur a un prix_achat connu.
+        // Utilise prix_vente_cdc (prix negocie B2B avec le centre) plutot
+        // que vente.prixUnit (prix au consommateur final), car la marge
+        // encaissable se calcule sur le tarif convenu avec le partenaire.
         const centre = getVenteCentre(v);
         let recevableLigne = 0;
         const monPrix = parseFloat(v.prixUnit) || 0;
+        const prixVenteCdc = prix.prix_vente_cdc != null ? prix.prix_vente_cdc : prix.prix_vente;
         if (centre && prix.prix_achat != null) {
-            recevableLigne = (monPrix - prix.prix_achat) * qte;
+            recevableLigne = (prixVenteCdc - prix.prix_achat) * qte;
             totalRecevable += recevableLigne;
         }
 
@@ -218,7 +222,8 @@ async function computeCreances(opts = {}) {
                 produit: key,
                 quantite_cdc: 0,
                 prix_achat: prix.prix_achat,
-                prix_vente_x_qte: 0, // somme(mon_prix * qte) pour calculer la moyenne ponderee
+                prix_vente_cdc: prixVenteCdc, // prix configure (meme valeur pour toutes les ventes)
+                prix_vente_x_qte: 0, // somme(mon_prix POS * qte) - garde pour info debug
                 recevable: 0,
                 ventes: []
             };
@@ -234,7 +239,7 @@ async function computeCreances(opts = {}) {
                 nombre: qte,
                 prix_unit: monPrix,
                 prix_achat: prix.prix_achat,
-                marge_unitaire: monPrix - prix.prix_achat,
+                marge_unitaire: prixVenteCdc - prix.prix_achat,
                 recevable_ligne: round2(recevableLigne),
                 nom_client: v.nomClient || null,
                 numero_client: v.numeroClient || null,
@@ -285,6 +290,7 @@ async function computeCreances(opts = {}) {
             if (!prix) continue;
 
             const monPrix = parseFloat(p.prixUnit != null ? p.prixUnit : p.price) || 0;
+            const prixVenteCdc = prix.prix_vente_cdc != null ? prix.prix_vente_cdc : prix.prix_vente;
 
             // Commission 3% (dette envers le fournisseur)
             const detteLigne = (commissionPct / 100) * prix.prix_vente * qte;
@@ -293,9 +299,11 @@ async function computeCreances(opts = {}) {
             // Recevable: par definition les commandes decoupe SONT des
             // ventes CDC, donc on accumule directement (pas besoin du
             // check getVenteCentre comme pour les Ventes locales).
+            // Utilise prix_vente_cdc (prix B2B negocie) plutot que monPrix
+            // (prix au consommateur final).
             let recevableLigne = 0;
             if (prix.prix_achat != null) {
-                recevableLigne = (monPrix - prix.prix_achat) * qte;
+                recevableLigne = (prixVenteCdc - prix.prix_achat) * qte;
                 totalRecevable += recevableLigne;
             }
 
@@ -325,6 +333,7 @@ async function computeCreances(opts = {}) {
                     produit: key,
                     quantite_cdc: 0,
                     prix_achat: prix.prix_achat,
+                    prix_vente_cdc: prixVenteCdc,
                     prix_vente_x_qte: 0,
                     recevable: 0,
                     ventes: []
@@ -341,7 +350,7 @@ async function computeCreances(opts = {}) {
                     nombre: qte,
                     prix_unit: monPrix,
                     prix_achat: prix.prix_achat,
-                    marge_unitaire: monPrix - prix.prix_achat,
+                    marge_unitaire: prixVenteCdc - prix.prix_achat,
                     recevable_ligne: round2(recevableLigne),
                     nom_client: log.nom_client || null,
                     numero_client: log.numero_client || null,
@@ -394,22 +403,28 @@ async function computeCreances(opts = {}) {
         // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
         // Chaque entree: { centre, total_recevable, total_quantite,
         //                   detail: [{ produit, quantite_cdc, prix_achat,
-        //                              mon_prix_moyen, marge_unitaire,
+        //                              prix_vente_cdc, marge_unitaire,
+        //                              mon_prix_moyen (info debug),
         //                              recevable }, ...] }
         // Trie par recevable decroissant.
         detail_cdc_par_centre: Array.from(detailParCentre.entries())
             .map(([centre, parProd]) => {
                 const lignes = Array.from(parProd.values()).map((d) => {
+                    // Prix POS moyen pondere (info pour debug/comparaison,
+                    // plus utilise dans le calcul de marge).
                     const monPrixMoyen = d.quantite_cdc > 0
                         ? d.prix_vente_x_qte / d.quantite_cdc
                         : 0;
-                    const margeUnit = d.quantite_cdc > 0
-                        ? d.recevable / d.quantite_cdc
+                    // marge_unitaire = prix_vente_cdc - prix_achat (constant
+                    // pour un produit, peu importe le nb de ventes).
+                    const margeUnit = (d.prix_vente_cdc != null && d.prix_achat != null)
+                        ? d.prix_vente_cdc - d.prix_achat
                         : 0;
                     return {
                         produit: d.produit,
                         quantite_cdc: round2(d.quantite_cdc),
                         prix_achat: d.prix_achat == null ? null : round2(d.prix_achat),
+                        prix_vente_cdc: d.prix_vente_cdc == null ? null : round2(d.prix_vente_cdc),
                         mon_prix_moyen: round2(monPrixMoyen),
                         marge_unitaire: round2(margeUnit),
                         recevable: round2(d.recevable),

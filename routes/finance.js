@@ -13,6 +13,8 @@
  *   GET    /api/finance/prix
  *   PUT    /api/finance/prix
  *   DELETE /api/finance/prix/:produit
+ *   PUT    /api/finance/prix-cdc/:produit         (prix vente Centre de Decoupe)
+ *   GET    /api/finance/prix-cdc/:produit/history (historique des changements)
  *   GET    /api/finance/alias                  (mapping vente -> catalog)
  *   PUT    /api/finance/alias                  (upsert)
  *   DELETE /api/finance/alias/:alias
@@ -41,6 +43,7 @@ const {
     FinanceConfig,
     FournisseurPaiement,
     ProduitAlias,
+    PrixVenteCdcHistory,
     Produit,
     Vente,
     sequelize
@@ -143,6 +146,77 @@ router.put('/prix', async (req, res) => {
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('PUT /api/finance/prix:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX VENTE CDC (negocie avec le Centre de Decoupe)
+// =====================================================
+// Distinct de prix_vente (= ce que le fournisseur me facture).
+// Sert UNIQUEMENT au calcul de marge "Il me doit" cote CDC.
+// Chaque save est historise dans prix_vente_cdc_history.
+
+// Body: { prix_vente_cdc: number }
+router.put('/prix-cdc/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_vente_cdc);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_vente_cdc doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        // Transaction: update + insert history en atomique.
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_vente_cdc: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixVenteCdcHistory.create({
+                produit,
+                prix_vente_cdc: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_cdc.upsert', { produit, prix_vente_cdc: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-cdc/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Liste les changements historiques de prix_vente_cdc pour un produit.
+router.get('/prix-cdc/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixVenteCdcHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-cdc/:produit/history:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
