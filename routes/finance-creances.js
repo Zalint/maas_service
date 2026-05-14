@@ -145,9 +145,18 @@ async function computeCreances(opts = {}) {
     // de MATA_DECOUPE_CENTRE pour l'affichage UI).
     const centresOriginaux = parseCentres();
     const centreLowerToOriginal = new Map(centresOriginaux.map((c) => [c.toLowerCase(), c]));
+    // Garde defensif: dans le setup actuel, aucun PV ne s'appelle "Centre
+    // de Decoupe X". Mais si un futur tenant ouvre une boutique a cet
+    // emplacement (PV nomme comme un centre), pos.js:1730 met
+    // preparation=pointVente par defaut, et on classerait a tort cette
+    // vente locale comme une livraison CDC. Regle: une vente CDC doit
+    // avoir preparation DIFFERENTE du pointVente — sinon vente locale.
+    // No-op aujourd'hui, defensive pour demain.
     const getVenteCentre = (v) => {
-        const p = (v.preparation || '').trim().toLowerCase();
-        return centreLowerToOriginal.get(p) || null;
+        const prep = (v.preparation || '').trim().toLowerCase();
+        const pv = (v.pointVente || '').trim().toLowerCase();
+        if (!prep || prep === pv) return null;
+        return centreLowerToOriginal.get(prep) || null;
     };
     const isVenteCentreDecoupe = (v) => getVenteCentre(v) !== null;
 
