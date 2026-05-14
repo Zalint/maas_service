@@ -915,28 +915,29 @@ async function checkAuth() {
         // Onglet Audit/Stock alerte - module audit (visible pour tous les authentifiés)
         setElementVisibility(stockAlerteItem, 'stock-alerte-item', true);
 
-        // Onglet Finance - reserve a admin, superutilisateur, superviseur.
-        // Pas de classe module-pending car pas controle par les modules — c'est
-        // une feature interne, visible si le role suffit. On utilise canManageAdvanced
-        // (calque DB cote middleware checkAdvancedAccess).
+        // Onglet Finance: visible pour tout utilisateur authentifie. Les
+        // sous-onglets sensibles sont caches selon le role (cf juste apres).
         const financeItem = document.getElementById('finance-item');
         if (financeItem) {
-            financeItem.style.display = currentUser.canManageAdvanced ? '' : 'none';
+            financeItem.style.display = '';
         }
 
-        // Sous-onglet PL (Profit/Loss) dans Finance: reserve a admin et
-        // superviseur uniquement (superutilisateur exclu). Meme pattern
-        // que les autres visibility checks (a ce stade currentUser est
-        // garanti charge). Le serveur fait aussi une verif role qui retourne
-        // 403 si bypass.
+        // Sous-onglets Finance par niveau d'acces:
+        //   - utilisateur simple: Creances fournisseur, Centre de Decoupe, Depenses
+        //   - admin/superutilisateur/superviseur: +Prix fournisseur, Mapping, Charges
+        //   - admin/superviseur uniquement: +PL, Cash et Stock
+        // Les routes API correspondantes appliquent les memes garde-fous cote serveur.
+        const canAdvanced = !!currentUser.canManageAdvanced;
+        const isAdminOrSuperviseur = ['admin', 'superviseur']
+            .includes(String(currentUser.role || '').toLowerCase());
+
+        document.querySelectorAll('.fin-tab-advanced').forEach((el) => {
+            el.style.display = canAdvanced ? '' : 'none';
+        });
         const plTabItem = document.getElementById('fin-pl-tab-item');
         const cashStockTabItem = document.getElementById('fin-cashstock-tab-item');
-        if (plTabItem || cashStockTabItem) {
-            const isAdminOrSuperviseur = ['admin', 'superviseur']
-                .includes(String(currentUser.role || '').toLowerCase());
-            if (plTabItem) plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
-            if (cashStockTabItem) cashStockTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
-        }
+        if (plTabItem) plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+        if (cashStockTabItem) cashStockTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
 
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         
