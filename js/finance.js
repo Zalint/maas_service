@@ -38,13 +38,14 @@
             loadCreances();
         });
 
-        // Subnav (creances / depenses / prix)
+        // Subnav (creances / cdc / depenses / prix)
         document.querySelectorAll('#finance-subnav [data-fin-tab]').forEach((link) => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
                 const target = link.dataset.finTab;
                 activatePane(target);
                 if (target === 'creances') loadCreances();
+                if (target === 'cdc') loadCdc();
                 if (target === 'depenses') loadDepenses();
                 if (target === 'prix') loadPrix();
             });
@@ -57,6 +58,10 @@
         // Bouton refresh creances
         const creancesRefresh = document.getElementById('fin-creances-refresh');
         if (creancesRefresh) creancesRefresh.addEventListener('click', loadCreances);
+
+        // Bouton refresh Centre de Decoupe
+        const cdcRefresh = document.getElementById('fin-cdc-refresh');
+        if (cdcRefresh) cdcRefresh.addEventListener('click', loadCdc);
 
         // Form depense
         const depenseForm = document.getElementById('fin-depense-form');
@@ -83,11 +88,11 @@
         const dd = String(now.getDate()).padStart(2, '0');
         const todayISO = `${yyyy}-${mm}-${dd}`;
         const firstISO = `${yyyy}-${mm}-01`;
-        for (const id of ['fin-creances-date-debut', 'fin-depense-date-debut']) {
+        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = firstISO;
         }
-        for (const id of ['fin-creances-date-fin', 'fin-depense-date-fin']) {
+        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = todayISO;
         }
@@ -195,37 +200,36 @@
         }).join('') || '<tr><td colspan="5" class="text-muted text-center">Aucune opération sur la période</td></tr>';
     }
 
-    // ===== Bloc 2: Calcul Maas local (indicateur) =====
+    // ===== Bloc 2: Calcul Maas local (commission 3%) =====
+    // Solde theorique recalcul cote UI sans la marge CDC pour matcher la
+    // semantique du nouvel onglet separe (Solde = Je dois - Paiements).
     function renderLocal(data) {
         const cards = document.getElementById('fin-creances-cards');
+        const soldeCommission = (data.ce_que_je_dois || 0) - (data.paiements_effectues || 0);
         cards.innerHTML = `
-            <div class="col-md-3"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
+            <div class="col-md-4"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
                 <div class="small">Je dois (${data.commission_pct}% sur ventes ${data.categories_eligibles.join('/')})</div>
                 <div class="fs-4 fw-bold">${esc(fmtMoney(data.ce_que_je_dois))}</div>
             </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-success"><div class="card-body p-2 text-center">
-                <div class="small">Il me doit (Centre de Découpe)</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(data.ce_qu_il_me_doit))}</div>
-            </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-info"><div class="card-body p-2 text-center">
+            <div class="col-md-4"><div class="card text-bg-info"><div class="card-body p-2 text-center">
                 <div class="small">Paiements locaux saisis</div>
                 <div class="fs-4 fw-bold">${esc(fmtMoney(data.paiements_effectues))}</div>
             </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-secondary"><div class="card-body p-2 text-center">
-                <div class="small">Solde théorique</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(data.reste_a_payer))}</div>
+            <div class="col-md-4"><div class="card text-bg-secondary"><div class="card-body p-2 text-center">
+                <div class="small">Solde commission (Je dois − Paiements)</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(soldeCommission))}</div>
             </div></div></div>
         `;
 
         const tbody = document.querySelector('#fin-creances-detail tbody');
-        tbody.innerHTML = data.detail.map((d) => `
+        const detailDette = data.detail.filter((d) => d.dette > 0);
+        tbody.innerHTML = detailDette.map((d) => `
             <tr>
                 <td>${esc(d.produit)}</td>
                 <td class="text-end">${esc(d.quantite)}</td>
                 <td class="text-end">${esc(fmtMoney(d.dette))}</td>
-                <td class="text-end">${esc(fmtMoney(d.recevable))}</td>
             </tr>
-        `).join('') || '<tr><td colspan="4" class="text-muted text-center">Aucune vente éligible sur la période</td></tr>';
+        `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune vente éligible sur la période</td></tr>';
 
         const pbody = document.querySelector('#fin-paiements-list tbody');
         pbody.innerHTML = data.paiements.map((p) => `
@@ -281,6 +285,106 @@
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
+    }
+
+    // ===== Centre de Découpe (marge "Il me doit") =====
+
+    async function loadCdc() {
+        try {
+            const dateDebut = document.getElementById('fin-cdc-date-debut').value;
+            const dateFin = document.getElementById('fin-cdc-date-fin').value;
+            // Reutilise le meme endpoint /api/finance/creances mais on ne
+            // garde que la partie "recevable" / detail.quantite_cdc cote rendu.
+            const url = `/api/finance/creances?dateDebut=${encodeURIComponent(dateDebut)}&dateFin=${encodeURIComponent(dateFin)}`;
+            const res = await fetch(url, { credentials: 'include' });
+            const json = await res.json();
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderCdc(json.data.local);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur Centre Découpe: ' + e.message, 'danger');
+        }
+    }
+
+    function renderCdc(data) {
+        const cards = document.getElementById('fin-cdc-cards');
+        const accordion = document.getElementById('fin-cdc-accordion');
+        if (!cards || !accordion) return;
+
+        const parCentre = Array.isArray(data.detail_cdc_par_centre)
+            ? data.detail_cdc_par_centre
+            : [];
+
+        const totalRecevable = data.ce_qu_il_me_doit || 0;
+        const totalQuantiteCdc = parCentre.reduce((s, c) => s + (c.total_quantite || 0), 0);
+        const margeMoyenneKg = totalQuantiteCdc > 0 ? (totalRecevable / totalQuantiteCdc) : 0;
+
+        cards.innerHTML = `
+            <div class="col-md-4"><div class="card text-bg-success"><div class="card-body p-2 text-center">
+                <div class="small">Il me doit (total marge)</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(totalRecevable))}</div>
+            </div></div></div>
+            <div class="col-md-4"><div class="card text-bg-primary"><div class="card-body p-2 text-center">
+                <div class="small">Quantité CDC totale</div>
+                <div class="fs-4 fw-bold">${esc(totalQuantiteCdc)} kg</div>
+            </div></div></div>
+            <div class="col-md-4"><div class="card text-bg-info"><div class="card-body p-2 text-center">
+                <div class="small">Marge moyenne / kg</div>
+                <div class="fs-4 fw-bold">${esc(fmtMoney(margeMoyenneKg))}</div>
+            </div></div></div>
+        `;
+
+        if (parCentre.length === 0) {
+            accordion.innerHTML = '<div class="alert alert-light border text-muted small mb-0">Aucune vente via un Centre de Découpe sur la période.</div>';
+            return;
+        }
+
+        // Un item d'accordeon par centre. Chaque item est independamment
+        // pliable (pas de data-bs-parent => l'ouverture de l'un ne ferme
+        // pas les autres). Le premier est ouvert par defaut.
+        accordion.innerHTML = parCentre.map((c, idx) => {
+            const collapseId = 'fin-cdc-coll-' + idx;
+            const isOpen = idx === 0;
+            const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
+            const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
+            const rows = c.detail.map((d) => `
+                <tr>
+                    <td>${esc(d.produit)}</td>
+                    <td class="text-end">${esc(d.quantite_cdc)}</td>
+                    <td class="text-end">${d.prix_achat == null ? '<span class="text-muted">—</span>' : esc(fmtMoney(d.prix_achat))}</td>
+                    <td class="text-end">${esc(fmtMoney(d.mon_prix_moyen))}</td>
+                    <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
+                    <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
+                </tr>
+            `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucune ligne</td></tr>';
+            return `
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="${headerBtnCls}" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="${isOpen ? 'true' : 'false'}" aria-controls="${collapseId}">
+                            <span class="me-3"><i class="bi bi-truck"></i> <strong>${esc(c.centre)}</strong></span>
+                            <span class="badge bg-primary me-2">${esc(c.total_quantite)} kg</span>
+                            <span class="badge bg-success">${esc(fmtMoney(c.total_recevable))}</span>
+                        </button>
+                    </h2>
+                    <div id="${collapseId}" class="${collapseCls}">
+                        <div class="accordion-body p-0">
+                            <table class="table table-sm table-striped mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Produit</th>
+                                        <th class="text-end">Quantité</th>
+                                        <th class="text-end">Prix achat fournisseur</th>
+                                        <th class="text-end">Mon prix moyen</th>
+                                        <th class="text-end">Marge unitaire</th>
+                                        <th class="text-end">Il me doit</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
     }
 
     // ===== Dépenses =====

@@ -2183,6 +2183,9 @@
                                 <a class="nav-link active" href="#" data-fin-tab="creances">Créances fournisseur</a>
                             </li>
                             <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="cdc">Centre de Découpe</a>
+                            </li>
+                            <li class="nav-item">
                                 <a class="nav-link" href="#" data-fin-tab="depenses">Dépenses</a>
                             </li>
                             <li class="nav-item">
@@ -2231,14 +2234,14 @@
 
                             <hr>
 
-                            <!-- ===== Bloc 2: Calcul Maas (indicateur local) ===== -->
-                            <h6 class="mt-2"><i class="bi bi-calculator"></i> Calcul Maas <small class="text-muted">(indicateur basé sur les ventes locales)</small></h6>
+                            <!-- ===== Bloc 2: Calcul Maas (indicateur commission 3%) ===== -->
+                            <h6 class="mt-2"><i class="bi bi-calculator"></i> Calcul Maas <small class="text-muted">(commission 3% basée sur les ventes locales)</small></h6>
                             <div class="row g-2 mb-3" id="fin-creances-cards"></div>
-                            <h6 class="mt-3">Détail par produit</h6>
+                            <h6 class="mt-3">Détail par produit (commission 3%)</h6>
                             <div class="table-responsive">
                                 <table class="table table-sm table-striped" id="fin-creances-detail">
                                     <thead>
-                                        <tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Je dois</th><th class="text-end">Il me doit</th></tr>
+                                        <tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Je dois (3%)</th></tr>
                                     </thead>
                                     <tbody></tbody>
                                 </table>
@@ -2284,6 +2287,33 @@
                                     <button class="btn btn-sm btn-success w-100">Ajouter</button>
                                 </div>
                             </form>
+                        </div>
+
+                        <!-- Pane: Centre de Découpe (marge sur ventes livrées par le fournisseur) -->
+                        <div data-fin-pane="cdc" style="display:none">
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-cdc-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-cdc-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-cdc-refresh">Calculer</button>
+                                </div>
+                            </div>
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                Marge encaissable pour les ventes livrées par le fournisseur via un Centre de Découpe :
+                                <code>(mon_prix_vente − prix_achat_fournisseur) × quantité</code>.
+                                Seules les ventes dont la préparation correspond à
+                                <code>MATA_DECOUPE_CENTRE</code> sont prises en compte.
+                            </div>
+                            <div class="row g-2 mb-3" id="fin-cdc-cards"></div>
+                            <h6 class="mt-3 mb-2">Détail par centre de découpe</h6>
+                            <div class="accordion" id="fin-cdc-accordion"></div>
                         </div>
 
                         <!-- Pane: Dépenses -->

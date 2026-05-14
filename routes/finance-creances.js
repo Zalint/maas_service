@@ -147,14 +147,20 @@ async function computeCreances(opts = {}) {
     });
 
     // 4. Filtrer les ventes "Centre de Decoupe" pour le calcul "ce qu'il me doit".
-    const centresDecoupe = parseCentres().map((s) => s.toLowerCase());
-    const isVenteCentreDecoupe = (v) => {
-        const p = (v.preparation || '').toLowerCase();
-        return centresDecoupe.includes(p);
+    // Map du nom de centre en minuscules -> nom original (preserve la casse
+    // de MATA_DECOUPE_CENTRE pour l'affichage UI).
+    const centresOriginaux = parseCentres();
+    const centreLowerToOriginal = new Map(centresOriginaux.map((c) => [c.toLowerCase(), c]));
+    const getVenteCentre = (v) => {
+        const p = (v.preparation || '').trim().toLowerCase();
+        return centreLowerToOriginal.get(p) || null;
     };
+    const isVenteCentreDecoupe = (v) => getVenteCentre(v) !== null;
 
     // 5. Calculer.
-    const detail = new Map(); // produit -> { qte, dette, recevable }
+    const detail = new Map(); // produit -> agg global
+    // Detail par centre: centre -> Map<produit, { quantite_cdc, recevable, prix_achat, prix_vente_pondere }>
+    const detailParCentre = new Map();
     let totalDette = 0;        // ce que je dois (3% × prix fournisseur × qte)
     let totalRecevable = 0;    // ce qu'il me doit (margin × qte sur ventes Centre)
 
@@ -170,20 +176,52 @@ async function computeCreances(opts = {}) {
 
         // Recevable: uniquement si vente passee par le Centre de Decoupe
         // ET si le fournisseur a un prix_achat connu.
+        const centre = getVenteCentre(v);
         let recevableLigne = 0;
-        if (isVenteCentreDecoupe(v) && prix.prix_achat != null) {
-            const monPrix = parseFloat(v.prixUnit) || 0;
+        const monPrix = parseFloat(v.prixUnit) || 0;
+        if (centre && prix.prix_achat != null) {
             recevableLigne = (monPrix - prix.prix_achat) * qte;
             totalRecevable += recevableLigne;
         }
 
-        // Agreger par produit pour le detail.
+        // Agreger par produit (vue globale) pour l'onglet "Creances".
         const key = v.produit;
-        const agg = detail.get(key) || { produit: key, quantite: 0, dette: 0, recevable: 0 };
+        const agg = detail.get(key) || {
+            produit: key,
+            quantite: 0,
+            quantite_cdc: 0,
+            prix_achat: prix.prix_achat,
+            dette: 0,
+            recevable: 0
+        };
         agg.quantite += qte;
+        if (centre && prix.prix_achat != null) {
+            agg.quantite_cdc += qte;
+        }
         agg.dette += detteLigne;
         agg.recevable += recevableLigne;
         detail.set(key, agg);
+
+        // Agreger par (centre, produit) pour l'onglet "Centre de Decoupe".
+        // On accumule aussi mon_prix * qte pour calculer le prix moyen
+        // pondere par produit dans ce centre.
+        if (centre && prix.prix_achat != null) {
+            if (!detailParCentre.has(centre)) {
+                detailParCentre.set(centre, new Map());
+            }
+            const parProd = detailParCentre.get(centre);
+            const cAgg = parProd.get(key) || {
+                produit: key,
+                quantite_cdc: 0,
+                prix_achat: prix.prix_achat,
+                prix_vente_x_qte: 0, // somme(mon_prix * qte) pour calculer la moyenne ponderee
+                recevable: 0
+            };
+            cAgg.quantite_cdc += qte;
+            cAgg.prix_vente_x_qte += monPrix * qte;
+            cAgg.recevable += recevableLigne;
+            parProd.set(key, cAgg);
+        }
     }
 
     // 6. Paiements faits AU fournisseur sur la periode (info brute, pas deduits).
@@ -213,15 +251,51 @@ async function computeCreances(opts = {}) {
         paiements_effectues: round2(totalPaiements),
         // Solde restant a payer apres paiements
         reste_a_payer: round2(totalDette - totalRecevable - totalPaiements),
-        // Detail par produit
+        // Detail par produit (vue globale - utilise par "Creances fournisseur")
         detail: Array.from(detail.values())
             .map((d) => ({
                 produit: d.produit,
                 quantite: round2(d.quantite),
+                quantite_cdc: round2(d.quantite_cdc),
+                prix_achat: d.prix_achat == null ? null : round2(d.prix_achat),
                 dette: round2(d.dette),
                 recevable: round2(d.recevable)
             }))
             .sort((a, b) => b.dette - a.dette),
+        // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
+        // Chaque entree: { centre, total_recevable, total_quantite,
+        //                   detail: [{ produit, quantite_cdc, prix_achat,
+        //                              mon_prix_moyen, marge_unitaire,
+        //                              recevable }, ...] }
+        // Trie par recevable decroissant.
+        detail_cdc_par_centre: Array.from(detailParCentre.entries())
+            .map(([centre, parProd]) => {
+                const lignes = Array.from(parProd.values()).map((d) => {
+                    const monPrixMoyen = d.quantite_cdc > 0
+                        ? d.prix_vente_x_qte / d.quantite_cdc
+                        : 0;
+                    const margeUnit = d.quantite_cdc > 0
+                        ? d.recevable / d.quantite_cdc
+                        : 0;
+                    return {
+                        produit: d.produit,
+                        quantite_cdc: round2(d.quantite_cdc),
+                        prix_achat: d.prix_achat == null ? null : round2(d.prix_achat),
+                        mon_prix_moyen: round2(monPrixMoyen),
+                        marge_unitaire: round2(margeUnit),
+                        recevable: round2(d.recevable)
+                    };
+                }).sort((a, b) => b.recevable - a.recevable);
+                const totalRec = lignes.reduce((s, l) => s + l.recevable, 0);
+                const totalQte = lignes.reduce((s, l) => s + l.quantite_cdc, 0);
+                return {
+                    centre,
+                    total_recevable: round2(totalRec),
+                    total_quantite: round2(totalQte),
+                    detail: lignes
+                };
+            })
+            .sort((a, b) => b.total_recevable - a.total_recevable),
         // Liste des paiements de la periode
         paiements: paiements.map((p) => ({
             id: p.id,
