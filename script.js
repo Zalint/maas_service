@@ -5,6 +5,33 @@
 // Variables globales pour les points de vente (déclarées en premier pour éviter les erreurs de temporal dead zone)
 var POINTS_VENTE_PHYSIQUES = [];
 
+/**
+ * Remplit le navbar user chip (avatar + nom + role) ET le span legacy
+ * #user-info (retro-compat: d'autres scripts y ecrivent encore). A appeler
+ * partout ou on connait l'utilisateur connecte (post-auth).
+ */
+function setUserDisplay(user, roleDisplayName) {
+    if (!user) return;
+    const username = String(user.username || '').trim();
+    const role = String(roleDisplayName || '').trim();
+    // Legacy span (hidden in markup but may be read elsewhere).
+    const legacy = document.getElementById('user-info');
+    if (legacy) legacy.textContent = `Connecté en tant que ${username}${role ? ' (' + role + ')' : ''}`;
+    // Visible chip.
+    const nameEl = document.getElementById('user-name');
+    const roleEl = document.getElementById('user-role');
+    const avatarEl = document.getElementById('user-avatar');
+    if (nameEl) nameEl.textContent = username;
+    if (roleEl) roleEl.textContent = role || 'Utilisateur';
+    if (avatarEl) {
+        // Initiales: 1ere lettre du username (fallback "·").
+        const initials = username
+            ? username.replace(/[^A-Za-zÀ-ÿ]/g, '').slice(0, 2).toUpperCase() || username[0].toUpperCase()
+            : '·';
+        avatarEl.textContent = initials;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Vérifier si le gestionnaire de réconciliation est disponible
     if (typeof ReconciliationManager === 'undefined') {
@@ -800,7 +827,7 @@ async function checkAuth() {
         
         // Afficher les informations de l'utilisateur avec le rôle
         const roleDisplayName = getUserRoleDisplayName(currentUser);
-        document.getElementById('user-info').textContent = `Connecté en tant que ${currentUser.username} (${roleDisplayName})`;
+        setUserDisplay(currentUser, roleDisplayName);
         
         // Charger l'état des modules si le gestionnaire est disponible
         if (window.ModulesHandler) {
@@ -5647,7 +5674,7 @@ function initCopierStock() {
 // Fonction pour afficher les onglets en fonction des droits utilisateur ET des modules actifs
 async function afficherOngletsSuivantDroits(userData) {
     const roleDisplayName = getUserRoleDisplayName(userData);
-    document.getElementById('user-info').textContent = `Connecté en tant que ${userData.username} (${roleDisplayName})`;
+    setUserDisplay(userData, roleDisplayName);
     document.getElementById('login-section').style.display = 'none';
     document.getElementById('main-content').style.display = 'block';
     
@@ -10088,32 +10115,34 @@ window.addEventListener('DOMContentLoaded', function() {
     if (!document.getElementById('btn-prix-pondere')) {
         const btn = document.createElement('button');
         btn.id = 'btn-prix-pondere';
-        btn.className = 'btn btn-info mb-2';
-        btn.textContent = 'Remplir Prix Moyen Pondéré (Boeuf/Veau)';
-        
-         // Style pour aligner à droite
-         btn.style.cssText = `
-         margin: 10px;
-         float: right;
-         margin-right: 20px;
-     `;
-        
-        // Try multiple locations to insert the button
+        // Classes neutres: le style final vient du CSS override (uniformite
+        // visuelle avec les autres boutons outline-primary btn-sm).
+        btn.className = 'btn btn-sm';
+        btn.type = 'button';
+        btn.innerHTML = '<i class="bi bi-cash-coin me-1"></i>Prix Moyen Pondéré';
+        btn.title = 'Remplir Prix Moyen Pondéré (Boeuf / Veau)';
+
+        // Preferer le slot dedie (index.html#btn-prix-pondere-slot) qui
+        // place le bouton dans la toolbar de controles, propre et aligne.
+        // Fallback historique sur l'injection en haut de section.
+        const slot = document.getElementById('btn-prix-pondere-slot');
         const stockSection = document.getElementById('stock-inventaire-section');
         const stockTable = document.getElementById('stock-table');
-        
-        if (stockSection) {
+
+        if (slot) {
+            slot.appendChild(btn);
+            console.log('Button added to dedicated slot');
+        } else if (stockSection) {
             stockSection.insertBefore(btn, stockSection.firstChild);
-            console.log('Button added to stock section');
+            console.log('Button added to stock section (fallback)');
         } else if (stockTable && stockTable.parentElement) {
             stockTable.parentElement.insertBefore(btn, stockTable);
-            console.log('Button added before stock table');
+            console.log('Button added before stock table (fallback)');
         } else {
-            // Fallback: add to the top of the page
             document.body.insertBefore(btn, document.body.firstChild);
-            console.log('Button added to body');
+            console.log('Button added to body (fallback)');
         }
-        
+
         console.log('Button "Remplir Prix Moyen Pondéré" has been added!');
     }
 

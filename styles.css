@@ -378,8 +378,13 @@ body > .visualisation-data {
     display: none !important;
 }
 
-/* Assurer que les éléments de visualisation ne sont visibles que dans la section de visualisation */
-#visualisation-section:not([style*="display: none"]) .visualisation-charts,
+/* Assurer que les éléments de visualisation ne sont visibles que dans la section de visualisation.
+   IMPORTANT: utiliser display:flex (et pas block) car .visualisation-charts est appliquee a un
+   Bootstrap .row qui DOIT etre flex pour que les col-md-6 cohabitent en row (sinon les graphes
+   s'empilent verticalement avec moitie de la page vide a droite). */
+#visualisation-section:not([style*="display: none"]) .visualisation-charts {
+    display: flex !important;
+}
 #visualisation-section:not([style*="display: none"]) .visualisation-data {
     display: block !important;
 }

@@ -79,9 +79,26 @@ async function checkAuth() {
             return false;
         }
         
-        // Afficher les informations de l'utilisateur
+        // Afficher les informations de l'utilisateur (chip + legacy span).
         const roleDisplayName = getUserRoleDisplayName(data.user);
-        document.getElementById('user-info').textContent = `Connecté en tant que ${data.user.username} (${roleDisplayName})`;
+        const username = String(data.user.username || '').trim();
+        const legacy = document.getElementById('user-info');
+        if (legacy) legacy.textContent = `Connecté en tant que ${username} (${roleDisplayName})`;
+        const nameEl = document.getElementById('user-name');
+        const roleEl = document.getElementById('user-role');
+        const avatarEl = document.getElementById('user-avatar');
+        if (nameEl) nameEl.textContent = username;
+        if (roleEl) roleEl.textContent = roleDisplayName || 'Utilisateur';
+        if (avatarEl && username) {
+            const initials = username.replace(/[^A-Za-zÀ-ÿ]/g, '').slice(0, 2).toUpperCase()
+                || username[0].toUpperCase();
+            avatarEl.textContent = initials;
+        }
+        // Brand "Administration · <Tenant>" si tenant connu
+        const brandTenant = document.getElementById('brand-tenant');
+        if (brandTenant && data.user.clientName) {
+            brandTenant.textContent = '· ' + data.user.clientName;
+        }
         
         // Afficher l'onglet de gestion des utilisateurs seulement pour l'utilisateur ADMIN
         if (data.user.username === 'ADMIN') {
@@ -1714,6 +1731,46 @@ function setFamilleFilterInventaire(famille) {
     afficherInventaireConfig();
 }
 
+// Re-rend les boutons "Tous / Boucherie / Epicerie / Autres" dans le header
+// stable (hors #inventaire-categories) pour refleter currentInventaireFamilleFilter.
+function renderInventaireFamilleButtons() {
+    const wrap = document.getElementById('inventaire-famille-buttons');
+    if (!wrap) return;
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    wrap.innerHTML = familles.map((f) => `
+        <button type="button"
+            class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+            onclick="setFamilleFilterInventaire('${f}')">${f}</button>
+    `).join('');
+}
+
+// Synchronise la valeur de l'input sans toucher au DOM (le listener reste
+// attache, on n'ecrase QUE la propriete .value).
+function syncInventaireSearchInputValue() {
+    const input = document.getElementById('inventaire-search-input');
+    if (!input) return;
+    if (input.value !== (currentInventaireSearchQuery || '')) {
+        input.value = currentInventaireSearchQuery || '';
+    }
+}
+
+// Init du listener via EVENT DELEGATION sur document: capte les events
+// 'input' qui ciblent #inventaire-search-input, peu importe quand l'input
+// est cree ou recree. Bullet-proof contre les re-renders et l'ordre de
+// chargement (admin.js peut s'executer avant que l'input existe).
+function initInventaireHeaderControls() {
+    if (document._inventaireSearchBound) return;
+    document._inventaireSearchBound = true;
+    document.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!t || t.id !== 'inventaire-search-input') return;
+        currentInventaireSearchQuery = t.value || '';
+        filtrerProduitsInventaire(currentInventaireSearchQuery);
+    });
+}
+// Attacher immediatement (idempotent via _inventaireSearchBound guard).
+initInventaireHeaderControls();
+
 // Afficher la configuration des produits d'inventaire avec accordéon
 function afficherInventaireConfig() {
     const container = document.getElementById('inventaire-categories');
@@ -1721,34 +1778,14 @@ function afficherInventaireConfig() {
 
     container.innerHTML = '';
 
-    // Tabs filtre famille en tête, comme sur Produits Généraux.
-    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
-    const filtreHtml = `
-        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-            <div class="btn-group" role="group" aria-label="Filtre famille inventaire">
-                ${familles.map((f) => `
-                    <button type="button"
-                        class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
-                        onclick="setFamilleFilterInventaire('${f}')">${f}</button>
-                `).join('')}
-            </div>
-            <div class="input-group input-group-sm" style="max-width: 320px;">
-                <span class="input-group-text"><i class="fas fa-search"></i></span>
-                <input type="search" id="inventaire-search-input" class="form-control"
-                       placeholder="Rechercher un produit…"
-                       value="${escAttr(currentInventaireSearchQuery || '')}"
-                       autocomplete="off">
-            </div>
-        </div>`;
-    container.insertAdjacentHTML('beforeend', filtreHtml);
-
-    const searchInput = container.querySelector('#inventaire-search-input');
-    if (searchInput) {
-        searchInput.addEventListener('input', (e) => {
-            currentInventaireSearchQuery = e.target.value || '';
-            filtrerProduitsInventaire(currentInventaireSearchQuery);
-        });
-    }
+    // Renders / rafraichit les controles du header stable (hors container)
+    // sans casser le listener input qui est attache une SEULE fois (cf
+    // initInventaireHeaderControls plus bas). Le bug "search ne marche pas"
+    // venait de l'ancienne approche qui re-creait l'input a chaque render
+    // et perdait le listener pendant la frappe.
+    initInventaireHeaderControls(); // idempotent (data-bound guard)
+    renderInventaireFamilleButtons();
+    syncInventaireSearchInputValue();
 
     const inventaireParCategories = reorganiserInventaireParCategories();
 
@@ -1823,37 +1860,44 @@ function afficherInventaireConfig() {
     }
 }
 
-// Filtre client-side: masque les lignes dont le nom de produit ne contient pas
-// la requête, masque les catégories sans match, et déplie automatiquement les
-// catégories qui ont au moins un match.
+// Filtre client-side dead-simple: masque tout <tr> du conteneur dont le
+// textContent ne contient pas la requête (insensible casse + accents).
+// Plus de selecteurs fragiles sur data-produit, plus d'hypotheses sur la
+// structure du tbody. Pour chaque row visible: on lit ce que l'utilisateur
+// VOIT (textContent + values des <input>) et on matche.
 function filtrerProduitsInventaire(query) {
     const container = document.getElementById('inventaire-categories');
     if (!container) return;
-    // NFKD décompose les ligatures (œ→oe, æ→ae) ET les lettres accentuées,
-    // puis on retire les diacritiques combinants (U+0300–U+036F).
     const norm = (s) => String(s || '')
         .normalize('NFKD').replace(/[̀-ͯ]/g, '')
-        .toLowerCase().trim();
-    const q = norm(query);
+        .toLowerCase();
+    const q = norm(query).trim();
 
-    container.querySelectorAll('.accordion-item[data-categorie]').forEach((item) => {
-        const rows = item.querySelectorAll('tbody tr[data-produit]');
-        let matchCount = 0;
-        rows.forEach((row) => {
-            const nom = norm(row.dataset.produit);
-            const match = !q || nom.includes(q);
-            row.style.display = match ? '' : 'none';
-            if (match) matchCount++;
-        });
-        item.style.display = (q && matchCount === 0) ? 'none' : '';
+    // 1) Filtrer les rows: cache celles qui ne matchent pas.
+    //    On exclut les rows d'en-tete (celles qui contiennent un <th>).
+    const allRows = container.querySelectorAll('tr');
+    allRows.forEach((row) => {
+        if (row.querySelector('th')) return; // header row, ignore
+        if (!q) {
+            row.style.display = '';
+            return;
+        }
+        // textContent + valeurs des inputs (le nom du produit est dans le 1er input)
+        let text = row.textContent || '';
+        row.querySelectorAll('input, select').forEach((el) => { text += ' ' + (el.value || ''); });
+        row.style.display = norm(text).includes(q) ? '' : 'none';
+    });
 
-        // Déplie les catégories qui ont un match quand l'utilisateur cherche.
-        if (q && matchCount > 0) {
+    // 2) Pour chaque accordion-item, cacher ceux qui n'ont aucune row visible.
+    //    Et auto-deplier ceux qui ont des matches (sinon Bootstrap les garde fermes).
+    container.querySelectorAll('.accordion-item').forEach((item) => {
+        const visibleDataRows = Array.from(item.querySelectorAll('tr'))
+            .filter((r) => !r.querySelector('th') && r.style.display !== 'none');
+        item.style.display = (q && visibleDataRows.length === 0) ? 'none' : '';
+        if (q && visibleDataRows.length > 0) {
             const collapse = item.querySelector('.accordion-collapse');
             const button = item.querySelector('.accordion-button');
-            if (collapse && !collapse.classList.contains('show')) {
-                collapse.classList.add('show');
-            }
+            if (collapse && !collapse.classList.contains('show')) collapse.classList.add('show');
             if (button && button.classList.contains('collapsed')) {
                 button.classList.remove('collapsed');
                 button.setAttribute('aria-expanded', 'true');

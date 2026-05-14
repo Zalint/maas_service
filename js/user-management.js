@@ -84,7 +84,20 @@ async function checkAuth() {
         
         currentUser = data.user;
         const roleDisplayName = getUserRoleDisplayName(currentUser);
-        document.getElementById('user-info').textContent = `Connecté en tant que ${currentUser.username} (${roleDisplayName})`;
+        // Chip + legacy span (retro-compat).
+        const username = String(currentUser.username || '').trim();
+        const legacy = document.getElementById('user-info');
+        if (legacy) legacy.textContent = `Connecté en tant que ${username} (${roleDisplayName})`;
+        const nameEl = document.getElementById('user-name');
+        const roleEl = document.getElementById('user-role');
+        const avatarEl = document.getElementById('user-avatar');
+        if (nameEl) nameEl.textContent = username;
+        if (roleEl) roleEl.textContent = roleDisplayName || 'Utilisateur';
+        if (avatarEl && username) {
+            const initials = username.replace(/[^A-Za-zÀ-ÿ]/g, '').slice(0, 2).toUpperCase()
+                || username[0].toUpperCase();
+            avatarEl.textContent = initials;
+        }
         return true;
     } catch (error) {
         console.error('Erreur lors de la vérification de la session:', error);
