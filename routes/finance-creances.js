@@ -138,12 +138,14 @@ async function computeCreances(opts = {}) {
     };
 
     // 3. Charger toutes les ventes de la periode.
+    // nomClient sert au drill-down (bouton "Details" cote UI) pour pouvoir
+    // tracer la marge encaissable a la commande client qui l'a generee.
     const ventes = await Vente.findAll({
         where: {
             date: { [Op.in]: dateList },
             categorie: { [Op.in]: categoriesEligibles }
         },
-        attributes: ['produit', 'categorie', 'preparation', 'nombre', 'prixUnit']
+        attributes: ['date', 'produit', 'categorie', 'preparation', 'nombre', 'prixUnit', 'nomClient']
     });
 
     // 4. Filtrer les ventes "Centre de Decoupe" pour le calcul "ce qu'il me doit".
@@ -204,7 +206,8 @@ async function computeCreances(opts = {}) {
 
         // Agreger par (centre, produit) pour l'onglet "Centre de Decoupe".
         // On accumule aussi mon_prix * qte pour calculer le prix moyen
-        // pondere par produit dans ce centre.
+        // pondere par produit dans ce centre, et on conserve la liste
+        // des ventes individuelles pour le drill-down "Details" cote UI.
         if (centre && prix.prix_achat != null) {
             if (!detailParCentre.has(centre)) {
                 detailParCentre.set(centre, new Map());
@@ -215,11 +218,21 @@ async function computeCreances(opts = {}) {
                 quantite_cdc: 0,
                 prix_achat: prix.prix_achat,
                 prix_vente_x_qte: 0, // somme(mon_prix * qte) pour calculer la moyenne ponderee
-                recevable: 0
+                recevable: 0,
+                ventes: []
             };
             cAgg.quantite_cdc += qte;
             cAgg.prix_vente_x_qte += monPrix * qte;
             cAgg.recevable += recevableLigne;
+            cAgg.ventes.push({
+                date: v.date,
+                nombre: qte,
+                prix_unit: monPrix,
+                prix_achat: prix.prix_achat,
+                marge_unitaire: monPrix - prix.prix_achat,
+                recevable_ligne: round2(recevableLigne),
+                nom_client: v.nomClient || null
+            });
             parProd.set(key, cAgg);
         }
     }
@@ -283,7 +296,8 @@ async function computeCreances(opts = {}) {
                         prix_achat: d.prix_achat == null ? null : round2(d.prix_achat),
                         mon_prix_moyen: round2(monPrixMoyen),
                         marge_unitaire: round2(margeUnit),
-                        recevable: round2(d.recevable)
+                        recevable: round2(d.recevable),
+                        ventes: d.ventes // ventes individuelles pour drill-down UI
                     };
                 }).sort((a, b) => b.recevable - a.recevable);
                 const totalRec = lignes.reduce((s, l) => s + l.recevable, 0);

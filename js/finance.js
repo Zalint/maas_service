@@ -316,10 +316,16 @@
         }
     }
 
+    // Cache du dernier payload CDC pour permettre le drill-down "Details"
+    // sans devoir refaire le calcul cote serveur.
+    let _cdcLastData = null;
+
     function renderCdc(data) {
         const cards = document.getElementById('fin-cdc-cards');
         const accordion = document.getElementById('fin-cdc-accordion');
         if (!cards || !accordion) return;
+
+        _cdcLastData = data;
 
         const parCentre = Array.isArray(data.detail_cdc_par_centre)
             ? data.detail_cdc_par_centre
@@ -357,7 +363,7 @@
             const isOpen = idx === 0;
             const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
             const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
-            const rows = c.detail.map((d) => `
+            const rows = c.detail.map((d, lineIdx) => `
                 <tr>
                     <td>${esc(d.produit)}</td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
@@ -365,8 +371,16 @@
                     <td class="text-end">${esc(fmtMoney(d.mon_prix_moyen))}</td>
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                data-cdc-details
+                                data-centre-idx="${idx}"
+                                data-line-idx="${lineIdx}">
+                            <i class="bi bi-zoom-in"></i> Détails
+                        </button>
+                    </td>
                 </tr>
-            `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucune ligne</td></tr>';
+            `).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune ligne</td></tr>';
             return `
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -387,6 +401,7 @@
                                         <th class="text-end">Mon prix moyen</th>
                                         <th class="text-end">Marge unitaire</th>
                                         <th class="text-end">Il me doit</th>
+                                        <th class="text-end"></th>
                                     </tr>
                                 </thead>
                                 <tbody>${rows}</tbody>
@@ -396,6 +411,85 @@
                 </div>
             `;
         }).join('');
+
+        // Wire les boutons "Details" (delegation)
+        accordion.querySelectorAll('[data-cdc-details]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const centreIdx = parseInt(btn.dataset.centreIdx, 10);
+                const lineIdx = parseInt(btn.dataset.lineIdx, 10);
+                showCdcDetailsModal(centreIdx, lineIdx);
+            });
+        });
+    }
+
+    // Affiche la modale avec le detail des ventes individuelles ayant
+    // contribue a une ligne (centre, produit) du calcul "Il me doit".
+    function showCdcDetailsModal(centreIdx, lineIdx) {
+        if (!_cdcLastData || !Array.isArray(_cdcLastData.detail_cdc_par_centre)) return;
+        const centre = _cdcLastData.detail_cdc_par_centre[centreIdx];
+        if (!centre) return;
+        const line = centre.detail[lineIdx];
+        if (!line) return;
+
+        const title = document.getElementById('fin-cdc-details-title');
+        const body = document.getElementById('fin-cdc-details-body');
+        const modalEl = document.getElementById('fin-cdc-details-modal');
+        if (!title || !body || !modalEl) return;
+
+        title.innerHTML = `<i class="bi bi-zoom-in me-2"></i>${esc(line.produit)} <small class="text-muted">— ${esc(centre.centre)}</small>`;
+
+        const ventes = Array.isArray(line.ventes) ? line.ventes : [];
+        const rowsHtml = ventes.map((v) => `
+            <tr>
+                <td>${esc(v.date)}</td>
+                <td>${esc(v.nom_client || '—')}</td>
+                <td class="text-end">${esc(v.nombre)}</td>
+                <td class="text-end">${esc(fmtMoney(v.prix_unit))}</td>
+                <td class="text-end">${esc(fmtMoney(v.prix_achat))}</td>
+                <td class="text-end">${esc(fmtMoney(v.marge_unitaire))}</td>
+                <td class="text-end fw-bold">${esc(fmtMoney(v.recevable_ligne))}</td>
+            </tr>
+        `).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune vente</td></tr>';
+
+        body.innerHTML = `
+            <div class="alert alert-light border small mb-3">
+                <div><strong>Formule par vente :</strong>
+                    <code>recevable = (mon_prix_vente − prix_achat_fournisseur) × quantité</code>
+                </div>
+                <div class="mt-1">
+                    <strong>Agrégat ${esc(line.produit)} :</strong>
+                    quantité ${esc(line.quantite_cdc)} kg
+                    × marge moyenne ${esc(fmtMoney(line.marge_unitaire))}
+                    = <strong>${esc(fmtMoney(line.recevable))}</strong>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped mb-0">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Client</th>
+                            <th class="text-end">Quantité</th>
+                            <th class="text-end">Mon prix</th>
+                            <th class="text-end">Prix achat</th>
+                            <th class="text-end">Marge unit.</th>
+                            <th class="text-end">Recevable</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                    <tfoot>
+                        <tr class="table-light">
+                            <th colspan="6" class="text-end">Total</th>
+                            <th class="text-end">${esc(fmtMoney(line.recevable))}</th>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        `;
+
+        // Affiche la modale via l'API Bootstrap (instance reutilisable).
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
     }
 
     // ===== Dépenses =====
