@@ -698,7 +698,7 @@
             </div>
 
             <!-- Détail des ventes individuelles -->
-            <div class="fin-subheading">Détail des ventes individuelles (prix CDC effectif point-in-time)</div>
+            <div class="fin-subheading">Détail des ventes individuelles (prix effectifs point-in-time à la date de chaque vente)</div>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
@@ -707,8 +707,8 @@
                             <th>Client / Commande</th>
                             <th class="text-end">Quantité</th>
                             <th class="text-end">Mon prix POS</th>
-                            <th class="text-end">Prix achat</th>
-                            <th class="text-end">Prix CDC effectif</th>
+                            <th class="text-end" title="Prix achat fournisseur effectif à la date de la vente">Achat eff.</th>
+                            <th class="text-end" title="Prix vente CDC effectif à la date de la vente">CDC eff.</th>
                             <th class="text-end">Marge unit.</th>
                             <th class="text-end">Recevable</th>
                         </tr>

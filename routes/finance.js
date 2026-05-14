@@ -112,13 +112,19 @@ router.get('/prix', async (req, res) => {
 });
 
 // Body: { items: [{ produit, prix_vente, prix_achat? }, ...] }
-// Upsert ligne par ligne (preserve les autres entrees).
+// Upsert ligne par ligne. Insere dans prix_vente_history /
+// prix_achat_history UNIQUEMENT pour les produits dont la valeur a
+// effectivement change (evite de polluer l'historique avec des
+// non-changements lors d'un save bulk depuis l'editeur catalogue).
 router.put('/prix', async (req, res) => {
     try {
         const items = Array.isArray(req.body?.items) ? req.body.items : null;
         if (!items) {
             return res.status(400).json({ success: false, error: 'items: array requis' });
         }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
         const now = new Date();
         for (const item of items) {
             const produit = String(item.produit || '').trim();
@@ -139,11 +145,46 @@ router.put('/prix', async (req, res) => {
                     error: `prix_achat invalide pour ${produit}`
                 });
             }
-            await FournisseurPrix.upsert({
-                produit,
-                prix_vente: prixVente,
-                prix_achat: prixAchat,
-                updated_at: now
+
+            // Lire l'ancien etat pour ne creer une entree history QUE si
+            // la valeur a effectivement change. Transaction atomique:
+            // upsert catalogue + inserts history conditionnels.
+            const existing = await FournisseurPrix.findByPk(produit);
+            const oldPrixVente = existing ? parseFloat(existing.prix_vente) : null;
+            const oldPrixAchat = existing && existing.prix_achat != null
+                ? parseFloat(existing.prix_achat)
+                : null;
+
+            await sequelize.transaction(async (t) => {
+                await FournisseurPrix.upsert({
+                    produit,
+                    prix_vente: prixVente,
+                    prix_achat: prixAchat,
+                    updated_at: now
+                }, { transaction: t });
+
+                // History prix_vente: seulement si change (ou si nouveau produit).
+                if (oldPrixVente == null || Math.abs(oldPrixVente - prixVente) > 0.001) {
+                    await PrixVenteHistory.create({
+                        produit,
+                        prix_vente: prixVente,
+                        changed_by: username
+                    }, { transaction: t });
+                }
+
+                // History prix_achat: seulement si change ET prix_achat != null
+                // (l'historique ne traite pas les nullifications).
+                if (prixAchat !== null) {
+                    const changed = oldPrixAchat == null
+                        || Math.abs(oldPrixAchat - prixAchat) > 0.001;
+                    if (changed) {
+                        await PrixAchatHistory.create({
+                            produit,
+                            prix_achat: prixAchat,
+                            changed_by: username
+                        }, { transaction: t });
+                    }
+                }
             });
             audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
         }
