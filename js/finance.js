@@ -130,6 +130,7 @@
         const status = document.getElementById('fin-cdb-status');
         const cards = document.getElementById('fin-cdb-cards');
         const tbody = document.querySelector('#fin-cdb-operations tbody');
+        const totalBadge = document.getElementById('fin-cre-acc-cdb-total');
         if (!status || !cards || !tbody) return;
 
         if (!cdb) {
@@ -137,6 +138,7 @@
             status.textContent = cdbError ? ('Erreur: ' + cdbError) : 'API non configurée';
             cards.innerHTML = '';
             tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">Données CDB indisponibles</td></tr>';
+            if (totalBadge) totalBadge.textContent = '';
             return;
         }
 
@@ -157,6 +159,9 @@
         const avances = clientStatus ? clientStatus.total_avances : 0;
         const remb = clientStatus ? clientStatus.total_remboursements : 0;
         const diff = summary ? (summary.totals.total_difference || 0) : 0;
+
+        // Badge total dans le header de l'accordeon (visible meme replie)
+        if (totalBadge) totalBadge.textContent = 'Solde ' + fmtMoney(solde);
 
         cards.innerHTML = `
             <div class="col-md-3"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
@@ -206,6 +211,12 @@
     function renderLocal(data) {
         const cards = document.getElementById('fin-creances-cards');
         const soldeCommission = (data.ce_que_je_dois || 0) - (data.paiements_effectues || 0);
+
+        // Badges totaux dans les headers d'accordeon (visibles meme replies)
+        const maasBadge = document.getElementById('fin-cre-acc-maas-total');
+        if (maasBadge) maasBadge.textContent = 'Je dois ' + fmtMoney(data.ce_que_je_dois || 0);
+        const paiementsBadge = document.getElementById('fin-cre-acc-paiements-total');
+        if (paiementsBadge) paiementsBadge.textContent = 'Payé ' + fmtMoney(data.paiements_effectues || 0);
         cards.innerHTML = `
             <div class="col-md-4"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
                 <div class="small">Je dois (${data.commission_pct}% sur ventes ${data.categories_eligibles.join('/')})</div>
