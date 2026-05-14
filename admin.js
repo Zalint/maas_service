@@ -1765,10 +1765,8 @@ function initInventaireHeaderControls() {
         const t = e.target;
         if (!t || t.id !== 'inventaire-search-input') return;
         currentInventaireSearchQuery = t.value || '';
-        console.warn('[inventaire-search] input event, query=', currentInventaireSearchQuery);
         filtrerProduitsInventaire(currentInventaireSearchQuery);
     });
-    console.warn('[inventaire-search] delegated listener attached on document');
 }
 // Attacher immediatement (idempotent via _inventaireSearchBound guard).
 initInventaireHeaderControls();
@@ -1862,97 +1860,50 @@ function afficherInventaireConfig() {
     }
 }
 
-// Filtre client-side: masque les lignes dont le nom de produit ne contient pas
-// la requête, masque les catégories sans match, et déplie automatiquement les
-// catégories qui ont au moins un match.
+// Filtre client-side dead-simple: masque tout <tr> du conteneur dont le
+// textContent ne contient pas la requête (insensible casse + accents).
+// Plus de selecteurs fragiles sur data-produit, plus d'hypotheses sur la
+// structure du tbody. Pour chaque row visible: on lit ce que l'utilisateur
+// VOIT (textContent + values des <input>) et on matche.
 function filtrerProduitsInventaire(query) {
     const container = document.getElementById('inventaire-categories');
-    if (!container) {
-        console.log('[inventaire-search] container not found');
-        return;
-    }
-    // NFKD décompose les ligatures (œ→oe, æ→ae) ET les lettres accentuées,
-    // puis on retire les diacritiques combinants (U+0300–U+036F).
+    if (!container) return;
     const norm = (s) => String(s || '')
         .normalize('NFKD').replace(/[̀-ͯ]/g, '')
-        .toLowerCase().trim();
-    const q = norm(query);
+        .toLowerCase();
+    const q = norm(query).trim();
 
-    const items = container.querySelectorAll('.accordion-item[data-categorie]');
-    console.warn('[inventaire-search] filter q=', q, 'items=', items.length);
-    // DIAGNOSTIC profond: si la 1ere fois (q non vide), on inspecte le DOM
-    // pour comprendre ou les rows sont VRAIMENT (puisque tbody tr -> 0).
-    if (q && items.length > 0 && !window._diagDumped) {
-        window._diagDumped = true;
-        const first = items[0];
-        console.warn('[diag] 1st accordion-item data-categorie=', first.dataset.categorie);
-        console.warn('[diag] 1st item children:', Array.from(first.children).map(c => c.tagName + '.' + c.className));
-        console.warn('[diag] 1st item tbody count:', first.querySelectorAll('tbody').length);
-        console.warn('[diag] 1st item tr count (all):', first.querySelectorAll('tr').length);
-        console.warn('[diag] 1st item html preview (first 500 chars):', first.outerHTML.substring(0, 500));
-        // Cherche n'importe quel <tr> dans tout le document qui contient "Yell"
-        const allTrInDoc = document.querySelectorAll('tr');
-        const yellRows = Array.from(allTrInDoc).filter(tr => tr.textContent.includes('Yell'));
-        console.warn('[diag] <tr> contenant "Yell" dans tout le doc:', yellRows.length);
-        if (yellRows.length > 0) {
-            const yr = yellRows[0];
-            console.warn('[diag] parent chain du 1er Yell:',
-                [yr, yr.parentElement, yr.parentElement?.parentElement, yr.parentElement?.parentElement?.parentElement]
-                    .filter(Boolean).map(el => el.tagName + (el.id ? '#' + el.id : '') + '.' + (el.className || '')));
-            console.warn('[diag] data-produit du 1er Yell:', yr.dataset.produit);
+    // 1) Filtrer les rows: cache celles qui ne matchent pas.
+    //    On exclut les rows d'en-tete (celles qui contiennent un <th>).
+    const allRows = container.querySelectorAll('tr');
+    allRows.forEach((row) => {
+        if (row.querySelector('th')) return; // header row, ignore
+        if (!q) {
+            row.style.display = '';
+            return;
         }
-    }
-    let totalMatches = 0;
-    let totalRows = 0;
-    let sampleProduits = [];
-    items.forEach((item) => {
-        const categorie = item.dataset.categorie;
-        // Selecteurs alternatifs: les rows peuvent ne pas avoir data-produit
-        // si genererLignesProduitsInventaire n'a pas mis l'attribut, OU si la
-        // structure imbrique le tbody dans table-responsive.
-        let rows = item.querySelectorAll('tbody tr[data-produit]');
-        if (rows.length === 0) {
-            // Fallback: TOUS les <tr> du tbody, filtre par texte de la 1ere cellule input.
-            rows = item.querySelectorAll('tbody tr');
-        }
-        if (rows.length === 0) {
-            // Fallback 2: TOUS les <tr> de l'item (au cas ou tbody manque).
-            rows = item.querySelectorAll('tr');
-            // Skip le tr du thead (premier tr avec th)
-            rows = Array.from(rows).filter(r => !r.querySelector('th'));
-        }
-        let matchCount = 0;
-        rows.forEach((row) => {
-            // Source du nom: data-produit en priorite, sinon valeur du 1er input texte.
-            let nom = row.dataset.produit;
-            if (!nom) {
-                const firstInput = row.querySelector('input[type="text"]');
-                nom = firstInput ? firstInput.value : '';
-            }
-            nom = norm(nom);
-            if (sampleProduits.length < 5 && nom) sampleProduits.push(`${categorie}:${nom}`);
-            const match = !q || nom.includes(q);
-            row.style.display = match ? '' : 'none';
-            if (match) matchCount++;
-        });
-        totalRows += rows.length;
-        totalMatches += matchCount;
-        item.style.display = (q && matchCount === 0) ? 'none' : '';
+        // textContent + valeurs des inputs (le nom du produit est dans le 1er input)
+        let text = row.textContent || '';
+        row.querySelectorAll('input, select').forEach((el) => { text += ' ' + (el.value || ''); });
+        row.style.display = norm(text).includes(q) ? '' : 'none';
+    });
 
-        // Déplie les catégories qui ont un match quand l'utilisateur cherche.
-        if (q && matchCount > 0) {
+    // 2) Pour chaque accordion-item, cacher ceux qui n'ont aucune row visible.
+    //    Et auto-deplier ceux qui ont des matches (sinon Bootstrap les garde fermes).
+    container.querySelectorAll('.accordion-item').forEach((item) => {
+        const visibleDataRows = Array.from(item.querySelectorAll('tr'))
+            .filter((r) => !r.querySelector('th') && r.style.display !== 'none');
+        item.style.display = (q && visibleDataRows.length === 0) ? 'none' : '';
+        if (q && visibleDataRows.length > 0) {
             const collapse = item.querySelector('.accordion-collapse');
             const button = item.querySelector('.accordion-button');
-            if (collapse && !collapse.classList.contains('show')) {
-                collapse.classList.add('show');
-            }
+            if (collapse && !collapse.classList.contains('show')) collapse.classList.add('show');
             if (button && button.classList.contains('collapsed')) {
                 button.classList.remove('collapsed');
                 button.setAttribute('aria-expanded', 'true');
             }
         }
     });
-    console.warn('[inventaire-search] total matches:', totalMatches, 'total rows scanned:', totalRows, 'sample:', sampleProduits);
 }
 
 // Générer les lignes de produits pour une catégorie d'inventaire
