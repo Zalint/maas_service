@@ -16,8 +16,38 @@
     'use strict';
 
     const fmtMoney = (n) => (Math.round(parseFloat(n) || 0)).toLocaleString('fr-FR') + ' FCFA';
+    // Variante HTML qui separe le suffixe FCFA en span muted (utilise dans
+    // les valeurs KPI pour mettre l'accent sur le chiffre).
+    const fmtAmount = (n) => {
+        const num = (Math.round(parseFloat(n) || 0)).toLocaleString('fr-FR');
+        return `${num}<span class="fin-kpi-currency">FCFA</span>`;
+    };
     const esc = (s) => String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Construit le markup d'une carte KPI Finance.
+    // tone: 'warning' | 'success' | 'danger' | 'info' | 'neutral'
+    function kpiCard(tone, icon, label, valueHtml, trendHtml) {
+        const trend = trendHtml ? `<div class="fin-kpi-trend">${trendHtml}</div>` : '';
+        return `
+            <div class="col-md-3 mb-2">
+                <div class="card fin-kpi-card h-100 border-0">
+                    <div class="card-body">
+                        <div class="d-flex align-items-start gap-3">
+                            <div class="fin-kpi-icon fin-kpi-icon--${tone}">
+                                <i class="bi bi-${icon}"></i>
+                            </div>
+                            <div class="flex-grow-1" style="min-width:0">
+                                <div class="fin-kpi-label">${label}</div>
+                                <div class="fin-kpi-value">${valueHtml}</div>
+                                ${trend}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
 
     // ===== Setup au DOMContentLoaded =====
     document.addEventListener('DOMContentLoaded', () => {
@@ -134,7 +164,7 @@
         if (!status || !cards || !tbody) return;
 
         if (!cdb) {
-            status.className = 'badge bg-warning';
+            status.className = 'fin-pill fin-pill--warning ms-2';
             status.textContent = cdbError ? ('Erreur: ' + cdbError) : 'API non configurée';
             cards.innerHTML = '';
             tbody.innerHTML = '<tr><td colspan="5" class="text-muted text-center">Données CDB indisponibles</td></tr>';
@@ -152,7 +182,7 @@
         const label = meta.label || (clientStatus && clientStatus.client_name) || '?';
         const director = (detail && detail.assigned_director) || '—';
         const dateSel = (summary && summary.date_selected) || '';
-        status.className = 'badge bg-success';
+        status.className = 'fin-pill fin-pill--success ms-2';
         status.textContent = `${label} • ${dateSel} • Resp: ${director}`;
 
         const solde = clientStatus ? clientStatus.solde_final : (summary ? summary.totals.current_balance : 0);
@@ -163,24 +193,22 @@
         // Badge total dans le header de l'accordeon (visible meme replie)
         if (totalBadge) totalBadge.textContent = 'Solde ' + fmtMoney(solde);
 
-        cards.innerHTML = `
-            <div class="col-md-3"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
-                <div class="small">Solde dû au fournisseur</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(solde))}</div>
-            </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-danger"><div class="card-body p-2 text-center">
-                <div class="small">Total avances</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(avances))}</div>
-            </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-success"><div class="card-body p-2 text-center">
-                <div class="small">Total remboursements</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(remb))}</div>
-            </div></div></div>
-            <div class="col-md-3"><div class="card text-bg-info"><div class="card-body p-2 text-center">
-                <div class="small">Δ vs veille</div>
-                <div class="fs-4 fw-bold">${diff >= 0 ? '+' : ''}${esc(fmtMoney(diff))}</div>
-            </div></div></div>
-        `;
+        const diffSign = diff > 0 ? '+' : '';
+        const trendCls = diff > 0 ? 'fin-kpi-trend--up'
+                       : diff < 0 ? 'fin-kpi-trend--down'
+                       : '';
+        const trendIcon = diff > 0 ? 'arrow-up-right'
+                        : diff < 0 ? 'arrow-down-right'
+                        : 'dash';
+        const trendLabel = diff === 0 ? 'Inchangé vs veille' : `${diffSign}${fmtMoney(diff)} vs veille`;
+
+        cards.innerHTML = [
+            kpiCard('warning', 'cash-stack',       'Solde dû au fournisseur', fmtAmount(solde),
+                `<span class="${trendCls}"><i class="bi bi-${trendIcon} me-1"></i>${esc(trendLabel)}</span>`),
+            kpiCard('danger',  'arrow-down-circle', 'Total avances',           fmtAmount(avances)),
+            kpiCard('success', 'arrow-up-circle',   'Total remboursements',    fmtAmount(remb)),
+            kpiCard('info',    'graph-up',          'Δ vs veille',             `${diffSign}${fmtAmount(diff)}`)
+        ].join('');
 
         // Operations: tri descendant (timestamp si dispo, sinon date)
         const sorted = operations.slice().sort((a, b) => {
@@ -191,8 +219,8 @@
         tbody.innerHTML = sorted.map((op) => {
             const isAvance = String(op.type).toLowerCase() === 'avance';
             const badge = isAvance
-                ? '<span class="badge bg-danger">Avance</span>'
-                : '<span class="badge bg-success">Remboursement</span>';
+                ? '<span class="fin-op fin-op--avance"><i class="bi bi-arrow-down-right"></i>Avance</span>'
+                : '<span class="fin-op fin-op--remboursement"><i class="bi bi-arrow-up-right"></i>Remboursement</span>';
             return `
                 <tr>
                     <td>${esc(op.date_operation || '')}</td>
@@ -217,20 +245,14 @@
         if (maasBadge) maasBadge.textContent = 'Je dois ' + fmtMoney(data.ce_que_je_dois || 0);
         const paiementsBadge = document.getElementById('fin-cre-acc-paiements-total');
         if (paiementsBadge) paiementsBadge.textContent = 'Payé ' + fmtMoney(data.paiements_effectues || 0);
-        cards.innerHTML = `
-            <div class="col-md-4"><div class="card text-bg-warning"><div class="card-body p-2 text-center">
-                <div class="small">Je dois (${data.commission_pct}% sur ventes ${data.categories_eligibles.join('/')})</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(data.ce_que_je_dois))}</div>
-            </div></div></div>
-            <div class="col-md-4"><div class="card text-bg-info"><div class="card-body p-2 text-center">
-                <div class="small">Paiements locaux saisis</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(data.paiements_effectues))}</div>
-            </div></div></div>
-            <div class="col-md-4"><div class="card text-bg-secondary"><div class="card-body p-2 text-center">
-                <div class="small">Solde commission (Je dois − Paiements)</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(soldeCommission))}</div>
-            </div></div></div>
-        `;
+        // 3 cartes au lieu de 4 (col-md-4). On override la col du helper.
+        const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
+            .replace('col-md-3', 'col-md-4');
+        cards.innerHTML = [
+            card3('warning', 'percent',    `Je dois (${data.commission_pct}% sur ventes ${data.categories_eligibles.join('/')})`, fmtAmount(data.ce_que_je_dois)),
+            card3('info',    'wallet2',    'Paiements locaux saisis',     fmtAmount(data.paiements_effectues)),
+            card3('neutral', 'calculator', 'Solde commission (Je dois − Paiements)', fmtAmount(soldeCommission))
+        ].join('');
 
         const tbody = document.querySelector('#fin-creances-detail tbody');
         const detailDette = data.detail.filter((d) => d.dette > 0);
@@ -335,20 +357,13 @@
         const totalQuantiteCdc = parCentre.reduce((s, c) => s + (c.total_quantite || 0), 0);
         const margeMoyenneKg = totalQuantiteCdc > 0 ? (totalRecevable / totalQuantiteCdc) : 0;
 
-        cards.innerHTML = `
-            <div class="col-md-4"><div class="card text-bg-success"><div class="card-body p-2 text-center">
-                <div class="small">Il me doit (total marge)</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(totalRecevable))}</div>
-            </div></div></div>
-            <div class="col-md-4"><div class="card text-bg-primary"><div class="card-body p-2 text-center">
-                <div class="small">Quantité CDC totale</div>
-                <div class="fs-4 fw-bold">${esc(totalQuantiteCdc)} kg</div>
-            </div></div></div>
-            <div class="col-md-4"><div class="card text-bg-info"><div class="card-body p-2 text-center">
-                <div class="small">Marge moyenne / kg</div>
-                <div class="fs-4 fw-bold">${esc(fmtMoney(margeMoyenneKg))}</div>
-            </div></div></div>
-        `;
+        const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
+            .replace('col-md-3', 'col-md-4');
+        cards.innerHTML = [
+            card3('success', 'coin',      'Il me doit (total marge)', fmtAmount(totalRecevable)),
+            card3('info',    'box-seam',  'Quantité CDC totale',      `${totalQuantiteCdc}<span class="fin-kpi-currency">kg</span>`),
+            card3('neutral', 'bar-chart', 'Marge moyenne / kg',       fmtAmount(margeMoyenneKg))
+        ].join('');
 
         if (parCentre.length === 0) {
             accordion.innerHTML = '<div class="alert alert-light border text-muted small mb-0">Aucune vente via un Centre de Découpe sur la période.</div>';
@@ -385,9 +400,9 @@
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="${headerBtnCls}" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="${isOpen ? 'true' : 'false'}" aria-controls="${collapseId}">
-                            <span class="me-3"><i class="bi bi-truck"></i> <strong>${esc(c.centre)}</strong></span>
-                            <span class="badge bg-primary me-2">${esc(c.total_quantite)} kg</span>
-                            <span class="badge bg-success">${esc(fmtMoney(c.total_recevable))}</span>
+                            <span class="me-3"><i class="bi bi-truck me-1"></i><strong>${esc(c.centre)}</strong></span>
+                            <span class="fin-pill fin-pill--info me-2">${esc(c.total_quantite)} kg</span>
+                            <span class="fin-pill fin-pill--success">${esc(fmtMoney(c.total_recevable))}</span>
                         </button>
                     </h2>
                     <div id="${collapseId}" class="${collapseCls}">
