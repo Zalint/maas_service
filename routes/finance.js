@@ -967,7 +967,19 @@ router.get('/pl', async (req, res) => {
             where: { date: { [SeqOp.in]: dateList } },
             attributes: ['montant']
         });
-        const totalVentes = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
+        const totalVentesBase = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
+
+        // Ajouter les commandes envoyees au Centre de Decoupe en tant que
+        // virtual ventes (meme logique que GET /api/ventes utilise par
+        // Visualisation -> "Montant Total des Ventes" inclut ces lignes).
+        // Sans cela, le total Ventes du PL diverge de la card Visualisation
+        // du meme nom. Cf lib/decoupe-as-ventes.js.
+        const { fetchDecoupeAsVentes } = require('../lib/decoupe-as-ventes');
+        const decoupeAsVentes = await fetchDecoupeAsVentes({ dateDebut, dateFin });
+        const totalDecoupeAsVentes = decoupeAsVentes.reduce(
+            (s, v) => s + (parseFloat(v.Montant) || 0), 0
+        );
+        const totalVentes = totalVentesBase + totalDecoupeAsVentes;
 
         // 2. Commission MaaS + Marge CDC via computeCreances
         const { computeCreances } = require('./finance-creances');
