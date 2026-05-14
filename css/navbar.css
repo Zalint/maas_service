@@ -1,0 +1,141 @@
+/* ============================================================
+   Shared navbar polish — utilise sur index.html, admin.html,
+   user-management.html. Toutes les regles attendent un
+   <nav class="navbar navbar-dark bg-primary"> et des classes
+   helper: .nav-cta-caisse, .user-chip, .tenant-badge.
+   ============================================================ */
+
+.navbar.bg-primary {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.navbar-brand img {
+    transition: transform 120ms ease;
+}
+.navbar-brand:hover img { transform: scale(1.02); }
+
+/* Nav links: hover + active state plus visibles */
+.navbar-dark .navbar-nav .nav-link {
+    position: relative;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+    color: rgba(255, 255, 255, 0.85);
+    transition: color 120ms ease, background 120ms ease;
+    border-radius: 6px;
+}
+.navbar-dark .navbar-nav .nav-link:hover,
+.navbar-dark .navbar-nav .nav-link:focus {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+.navbar-dark .navbar-nav .nav-link.active {
+    color: #fff;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.12);
+}
+.navbar-dark .navbar-nav .nav-link.active::after {
+    content: "";
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 2px;
+    height: 2px;
+    background: #ffc107;
+    border-radius: 2px;
+}
+
+/* Caisse: CTA distinct (jaune brand) */
+.nav-cta-caisse {
+    background: #ffc107;
+    color: #212529 !important;
+    font-weight: 600;
+    padding: 0.45rem 0.9rem !important;
+    border-radius: 8px;
+    margin-right: 0.5rem;
+    transition: background 120ms ease, transform 80ms ease;
+}
+.nav-cta-caisse:hover,
+.nav-cta-caisse:focus {
+    background: #ffca2c !important;
+    color: #000 !important;
+}
+.nav-cta-caisse:active { transform: scale(0.98); }
+
+/* User chip + dropdown */
+.user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.4rem 0.75rem;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    color: #fff;
+    text-decoration: none;
+    transition: background 120ms ease;
+    font-size: 0.875rem;
+    line-height: 1.2;
+    min-height: 36px;
+}
+.user-chip:hover,
+.user-chip:focus,
+.user-chip[aria-expanded="true"] {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+.user-chip .user-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #ffc107;
+    color: #212529;
+    font-weight: 700;
+    font-size: 0.8rem;
+}
+.user-chip .user-meta {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+}
+.user-chip .user-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+.user-chip .user-role {
+    font-size: 0.72rem;
+    opacity: 0.85;
+}
+
+/* Tenant badge */
+.tenant-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: #ffc107;
+    font-weight: 600;
+    margin-right: 0.5rem;
+}
+.tenant-badge i { font-size: 0.7rem; opacity: 0.85; }
+
+/* Brand text (admin / user-mgmt pages utilisent souvent du texte
+   plutot qu'une image) — meme rendu propre */
+.navbar-dark .navbar-brand {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.navbar-dark .navbar-brand .brand-sub {
+    color: rgba(255, 255, 255, 0.7);
+    font-weight: 400;
+    font-size: 0.85em;
+    margin-left: 0.25rem;
+}
+
+/* Mobile: keep stack readable */
+@media (max-width: 991.98px) {
+    .nav-cta-caisse { margin: 0.25rem 0; display: inline-block; }
+    .user-chip { margin: 0.5rem 0; }
+}

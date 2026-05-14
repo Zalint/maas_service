@@ -79,9 +79,26 @@ async function checkAuth() {
             return false;
         }
         
-        // Afficher les informations de l'utilisateur
+        // Afficher les informations de l'utilisateur (chip + legacy span).
         const roleDisplayName = getUserRoleDisplayName(data.user);
-        document.getElementById('user-info').textContent = `Connecté en tant que ${data.user.username} (${roleDisplayName})`;
+        const username = String(data.user.username || '').trim();
+        const legacy = document.getElementById('user-info');
+        if (legacy) legacy.textContent = `Connecté en tant que ${username} (${roleDisplayName})`;
+        const nameEl = document.getElementById('user-name');
+        const roleEl = document.getElementById('user-role');
+        const avatarEl = document.getElementById('user-avatar');
+        if (nameEl) nameEl.textContent = username;
+        if (roleEl) roleEl.textContent = roleDisplayName || 'Utilisateur';
+        if (avatarEl && username) {
+            const initials = username.replace(/[^A-Za-zÀ-ÿ]/g, '').slice(0, 2).toUpperCase()
+                || username[0].toUpperCase();
+            avatarEl.textContent = initials;
+        }
+        // Brand "Administration · <Tenant>" si tenant connu
+        const brandTenant = document.getElementById('brand-tenant');
+        if (brandTenant && data.user.clientName) {
+            brandTenant.textContent = '· ' + data.user.clientName;
+        }
         
         // Afficher l'onglet de gestion des utilisateurs seulement pour l'utilisateur ADMIN
         if (data.user.username === 'ADMIN') {
