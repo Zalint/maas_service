@@ -544,6 +544,9 @@ router.put('/alias', async (req, res) => {
             });
         }
 
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
         const result = await sequelize.transaction(async (t) => {
             const [, createdCatalog] = await FournisseurPrix.findOrCreate({
                 where: { produit: produitCatalog },
@@ -555,6 +558,18 @@ router.put('/alias', async (req, res) => {
                 },
                 transaction: t
             });
+            // Si auto-creation: seedee une entree prix_vente_history pour
+            // que le lookup point-in-time des ventes futures sur ce nouveau
+            // produit trouve une valeur (sans attendre le prochain restart
+            // serveur ou le genesis seed via update-schema). prix_achat
+            // reste NULL donc pas d'entree history (CHECK >= 0).
+            if (createdCatalog) {
+                await PrixVenteHistory.create({
+                    produit: produitCatalog,
+                    prix_vente: 0,
+                    changed_by: username || '_autocreate_alias_'
+                }, { transaction: t });
+            }
             await ProduitAlias.upsert({
                 alias_produit: aliasProduit,
                 produit_catalog: produitCatalog,
