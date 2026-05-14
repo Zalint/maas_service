@@ -145,7 +145,7 @@ body {
     color: var(--fin-text);
     font-variant-numeric: tabular-nums;
     line-height: 1.15;
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 #finance-section .fin-kpi-currency {
     font-size: 0.78rem;

@@ -64,10 +64,9 @@ function toDDMMYYYY(input) {
 
 // Generer la liste des dates "YYYY-MM-DD" entre debut et fin (inclus).
 function generateDateRange(startISO, endISO) {
-    const parse = (s) => {
-        const [y, m, d] = s.split('-').map(Number);
-        return new Date(Date.UTC(y, m - 1, d));
-    };
+    // Parse via ISO timestamp Z (UTC explicite) plutot que Date.UTC(y,m-1,d):
+    // moins de risque de transposition d'arguments et plus lisible.
+    const parse = (s) => new Date(`${s}T00:00:00Z`);
     const fmt = (date) => {
         const yyyy = date.getUTCFullYear();
         const mm = String(date.getUTCMonth() + 1).padStart(2, '0');

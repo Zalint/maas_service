@@ -242,7 +242,7 @@ async function updateSchema() {
             CREATE TABLE IF NOT EXISTS depenses (
                 id SERIAL PRIMARY KEY,
                 date DATE NOT NULL,
-                montant NUMERIC(12, 2) NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
                 categorie VARCHAR(50),
                 description TEXT,
                 justificatif_filename VARCHAR(255),
@@ -255,15 +255,36 @@ async function updateSchema() {
         `);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date DESC)`);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie)`);
+        // CHECK idempotent pour les tables deja creees sans la contrainte
+        // (rolling upgrade). DO block car ADD CONSTRAINT IF NOT EXISTS
+        // n'existe pas en Postgres pour les CHECK column-level.
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'depenses_montant_nonneg' AND conrelid = 'depenses'::regclass) THEN
+                    ALTER TABLE depenses ADD CONSTRAINT depenses_montant_nonneg CHECK (montant >= 0);
+                END IF;
+            END $$;
+        `);
         console.log('Table depenses verifiee');
 
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS fournisseur_prix (
                 produit VARCHAR(100) PRIMARY KEY,
-                prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0,
-                prix_achat NUMERIC(12, 2),
+                prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
+                prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+        `);
+        // CHECK idempotent pour les tables deja creees (cf depenses).
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_prix_prix_vente_nonneg' AND conrelid = 'fournisseur_prix'::regclass) THEN
+                    ALTER TABLE fournisseur_prix ADD CONSTRAINT fournisseur_prix_prix_vente_nonneg CHECK (prix_vente >= 0);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_prix_prix_achat_nonneg' AND conrelid = 'fournisseur_prix'::regclass) THEN
+                    ALTER TABLE fournisseur_prix ADD CONSTRAINT fournisseur_prix_prix_achat_nonneg CHECK (prix_achat IS NULL OR prix_achat >= 0);
+                END IF;
+            END $$;
         `);
         await sequelize.query(`
             INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
@@ -298,7 +319,7 @@ async function updateSchema() {
             CREATE TABLE IF NOT EXISTS fournisseur_paiements (
                 id SERIAL PRIMARY KEY,
                 date DATE NOT NULL,
-                montant NUMERIC(12, 2) NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
                 mode VARCHAR(50),
                 reference VARCHAR(100),
                 commentaire TEXT,
@@ -307,6 +328,14 @@ async function updateSchema() {
             )
         `);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC)`);
+        // CHECK idempotent (cf depenses).
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_paiements_montant_nonneg' AND conrelid = 'fournisseur_paiements'::regclass) THEN
+                    ALTER TABLE fournisseur_paiements ADD CONSTRAINT fournisseur_paiements_montant_nonneg CHECK (montant >= 0);
+                END IF;
+            END $$;
+        `);
         console.log('Table fournisseur_paiements verifiee');
 
         // Mapping libelle de vente -> entree du catalogue prix.

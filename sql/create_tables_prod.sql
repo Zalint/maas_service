@@ -776,7 +776,7 @@ CREATE INDEX IF NOT EXISTS idx_prix_historique_created_at ON prix_historique(cre
 CREATE TABLE IF NOT EXISTS depenses (
     id SERIAL PRIMARY KEY,
     date DATE NOT NULL,
-    montant NUMERIC(12, 2) NOT NULL,
+    montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
     categorie VARCHAR(50),
     description TEXT,
     justificatif_filename VARCHAR(255),
@@ -791,8 +791,8 @@ CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie);
 
 CREATE TABLE IF NOT EXISTS fournisseur_prix (
     produit VARCHAR(100) PRIMARY KEY,
-    prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    prix_achat NUMERIC(12, 2),
+    prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
+    prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
@@ -816,7 +816,7 @@ ON CONFLICT (key) DO NOTHING;
 CREATE TABLE IF NOT EXISTS fournisseur_paiements (
     id SERIAL PRIMARY KEY,
     date DATE NOT NULL,
-    montant NUMERIC(12, 2) NOT NULL,
+    montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
     mode VARCHAR(50),
     reference VARCHAR(100),
     commentaire TEXT,
