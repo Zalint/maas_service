@@ -309,6 +309,22 @@ async function updateSchema() {
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC)`);
         console.log('Table fournisseur_paiements verifiee');
 
+        // Mapping libelle de vente -> entree du catalogue prix.
+        // Sert a remplacer le matching prefix (startsWith) par un alias
+        // explicite gere depuis l'UI Mapping produits.
+        // ON DELETE CASCADE: supprimer un produit du catalogue retire
+        // automatiquement ses aliases (pas de dangling references).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS produit_alias (
+                alias_produit VARCHAR(150) PRIMARY KEY,
+                produit_catalog VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog)`);
+        console.log('Table produit_alias verifiee');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

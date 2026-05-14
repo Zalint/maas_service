@@ -825,6 +825,16 @@ CREATE TABLE IF NOT EXISTS fournisseur_paiements (
 );
 CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC);
 
+-- Mapping libelle vente -> entree catalogue prix.
+-- Remplace le matching prefix (startsWith) par un alias explicite.
+CREATE TABLE IF NOT EXISTS produit_alias (
+    alias_produit VARCHAR(150) PRIMARY KEY,
+    produit_catalog VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog);
+
 -- =====================================================
 -- NETTOYAGE DES DONNÉES HISTORIQUES (optionnel)
 -- =====================================================
