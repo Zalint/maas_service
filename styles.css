@@ -62,6 +62,261 @@ body {
     font-weight: bold;
 }
 
+/* Override pour les sous-onglets Finance (card-header blanc).
+ * La regle globale .nav-link { color: white } est faite pour la
+ * navbar bleue principale; ici on est sur fond blanc donc il faut
+ * du texte fonce. */
+#finance-subnav .nav-link {
+    color: #495057 !important;
+    font-weight: 500;
+}
+#finance-subnav .nav-link:hover {
+    color: #0d6efd !important;
+    border-color: #e9ecef #e9ecef #dee2e6;
+}
+#finance-subnav .nav-link.active {
+    color: #0d6efd !important;
+    background-color: #fff;
+    border-color: #dee2e6 #dee2e6 #fff;
+    font-weight: 600;
+}
+
+/* ============================================================
+ * Finance — design system pro-finance
+ * Scope: tous les styles sont prefixes par #finance-section pour
+ * eviter d'affecter le reste de l'app.
+ * Tokens design system: palette sobre (slate), accents tints
+ * (warning/success/danger/info), tabular-nums pour les chiffres.
+ * ============================================================ */
+#finance-section {
+    --fin-surface: #ffffff;
+    --fin-bg-soft: #f8fafc;
+    --fin-border: #e2e8f0;
+    --fin-border-strong: #cbd5e1;
+    --fin-text: #0f172a;
+    --fin-text-secondary: #475569;
+    --fin-text-muted: #64748b;
+    --fin-accent: #0d6efd;
+    /* Tints (background + foreground accessible 4.5:1) */
+    --fin-warning: #b45309;       --fin-warning-bg: #fef3c7;
+    --fin-success: #047857;       --fin-success-bg: #d1fae5;
+    --fin-danger:  #b91c1c;       --fin-danger-bg:  #fee2e2;
+    --fin-info:    #0369a1;       --fin-info-bg:    #e0f2fe;
+    --fin-neutral: #475569;       --fin-neutral-bg: #f1f5f9;
+}
+
+/* Cartes Finance (override Bootstrap card) */
+#finance-section .card,
+#finance-section .fin-kpi-card {
+    border: 1px solid var(--fin-border);
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    background: var(--fin-surface);
+}
+#finance-section .fin-kpi-card { transition: box-shadow 150ms ease; }
+#finance-section .fin-kpi-card:hover { box-shadow: 0 4px 10px rgba(15, 23, 42, 0.06); }
+#finance-section .fin-kpi-card .card-body { padding: 16px 18px; }
+
+#finance-section .fin-kpi-icon {
+    width: 40px; height: 40px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 8px;
+    font-size: 18px;
+    flex-shrink: 0;
+}
+#finance-section .fin-kpi-icon--warning { background: var(--fin-warning-bg); color: var(--fin-warning); }
+#finance-section .fin-kpi-icon--success { background: var(--fin-success-bg); color: var(--fin-success); }
+#finance-section .fin-kpi-icon--danger  { background: var(--fin-danger-bg);  color: var(--fin-danger);  }
+#finance-section .fin-kpi-icon--info    { background: var(--fin-info-bg);    color: var(--fin-info);    }
+#finance-section .fin-kpi-icon--neutral { background: var(--fin-neutral-bg); color: var(--fin-neutral); }
+
+#finance-section .fin-kpi-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fin-text-muted);
+    margin-bottom: 4px;
+    line-height: 1.2;
+}
+#finance-section .fin-kpi-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--fin-text);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+    overflow-wrap: break-word;
+}
+#finance-section .fin-kpi-currency {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--fin-text-muted);
+    margin-left: 3px;
+}
+#finance-section .fin-kpi-trend {
+    font-size: 12px;
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fin-text-muted);
+}
+#finance-section .fin-kpi-trend--up      { color: var(--fin-danger);  }
+#finance-section .fin-kpi-trend--down    { color: var(--fin-success); }
+
+/* Accordéons */
+#finance-section .accordion {
+    --bs-accordion-border-color: var(--fin-border);
+    --bs-accordion-border-radius: 8px;
+    --bs-accordion-active-color: var(--fin-text);
+    --bs-accordion-active-bg: var(--fin-bg-soft);
+}
+#finance-section .accordion-item {
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 10px;
+    border: 1px solid var(--fin-border);
+}
+#finance-section .accordion-item:first-of-type,
+#finance-section .accordion-item:last-of-type { border-radius: 8px; }
+#finance-section .accordion-button {
+    font-size: 0.95rem;
+    padding: 14px 18px;
+    background-color: var(--fin-surface);
+    color: var(--fin-text);
+    font-weight: 500;
+}
+#finance-section .accordion-button:not(.collapsed) {
+    background: var(--fin-bg-soft);
+    color: var(--fin-text);
+    box-shadow: inset 0 -1px 0 var(--fin-border);
+}
+#finance-section .accordion-button:focus {
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.18);
+    border-color: transparent;
+}
+#finance-section .accordion-body { padding: 16px 18px; }
+
+/* Badges discrets (pills) — section totals + statut */
+#finance-section .fin-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+#finance-section .fin-pill--warning { background: var(--fin-warning-bg); color: var(--fin-warning); }
+#finance-section .fin-pill--success { background: var(--fin-success-bg); color: var(--fin-success); }
+#finance-section .fin-pill--danger  { background: var(--fin-danger-bg);  color: var(--fin-danger);  }
+#finance-section .fin-pill--info    { background: var(--fin-info-bg);    color: var(--fin-info);    }
+#finance-section .fin-pill--neutral { background: var(--fin-neutral-bg); color: var(--fin-neutral); }
+
+/* Badges Avance / Remboursement (table opérations CDB) */
+#finance-section .fin-op {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+#finance-section .fin-op--avance        { background: var(--fin-danger-bg);  color: var(--fin-danger);  }
+#finance-section .fin-op--remboursement { background: var(--fin-success-bg); color: var(--fin-success); }
+
+/* Tables */
+#finance-section .table {
+    --bs-table-bg: var(--fin-surface);
+    font-size: 0.875rem;
+    margin-bottom: 0;
+}
+#finance-section .table thead th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fin-text-muted);
+    font-weight: 600;
+    background: var(--fin-bg-soft);
+    border-bottom: 1px solid var(--fin-border);
+    padding: 10px 12px;
+}
+#finance-section .table tbody td {
+    vertical-align: middle;
+    color: var(--fin-text-secondary);
+    padding: 10px 12px;
+    border-color: var(--fin-border);
+}
+#finance-section .table tbody td.text-end,
+#finance-section .table thead th.text-end,
+#finance-section .table tfoot th.text-end {
+    font-variant-numeric: tabular-nums;
+}
+#finance-section .table.table-striped > tbody > tr:nth-of-type(odd) > * {
+    --bs-table-accent-bg: rgba(15, 23, 42, 0.025);
+}
+
+/* Sous-titre / heading minor (uppercase, muted) */
+#finance-section .fin-subheading {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fin-text-muted);
+    margin: 16px 0 8px;
+}
+
+/* Formulaires Finance */
+#finance-section .form-control,
+#finance-section .form-select {
+    border-color: var(--fin-border);
+    color: var(--fin-text);
+}
+#finance-section .form-control:focus,
+#finance-section .form-select:focus {
+    border-color: var(--fin-accent);
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+}
+#finance-section .form-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fin-text-secondary);
+    margin-bottom: 4px;
+}
+
+/* Boutons */
+#finance-section .btn-primary {
+    background-color: var(--fin-accent);
+    border-color: var(--fin-accent);
+}
+#finance-section .btn-outline-primary {
+    color: var(--fin-accent);
+    border-color: var(--fin-border-strong);
+}
+#finance-section .btn-outline-primary:hover {
+    color: #fff;
+    background-color: var(--fin-accent);
+    border-color: var(--fin-accent);
+}
+
+/* Modale détails CDC */
+#fin-cdc-details-modal .modal-content {
+    border-radius: 12px;
+    border: 1px solid var(--fin-border);
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.15);
+}
+#fin-cdc-details-modal .modal-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: #0f172a;
+}
+#fin-cdc-details-modal .modal-header,
+#fin-cdc-details-modal .modal-footer { border-color: var(--fin-border); }
+
 #visualisation-section .card {
     margin-top: 1rem;
 }

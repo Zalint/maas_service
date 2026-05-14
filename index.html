@@ -370,6 +370,11 @@
                         <li class="nav-item module-pending" id="cash-payment-item">
                             <a class="nav-link" href="#" id="cash-payment-tab">Cash Paiement</a>
                         </li>
+                        <li class="nav-item" id="finance-item" style="display:none">
+                            <a class="nav-link" href="#" id="finance-tab">
+                                <i class="bi bi-cash-stack"></i> Finance
+                            </a>
+                        </li>
                         <li class="nav-item module-pending" id="suivi-achat-boeuf-item">
                             <a class="nav-link" href="#" id="suivi-achat-boeuf-tab">Suivi achat boeuf</a>
                         </li>
@@ -2169,6 +2174,345 @@
                 </div>
             </div>
 
+            <!-- Section Finance -->
+            <div id="finance-section" class="container-fluid mt-4 content-section" style="display: none;">
+                <div class="card">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs" id="finance-subnav">
+                            <li class="nav-item">
+                                <a class="nav-link active" href="#" data-fin-tab="creances">Créances fournisseur</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="cdc">Centre de Découpe</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="depenses">Dépenses</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="prix">Prix fournisseur</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="mapping">Mapping produits</a>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        <!-- Pane: Créances -->
+                        <div data-fin-pane="creances">
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-creances-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-creances-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-creances-refresh">Calculer</button>
+                                </div>
+                            </div>
+                            <!-- ===== Accordeon: 3 sections pliables ===== -->
+                            <div class="accordion" id="fin-creances-accordion">
+                                <!-- Section 1: Créance Partenaire (MataBanq) -->
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#fin-cre-acc-cdb" aria-expanded="true" aria-controls="fin-cre-acc-cdb">
+                                            <i class="bi bi-bank me-2"></i>
+                                            <strong>Créance Partenaire</strong>
+                                            <span class="fin-pill fin-pill--neutral ms-2" id="fin-cdb-status">Chargement…</span>
+                                            <span class="fin-pill fin-pill--warning ms-2" id="fin-cre-acc-cdb-total"></span>
+                                        </button>
+                                    </h2>
+                                    <div id="fin-cre-acc-cdb" class="accordion-collapse collapse show">
+                                        <div class="accordion-body">
+                                            <div id="fin-cdb-block">
+                                                <div class="row g-2 mb-3" id="fin-cdb-cards"></div>
+                                                <div class="table-responsive mb-0">
+                                                    <table class="table table-sm table-striped mb-0" id="fin-cdb-operations">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Date</th>
+                                                                <th>Type</th>
+                                                                <th class="text-end">Montant</th>
+                                                                <th>Description</th>
+                                                                <th>Saisie par</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody></tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Section 2: Calcul Maas (commission 3%) -->
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#fin-cre-acc-maas" aria-expanded="false" aria-controls="fin-cre-acc-maas">
+                                            <i class="bi bi-calculator me-2"></i>
+                                            <strong>Calcul Maas</strong>
+                                            <span class="text-muted ms-2 small">(commission 3% basée sur les ventes locales)</span>
+                                            <span class="fin-pill fin-pill--warning ms-2" id="fin-cre-acc-maas-total"></span>
+                                        </button>
+                                    </h2>
+                                    <div id="fin-cre-acc-maas" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="row g-2 mb-3" id="fin-creances-cards"></div>
+                                            <h6 class="mt-2">Détail par produit (commission 3%)</h6>
+                                            <div class="table-responsive mb-0">
+                                                <table class="table table-sm table-striped mb-0" id="fin-creances-detail">
+                                                    <thead>
+                                                        <tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Je dois (3%)</th></tr>
+                                                    </thead>
+                                                    <tbody></tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Section 3: Paiements faits au fournisseur (notes locales Maas) -->
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#fin-cre-acc-paiements" aria-expanded="false" aria-controls="fin-cre-acc-paiements">
+                                            <i class="bi bi-wallet2 me-2"></i>
+                                            <strong>Paiements faits au fournisseur</strong>
+                                            <span class="text-muted ms-2 small">(notes locales Maas)</span>
+                                            <span class="fin-pill fin-pill--info ms-2" id="fin-cre-acc-paiements-total"></span>
+                                        </button>
+                                    </h2>
+                                    <div id="fin-cre-acc-paiements" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <div class="table-responsive mb-3">
+                                                <table class="table table-sm mb-0" id="fin-paiements-list">
+                                                    <thead>
+                                                        <tr><th>Date</th><th class="text-end">Montant</th><th>Mode</th><th>Référence</th><th>Commentaire</th><th></th></tr>
+                                                    </thead>
+                                                    <tbody></tbody>
+                                                </table>
+                                            </div>
+                                            <h6 class="mt-3">Enregistrer un paiement</h6>
+                                            <form id="fin-paiement-form" class="row g-2 align-items-end">
+                                                <div class="col-md-2">
+                                                    <label class="form-label">Date</label>
+                                                    <input type="date" name="date" class="form-control form-control-sm" required>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label">Montant (FCFA)</label>
+                                                    <input type="number" name="montant" min="0" step="1" class="form-control form-control-sm" required>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label">Mode</label>
+                                                    <select name="mode" class="form-select form-select-sm">
+                                                        <option value="">—</option>
+                                                        <option value="cash">Cash</option>
+                                                        <option value="virement">Virement</option>
+                                                        <option value="mobile_money">Mobile Money</option>
+                                                        <option value="autre">Autre</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label">Référence</label>
+                                                    <input type="text" name="reference" class="form-control form-control-sm" maxlength="100">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label">Commentaire</label>
+                                                    <input type="text" name="commentaire" class="form-control form-control-sm" maxlength="200">
+                                                </div>
+                                                <div class="col-md-1">
+                                                    <button class="btn btn-sm btn-success w-100">Ajouter</button>
+                                                </div>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Centre de Découpe (marge sur ventes livrées par le fournisseur) -->
+                        <div data-fin-pane="cdc" style="display:none">
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-cdc-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-cdc-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-cdc-refresh">Calculer</button>
+                                </div>
+                            </div>
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                Marge encaissable pour les ventes livrées par le fournisseur via un Centre de Découpe :
+                                <code>(mon_prix_vente − prix_achat_fournisseur) × quantité</code>.
+                                Seules les ventes dont la préparation correspond à
+                                <code>MATA_DECOUPE_CENTRE</code> sont prises en compte.
+                            </div>
+                            <div class="row g-2 mb-3" id="fin-cdc-cards"></div>
+                            <h6 class="mt-3 mb-2">Détail par centre de découpe</h6>
+                            <div class="accordion" id="fin-cdc-accordion"></div>
+                        </div>
+
+                        <!-- Modale partagée: détails du calcul "Il me doit" pour un (centre, produit) -->
+                        <div class="modal fade" id="fin-cdc-details-modal" tabindex="-1" aria-hidden="true" aria-labelledby="fin-cdc-details-title">
+                            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                                <div class="modal-content">
+                                    <div class="modal-header">
+                                        <h5 class="modal-title" id="fin-cdc-details-title">Détails du calcul</h5>
+                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                                    </div>
+                                    <div class="modal-body" id="fin-cdc-details-body"></div>
+                                    <div class="modal-footer">
+                                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Fermer</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Dépenses -->
+                        <div data-fin-pane="depenses" style="display:none">
+                            <form id="fin-depense-form" class="row g-2 align-items-end mb-3" enctype="multipart/form-data">
+                                <div class="col-md-2">
+                                    <label class="form-label">Date</label>
+                                    <input type="date" name="date" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Montant (FCFA)</label>
+                                    <input type="number" name="montant" min="0" step="1" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Catégorie</label>
+                                    <select name="categorie" class="form-select form-select-sm">
+                                        <option value="">—</option>
+                                        <option value="loyer">Loyer</option>
+                                        <option value="electricite">Électricité</option>
+                                        <option value="eau">Eau</option>
+                                        <option value="salaire">Salaire</option>
+                                        <option value="achat_marchandise">Achat marchandise</option>
+                                        <option value="transport">Transport</option>
+                                        <option value="entretien">Entretien</option>
+                                        <option value="autre">Autre</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Description</label>
+                                    <input type="text" name="description" class="form-control form-control-sm" maxlength="500">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Justificatif</label>
+                                    <input type="file" name="justificatif" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,image/jpeg,image/png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                                </div>
+                                <div class="col-md-1">
+                                    <button class="btn btn-sm btn-success w-100">Ajouter</button>
+                                </div>
+                            </form>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Filtre date début</label>
+                                    <input type="date" id="fin-depense-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Filtre date fin</label>
+                                    <input type="date" id="fin-depense-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Filtre catégorie</label>
+                                    <select id="fin-depense-categorie" class="form-select form-select-sm">
+                                        <option value="">Toutes</option>
+                                        <option value="loyer">Loyer</option>
+                                        <option value="electricite">Électricité</option>
+                                        <option value="eau">Eau</option>
+                                        <option value="salaire">Salaire</option>
+                                        <option value="achat_marchandise">Achat marchandise</option>
+                                        <option value="transport">Transport</option>
+                                        <option value="entretien">Entretien</option>
+                                        <option value="autre">Autre</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-depense-refresh">Filtrer</button>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-striped" id="fin-depense-list">
+                                    <thead>
+                                        <tr><th>Date</th><th>Catégorie</th><th>Description</th><th class="text-end">Montant</th><th>Justificatif</th><th>Auteur</th><th></th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Prix fournisseur -->
+                        <div data-fin-pane="prix" style="display:none">
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Commission fournisseur (%)</label>
+                                    <input type="number" id="fin-commission-pct" min="0" max="100" step="0.1" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-config-save">Sauvegarder commission</button>
+                                </div>
+                            </div>
+                            <h6>Catalogue de prix par produit</h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="fin-prix-table">
+                                    <thead>
+                                        <tr><th>Produit</th><th>Prix vente fournisseur (FCFA)</th><th>Prix achat fournisseur (FCFA)</th><th style="width:60px"></th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-sm btn-success" id="fin-prix-save">Sauvegarder prix</button>
+                                <button class="btn btn-sm btn-outline-secondary" id="fin-prix-add">+ Ajouter une ligne</button>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Mapping produits (alias libelle vente -> catalogue prix) -->
+                        <div data-fin-pane="mapping" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                Pour chaque libellé produit utilisé dans les ventes des 90 derniers jours,
+                                indique à quelle entrée du catalogue il correspond. Une fois mappé,
+                                il ne dépendra plus du fallback prefix (qui restera repérable par le badge orange).
+                            </div>
+                            <div class="row g-2 mb-3" id="fin-mapping-cards"></div>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0 fin-subheading" style="margin:0">Libellés produits utilisés en vente</h6>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-sm btn-outline-primary" id="fin-mapping-refresh">
+                                        <i class="bi bi-arrow-clockwise"></i> Rafraîchir
+                                    </button>
+                                    <button class="btn btn-sm btn-primary" id="fin-mapping-bulk">
+                                        <i class="bi bi-magic"></i> Convertir tous les Prefix en Aliases
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="fin-mapping-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Libellé saisi en vente</th>
+                                            <th class="text-end">Nb ventes 90j</th>
+                                            <th>Statut</th>
+                                            <th>Mappé vers (catalogue)</th>
+                                            <th style="width:120px"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Section Suivi Achat Boeuf -->
             <div id="suivi-achat-boeuf-section" class="container-fluid mt-4 content-section" style="display: none;">
                  <div class="card">
@@ -2931,6 +3275,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
+    <script src="js/finance.js"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

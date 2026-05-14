@@ -37,6 +37,13 @@ const WebOrder = require('./WebOrder');
 // le premier appel à /api/clotures plante avec "relation does not exist".
 const ClotureCaisse = require('./ClotureCaisse');
 
+// Modeles Finance (onglet Finance: depenses + creances fournisseur)
+const Depense = require('./Depense');
+const FournisseurPrix = require('./FournisseurPrix');
+const FinanceConfig = require('./FinanceConfig');
+const FournisseurPaiement = require('./FournisseurPaiement');
+const ProduitAlias = require('./ProduitAlias');
+
 const { sequelize } = require('../index');
 
 // =====================================================
@@ -211,6 +218,13 @@ module.exports = {
 
   // Modèle clôture de caisse
   ClotureCaisse,
+
+  // Modeles Finance
+  Depense,
+  FournisseurPrix,
+  FinanceConfig,
+  FournisseurPaiement,
+  ProduitAlias,
 
   // Fonctions utilitaires
   syncDatabase,

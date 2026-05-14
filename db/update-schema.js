@@ -232,6 +232,128 @@ async function updateSchema() {
             console.log('Colonne famille vérifiée/ajoutée dans la table categories (Boucherie/Epicerie pré-remplis)');
         }
 
+        // =====================================================
+        // FINANCE — depenses, prix fournisseur, paiements
+        // =====================================================
+        // Tables creees idempotemment (IF NOT EXISTS). Seed des prix
+        // fournisseur via ON CONFLICT DO NOTHING pour preserver les valeurs
+        // que l'admin aurait deja modifiees.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS depenses (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
+                categorie VARCHAR(50),
+                description TEXT,
+                justificatif_filename VARCHAR(255),
+                justificatif_mime VARCHAR(100),
+                justificatif_data BYTEA,
+                justificatif_size INTEGER,
+                created_by VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date DESC)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie)`);
+        // CHECK idempotent pour les tables deja creees sans la contrainte
+        // (rolling upgrade). DO block car ADD CONSTRAINT IF NOT EXISTS
+        // n'existe pas en Postgres pour les CHECK column-level.
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'depenses_montant_nonneg' AND conrelid = 'depenses'::regclass) THEN
+                    ALTER TABLE depenses ADD CONSTRAINT depenses_montant_nonneg CHECK (montant >= 0);
+                END IF;
+            END $$;
+        `);
+        console.log('Table depenses verifiee');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS fournisseur_prix (
+                produit VARCHAR(100) PRIMARY KEY,
+                prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
+                prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        // CHECK idempotent pour les tables deja creees (cf depenses).
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_prix_prix_vente_nonneg' AND conrelid = 'fournisseur_prix'::regclass) THEN
+                    ALTER TABLE fournisseur_prix ADD CONSTRAINT fournisseur_prix_prix_vente_nonneg CHECK (prix_vente >= 0);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_prix_prix_achat_nonneg' AND conrelid = 'fournisseur_prix'::regclass) THEN
+                    ALTER TABLE fournisseur_prix ADD CONSTRAINT fournisseur_prix_prix_achat_nonneg CHECK (prix_achat IS NULL OR prix_achat >= 0);
+                END IF;
+            END $$;
+        `);
+        await sequelize.query(`
+            INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
+              ('Boeuf',  4350, 3835),
+              ('Veau',   4600, 4035),
+              ('Agneau', 5300, 4500),
+              ('Poulet', 3500, NULL),
+              ('Laxass',  300,  200)
+            ON CONFLICT (produit) DO NOTHING
+        `);
+        console.log('Table fournisseur_prix verifiee (seed 5 produits par defaut)');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        // Defaut: commission 3% sur ventes boucherie. categories_eligibles
+        // est stocke comme CSV pour rester JSON-libre. Modifiable via l'UI
+        // finance (PUT /api/finance/config).
+        await sequelize.query(`
+            INSERT INTO finance_config (key, value) VALUES
+              ('commission_pct', '3.0'),
+              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson')
+            ON CONFLICT (key) DO NOTHING
+        `);
+        console.log('Table finance_config verifiee (seed commission_pct=3.0)');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS fournisseur_paiements (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
+                mode VARCHAR(50),
+                reference VARCHAR(100),
+                commentaire TEXT,
+                created_by VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC)`);
+        // CHECK idempotent (cf depenses).
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fournisseur_paiements_montant_nonneg' AND conrelid = 'fournisseur_paiements'::regclass) THEN
+                    ALTER TABLE fournisseur_paiements ADD CONSTRAINT fournisseur_paiements_montant_nonneg CHECK (montant >= 0);
+                END IF;
+            END $$;
+        `);
+        console.log('Table fournisseur_paiements verifiee');
+
+        // Mapping libelle de vente -> entree du catalogue prix.
+        // Sert a remplacer le matching prefix (startsWith) par un alias
+        // explicite gere depuis l'UI Mapping produits.
+        // ON DELETE CASCADE: supprimer un produit du catalogue retire
+        // automatiquement ses aliases (pas de dangling references).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS produit_alias (
+                alias_produit VARCHAR(150) PRIMARY KEY,
+                produit_catalog VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog)`);
+        console.log('Table produit_alias verifiee');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

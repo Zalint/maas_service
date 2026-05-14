@@ -570,6 +570,11 @@ app.use('/api/admin/config', configAdminRouter);
 // du POS peut envoyer une commande au centre.
 app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
 
+// Onglet Finance: depenses + creances fournisseur + config prix/commission.
+// Gate par checkAdvancedAccess (admin + superutilisateur + superviseur).
+const financeRouter = require('./routes/finance');
+app.use('/api/finance', checkAuth, checkAdvancedAccess, financeRouter);
+
 // Routes pour la gestion du stock automatique
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON
 // app.use('/api/stock-auto', stockAutoRouter);

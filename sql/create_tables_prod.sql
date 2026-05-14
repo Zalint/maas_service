@@ -771,6 +771,71 @@ CREATE INDEX IF NOT EXISTS idx_prix_historique_point_vente_id ON prix_historique
 CREATE INDEX IF NOT EXISTS idx_prix_historique_created_at ON prix_historique(created_at);
 
 -- =====================================================
+-- FINANCE: depenses, prix fournisseur, paiements
+-- =====================================================
+CREATE TABLE IF NOT EXISTS depenses (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
+    categorie VARCHAR(50),
+    description TEXT,
+    justificatif_filename VARCHAR(255),
+    justificatif_mime VARCHAR(100),
+    justificatif_data BYTEA,
+    justificatif_size INTEGER,
+    created_by VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date DESC);
+CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie);
+
+CREATE TABLE IF NOT EXISTS fournisseur_prix (
+    produit VARCHAR(100) PRIMARY KEY,
+    prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (prix_vente >= 0),
+    prix_achat NUMERIC(12, 2) CHECK (prix_achat IS NULL OR prix_achat >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
+  ('Boeuf',  4350, 3835),
+  ('Veau',   4600, 4035),
+  ('Agneau', 5300, 4500),
+  ('Poulet', 3500, NULL),
+  ('Laxass',  300,  200)
+ON CONFLICT (produit) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS finance_config (
+    key VARCHAR(50) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO finance_config (key, value) VALUES
+  ('commission_pct', '3.0'),
+  ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson')
+ON CONFLICT (key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS fournisseur_paiements (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
+    mode VARCHAR(50),
+    reference VARCHAR(100),
+    commentaire TEXT,
+    created_by VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC);
+
+-- Mapping libelle vente -> entree catalogue prix.
+-- Remplace le matching prefix (startsWith) par un alias explicite.
+CREATE TABLE IF NOT EXISTS produit_alias (
+    alias_produit VARCHAR(150) PRIMARY KEY,
+    produit_catalog VARCHAR(100) NOT NULL
+        REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog);
+
+-- =====================================================
 -- NETTOYAGE DES DONNÉES HISTORIQUES (optionnel)
 -- =====================================================
 -- Pour nettoyer les données des anciens points de vente, décommentez les lignes suivantes:

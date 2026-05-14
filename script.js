@@ -308,6 +308,8 @@ function hideAllSections() {
     document.getElementById('stock-alerte-section').style.display = 'none';
     document.getElementById('cash-payment-section').style.display = 'none';
     document.getElementById('estimation-section').style.display = 'none';
+    const _financeSection = document.getElementById('finance-section');
+    if (_financeSection) _financeSection.style.display = 'none';
 
     // Ensure content-section elements are also hidden
     const contentSections = document.querySelectorAll('.content-section');
@@ -885,7 +887,16 @@ async function checkAuth() {
         
         // Onglet Audit/Stock alerte - module audit (visible pour tous les authentifiés)
         setElementVisibility(stockAlerteItem, 'stock-alerte-item', true);
-        
+
+        // Onglet Finance - reserve a admin, superutilisateur, superviseur.
+        // Pas de classe module-pending car pas controle par les modules — c'est
+        // une feature interne, visible si le role suffit. On utilise canManageAdvanced
+        // (calque DB cote middleware checkAdvancedAccess).
+        const financeItem = document.getElementById('finance-item');
+        if (financeItem) {
+            financeItem.style.display = currentUser.canManageAdvanced ? '' : 'none';
+        }
+
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         
         // Section Analytics des Ventes - visible uniquement pour les superviseurs
