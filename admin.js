@@ -1731,6 +1731,50 @@ function setFamilleFilterInventaire(famille) {
     afficherInventaireConfig();
 }
 
+// Re-rend les boutons "Tous / Boucherie / Epicerie / Autres" dans le header
+// stable (hors #inventaire-categories) pour refleter currentInventaireFamilleFilter.
+function renderInventaireFamilleButtons() {
+    const wrap = document.getElementById('inventaire-famille-buttons');
+    if (!wrap) return;
+    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
+    wrap.innerHTML = familles.map((f) => `
+        <button type="button"
+            class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
+            onclick="setFamilleFilterInventaire('${f}')">${f}</button>
+    `).join('');
+}
+
+// Synchronise la valeur de l'input sans toucher au DOM (le listener reste
+// attache, on n'ecrase QUE la propriete .value).
+function syncInventaireSearchInputValue() {
+    const input = document.getElementById('inventaire-search-input');
+    if (!input) return;
+    if (input.value !== (currentInventaireSearchQuery || '')) {
+        input.value = currentInventaireSearchQuery || '';
+    }
+}
+
+// Init UNE SEULE FOIS au load de la page: attache un listener stable sur
+// l'input du header (qui ne sera jamais detruit par les re-renders).
+// Sans ca, l'ancien comportement (input + listener recrees a chaque
+// afficherInventaireConfig) perdait la frappe en cours -> "search not working".
+function initInventaireHeaderControls() {
+    const input = document.getElementById('inventaire-search-input');
+    if (!input || input.dataset.bound === 'true') return;
+    input.dataset.bound = 'true';
+    input.addEventListener('input', (e) => {
+        currentInventaireSearchQuery = e.target.value || '';
+        filtrerProduitsInventaire(currentInventaireSearchQuery);
+    });
+}
+// Attacher au DOMContentLoaded ET de maniere defensive au prochain appel
+// d'afficherInventaireConfig si DOMContentLoaded a deja eu lieu.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initInventaireHeaderControls);
+} else {
+    initInventaireHeaderControls();
+}
+
 // Afficher la configuration des produits d'inventaire avec accordéon
 function afficherInventaireConfig() {
     const container = document.getElementById('inventaire-categories');
@@ -1738,34 +1782,14 @@ function afficherInventaireConfig() {
 
     container.innerHTML = '';
 
-    // Tabs filtre famille en tête, comme sur Produits Généraux.
-    const familles = ['Tous', 'Boucherie', 'Epicerie', 'Autres'];
-    const filtreHtml = `
-        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-            <div class="btn-group" role="group" aria-label="Filtre famille inventaire">
-                ${familles.map((f) => `
-                    <button type="button"
-                        class="btn ${currentInventaireFamilleFilter === f ? 'btn-primary' : 'btn-outline-primary'}"
-                        onclick="setFamilleFilterInventaire('${f}')">${f}</button>
-                `).join('')}
-            </div>
-            <div class="input-group input-group-sm" style="max-width: 320px;">
-                <span class="input-group-text"><i class="fas fa-search"></i></span>
-                <input type="search" id="inventaire-search-input" class="form-control"
-                       placeholder="Rechercher un produit…"
-                       value="${escAttr(currentInventaireSearchQuery || '')}"
-                       autocomplete="off">
-            </div>
-        </div>`;
-    container.insertAdjacentHTML('beforeend', filtreHtml);
-
-    const searchInput = container.querySelector('#inventaire-search-input');
-    if (searchInput) {
-        searchInput.addEventListener('input', (e) => {
-            currentInventaireSearchQuery = e.target.value || '';
-            filtrerProduitsInventaire(currentInventaireSearchQuery);
-        });
-    }
+    // Renders / rafraichit les controles du header stable (hors container)
+    // sans casser le listener input qui est attache une SEULE fois (cf
+    // initInventaireHeaderControls plus bas). Le bug "search ne marche pas"
+    // venait de l'ancienne approche qui re-creait l'input a chaque render
+    // et perdait le listener pendant la frappe.
+    initInventaireHeaderControls(); // idempotent (data-bound guard)
+    renderInventaireFamilleButtons();
+    syncInventaireSearchInputValue();
 
     const inventaireParCategories = reorganiserInventaireParCategories();
 
