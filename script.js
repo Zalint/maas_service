@@ -5,6 +5,33 @@
 // Variables globales pour les points de vente (déclarées en premier pour éviter les erreurs de temporal dead zone)
 var POINTS_VENTE_PHYSIQUES = [];
 
+/**
+ * Remplit le navbar user chip (avatar + nom + role) ET le span legacy
+ * #user-info (retro-compat: d'autres scripts y ecrivent encore). A appeler
+ * partout ou on connait l'utilisateur connecte (post-auth).
+ */
+function setUserDisplay(user, roleDisplayName) {
+    if (!user) return;
+    const username = String(user.username || '').trim();
+    const role = String(roleDisplayName || '').trim();
+    // Legacy span (hidden in markup but may be read elsewhere).
+    const legacy = document.getElementById('user-info');
+    if (legacy) legacy.textContent = `Connecté en tant que ${username}${role ? ' (' + role + ')' : ''}`;
+    // Visible chip.
+    const nameEl = document.getElementById('user-name');
+    const roleEl = document.getElementById('user-role');
+    const avatarEl = document.getElementById('user-avatar');
+    if (nameEl) nameEl.textContent = username;
+    if (roleEl) roleEl.textContent = role || 'Utilisateur';
+    if (avatarEl) {
+        // Initiales: 1ere lettre du username (fallback "·").
+        const initials = username
+            ? username.replace(/[^A-Za-zÀ-ÿ]/g, '').slice(0, 2).toUpperCase() || username[0].toUpperCase()
+            : '·';
+        avatarEl.textContent = initials;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     // Vérifier si le gestionnaire de réconciliation est disponible
     if (typeof ReconciliationManager === 'undefined') {
@@ -800,7 +827,7 @@ async function checkAuth() {
         
         // Afficher les informations de l'utilisateur avec le rôle
         const roleDisplayName = getUserRoleDisplayName(currentUser);
-        document.getElementById('user-info').textContent = `Connecté en tant que ${currentUser.username} (${roleDisplayName})`;
+        setUserDisplay(currentUser, roleDisplayName);
         
         // Charger l'état des modules si le gestionnaire est disponible
         if (window.ModulesHandler) {
@@ -5647,7 +5674,7 @@ function initCopierStock() {
 // Fonction pour afficher les onglets en fonction des droits utilisateur ET des modules actifs
 async function afficherOngletsSuivantDroits(userData) {
     const roleDisplayName = getUserRoleDisplayName(userData);
-    document.getElementById('user-info').textContent = `Connecté en tant que ${userData.username} (${roleDisplayName})`;
+    setUserDisplay(userData, roleDisplayName);
     document.getElementById('login-section').style.display = 'none';
     document.getElementById('main-content').style.display = 'block';
     

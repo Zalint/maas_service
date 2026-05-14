@@ -328,14 +328,138 @@
             text-align: center;
             font-weight: bold;
         }
+
+        /* ============ NAVBAR POLISH ============ */
+        .navbar.bg-primary {
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        }
+        .navbar-brand img {
+            transition: transform 120ms ease;
+        }
+        .navbar-brand:hover img { transform: scale(1.02); }
+
+        /* Nav links: hover + active state plus visibles */
+        .navbar-dark .navbar-nav .nav-link {
+            position: relative;
+            padding-top: 0.6rem;
+            padding-bottom: 0.6rem;
+            color: rgba(255, 255, 255, 0.85);
+            transition: color 120ms ease, background 120ms ease;
+            border-radius: 6px;
+        }
+        .navbar-dark .navbar-nav .nav-link:hover,
+        .navbar-dark .navbar-nav .nav-link:focus {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .navbar-dark .navbar-nav .nav-link.active {
+            color: #fff;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.12);
+        }
+        .navbar-dark .navbar-nav .nav-link.active::after {
+            content: "";
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: 2px;
+            height: 2px;
+            background: #ffc107;
+            border-radius: 2px;
+        }
+
+        /* Caisse: CTA distinct (jaune brand) */
+        .nav-cta-caisse {
+            background: #ffc107;
+            color: #212529 !important;
+            font-weight: 600;
+            padding: 0.45rem 0.9rem !important;
+            border-radius: 8px;
+            margin-right: 0.5rem;
+            transition: background 120ms ease, transform 80ms ease;
+        }
+        .nav-cta-caisse:hover,
+        .nav-cta-caisse:focus {
+            background: #ffca2c !important;
+            color: #000 !important;
+        }
+        .nav-cta-caisse:active { transform: scale(0.98); }
+
+        /* User chip + dropdown */
+        .user-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0.4rem 0.75rem;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 999px;
+            color: #fff;
+            text-decoration: none;
+            transition: background 120ms ease;
+            font-size: 0.875rem;
+            line-height: 1.2;
+            min-height: 36px;
+        }
+        .user-chip:hover,
+        .user-chip:focus,
+        .user-chip[aria-expanded="true"] {
+            background: rgba(255, 255, 255, 0.2);
+            color: #fff;
+        }
+        .user-chip .user-avatar {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: #ffc107;
+            color: #212529;
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+        .user-chip .user-meta {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.15;
+        }
+        .user-chip .user-name {
+            font-weight: 600;
+            font-size: 0.875rem;
+        }
+        .user-chip .user-role {
+            font-size: 0.72rem;
+            opacity: 0.85;
+        }
+        .user-chip .user-caret {
+            opacity: 0.7;
+            font-size: 0.7rem;
+        }
+        .tenant-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: #ffc107;
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        .tenant-badge i { font-size: 0.7rem; opacity: 0.85; }
+
+        /* Mobile: keep stack readable */
+        @media (max-width: 991.98px) {
+            .nav-cta-caisse { margin: 0.25rem 0; display: inline-block; }
+            .user-chip { margin: 0.5rem 0; }
+        }
     </style>
 </head>
 <body class="auth-pending">
     <div class="container-fluid navbar-container">
         <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
             <div class="container-fluid">
-                <a class="navbar-brand d-flex align-items-center" href="#">
-                    <img src="image/LogoMatixVect.png" alt="Matix Logo" height="90" class="d-inline-block align-text-top me-2">
+                <a class="navbar-brand d-flex align-items-center" href="#" aria-label="Accueil">
+                    <img src="image/LogoMatixVect.png" alt="Matix" height="56" class="d-inline-block">
                 </a>
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                     <span class="navbar-toggler-icon"></span>
@@ -409,14 +533,50 @@
                             </a>
                         </li>
                     </ul>
-                    <div class="navbar-nav text-end">
-                        <span id="client-name-display" class="nav-link fw-bold text-warning"></span>
-                        <a class="nav-link fw-semibold" href="/pos.html" title="Point de vente"><i class="bi bi-cash-register me-1"></i>Caisse</a>
-                        <span class="nav-item nav-link" id="user-info"></span>
-                        <a class="nav-link" href="#" id="change-password-btn" data-bs-toggle="modal" data-bs-target="#changePasswordModal" title="Changer mon mot de passe">
-                            <i class="fas fa-key me-1"></i>Mot de passe
+                    <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
+                        <!-- Tenant badge (point de vente / client) -->
+                        <span class="tenant-badge" id="tenant-badge" title="Point de vente">
+                            <i class="bi bi-shop"></i>
+                            <span id="client-name-display"></span>
+                        </span>
+
+                        <!-- Caisse: CTA distinct (action frequente, primaire) -->
+                        <a class="nav-link nav-cta-caisse" href="/pos.html" title="Point de vente">
+                            <i class="bi bi-cash-register me-1"></i>Caisse
                         </a>
-                        <a class="nav-link" href="#" id="logout-btn">Déconnexion</a>
+
+                        <!-- User chip + dropdown (mot de passe, deconnexion) -->
+                        <div class="nav-item dropdown">
+                            <a class="user-chip dropdown-toggle"
+                               href="#"
+                               id="userMenuToggle"
+                               role="button"
+                               data-bs-toggle="dropdown"
+                               aria-expanded="false"
+                               aria-label="Menu utilisateur">
+                                <span class="user-avatar" id="user-avatar" aria-hidden="true">·</span>
+                                <span class="user-meta">
+                                    <span class="user-name" id="user-name"></span>
+                                    <span class="user-role" id="user-role"></span>
+                                </span>
+                            </a>
+                            <ul class="dropdown-menu dropdown-menu-end shadow" aria-labelledby="userMenuToggle">
+                                <!-- #user-info: garde-fou retro-compat (anciens scripts y ecrivent), masque pour ne pas dupliquer l'affichage chip -->
+                                <li class="px-3 py-2 small text-muted" id="user-info" style="display:none"></li>
+                                <li>
+                                    <a class="dropdown-item" href="#" id="change-password-btn"
+                                       data-bs-toggle="modal" data-bs-target="#changePasswordModal">
+                                        <i class="bi bi-key me-2"></i>Changer le mot de passe
+                                    </a>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li>
+                                    <a class="dropdown-item text-danger" href="#" id="logout-btn">
+                                        <i class="bi bi-box-arrow-right me-2"></i>Déconnexion
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>

@@ -3,157 +3,329 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Connexion - Gestion des Ventes</title>
+    <title>Connexion</title>
     <script src="public/js/tenant-branding.js" defer></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
+        :root {
+            --brand-primary: #0d6efd;
+            --brand-primary-dark: #0a58ca;
+            --surface: #ffffff;
+            --bg-1: #eef2ff;
+            --bg-2: #f0f9ff;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
         body {
-            height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background:
+                radial-gradient(1200px 600px at 10% -10%, var(--bg-1) 0%, transparent 60%),
+                radial-gradient(900px 500px at 110% 110%, var(--bg-2) 0%, transparent 55%),
+                #f6f8fb;
+            min-height: 100vh;
             display: flex;
             align-items: center;
-            background-color: #f8f9fa;
+            justify-content: center;
+            padding: 16px;
         }
-        .login-form {
+        .login-shell {
             width: 100%;
-            max-width: 400px;
-            padding: 15px;
-            margin: auto;
-            background-color: white;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            max-width: 420px;
+            animation: rise 320ms cubic-bezier(.2,.7,.2,1) both;
+        }
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .login-shell { animation: none; }
+        }
+        .login-card {
+            background: var(--surface);
+            border-radius: 16px;
+            box-shadow:
+                0 1px 2px rgba(15, 23, 42, 0.04),
+                0 8px 24px rgba(15, 23, 42, 0.08);
+            padding: 32px 28px 24px;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+        }
+        .brand-block {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        .brand-logo {
+            height: 56px;
+            width: auto;
+            margin-bottom: 12px;
+        }
+        .brand-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #0f172a;
+            margin: 0;
+            letter-spacing: -0.01em;
+        }
+        .brand-sub {
+            font-size: 0.875rem;
+            color: #64748b;
+            margin-top: 4px;
+            min-height: 1.25rem;
+        }
+        .form-label {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: #334155;
+            margin-bottom: 6px;
+        }
+        .input-group-text {
+            background: #f8fafc;
+            border-color: #e2e8f0;
+            color: #64748b;
+        }
+        .form-control {
+            border-color: #e2e8f0;
+            font-size: 1rem;
+            padding: 0.625rem 0.75rem;
+        }
+        .form-control:focus {
+            border-color: var(--brand-primary);
+            box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+        }
+        .password-toggle {
+            cursor: pointer;
+            background: #f8fafc;
+            border-color: #e2e8f0;
+            color: #64748b;
+            transition: color 120ms ease;
+        }
+        .password-toggle:hover,
+        .password-toggle:focus {
+            color: #0f172a;
+        }
+        .btn-login {
+            width: 100%;
+            padding: 0.625rem 1rem;
+            font-weight: 600;
+            font-size: 1rem;
+            background: var(--brand-primary);
+            border-color: var(--brand-primary);
+            transition: background 120ms ease, transform 80ms ease;
+        }
+        .btn-login:hover:not(:disabled),
+        .btn-login:focus:not(:disabled) {
+            background: var(--brand-primary-dark);
+            border-color: var(--brand-primary-dark);
+        }
+        .btn-login:active:not(:disabled) {
+            transform: scale(0.99);
+        }
+        .btn-login:disabled {
+            opacity: 0.75;
+        }
+        .error-alert {
+            font-size: 0.875rem;
+            padding: 0.625rem 0.75rem;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+            display: none;
+        }
+        .error-alert.show { display: flex; align-items: flex-start; gap: 8px; }
+        .footer-note {
+            text-align: center;
+            color: #94a3b8;
+            font-size: 0.75rem;
+            margin-top: 16px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="login-form">
-            <h3 class="text-center mb-4 text-primary" id="client-name-display"></h3>
-            <form id="loginForm">
+    <main class="login-shell" role="main">
+        <div class="login-card">
+            <div class="brand-block">
+                <img src="image/LogoMatixVect.png" alt="" class="brand-logo" onerror="this.style.display='none'">
+                <h1 class="brand-title" id="client-name-display">Connexion</h1>
+                <div class="brand-sub" id="tenant-sub" data-tenant-name></div>
+            </div>
+
+            <div id="login-error" class="error-alert" role="alert" aria-live="polite">
+                <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+                <span id="login-error-text"></span>
+            </div>
+
+            <form id="loginForm" novalidate>
                 <div class="mb-3">
                     <label for="username" class="form-label">Nom d'utilisateur</label>
-                    <input type="text" class="form-control" id="username" required>
+                    <div class="input-group">
+                        <span class="input-group-text" aria-hidden="true">
+                            <i class="bi bi-person"></i>
+                        </span>
+                        <input
+                            type="text"
+                            class="form-control"
+                            id="username"
+                            name="username"
+                            autocomplete="username"
+                            autocapitalize="none"
+                            autocorrect="off"
+                            spellcheck="false"
+                            required
+                            aria-required="true">
+                    </div>
                 </div>
+
                 <div class="mb-3">
                     <label for="password" class="form-label">Mot de passe</label>
-                    <input type="password" class="form-control" id="password" required>
+                    <div class="input-group">
+                        <span class="input-group-text" aria-hidden="true">
+                            <i class="bi bi-lock"></i>
+                        </span>
+                        <input
+                            type="password"
+                            class="form-control"
+                            id="password"
+                            name="password"
+                            autocomplete="current-password"
+                            required
+                            aria-required="true">
+                        <button
+                            type="button"
+                            class="input-group-text password-toggle"
+                            id="togglePassword"
+                            aria-label="Afficher le mot de passe"
+                            aria-pressed="false">
+                            <i class="bi bi-eye" id="togglePasswordIcon" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
-                <button type="submit" class="btn btn-primary w-100">Se connecter</button>
+
+                <button type="submit" class="btn btn-primary btn-login" id="submitBtn">
+                    <span id="submitLabel">Se connecter</span>
+                    <span id="submitSpinner" class="spinner-border spinner-border-sm ms-2" style="display:none" role="status" aria-hidden="true"></span>
+                </button>
             </form>
         </div>
-    </div>
+        <div class="footer-note">© <span id="footerYear"></span> Matix</div>
+    </main>
 
     <script>
-        // Vérifier si l'utilisateur est déjà connecté
-        async function checkSession() {
-            try {
-                console.log('Vérification de la session...');
-                const response = await fetch('/api/check-session', {
-                    credentials: 'include',
-                    headers: {
-                        'Accept': 'application/json'
-                    }
-                });
-                
-                console.log('Réponse de check-session:', response.status);
-                
-                if (!response.ok) {
-                    console.log('Session invalide');
-                    return;
-                }
-                
-                const data = await response.json();
-                console.log('Données de session:', data);
-                
-                if (data.success) {
-                    console.log('Redirection vers la page appropriée');
-                    window.location.href = '/redirect';
-                }
-            } catch (error) {
-                console.error('Erreur lors de la vérification de la session:', error);
-            }
+        // Annee dynamique pour le footer.
+        document.getElementById('footerYear').textContent = new Date().getFullYear();
+
+        // Toggle visibilite mot de passe.
+        const pwdInput = document.getElementById('password');
+        const pwdToggle = document.getElementById('togglePassword');
+        const pwdToggleIcon = document.getElementById('togglePasswordIcon');
+        pwdToggle.addEventListener('click', () => {
+            const isHidden = pwdInput.type === 'password';
+            pwdInput.type = isHidden ? 'text' : 'password';
+            pwdToggle.setAttribute('aria-pressed', String(isHidden));
+            pwdToggle.setAttribute('aria-label', isHidden ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+            pwdToggleIcon.classList.toggle('bi-eye', !isHidden);
+            pwdToggleIcon.classList.toggle('bi-eye-slash', isHidden);
+        });
+
+        // Affichage erreur inline (remplace alert()).
+        const errEl = document.getElementById('login-error');
+        const errText = document.getElementById('login-error-text');
+        function showError(message) {
+            errText.textContent = message || 'Erreur lors de la connexion';
+            errEl.classList.add('show');
+        }
+        function clearError() {
+            errEl.classList.remove('show');
+            errText.textContent = '';
+        }
+        ['username', 'password'].forEach((id) => {
+            document.getElementById(id).addEventListener('input', clearError);
+        });
+
+        // Loading state du bouton submit.
+        const submitBtn = document.getElementById('submitBtn');
+        const submitLabel = document.getElementById('submitLabel');
+        const submitSpinner = document.getElementById('submitSpinner');
+        function setLoading(loading) {
+            submitBtn.disabled = loading;
+            submitLabel.textContent = loading ? 'Connexion…' : 'Se connecter';
+            submitSpinner.style.display = loading ? 'inline-block' : 'none';
         }
 
-        // Gérer la soumission du formulaire
-        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+        // Soumission du formulaire.
+        document.getElementById('loginForm').addEventListener('submit', async function (e) {
             e.preventDefault();
-            
-            const username = document.getElementById('username').value;
+            clearError();
+            const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value;
-            
-            console.log('Tentative de connexion pour:', username);
-            
+            if (!username || !password) {
+                showError('Veuillez saisir vos identifiants.');
+                return;
+            }
+            setLoading(true);
             try {
                 const response = await fetch('/api/login', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                     credentials: 'include',
                     body: JSON.stringify({ username, password })
                 });
-                
-                console.log('Réponse de login:', response.status);
-                
-                if (!response.ok) {
-                    throw new Error('Échec de la connexion');
-                }
-                
-                const data = await response.json();
-                console.log('Données de connexion:', data);
-                
-                if (data.success) {
-                    console.log('Connexion réussie, redirection...');
+                const data = await response.json().catch(() => ({}));
+                if (response.ok && data && data.success) {
                     window.location.href = '/redirect';
-                } else {
-                    console.log('Échec de la connexion:', data.message);
-                    alert(data.message);
+                    return;
                 }
-            } catch (error) {
-                console.error('Erreur lors de la connexion:', error);
-                alert('Erreur lors de la connexion');
+                showError((data && data.message) || 'Identifiants invalides.');
+            } catch (err) {
+                console.error('Erreur lors de la connexion:', err);
+                showError('Connexion impossible. Vérifiez votre réseau.');
+            } finally {
+                setLoading(false);
             }
         });
 
-        // Vérifier l'authentification au chargement de la page
-        async function checkInitialAuth() {
+        // Verification session existante au chargement.
+        (async function checkInitialAuth() {
             try {
-                // Utiliser un chemin relatif
-                const response = await fetch('/api/check-session', {
-                    credentials: 'include'
-                });
+                const response = await fetch('/api/check-session', { credentials: 'include' });
+                if (!response.ok) return;
                 const data = await response.json();
-                console.log('Données de session:', data);
-                
-                if (data.success) {
-                    console.log('Redirection vers la page appropriée');
+                if (data && data.success) {
                     window.location.href = '/redirect';
                 }
-            } catch (error) {
-                console.error('Erreur lors de la vérification de la session:', error);
+            } catch (err) {
+                // Reseau / serveur indispo: on reste sur l'ecran de login.
+                console.warn('check-session a echoue', err);
             }
-        }
+        })();
 
-        // Vérifier la session au chargement de la page
-        checkInitialAuth();
-        
-        // Charger et afficher le nom du client
-        async function loadClientName() {
+        // Charger le nom client (et le mettre dans la card + sub).
+        (async function loadClientName() {
             try {
                 const response = await fetch('/api/client-config');
                 const data = await response.json();
                 if (data.success && data.config.clientName) {
-                    const clientNameDisplay = document.getElementById('client-name-display');
-                    if (clientNameDisplay) {
-                        clientNameDisplay.textContent = data.config.clientName;
+                    const name = data.config.clientName;
+                    const titleEl = document.getElementById('client-name-display');
+                    const subEl = document.getElementById('tenant-sub');
+                    if (titleEl) titleEl.textContent = name;
+                    // Si tenant-branding a deja rempli subEl avec data-tenant-name,
+                    // on garde sa valeur (ex: nom officiel). Sinon, on masque.
+                    if (subEl && !subEl.textContent) {
+                        subEl.textContent = 'Espace de gestion';
                     }
-                    document.title = data.config.clientName + ' - Connexion';
+                    document.title = name + ' — Connexion';
                 }
-            } catch (error) {
-                console.error('Erreur lors du chargement du nom client:', error);
+            } catch (err) {
+                console.error('Erreur chargement nom client:', err);
             }
-        }
-        loadClientName();
+        })();
+
+        // Focus initial sur le champ username pour gagner un clic.
+        document.getElementById('username').focus();
     </script>
 </body>
-</html> 
+</html>
