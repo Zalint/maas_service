@@ -1880,6 +1880,28 @@ function filtrerProduitsInventaire(query) {
 
     const items = container.querySelectorAll('.accordion-item[data-categorie]');
     console.warn('[inventaire-search] filter q=', q, 'items=', items.length);
+    // DIAGNOSTIC profond: si la 1ere fois (q non vide), on inspecte le DOM
+    // pour comprendre ou les rows sont VRAIMENT (puisque tbody tr -> 0).
+    if (q && items.length > 0 && !window._diagDumped) {
+        window._diagDumped = true;
+        const first = items[0];
+        console.warn('[diag] 1st accordion-item data-categorie=', first.dataset.categorie);
+        console.warn('[diag] 1st item children:', Array.from(first.children).map(c => c.tagName + '.' + c.className));
+        console.warn('[diag] 1st item tbody count:', first.querySelectorAll('tbody').length);
+        console.warn('[diag] 1st item tr count (all):', first.querySelectorAll('tr').length);
+        console.warn('[diag] 1st item html preview (first 500 chars):', first.outerHTML.substring(0, 500));
+        // Cherche n'importe quel <tr> dans tout le document qui contient "Yell"
+        const allTrInDoc = document.querySelectorAll('tr');
+        const yellRows = Array.from(allTrInDoc).filter(tr => tr.textContent.includes('Yell'));
+        console.warn('[diag] <tr> contenant "Yell" dans tout le doc:', yellRows.length);
+        if (yellRows.length > 0) {
+            const yr = yellRows[0];
+            console.warn('[diag] parent chain du 1er Yell:',
+                [yr, yr.parentElement, yr.parentElement?.parentElement, yr.parentElement?.parentElement?.parentElement]
+                    .filter(Boolean).map(el => el.tagName + (el.id ? '#' + el.id : '') + '.' + (el.className || '')));
+            console.warn('[diag] data-produit du 1er Yell:', yr.dataset.produit);
+        }
+    }
     let totalMatches = 0;
     let totalRows = 0;
     let sampleProduits = [];
@@ -1892,6 +1914,12 @@ function filtrerProduitsInventaire(query) {
         if (rows.length === 0) {
             // Fallback: TOUS les <tr> du tbody, filtre par texte de la 1ere cellule input.
             rows = item.querySelectorAll('tbody tr');
+        }
+        if (rows.length === 0) {
+            // Fallback 2: TOUS les <tr> de l'item (au cas ou tbody manque).
+            rows = item.querySelectorAll('tr');
+            // Skip le tr du thead (premier tr avec th)
+            rows = Array.from(rows).filter(r => !r.querySelector('th'));
         }
         let matchCount = 0;
         rows.forEach((row) => {
