@@ -1879,17 +1879,35 @@ function filtrerProduitsInventaire(query) {
     const q = norm(query);
 
     const items = container.querySelectorAll('.accordion-item[data-categorie]');
-    console.log('[inventaire-search] filter q=', q, 'items=', items.length);
+    console.warn('[inventaire-search] filter q=', q, 'items=', items.length);
     let totalMatches = 0;
+    let totalRows = 0;
+    let sampleProduits = [];
     items.forEach((item) => {
-        const rows = item.querySelectorAll('tbody tr[data-produit]');
+        const categorie = item.dataset.categorie;
+        // Selecteurs alternatifs: les rows peuvent ne pas avoir data-produit
+        // si genererLignesProduitsInventaire n'a pas mis l'attribut, OU si la
+        // structure imbrique le tbody dans table-responsive.
+        let rows = item.querySelectorAll('tbody tr[data-produit]');
+        if (rows.length === 0) {
+            // Fallback: TOUS les <tr> du tbody, filtre par texte de la 1ere cellule input.
+            rows = item.querySelectorAll('tbody tr');
+        }
         let matchCount = 0;
         rows.forEach((row) => {
-            const nom = norm(row.dataset.produit);
+            // Source du nom: data-produit en priorite, sinon valeur du 1er input texte.
+            let nom = row.dataset.produit;
+            if (!nom) {
+                const firstInput = row.querySelector('input[type="text"]');
+                nom = firstInput ? firstInput.value : '';
+            }
+            nom = norm(nom);
+            if (sampleProduits.length < 5 && nom) sampleProduits.push(`${categorie}:${nom}`);
             const match = !q || nom.includes(q);
             row.style.display = match ? '' : 'none';
             if (match) matchCount++;
         });
+        totalRows += rows.length;
         totalMatches += matchCount;
         item.style.display = (q && matchCount === 0) ? 'none' : '';
 
@@ -1906,7 +1924,7 @@ function filtrerProduitsInventaire(query) {
             }
         }
     });
-    console.log('[inventaire-search] total matches:', totalMatches);
+    console.warn('[inventaire-search] total matches:', totalMatches, 'total rows scanned:', totalRows, 'sample:', sampleProduits);
 }
 
 // Générer les lignes de produits pour une catégorie d'inventaire
