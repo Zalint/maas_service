@@ -232,6 +232,83 @@ async function updateSchema() {
             console.log('Colonne famille vérifiée/ajoutée dans la table categories (Boucherie/Epicerie pré-remplis)');
         }
 
+        // =====================================================
+        // FINANCE — depenses, prix fournisseur, paiements
+        // =====================================================
+        // Tables creees idempotemment (IF NOT EXISTS). Seed des prix
+        // fournisseur via ON CONFLICT DO NOTHING pour preserver les valeurs
+        // que l'admin aurait deja modifiees.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS depenses (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL,
+                categorie VARCHAR(50),
+                description TEXT,
+                justificatif_filename VARCHAR(255),
+                justificatif_mime VARCHAR(100),
+                justificatif_data BYTEA,
+                justificatif_size INTEGER,
+                created_by VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date DESC)`);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_depenses_categorie ON depenses(categorie)`);
+        console.log('Table depenses verifiee');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS fournisseur_prix (
+                produit VARCHAR(100) PRIMARY KEY,
+                prix_vente NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                prix_achat NUMERIC(12, 2),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`
+            INSERT INTO fournisseur_prix (produit, prix_vente, prix_achat) VALUES
+              ('Boeuf',  4350, 3835),
+              ('Veau',   4600, 4035),
+              ('Agneau', 5300, 4500),
+              ('Poulet', 3500, NULL),
+              ('Laxass',  300,  200)
+            ON CONFLICT (produit) DO NOTHING
+        `);
+        console.log('Table fournisseur_prix verifiee (seed 5 produits par defaut)');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        // Defaut: commission 3% sur ventes boucherie. categories_eligibles
+        // est stocke comme CSV pour rester JSON-libre. Modifiable via l'UI
+        // finance (PUT /api/finance/config).
+        await sequelize.query(`
+            INSERT INTO finance_config (key, value) VALUES
+              ('commission_pct', '3.0'),
+              ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson')
+            ON CONFLICT (key) DO NOTHING
+        `);
+        console.log('Table finance_config verifiee (seed commission_pct=3.0)');
+
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS fournisseur_paiements (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                montant NUMERIC(12, 2) NOT NULL,
+                mode VARCHAR(50),
+                reference VARCHAR(100),
+                commentaire TEXT,
+                created_by VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_fournisseur_paiements_date ON fournisseur_paiements(date DESC)`);
+        console.log('Table fournisseur_paiements verifiee');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {
