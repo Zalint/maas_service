@@ -62,6 +62,10 @@
             // Active la nav-link
             document.querySelectorAll('.nav-link.active').forEach((n) => n.classList.remove('active'));
             financeTab.classList.add('active');
+            // (Re)verifier visibilite PL: window.currentUser peut etre set
+            // asynchrone apres l'auth check, donc on refait le test ici (a
+            // ce stade l'user a forcement charge Finance, donc auth OK).
+            refreshPlTabVisibility();
             // Charger le pane par defaut (creances)
             ensureDefaultDates();
             activatePane('creances');
@@ -85,11 +89,8 @@
         });
 
         // Visibilité conditionnelle de l'onglet PL: admin + superviseur uniquement.
-        const plTabItem = document.getElementById('fin-pl-tab-item');
-        if (plTabItem && window.currentUser) {
-            const role = (window.currentUser.role || '').toLowerCase();
-            plTabItem.style.display = ['admin', 'superviseur'].includes(role) ? '' : 'none';
-        }
+        // Premier essai au DOMContentLoaded (sera ré-évalué au clic Finance).
+        refreshPlTabVisibility();
 
         // Boutons Charges + PL
         const chargesSave = document.getElementById('fin-charges-save');
@@ -168,6 +169,26 @@
         document.querySelectorAll('[data-fin-pane]').forEach((p) => {
             p.style.display = (p.dataset.finPane === name) ? 'block' : 'none';
         });
+    }
+
+    // Visibilite onglet PL: admin + superviseur uniquement. window.currentUser
+    // est set apres l'auth check async, donc on re-evalue a chaque clic
+    // Finance. ADMIN special: l'username "ADMIN" est aussi traite comme admin
+    // (compatible avec le compte historique).
+    function refreshPlTabVisibility() {
+        const plTabItem = document.getElementById('fin-pl-tab-item');
+        if (!plTabItem) return;
+        const u = window.currentUser;
+        if (!u) {
+            plTabItem.style.display = 'none';
+            return;
+        }
+        const role = String(u.role || '').toLowerCase();
+        const username = String(u.username || '').toUpperCase();
+        const allowed = ['admin', 'superviseur'].includes(role)
+                     || username === 'ADMIN'
+                     || u.isAdmin === true;
+        plTabItem.style.display = allowed ? '' : 'none';
     }
 
     // ===== Créances =====
