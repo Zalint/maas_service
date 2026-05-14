@@ -352,6 +352,57 @@ async function updateSchema() {
         `);
         console.log('Table prix_vente_cdc_history verifiee (genesis seedee)');
 
+        // Historique des modifications de prix_achat (point-in-time).
+        // Meme pattern que prix_vente_cdc_history: chaque changement est
+        // une nouvelle ligne, et le calcul de marge utilise la valeur
+        // effective a la date de la vente.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_achat_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_achat NUMERIC(12, 2) NOT NULL CHECK (prix_achat >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_achat_history_produit ON prix_achat_history(produit, created_at DESC)`);
+        // Genesis seed pour prix_achat (uniquement pour produits avec
+        // prix_achat IS NOT NULL, e.g. Poulet n'en a pas).
+        await sequelize.query(`
+            INSERT INTO prix_achat_history (produit, prix_achat, changed_by, created_at)
+            SELECT fp.produit, fp.prix_achat, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE fp.prix_achat IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM prix_achat_history h WHERE h.produit = fp.produit
+              )
+        `);
+        console.log('Table prix_achat_history verifiee (genesis seedee)');
+
+        // Historique des modifications de prix_vente (point-in-time).
+        // Base du calcul commission 3% dans l'onglet "Creances fournisseur".
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS prix_vente_history (
+                id SERIAL PRIMARY KEY,
+                produit VARCHAR(100) NOT NULL
+                    REFERENCES fournisseur_prix(produit) ON DELETE CASCADE,
+                prix_vente NUMERIC(12, 2) NOT NULL CHECK (prix_vente >= 0),
+                changed_by VARCHAR(150),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_prix_vente_history_produit ON prix_vente_history(produit, created_at DESC)`);
+        await sequelize.query(`
+            INSERT INTO prix_vente_history (produit, prix_vente, changed_by, created_at)
+            SELECT fp.produit, fp.prix_vente, '_seed_', '1970-01-01 00:00:00+00'::timestamptz
+            FROM fournisseur_prix fp
+            WHERE NOT EXISTS (
+                SELECT 1 FROM prix_vente_history h WHERE h.produit = fp.produit
+            )
+        `);
+        console.log('Table prix_vente_history verifiee (genesis seedee)');
+
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS finance_config (
                 key VARCHAR(50) PRIMARY KEY,

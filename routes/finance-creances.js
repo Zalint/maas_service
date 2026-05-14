@@ -35,47 +35,46 @@ const {
     FinanceConfig,
     FournisseurPaiement,
     DecoupeOrderLog,
-    PrixVenteCdcHistory
+    PrixVenteCdcHistory,
+    PrixAchatHistory,
+    PrixVenteHistory
 } = require('../db/models');
 const { parseCentres } = require('./decoupe-helpers');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 
 /**
- * Construit un lookup point-in-time du prix_vente_cdc effectif pour
- * chaque produit a une date donnee.
+ * Construit un lookup point-in-time generique pour les history tables
+ * (prix_vente_cdc_history, prix_achat_history, prix_vente_history).
  *
- * @param {Array} historyRows - PrixVenteCdcHistory.findAll() ordered ASC
- * @returns {(produitNomLower: string, dateISO: string) => number|null}
- *   Fonction qui retourne le prix effectif (en regardant la derniere
- *   entree avec created_at <= fin de la dateISO), ou null si aucune.
+ * Retourne une fonction (produitLower, dateISO) -> prix_effectif|null
+ * qui regarde la derniere entree avec created_at <= fin de dateISO.
+ *
+ * @param {Array} historyRows - resultats findAll(), n'importe quel ordre
+ * @param {string} prixField   - 'prix_vente_cdc' | 'prix_achat' | 'prix_vente'
  */
-function buildPrixCdcResolver(historyRows) {
-    // Pre-grouper par produit (lowercase), tries ASC sur created_at.
+function buildTemporalResolver(historyRows, prixField) {
     const byProduit = new Map();
     for (const h of historyRows) {
         const key = h.produit.toLowerCase();
         if (!byProduit.has(key)) byProduit.set(key, []);
         byProduit.get(key).push({
             ts: new Date(h.created_at),
-            prix: parseFloat(h.prix_vente_cdc)
+            prix: parseFloat(h[prixField])
         });
     }
-    // Trier par ts ASC pour chaque produit (le find iterant retournera
-    // la derniere entree <= cutoff).
+    // Sort ASC pour iteration efficace.
     for (const arr of byProduit.values()) {
         arr.sort((a, b) => a.ts - b.ts);
     }
     return function getPrixAtDate(produitNomLower, dateISO) {
         const arr = byProduit.get(produitNomLower);
         if (!arr || arr.length === 0) return null;
-        // dateISO = "YYYY-MM-DD" -> on prend fin de journee pour inclure
-        // toute la journee de la vente.
         const cutoff = new Date(dateISO + 'T23:59:59.999Z');
         let effective = null;
         for (const entry of arr) {
             if (entry.ts <= cutoff) effective = entry.prix;
-            else break; // sorted ASC, no point continuing
+            else break;
         }
         return effective;
     };
@@ -167,25 +166,43 @@ async function computeCreances(opts = {}) {
         return r.value; // {prix_vente, prix_achat, prix_vente_cdc (courant)} ou null
     };
 
-    // 2bis. Lookup point-in-time du prix_vente_cdc. Permet d'utiliser la
-    // valeur effective AU MOMENT DE LA VENTE, pas la valeur courante.
-    // Le resolverMaps fournit le nom canonique (via alias) qu'on utilise
-    // comme cle dans l'history.
-    const historyRows = await PrixVenteCdcHistory.findAll({
-        order: [['created_at', 'ASC']]
-    });
-    const prixCdcAtDate = buildPrixCdcResolver(historyRows);
+    // 2bis. Lookups point-in-time des 3 prix (vente catalogue, achat,
+    // vente CDC). Permet d'utiliser la valeur effective AU MOMENT DE LA
+    // VENTE, pas la valeur courante du catalogue.
+    const [pvcHistory, paHistory, pvHistory] = await Promise.all([
+        PrixVenteCdcHistory.findAll({ order: [['created_at', 'ASC']] }),
+        PrixAchatHistory.findAll({ order: [['created_at', 'ASC']] }),
+        PrixVenteHistory.findAll({ order: [['created_at', 'ASC']] })
+    ]);
+    const prixCdcAtDate = buildTemporalResolver(pvcHistory, 'prix_vente_cdc');
+    const prixAchatAtDate = buildTemporalResolver(paHistory, 'prix_achat');
+    const prixVenteAtDate = buildTemporalResolver(pvHistory, 'prix_vente');
+
     /** Resout le prix_vente_cdc effectif pour (produit_vente, vente_date). */
     const lookupPrixCdcAtDate = (produitVenteNom, venteDateISO) => {
-        // Trouver le nom canonique du catalogue via le resolver.
         const r = resolveProduit(produitVenteNom, resolverMaps);
         if (!r.resolved) return null;
         const fromHistory = prixCdcAtDate(r.resolved.toLowerCase(), venteDateISO);
         if (fromHistory != null) return fromHistory;
-        // Fallback: valeur courante du catalogue (cas pas de genesis).
         return r.value && r.value.prix_vente_cdc != null
             ? r.value.prix_vente_cdc
             : (r.value ? r.value.prix_vente : null);
+    };
+    /** Resout le prix_achat effectif. */
+    const lookupPrixAchatAtDate = (produitVenteNom, venteDateISO) => {
+        const r = resolveProduit(produitVenteNom, resolverMaps);
+        if (!r.resolved) return null;
+        const fromHistory = prixAchatAtDate(r.resolved.toLowerCase(), venteDateISO);
+        if (fromHistory != null) return fromHistory;
+        return r.value ? r.value.prix_achat : null;
+    };
+    /** Resout le prix_vente (catalogue) effectif pour la commission 3%. */
+    const lookupPrixVenteAtDate = (produitVenteNom, venteDateISO) => {
+        const r = resolveProduit(produitVenteNom, resolverMaps);
+        if (!r.resolved) return null;
+        const fromHistory = prixVenteAtDate(r.resolved.toLowerCase(), venteDateISO);
+        if (fromHistory != null) return fromHistory;
+        return r.value ? r.value.prix_vente : null;
     };
 
     // 3. Charger toutes les ventes de la periode.
@@ -235,21 +252,24 @@ async function computeCreances(opts = {}) {
         const prix = lookupPrix(v.produit);
         if (!prix) continue; // produit non present dans le catalogue fournisseur
 
-        // Commission 3% sur prix de vente du fournisseur (toutes ventes elligibles)
-        const detteLigne = (commissionPct / 100) * prix.prix_vente * qte;
+        // Point-in-time: prix_vente, prix_achat, prix_vente_cdc effectifs
+        // a la date de la vente. Changer un prix aujourd'hui n'impacte
+        // pas les ventes passees.
+        const prixVenteEff = lookupPrixVenteAtDate(v.produit, v.date) ?? prix.prix_vente;
+        const prixAchatEff = lookupPrixAchatAtDate(v.produit, v.date); // null possible
+        const prixVenteCdc = lookupPrixCdcAtDate(v.produit, v.date) || 0;
+
+        // Commission 3% sur prix de vente catalogue (toutes ventes elligibles)
+        const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
         totalDette += detteLigne;
 
         // Recevable: uniquement si vente passee par le Centre de Decoupe
-        // ET si le fournisseur a un prix_achat connu.
-        // Point-in-time: utilise le prix_vente_cdc effectif a la date de
-        // la vente (cf prix_vente_cdc_history). Changer le prix
-        // aujourd'hui n'impacte pas les ventes passees.
+        // ET si le fournisseur a un prix_achat connu a la date.
         const centre = getVenteCentre(v);
         let recevableLigne = 0;
         const monPrix = parseFloat(v.prixUnit) || 0;
-        const prixVenteCdc = lookupPrixCdcAtDate(v.produit, v.date) || 0;
-        if (centre && prix.prix_achat != null) {
-            recevableLigne = (prixVenteCdc - prix.prix_achat) * qte;
+        if (centre && prixAchatEff != null) {
+            recevableLigne = (prixVenteCdc - prixAchatEff) * qte;
             totalRecevable += recevableLigne;
         }
 
@@ -259,12 +279,12 @@ async function computeCreances(opts = {}) {
             produit: key,
             quantite: 0,
             quantite_cdc: 0,
-            prix_achat: prix.prix_achat,
+            prix_achat: prix.prix_achat, // courant catalogue (info edition UI)
             dette: 0,
             recevable: 0
         };
         agg.quantite += qte;
-        if (centre && prix.prix_achat != null) {
+        if (centre && prixAchatEff != null) {
             agg.quantite_cdc += qte;
         }
         agg.dette += detteLigne;
@@ -275,7 +295,7 @@ async function computeCreances(opts = {}) {
         // On accumule aussi mon_prix * qte pour calculer le prix moyen
         // pondere par produit dans ce centre, et on conserve la liste
         // des ventes individuelles pour le drill-down "Details" cote UI.
-        if (centre && prix.prix_achat != null) {
+        if (centre && prixAchatEff != null) {
             if (!detailParCentre.has(centre)) {
                 detailParCentre.set(centre, new Map());
             }
@@ -283,15 +303,20 @@ async function computeCreances(opts = {}) {
             const cAgg = parProd.get(key) || {
                 produit: key,
                 quantite_cdc: 0,
-                prix_achat: prix.prix_achat,
-                prix_vente_cdc_courant: prix.prix_vente_cdc, // valeur catalogue actuelle (info edition)
-                prix_vente_cdc_x_qte: 0, // somme(prix_vente_cdc_effectif × qte) pour moyenne ponderee
-                prix_vente_x_qte: 0, // somme(mon_prix POS * qte) - garde pour info debug
+                prix_vente_courant: prix.prix_vente, // valeur catalogue actuelle
+                prix_vente_eff_x_qte: 0, // somme(prix_vente_effectif × qte)
+                prix_achat_courant: prix.prix_achat,
+                prix_achat_x_qte: 0,
+                prix_vente_cdc_courant: prix.prix_vente_cdc,
+                prix_vente_cdc_x_qte: 0,
+                prix_vente_x_qte: 0, // = mon_prix POS x qte (debug, pas prix vente fourn)
                 recevable: 0,
                 ventes: []
             };
             cAgg.quantite_cdc += qte;
+            cAgg.prix_vente_eff_x_qte += prixVenteEff * qte;
             cAgg.prix_vente_cdc_x_qte += prixVenteCdc * qte;
+            cAgg.prix_achat_x_qte += prixAchatEff * qte;
             cAgg.prix_vente_x_qte += monPrix * qte;
             cAgg.recevable += recevableLigne;
             cAgg.ventes.push({
@@ -302,9 +327,10 @@ async function computeCreances(opts = {}) {
                 point_vente: v.pointVente || null,
                 nombre: qte,
                 prix_unit: monPrix,
-                prix_achat: prix.prix_achat,
-                prix_vente_cdc_effectif: prixVenteCdc, // prix point-in-time pour cette vente
-                marge_unitaire: prixVenteCdc - prix.prix_achat,
+                prix_achat: prixAchatEff,
+                prix_achat_effectif: prixAchatEff,
+                prix_vente_cdc_effectif: prixVenteCdc,
+                marge_unitaire: prixVenteCdc - prixAchatEff,
                 recevable_ligne: round2(recevableLigne),
                 nom_client: v.nomClient || null,
                 numero_client: v.numeroClient || null,
@@ -361,18 +387,19 @@ async function computeCreances(opts = {}) {
                 ? new Date(log.createdAt).toISOString().slice(0, 10)
                 : (log.created_at ? new Date(log.created_at).toISOString().slice(0, 10) : null);
             const prixVenteCdc = logDateISO ? (lookupPrixCdcAtDate(produitNom, logDateISO) || 0) : 0;
+            const prixVenteEff = logDateISO ? (lookupPrixVenteAtDate(produitNom, logDateISO) ?? prix.prix_vente) : prix.prix_vente;
+            const prixAchatEff = logDateISO ? lookupPrixAchatAtDate(produitNom, logDateISO) : prix.prix_achat;
 
-            // Commission 3% (dette envers le fournisseur)
-            const detteLigne = (commissionPct / 100) * prix.prix_vente * qte;
+            // Commission 3% (dette envers le fournisseur), point-in-time.
+            const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
             totalDette += detteLigne;
 
             // Recevable: par definition les commandes decoupe SONT des
-            // ventes CDC, donc on accumule directement (pas besoin du
-            // check getVenteCentre comme pour les Ventes locales).
-            // Utilise prix_vente_cdc point-in-time effectif a la date du log.
+            // ventes CDC, donc on accumule directement.
+            // prix_vente_cdc ET prix_achat point-in-time.
             let recevableLigne = 0;
-            if (prix.prix_achat != null) {
-                recevableLigne = (prixVenteCdc - prix.prix_achat) * qte;
+            if (prixAchatEff != null) {
+                recevableLigne = (prixVenteCdc - prixAchatEff) * qte;
                 totalRecevable += recevableLigne;
             }
 
@@ -387,13 +414,13 @@ async function computeCreances(opts = {}) {
                 recevable: 0
             };
             agg.quantite += qte;
-            if (prix.prix_achat != null) agg.quantite_cdc += qte;
+            if (prixAchatEff != null) agg.quantite_cdc += qte;
             agg.dette += detteLigne;
             agg.recevable += recevableLigne;
             detail.set(key, agg);
 
             // Agregat par (centre, produit)
-            if (prix.prix_achat != null) {
+            if (prixAchatEff != null) {
                 if (!detailParCentre.has(centreOriginal)) {
                     detailParCentre.set(centreOriginal, new Map());
                 }
@@ -401,7 +428,10 @@ async function computeCreances(opts = {}) {
                 const cAgg = parProd.get(key) || {
                     produit: key,
                     quantite_cdc: 0,
-                    prix_achat: prix.prix_achat,
+                    prix_vente_courant: prix.prix_vente,
+                    prix_vente_eff_x_qte: 0,
+                    prix_achat_courant: prix.prix_achat,
+                    prix_achat_x_qte: 0,
                     prix_vente_cdc_courant: prix.prix_vente_cdc,
                     prix_vente_cdc_x_qte: 0,
                     prix_vente_x_qte: 0,
@@ -409,7 +439,9 @@ async function computeCreances(opts = {}) {
                     ventes: []
                 };
                 cAgg.quantite_cdc += qte;
+                cAgg.prix_vente_eff_x_qte += prixVenteEff * qte;
                 cAgg.prix_vente_cdc_x_qte += prixVenteCdc * qte;
+                cAgg.prix_achat_x_qte += prixAchatEff * qte;
                 cAgg.prix_vente_x_qte += monPrix * qte;
                 cAgg.recevable += recevableLigne;
                 cAgg.ventes.push({
@@ -420,9 +452,10 @@ async function computeCreances(opts = {}) {
                     point_vente: log.point_vente || null,
                     nombre: qte,
                     prix_unit: monPrix,
-                    prix_achat: prix.prix_achat,
+                    prix_achat: prixAchatEff,
+                    prix_achat_effectif: prixAchatEff,
                     prix_vente_cdc_effectif: prixVenteCdc,
-                    marge_unitaire: prixVenteCdc - prix.prix_achat,
+                    marge_unitaire: prixVenteCdc - prixAchatEff,
                     recevable_ligne: round2(recevableLigne),
                     nom_client: log.nom_client || null,
                     numero_client: log.numero_client || null,
@@ -486,25 +519,37 @@ async function computeCreances(opts = {}) {
                     const monPrixMoyen = d.quantite_cdc > 0
                         ? d.prix_vente_x_qte / d.quantite_cdc
                         : 0;
-                    // Prix vente CDC moyen pondere (point-in-time): si les
-                    // ventes du produit couvrent une periode ou le prix a
-                    // change, on affiche la moyenne effective.
+                    // Prix vente CDC moyen pondere (point-in-time).
                     const prixCdcMoyen = d.quantite_cdc > 0
                         ? d.prix_vente_cdc_x_qte / d.quantite_cdc
+                        : 0;
+                    // Prix achat moyen pondere (point-in-time).
+                    const prixAchatMoyen = d.quantite_cdc > 0
+                        ? d.prix_achat_x_qte / d.quantite_cdc
                         : 0;
                     // Marge moyenne ponderee (recevable / qte).
                     const margeUnit = d.quantite_cdc > 0
                         ? d.recevable / d.quantite_cdc
                         : 0;
+                    // Prix vente fournisseur moyen pondere (point-in-time).
+                    const prixVenteMoyen = d.quantite_cdc > 0
+                        ? d.prix_vente_eff_x_qte / d.quantite_cdc
+                        : 0;
                     return {
                         produit: d.produit,
                         quantite_cdc: round2(d.quantite_cdc),
-                        prix_achat: d.prix_achat == null ? null : round2(d.prix_achat),
-                        // Prix CDC moyen ponderé point-in-time (peut differer
-                        // de prix_vente_cdc_courant si une vente est anterieure
-                        // au dernier changement de prix).
+                        // Prix vente fournisseur (catalogue, base commission 3%)
+                        prix_vente_moyen: round2(prixVenteMoyen),
+                        prix_vente_courant: d.prix_vente_courant == null
+                            ? null
+                            : round2(d.prix_vente_courant),
+                        // Prix achat moyen ponderé point-in-time
+                        prix_achat: round2(prixAchatMoyen),
+                        prix_achat_courant: d.prix_achat_courant == null
+                            ? null
+                            : round2(d.prix_achat_courant),
+                        // Prix CDC moyen ponderé point-in-time
                         prix_vente_cdc: round2(prixCdcMoyen),
-                        // Valeur courante du catalogue (= ce qu'on edite via UI).
                         prix_vente_cdc_courant: d.prix_vente_cdc_courant == null
                             ? null
                             : round2(d.prix_vente_cdc_courant),

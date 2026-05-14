@@ -385,48 +385,50 @@
             const isOpen = idx === 0;
             const headerBtnCls = 'accordion-button' + (isOpen ? '' : ' collapsed');
             const collapseCls = 'accordion-collapse collapse' + (isOpen ? ' show' : '');
-            const rows = c.detail.map((d, lineIdx) => {
-                // Input edite = valeur courante du catalogue (le prix qui
-                // sera applique aux FUTURES ventes apres save).
-                const prixCdcCourant = d.prix_vente_cdc_courant != null
-                    ? d.prix_vente_cdc_courant
-                    : (d.prix_vente_cdc != null ? d.prix_vente_cdc : '');
-                // Cellule affiche aussi la moyenne ponderee point-in-time
-                // (= ce qui est utilise dans le calcul, peut differer du
-                // courant si une vente passee a utilise un autre prix).
-                const moyenPointInTime = d.prix_vente_cdc;
-                const differs = (moyenPointInTime != null && prixCdcCourant !== ''
-                    && Math.abs(moyenPointInTime - prixCdcCourant) > 0.01);
+            // Helper: rend une cellule editable (input + save + history btns)
+            // commun aux 3 prix: vente fournisseur, achat, vente CDC. Le
+            // data-attribute "kind" identifie le type pour le wiring JS.
+            const editablePrixCell = (kind, courant, moyenPit, title) => {
+                const courantVal = courant != null ? courant : '';
+                const differs = (moyenPit != null && courantVal !== ''
+                    && Math.abs(moyenPit - courantVal) > 0.01);
                 const moyenBadge = differs
-                    ? `<span class="badge bg-warning text-dark mt-1" title="Moyenne pondérée des prix effectifs (point-in-time) pour les ventes de la période. Différente du prix courant car des ventes ont eu lieu avant un changement de prix.">moy. ${fmtMoney(moyenPointInTime)}</span>`
+                    ? `<span class="badge bg-warning text-dark mt-1" style="font-size:0.65rem" title="Moyenne pondérée effective (point-in-time) pour les ventes de la période. Différente du courant car des ventes anciennes ont utilisé un autre prix.">moy. ${fmtMoney(moyenPit)}</span>`
                     : '';
                 return `
-                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(d.produit)}">
-                    <td>${esc(d.produit)}</td>
-                    <td class="text-end">${esc(d.quantite_cdc)}</td>
-                    <td class="text-end">${d.prix_achat == null ? '<span class="text-muted">—</span>' : esc(fmtMoney(d.prix_achat))}</td>
-                    <td class="text-end" style="min-width:180px">
+                    <td class="text-end" style="min-width:175px">
                         <div class="d-inline-flex flex-column align-items-end gap-1" style="white-space:nowrap">
                             <div class="d-inline-flex align-items-center gap-1">
                                 <input type="number" min="0" step="1" class="form-control form-control-sm text-end"
-                                       style="width:90px"
-                                       value="${esc(prixCdcCourant)}"
-                                       data-prix-cdc-input
-                                       title="Prix courant — appliqué aux futures ventes après sauvegarde">
+                                       style="width:85px"
+                                       value="${esc(courantVal)}"
+                                       data-prix-input="${kind}"
+                                       title="${title}">
                                 <button type="button" class="btn btn-sm btn-success py-0 px-1"
-                                        data-prix-cdc-save
-                                        title="Sauvegarder (les ventes passées gardent leur prix historique)">
+                                        data-prix-save="${kind}"
+                                        title="Sauvegarder">
                                     <i class="bi bi-check2"></i>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                        data-prix-cdc-history
-                                        title="Voir l'historique des changements">
+                                        data-prix-history="${kind}"
+                                        title="Voir l'historique">
                                     <i class="bi bi-clock-history"></i>
                                 </button>
                             </div>
                             ${moyenBadge}
                         </div>
                     </td>
+                `;
+            };
+
+            const rows = c.detail.map((d, lineIdx) => {
+                return `
+                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(d.produit)}">
+                    <td>${esc(d.produit)}</td>
+                    <td class="text-end">${esc(d.quantite_cdc)}</td>
+                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (commission 3%)')}
+                    ${editablePrixCell('prix_achat', d.prix_achat_courant, d.prix_achat, 'Prix achat fournisseur')}
+                    ${editablePrixCell('prix_vente_cdc', d.prix_vente_cdc_courant, d.prix_vente_cdc, 'Prix vente CDC (négocié B2B)')}
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
                     <td class="text-end">
@@ -439,7 +441,7 @@
                     </td>
                 </tr>
             `;
-            }).join('') || '<tr><td colspan="7" class="text-muted text-center">Aucune ligne</td></tr>';
+            }).join('') || '<tr><td colspan="8" class="text-muted text-center">Aucune ligne</td></tr>';
             return `
                 <div class="accordion-item">
                     <h2 class="accordion-header">
@@ -456,7 +458,8 @@
                                     <tr>
                                         <th>Produit</th>
                                         <th class="text-end">Quantité</th>
-                                        <th class="text-end">Prix achat fournisseur</th>
+                                        <th class="text-end">Prix vente fourn.</th>
+                                        <th class="text-end">Prix achat fourn.</th>
                                         <th class="text-end">Prix vente CDC</th>
                                         <th class="text-end">Marge unitaire</th>
                                         <th class="text-end">Il me doit</th>
@@ -480,31 +483,42 @@
             });
         });
 
-        // Wire les boutons "Save" prix vente CDC inline (par row).
-        accordion.querySelectorAll('[data-prix-cdc-save]').forEach((btn) => {
+        // Config commune des 3 kinds editables.
+        // endpoint = chemin REST, bodyField = nom du field dans le PUT body,
+        // label = libelle utilisateur.
+        const PRIX_CONFIG = {
+            'prix_vente':     { endpoint: 'prix-vente-fournisseur', bodyField: 'prix_vente',     label: 'Prix vente fournisseur' },
+            'prix_achat':     { endpoint: 'prix-achat',             bodyField: 'prix_achat',     label: 'Prix achat fournisseur' },
+            'prix_vente_cdc': { endpoint: 'prix-cdc',               bodyField: 'prix_vente_cdc', label: 'Prix vente CDC' }
+        };
+
+        // Wire les boutons "Save" pour les 3 prix (vente / achat / vente CDC).
+        accordion.querySelectorAll('[data-prix-save]').forEach((btn) => {
             btn.addEventListener('click', async () => {
+                const kind = btn.dataset.prixSave;
+                const cfg = PRIX_CONFIG[kind];
+                if (!cfg) return;
                 const tr = btn.closest('[data-cdc-row]');
                 if (!tr) return;
                 const produit = tr.dataset.produit;
-                const input = tr.querySelector('[data-prix-cdc-input]');
+                const input = tr.querySelector(`[data-prix-input="${kind}"]`);
                 const val = parseFloat(input ? input.value : 0);
                 if (!Number.isFinite(val) || val < 0) {
                     if (typeof showToast === 'function') showToast('Prix invalide', 'warning');
                     return;
                 }
                 try {
-                    const res = await fetch('/api/finance/prix-cdc/' + encodeURIComponent(produit), {
+                    const res = await fetch('/api/finance/' + cfg.endpoint + '/' + encodeURIComponent(produit), {
                         method: 'PUT',
                         credentials: 'include',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ prix_vente_cdc: val })
+                        body: JSON.stringify({ [cfg.bodyField]: val })
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
                     if (typeof showToast === 'function') {
-                        showToast(`Prix vente CDC mis à jour pour ${produit}`, 'success');
+                        showToast(`${cfg.label} mis à jour pour ${produit}`, 'success');
                     }
-                    // Re-fetch pour recalculer la marge + recevable avec le nouveau prix
                     loadCdc();
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
@@ -512,19 +526,22 @@
             });
         });
 
-        // Wire les boutons "History" (affiche modale avec historique des changements).
-        accordion.querySelectorAll('[data-prix-cdc-history]').forEach((btn) => {
+        // Wire les boutons "History" pour les 3 prix.
+        accordion.querySelectorAll('[data-prix-history]').forEach((btn) => {
             btn.addEventListener('click', async () => {
+                const kind = btn.dataset.prixHistory;
+                const cfg = PRIX_CONFIG[kind];
+                if (!cfg) return;
                 const tr = btn.closest('[data-cdc-row]');
                 if (!tr) return;
                 const produit = tr.dataset.produit;
                 try {
-                    const res = await fetch('/api/finance/prix-cdc/' + encodeURIComponent(produit) + '/history', {
+                    const res = await fetch('/api/finance/' + cfg.endpoint + '/' + encodeURIComponent(produit) + '/history', {
                         credentials: 'include'
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
-                    showPrixCdcHistoryModal(produit, j.data);
+                    showPrixHistoryModal(cfg.label, produit, cfg.bodyField, j.data);
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
                 }
@@ -532,36 +549,41 @@
         });
     }
 
-    // Modale historique des changements de prix_vente_cdc pour un produit.
-    // Réutilise l'infrastructure modale CDC details (même DOM #fin-cdc-details-modal).
-    function showPrixCdcHistoryModal(produit, rows) {
+    // Modale historique générique pour les 3 types de prix.
+    // labelPrix = libellé affiché (ex: "Prix vente CDC").
+    // bodyField = nom du champ dans les rows (ex: "prix_vente_cdc").
+    function showPrixHistoryModal(labelPrix, produit, bodyField, rows) {
         const title = document.getElementById('fin-cdc-details-title');
         const body = document.getElementById('fin-cdc-details-body');
         const modalEl = document.getElementById('fin-cdc-details-modal');
         if (!title || !body || !modalEl) return;
-        title.innerHTML = `<i class="bi bi-clock-history me-2"></i>Historique prix vente CDC — <strong>${esc(produit)}</strong>`;
+        title.innerHTML = `<i class="bi bi-clock-history me-2"></i>Historique ${esc(labelPrix)} — <strong>${esc(produit)}</strong>`;
         const list = Array.isArray(rows) ? rows : [];
         const rowsHtml = list.map((h) => {
             const when = h.created_at ? new Date(h.created_at).toLocaleString('fr-FR') : '—';
+            const isSeed = h.changed_by === '_seed_';
+            const whenLabel = isSeed ? 'Valeur initiale' : when;
+            const whoLabel = isSeed ? '(seed migration)' : (h.changed_by || 'anonymous');
             return `
-                <tr>
-                    <td class="text-nowrap">${esc(when)}</td>
-                    <td class="text-end fw-medium">${esc(fmtMoney(h.prix_vente_cdc))}</td>
-                    <td>${esc(h.changed_by || 'anonymous')}</td>
+                <tr${isSeed ? ' class="text-muted"' : ''}>
+                    <td class="text-nowrap">${esc(whenLabel)}</td>
+                    <td class="text-end fw-medium">${esc(fmtMoney(h[bodyField]))}</td>
+                    <td>${esc(whoLabel)}</td>
                 </tr>
             `;
-        }).join('') || '<tr><td colspan="3" class="text-muted text-center py-3">Aucun changement enregistré (valeur seedée par défaut).</td></tr>';
+        }).join('') || '<tr><td colspan="3" class="text-muted text-center py-3">Aucun changement enregistré.</td></tr>';
         body.innerHTML = `
             <div class="alert alert-light border small mb-3">
-                <i class="bi bi-info-circle"></i> Chaque sauvegarde du prix vente CDC est historisée.
-                La valeur la plus récente (en haut) est celle actuellement utilisée pour le calcul de marge.
+                <i class="bi bi-info-circle"></i> Chaque sauvegarde est historisée (point-in-time).
+                La valeur la plus récente (en haut) s'applique aux futures ventes; les ventes passées
+                conservent le prix effectif à leur date.
             </div>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>
                         <tr>
                             <th>Date</th>
-                            <th class="text-end">Prix vente CDC</th>
+                            <th class="text-end">${esc(labelPrix)}</th>
                             <th>Modifié par</th>
                         </tr>
                     </thead>

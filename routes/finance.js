@@ -15,6 +15,10 @@
  *   DELETE /api/finance/prix/:produit
  *   PUT    /api/finance/prix-cdc/:produit         (prix vente Centre de Decoupe)
  *   GET    /api/finance/prix-cdc/:produit/history (historique des changements)
+ *   PUT    /api/finance/prix-achat/:produit       (prix achat fournisseur)
+ *   GET    /api/finance/prix-achat/:produit/history
+ *   PUT    /api/finance/prix-vente-fournisseur/:produit  (prix vente catalogue)
+ *   GET    /api/finance/prix-vente-fournisseur/:produit/history
  *   GET    /api/finance/alias                  (mapping vente -> catalog)
  *   PUT    /api/finance/alias                  (upsert)
  *   DELETE /api/finance/alias/:alias
@@ -44,6 +48,8 @@ const {
     FournisseurPaiement,
     ProduitAlias,
     PrixVenteCdcHistory,
+    PrixAchatHistory,
+    PrixVenteHistory,
     Produit,
     Vente,
     sequelize
@@ -217,6 +223,142 @@ router.get('/prix-cdc/:produit/history', async (req, res) => {
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('GET /api/finance/prix-cdc/:produit/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX ACHAT (point-in-time, meme pattern que prix_vente_cdc)
+// =====================================================
+// Le prix achat fournisseur est aussi editable + historise. Sert au
+// calcul de marge "Il me doit" = prix_vente_cdc_effectif - prix_achat_effectif.
+// Changer le prix achat aujourd'hui n'impacte pas les calculs des
+// ventes passees (chaque vente utilise le prix_achat effectif a sa date).
+
+router.put('/prix-achat/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_achat);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_achat doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_achat: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixAchatHistory.create({
+                produit,
+                prix_achat: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_achat.upsert', { produit, prix_achat: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-achat/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.get('/prix-achat/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixAchatHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-achat/:produit/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// PRIX VENTE FOURNISSEUR (point-in-time)
+// =====================================================
+// Prix catalogue du fournisseur, base de la commission 3% sur ventes
+// boucherie. Editable + historise, meme pattern que prix_achat/prix_vente_cdc.
+
+router.put('/prix-vente-fournisseur/:produit', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const prix = parseFloat(req.body && req.body.prix_vente);
+        if (!Number.isFinite(prix) || prix < 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'prix_vente doit etre un nombre >= 0'
+            });
+        }
+        const cat = await FournisseurPrix.findByPk(produit);
+        if (!cat) {
+            return res.status(404).json({
+                success: false,
+                error: `produit "${produit}" introuvable dans le catalogue`
+            });
+        }
+        const username = req.session && req.session.user
+            ? req.session.user.username
+            : null;
+        await sequelize.transaction(async (t) => {
+            await FournisseurPrix.update(
+                { prix_vente: prix, updated_at: new Date() },
+                { where: { produit }, transaction: t }
+            );
+            await PrixVenteHistory.create({
+                produit,
+                prix_vente: prix,
+                changed_by: username
+            }, { transaction: t });
+        });
+        audit.log(req, 'prix_vente.upsert', { produit, prix_vente: prix });
+        financeCache.invalidate();
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/prix-vente-fournisseur/:produit:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.get('/prix-vente-fournisseur/:produit/history', async (req, res) => {
+    try {
+        const produit = String(req.params.produit || '').trim();
+        if (!produit) {
+            return res.status(400).json({ success: false, error: 'produit requis' });
+        }
+        const rows = await PrixVenteHistory.findAll({
+            where: { produit },
+            order: [['created_at', 'DESC']],
+            limit: 100
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/prix-vente-fournisseur/:produit/history:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
