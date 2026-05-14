@@ -1,9 +1,13 @@
 /**
- * Calcul des creances vis-a-vis du fournisseur viande.
+ * Calcul LOCAL des creances vis-a-vis du fournisseur viande.
+ *
+ * Note: c'est un calcul "indicateur" Maas-side. La creance officielle
+ * (solde, avances, remboursements) vient de mata-depenses-management
+ * (cf lib/depenses-creance-client.js). Les deux sont affiches cote a
+ * cote dans l'UI Finance pour reconciliation.
  *
  * Reutilise par:
  *   - GET /api/finance/creances  (UI Finance, cookie auth)
- *   - GET /api/external/creance  (consommateur externe, API key)
  *
  * Periode:
  *   - dateDebut / dateFin (format YYYY-MM-DD ou DD-MM-YYYY ou DD/MM/YYYY).

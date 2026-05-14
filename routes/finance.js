@@ -1,9 +1,13 @@
 /**
  * Routes de l'onglet Finance.
  *
- * Toutes les routes (sauf /api/external/creance qui est expose
- * separement dans server.js avec auth API key) sont gates par
- * checkAdvancedAccess (admin / superutilisateur / superviseur).
+ * Toutes les routes sont gates par checkAdvancedAccess (admin /
+ * superutilisateur / superviseur).
+ *
+ * La creance officielle vis-a-vis du fournisseur viande est lue
+ * depuis l'API externe mata-depenses-management (cf
+ * lib/depenses-creance-client.js + route GET /api/finance/creances
+ * qui agrege l'appel HTTP + le calcul Maas local).
  *
  * Routes exposees:
  *   GET    /api/finance/prix
@@ -325,15 +329,45 @@ router.delete('/paiements/:id', async (req, res) => {
 // =====================================================
 // CALCUL DES CREANCES (interne, gate session)
 // =====================================================
-// Expose la meme structure que /api/external/creance pour permettre a la
-// page UI Finance d'afficher les chiffres sans cle API.
+// Reponse:
+//   {
+//     success: true,
+//     data: {
+//       local: { ...calcul Maas (commission 3% + marge Centre Decoupe)... },
+//       cdb:   { ...creance officielle depuis mata-depenses-management... }
+//                | null si l'API externe est down / non configuree
+//     }
+//   }
 router.get('/creances', async (req, res) => {
     try {
         const { computeCreances } = require('./finance-creances');
-        const data = await computeCreances({
-            dateDebut: req.query.dateDebut,
-            dateFin: req.query.dateFin
-        });
+        const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+
+        // Parallel: calcul local + fetch API externe.
+        // L'API externe peut etre down ou pas configuree -> on degrade
+        // gracieusement (cdb=null + warning) plutot que tout casser.
+        const [local, cdbResult] = await Promise.allSettled([
+            computeCreances({
+                dateDebut: req.query.dateDebut,
+                dateFin: req.query.dateFin
+            }),
+            fetchCreanceCdb({
+                dateDebut: req.query.dateDebut,
+                dateFin: req.query.dateFin
+            })
+        ]);
+
+        if (local.status === 'rejected') {
+            throw local.reason;
+        }
+
+        const data = {
+            local: local.value,
+            cdb: cdbResult.status === 'fulfilled' ? cdbResult.value : null,
+            cdb_error: cdbResult.status === 'rejected'
+                ? (cdbResult.reason && cdbResult.reason.message) || 'Erreur appel API depenses'
+                : null
+        };
         res.json({ success: true, data });
     } catch (e) {
         console.error('GET /api/finance/creances:', e);
