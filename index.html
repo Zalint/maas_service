@@ -2191,6 +2191,9 @@
                             <li class="nav-item">
                                 <a class="nav-link" href="#" data-fin-tab="prix">Prix fournisseur</a>
                             </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="mapping">Mapping produits</a>
+                            </li>
                         </ul>
                     </div>
                     <div class="card-body">
@@ -2468,6 +2471,42 @@
                             <div class="d-flex gap-2 mt-2">
                                 <button class="btn btn-sm btn-success" id="fin-prix-save">Sauvegarder prix</button>
                                 <button class="btn btn-sm btn-outline-secondary" id="fin-prix-add">+ Ajouter une ligne</button>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Mapping produits (alias libelle vente -> catalogue prix) -->
+                        <div data-fin-pane="mapping" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                Pour chaque libellé produit utilisé dans les ventes des 90 derniers jours,
+                                indique à quelle entrée du catalogue il correspond. Une fois mappé,
+                                il ne dépendra plus du fallback prefix (qui restera repérable par le badge orange).
+                            </div>
+                            <div class="row g-2 mb-3" id="fin-mapping-cards"></div>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0 fin-subheading" style="margin:0">Libellés produits utilisés en vente</h6>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-sm btn-outline-primary" id="fin-mapping-refresh">
+                                        <i class="bi bi-arrow-clockwise"></i> Rafraîchir
+                                    </button>
+                                    <button class="btn btn-sm btn-primary" id="fin-mapping-bulk">
+                                        <i class="bi bi-magic"></i> Convertir tous les Prefix en Aliases
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm" id="fin-mapping-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Libellé saisi en vente</th>
+                                            <th class="text-end">Nb ventes 90j</th>
+                                            <th>Statut</th>
+                                            <th>Mappé vers (catalogue)</th>
+                                            <th style="width:120px"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
                             </div>
                         </div>
                     </div>

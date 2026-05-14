@@ -68,7 +68,7 @@
             loadCreances();
         });
 
-        // Subnav (creances / cdc / depenses / prix)
+        // Subnav (creances / cdc / depenses / prix / mapping)
         document.querySelectorAll('#finance-subnav [data-fin-tab]').forEach((link) => {
             link.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -78,6 +78,7 @@
                 if (target === 'cdc') loadCdc();
                 if (target === 'depenses') loadDepenses();
                 if (target === 'prix') loadPrix();
+                if (target === 'mapping') loadMapping();
             });
         });
 
@@ -109,6 +110,12 @@
 
         const configSave = document.getElementById('fin-config-save');
         if (configSave) configSave.addEventListener('click', onConfigSave);
+
+        // Boutons Mapping produits
+        const mappingRefresh = document.getElementById('fin-mapping-refresh');
+        if (mappingRefresh) mappingRefresh.addEventListener('click', loadMapping);
+        const mappingBulk = document.getElementById('fin-mapping-bulk');
+        if (mappingBulk) mappingBulk.addEventListener('click', onMappingBulkFromPrefix);
     });
 
     function ensureDefaultDates() {
@@ -780,5 +787,205 @@
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
+    }
+
+    // ===== Mapping produits (alias vente -> catalogue prix) =====
+
+    // Cache du payload courant pour pouvoir recalculer rapidement les
+    // cartes synthese apres ajout/suppression d'alias sans refaire un
+    // appel reseau complet.
+    let _mappingLastData = null;
+
+    async function loadMapping() {
+        try {
+            const res = await fetch('/api/finance/alias', { credentials: 'include' });
+            const json = await res.json();
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            _mappingLastData = json.data;
+            renderMapping(json.data);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur mapping: ' + e.message, 'danger');
+        }
+    }
+
+    function renderMapping(data) {
+        const cardsEl = document.getElementById('fin-mapping-cards');
+        const tbody = document.querySelector('#fin-mapping-table tbody');
+        if (!cardsEl || !tbody) return;
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+
+        const nExact   = items.filter((i) => i.statut === 'exact').length;
+        const nAlias   = items.filter((i) => i.statut === 'alias').length;
+        const nPrefix  = items.filter((i) => i.statut === 'prefix').length;
+        const nUnmap   = items.filter((i) => i.statut === 'unmapped').length;
+
+        const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
+            .replace('col-md-3', 'col-md-3');
+        cardsEl.innerHTML = [
+            kpiCard('success', 'check-circle',     'Mappés exactement', `${nExact}`),
+            kpiCard('info',    'link-45deg',       'Aliases définis',   `${nAlias}`),
+            kpiCard('warning', 'exclamation-triangle', 'Fallback prefix',`${nPrefix}`),
+            kpiCard('danger',  'x-circle',         'Non mappés',        `${nUnmap}`)
+        ].join('');
+
+        // Helpers de rendu d'un select catalog (option preselectionnee).
+        const catalogOptions = (selected) => {
+            const blank = '<option value="">— choisir —</option>';
+            const opts = catalog.map((p) =>
+                `<option value="${esc(p)}"${p === selected ? ' selected' : ''}>${esc(p)}</option>`
+            ).join('');
+            return blank + opts;
+        };
+
+        // Pills de statut (couleurs alignees au reste du design)
+        const statutPill = (statut, resolved) => {
+            switch (statut) {
+                case 'exact':
+                    return `<span class="fin-pill fin-pill--success"><i class="bi bi-check-circle me-1"></i>Exact</span>`;
+                case 'alias':
+                    return `<span class="fin-pill fin-pill--info"><i class="bi bi-link-45deg me-1"></i>Alias → ${esc(resolved)}</span>`;
+                case 'prefix':
+                    return `<span class="fin-pill fin-pill--warning"><i class="bi bi-exclamation-triangle me-1"></i>Prefix → ${esc(resolved)}</span>`;
+                case 'unmapped':
+                default:
+                    return `<span class="fin-pill fin-pill--danger"><i class="bi bi-x-circle me-1"></i>Non mappé</span>`;
+            }
+        };
+
+        tbody.innerHTML = items.map((it) => {
+            // Si exact: pas de dropdown / pas de bouton (le libelle EST une
+            // entree du catalogue, rien a mapper).
+            if (it.statut === 'exact') {
+                return `
+                    <tr>
+                        <td><strong>${esc(it.produit)}</strong></td>
+                        <td class="text-end">${esc(it.count)}</td>
+                        <td>${statutPill(it.statut, it.resolved)}</td>
+                        <td><span class="text-muted">${esc(it.resolved)}</span></td>
+                        <td></td>
+                    </tr>
+                `;
+            }
+            const selectedCatalog = it.statut === 'alias' ? it.resolved
+                                  : it.statut === 'prefix' ? it.resolved
+                                  : '';
+            const actionLabel = it.statut === 'alias' ? 'Mettre à jour' : 'Enregistrer';
+            const deleteBtn = it.statut === 'alias'
+                ? `<button type="button" class="btn btn-sm btn-outline-danger" data-mapping-del="${esc(it.produit)}" title="Supprimer l'alias"><i class="bi bi-trash"></i></button>`
+                : '';
+            return `
+                <tr>
+                    <td><strong>${esc(it.produit)}</strong></td>
+                    <td class="text-end">${esc(it.count)}</td>
+                    <td>${statutPill(it.statut, it.resolved)}</td>
+                    <td>
+                        <select class="form-select form-select-sm" data-mapping-select="${esc(it.produit)}">
+                            ${catalogOptions(selectedCatalog)}
+                        </select>
+                    </td>
+                    <td class="d-flex gap-1">
+                        <button type="button" class="btn btn-sm btn-primary" data-mapping-save="${esc(it.produit)}" title="${actionLabel}">
+                            <i class="bi bi-check2"></i>
+                        </button>
+                        ${deleteBtn}
+                    </td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="5" class="text-muted text-center py-3">Aucun produit vendu sur les 90 derniers jours.</td></tr>';
+
+        // Wire boutons "Enregistrer" (PUT /alias)
+        tbody.querySelectorAll('[data-mapping-save]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const alias = btn.dataset.mappingSave;
+                const select = tbody.querySelector(`[data-mapping-select="${cssEsc(alias)}"]`);
+                const target = select ? select.value : '';
+                if (!target) {
+                    if (typeof showToast === 'function') showToast('Choisir un produit du catalogue', 'warning');
+                    return;
+                }
+                try {
+                    const res = await fetch('/api/finance/alias', {
+                        method: 'PUT',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ alias_produit: alias, produit_catalog: target })
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') showToast(`Alias "${alias}" → "${target}" enregistré`, 'success');
+                    loadMapping();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+
+        // Wire boutons "Supprimer alias" (DELETE /alias/:alias)
+        tbody.querySelectorAll('[data-mapping-del]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const alias = btn.dataset.mappingDel;
+                const msg = `Supprimer l'alias "${alias}" ? Le libellé retombera sur le fallback prefix ou sera ignoré.`;
+                let ok;
+                if (typeof showConfirmModal === 'function') {
+                    ok = await showConfirmModal(msg, {
+                        title: 'Supprimer alias', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                } else {
+                    ok = confirm(msg);
+                }
+                if (!ok) return;
+                try {
+                    const res = await fetch('/api/finance/alias/' + encodeURIComponent(alias), {
+                        method: 'DELETE',
+                        credentials: 'include'
+                    });
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    if (typeof showToast === 'function') showToast('Alias supprimé', 'success');
+                    loadMapping();
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+                }
+            });
+        });
+    }
+
+    async function onMappingBulkFromPrefix() {
+        const items = _mappingLastData && _mappingLastData.items;
+        const nPrefix = Array.isArray(items) ? items.filter((i) => i.statut === 'prefix').length : 0;
+        if (nPrefix === 0) {
+            if (typeof showToast === 'function') showToast('Rien à convertir (aucun fallback prefix actif)', 'info');
+            return;
+        }
+        const msg = `Convertir ${nPrefix} libellé(s) "prefix" en aliases explicites ? La résolution restera la même mais sera figée et reproductible.`;
+        let ok;
+        if (typeof showConfirmModal === 'function') {
+            ok = await showConfirmModal(msg, {
+                title: 'Convertir en aliases', okLabel: 'Convertir', okVariant: 'primary'
+            });
+        } else {
+            ok = confirm(msg);
+        }
+        if (!ok) return;
+        try {
+            const res = await fetch('/api/finance/alias/bulk-from-prefix', {
+                method: 'POST',
+                credentials: 'include'
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            const n = Array.isArray(j.created) ? j.created.length : 0;
+            if (typeof showToast === 'function') showToast(`${n} alias(es) créé(s)`, 'success');
+            loadMapping();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    // Escape CSS pour selector attribute (querySelector + valeur dynamique)
+    function cssEsc(s) {
+        return String(s).replace(/(["\\\]\[])/g, '\\$1');
     }
 })();
