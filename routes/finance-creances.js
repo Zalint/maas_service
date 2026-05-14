@@ -251,6 +251,9 @@ async function computeCreances(opts = {}) {
         if (qte <= 0) continue;
         const prix = lookupPrix(v.produit);
         if (!prix) continue; // produit non present dans le catalogue fournisseur
+        // Nom catalogue resolu (= cible des PUT /prix-* depuis l'UI CDC).
+        // Ex: vente "Boeuf en detail" -> catalogue "Boeuf".
+        const produitCatalog = resolveProduit(v.produit, resolverMaps).resolved || v.produit;
 
         // Point-in-time: prix_vente, prix_achat, prix_vente_cdc effectifs
         // a la date de la vente. Changer un prix aujourd'hui n'impacte
@@ -301,7 +304,8 @@ async function computeCreances(opts = {}) {
             }
             const parProd = detailParCentre.get(centre);
             const cAgg = parProd.get(key) || {
-                produit: key,
+                produit: key, // libelle vente (ex: "Boeuf en detail")
+                produit_catalog: produitCatalog, // entree catalogue (ex: "Boeuf") = cible PUT
                 quantite_cdc: 0,
                 prix_vente_courant: prix.prix_vente, // valeur catalogue actuelle
                 prix_vente_eff_x_qte: 0, // somme(prix_vente_effectif × qte)
@@ -379,6 +383,7 @@ async function computeCreances(opts = {}) {
             const produitNom = p.produit || p.name || '';
             const prix = lookupPrix(produitNom);
             if (!prix) continue;
+            const produitCatalog = resolveProduit(produitNom, resolverMaps).resolved || produitNom;
 
             const monPrix = parseFloat(p.prixUnit != null ? p.prixUnit : p.price) || 0;
             // Point-in-time: date du log = la date a laquelle la commande
@@ -427,6 +432,7 @@ async function computeCreances(opts = {}) {
                 const parProd = detailParCentre.get(centreOriginal);
                 const cAgg = parProd.get(key) || {
                     produit: key,
+                    produit_catalog: produitCatalog,
                     quantite_cdc: 0,
                     prix_vente_courant: prix.prix_vente,
                     prix_vente_eff_x_qte: 0,
@@ -536,7 +542,11 @@ async function computeCreances(opts = {}) {
                         ? d.prix_vente_eff_x_qte / d.quantite_cdc
                         : 0;
                     return {
-                        produit: d.produit,
+                        produit: d.produit, // libelle vente (ex: "Boeuf en detail")
+                        // Nom de l'entree catalogue resolue (cible PUT pour
+                        // editer les prix depuis l'UI CDC). Peut differer
+                        // du libelle vente si alias ou prefix match.
+                        produit_catalog: d.produit_catalog,
                         quantite_cdc: round2(d.quantite_cdc),
                         // Prix vente fournisseur (catalogue, base commission 3%)
                         prix_vente_moyen: round2(prixVenteMoyen),

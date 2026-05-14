@@ -422,13 +422,25 @@
             };
 
             const rows = c.detail.map((d, lineIdx) => {
+                // Cible des PUT prix-* = entree catalogue (ex: "Boeuf"), pas
+                // le libelle vente (ex: "Boeuf en detail" qui resout vers Boeuf
+                // via alias/prefix).
+                const produitCatalog = d.produit_catalog || d.produit;
+                // Hint visuel quand le libelle vente differe du nom catalogue
+                // (= ce produit passe par alias ou prefix matching).
+                const catalogHint = (d.produit_catalog && d.produit_catalog !== d.produit)
+                    ? `<div class="small text-muted" title="Les prix edites ici modifient l'entree catalogue '${esc(d.produit_catalog)}', qui s'applique a toutes les variantes de ce produit (ex: en gros/en detail).">→ catalogue: <span class="fw-medium">${esc(d.produit_catalog)}</span></div>`
+                    : '';
                 return `
-                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(d.produit)}">
-                    <td>${esc(d.produit)}</td>
+                <tr data-cdc-row data-centre-idx="${idx}" data-line-idx="${lineIdx}" data-produit="${esc(produitCatalog)}" data-produit-vente="${esc(d.produit)}">
+                    <td>
+                        ${esc(d.produit)}
+                        ${catalogHint}
+                    </td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
-                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (commission 3%)')}
-                    ${editablePrixCell('prix_achat', d.prix_achat_courant, d.prix_achat, 'Prix achat fournisseur')}
-                    ${editablePrixCell('prix_vente_cdc', d.prix_vente_cdc_courant, d.prix_vente_cdc, 'Prix vente CDC (négocié B2B)')}
+                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (commission 3%) — édite l\'entrée catalogue ' + produitCatalog)}
+                    ${editablePrixCell('prix_achat', d.prix_achat_courant, d.prix_achat, 'Prix achat fournisseur — édite l\'entrée catalogue ' + produitCatalog)}
+                    ${editablePrixCell('prix_vente_cdc', d.prix_vente_cdc_courant, d.prix_vente_cdc, 'Prix vente CDC (négocié B2B) — édite l\'entrée catalogue ' + produitCatalog)}
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
                     <td class="text-end fw-bold">${esc(fmtMoney(d.recevable))}</td>
                     <td class="text-end">
