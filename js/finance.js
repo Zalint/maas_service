@@ -151,7 +151,7 @@
         const director = (detail && detail.assigned_director) || '—';
         const dateSel = (summary && summary.date_selected) || '';
         status.className = 'badge bg-success';
-        status.textContent = `Source: MataBanq • ${esc(label)} • ${esc(dateSel)} • Resp: ${esc(director)}`;
+        status.textContent = `${label} • ${dateSel} • Resp: ${director}`;
 
         const solde = clientStatus ? clientStatus.solde_final : (summary ? summary.totals.current_balance : 0);
         const avances = clientStatus ? clientStatus.total_avances : 0;
