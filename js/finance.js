@@ -814,7 +814,13 @@
         if (!cardsEl || !tbody) return;
 
         const items = Array.isArray(data.items) ? data.items : [];
-        const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+        // Source du dropdown: union triee (inventaire boucherie ∪ catalogue
+        // fournisseur_prix), fournie cote serveur sous data.dropdown. Permet
+        // a l'admin d'ajouter un produit manuellement dans "Prix fournisseur"
+        // et le voir apparaitre ici automatiquement.
+        const catalog = Array.isArray(data.dropdown) && data.dropdown.length
+            ? data.dropdown
+            : (Array.isArray(data.catalog) ? data.catalog : []);
 
         const nExact   = items.filter((i) => i.statut === 'exact').length;
         const nAlias   = items.filter((i) => i.statut === 'alias').length;

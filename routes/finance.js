@@ -33,6 +33,7 @@
 
 const express = require('express');
 const multer = require('multer');
+const { Op } = require('sequelize');
 
 const {
     Depense,
@@ -40,6 +41,7 @@ const {
     FinanceConfig,
     FournisseurPaiement,
     ProduitAlias,
+    Produit,
     Vente,
     sequelize
 } = require('../db/models');
@@ -155,6 +157,41 @@ router.get('/alias', async (req, res) => {
             ProduitAlias.findAll({ order: [['alias_produit', 'ASC']] })
         ]);
 
+        // Liste des produits inventaire "boucherie" (filtre par regex sur
+        // le nom car la BDD locale n'utilise pas les categories Bovin/Ovin/
+        // Caprin/Volaille pour l'inventaire). On INCLUT les "parents" et
+        // les variants "sur pieds" (Boeuf sur pieds, Chevre sur pieds,
+        // Mouton sur pieds sont conserves). On EXCLUT seulement les
+        // variants de presentation en gros / en detail qui seront mappes
+        // via produit_alias vers leur parent. CORNE BOEUF GM exclu car
+        // ce n'est pas un produit boucherie principal.
+        const invRows = await Produit.findAll({
+            where: {
+                type_catalogue: 'inventaire',
+                [Op.and]: [
+                    sequelize.where(
+                        sequelize.fn('LOWER', sequelize.col('nom')),
+                        { [Op.regexp]: '(boeuf|veau|agneau|mouton|chevre|chèvre|poulet|foie|abats|yell|sans os|mergez|merguez|tete|tête|laxass|jarret|peaux?)' }
+                    ),
+                    sequelize.where(
+                        sequelize.fn('LOWER', sequelize.col('nom')),
+                        { [Op.notRegexp]: '(en gros|en détail|en detail|en dEtail|corne)' }
+                    )
+                ]
+            },
+            attributes: ['nom'],
+            order: [['nom', 'ASC']]
+        });
+
+        // Le dropdown UI = union(inventaire boucherie, catalogue fournisseur_prix)
+        // pour permettre a l'admin d'ajouter manuellement un produit via
+        // l'onglet "Prix fournisseur" et le voir apparaitre ici aussi.
+        const set = new Set();
+        invRows.forEach((p) => set.add(p.nom));
+        catalog.forEach((p) => set.add(p.produit));
+        const dropdown = Array.from(set).sort((a, b) => a.localeCompare(b, 'fr'));
+        const inventory = invRows.map((p) => ({ nom: p.nom }));
+
         // Distincts produits saisis dans ventes sur les ~90 derniers jours
         // (limiter la fenetre evite de tirer 10 ans d'historique inutile).
         // Vente.date est stocke en texte YYYY-MM-DD donc on filtre en chaine.
@@ -199,7 +236,9 @@ router.get('/alias', async (req, res) => {
         res.json({
             success: true,
             data: {
-                catalog: catalog.map((p) => p.produit),
+                catalog: catalog.map((p) => p.produit),  // entrees fournisseur_prix existantes
+                inventory,                                // produits inventaire boucherie (filtre regex)
+                dropdown,                                 // union triee inventaire ∪ catalogue (= source du <select> UI)
                 aliases: aliases.map((a) => ({
                     alias_produit: a.alias_produit,
                     produit_catalog: a.produit_catalog
@@ -215,6 +254,10 @@ router.get('/alias', async (req, res) => {
 
 // Body: { alias_produit, produit_catalog }
 // Upsert: si l'alias existe, sa cible est mise a jour.
+// La cible est un nom de produit inventaire boucherie. Si elle n'est
+// pas encore dans fournisseur_prix, on cree une entree avec prix=0
+// pour satisfaire la FK et permettre a l'admin de remplir le prix
+// ensuite dans l'onglet Prix fournisseur.
 router.put('/alias', async (req, res) => {
     try {
         const aliasProduit = String(req.body?.alias_produit || '').trim();
@@ -225,21 +268,23 @@ router.put('/alias', async (req, res) => {
                 error: 'alias_produit et produit_catalog requis'
             });
         }
-        // Verifier que la cible existe dans le catalogue (sinon la FK
-        // CASCADE renverrait une erreur Postgres peu lisible).
         const cat = await FournisseurPrix.findByPk(produitCatalog);
+        let created = false;
         if (!cat) {
-            return res.status(400).json({
-                success: false,
-                error: `produit_catalog "${produitCatalog}" introuvable dans le catalogue`
+            await FournisseurPrix.create({
+                produit: produitCatalog,
+                prix_vente: 0,
+                prix_achat: null,
+                updated_at: new Date()
             });
+            created = true;
         }
         await ProduitAlias.upsert({
             alias_produit: aliasProduit,
             produit_catalog: produitCatalog,
             updated_at: new Date()
         });
-        res.json({ success: true });
+        res.json({ success: true, catalog_created: created });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
         res.status(500).json({ success: false, error: e.message });
