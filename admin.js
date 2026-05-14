@@ -1760,12 +1760,18 @@ function syncInventaireSearchInputValue() {
 // afficherInventaireConfig) perdait la frappe en cours -> "search not working".
 function initInventaireHeaderControls() {
     const input = document.getElementById('inventaire-search-input');
-    if (!input || input.dataset.bound === 'true') return;
+    if (!input) {
+        console.log('[inventaire-search] input not found at init');
+        return;
+    }
+    if (input.dataset.bound === 'true') return;
     input.dataset.bound = 'true';
     input.addEventListener('input', (e) => {
         currentInventaireSearchQuery = e.target.value || '';
+        console.log('[inventaire-search] input event, query=', currentInventaireSearchQuery);
         filtrerProduitsInventaire(currentInventaireSearchQuery);
     });
+    console.log('[inventaire-search] listener attached');
 }
 // Attacher au DOMContentLoaded ET de maniere defensive au prochain appel
 // d'afficherInventaireConfig si DOMContentLoaded a deja eu lieu.
@@ -1869,7 +1875,10 @@ function afficherInventaireConfig() {
 // catégories qui ont au moins un match.
 function filtrerProduitsInventaire(query) {
     const container = document.getElementById('inventaire-categories');
-    if (!container) return;
+    if (!container) {
+        console.log('[inventaire-search] container not found');
+        return;
+    }
     // NFKD décompose les ligatures (œ→oe, æ→ae) ET les lettres accentuées,
     // puis on retire les diacritiques combinants (U+0300–U+036F).
     const norm = (s) => String(s || '')
@@ -1877,7 +1886,10 @@ function filtrerProduitsInventaire(query) {
         .toLowerCase().trim();
     const q = norm(query);
 
-    container.querySelectorAll('.accordion-item[data-categorie]').forEach((item) => {
+    const items = container.querySelectorAll('.accordion-item[data-categorie]');
+    console.log('[inventaire-search] filter q=', q, 'items=', items.length);
+    let totalMatches = 0;
+    items.forEach((item) => {
         const rows = item.querySelectorAll('tbody tr[data-produit]');
         let matchCount = 0;
         rows.forEach((row) => {
@@ -1886,6 +1898,7 @@ function filtrerProduitsInventaire(query) {
             row.style.display = match ? '' : 'none';
             if (match) matchCount++;
         });
+        totalMatches += matchCount;
         item.style.display = (q && matchCount === 0) ? 'none' : '';
 
         // Déplie les catégories qui ont un match quand l'utilisateur cherche.
@@ -1901,6 +1914,7 @@ function filtrerProduitsInventaire(query) {
             }
         }
     });
+    console.log('[inventaire-search] total matches:', totalMatches);
 }
 
 // Générer les lignes de produits pour une catégorie d'inventaire
