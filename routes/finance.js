@@ -88,23 +88,29 @@ const { checkAdvancedAccess } = require('../middlewares/auth');
 const router = express.Router();
 
 // ============================================================
-// Guards par prefixe: les utilisateurs simples (role 'utilisateur')
-// peuvent acceder a Creances / Centre de Decoupe / Depenses uniquement.
-// Les routes admin/superviseur/superutilisateur ci-dessous sont gardes
-// individuellement via checkAdvancedAccess.
-// PL et Cash et Stock font leur propre check (admin OR superviseur) dans
-// le handler — on ajoute aussi checkAdvancedAccess en defense en profondeur.
+// Guards par prefixe: les utilisateurs simples (role 'user' dans le
+// RBAC — cf users.js#isUtilisateur) peuvent acceder a Creances /
+// Centre de Decoupe / Depenses uniquement. Les routes admin/
+// superviseur/superutilisateur ci-dessous sont gardees individuellement
+// via checkAdvancedAccess (= canManageAdvanced).
+// PL et Cash et Stock font leur propre check (admin OR superviseur)
+// dans le handler — on ajoute aussi checkAdvancedAccess en defense en
+// profondeur (le superutilisateur passe checkAdvanced mais sera bloque
+// par le check inline).
 // ============================================================
-router.use('/prix', checkAdvancedAccess);
-router.use('/prix-cdc', checkAdvancedAccess);
-router.use('/prix-achat', checkAdvancedAccess);
-router.use('/prix-vente-fournisseur', checkAdvancedAccess);
-router.use('/alias', checkAdvancedAccess);
-router.use('/charges', checkAdvancedAccess);
-router.use('/config', checkAdvancedAccess);
-router.use('/paiements', checkAdvancedAccess);
-router.use('/pl', checkAdvancedAccess);
-router.use('/cash-stock', checkAdvancedAccess);
+const ADVANCED_FINANCE_PREFIXES = [
+    '/prix',
+    '/prix-cdc',
+    '/prix-achat',
+    '/prix-vente-fournisseur',
+    '/alias',
+    '/charges',
+    '/config',
+    '/paiements',
+    '/pl',
+    '/cash-stock'
+];
+ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
 // DELETE /depenses/:id reste admin via inline check (cf le handler).
 
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
@@ -221,7 +227,7 @@ router.put('/prix', async (req, res) => {
             });
             audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
         }
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         const rows = await FournisseurPrix.findAll({ order: [['produit', 'ASC']] });
         res.json({ success: true, data: rows });
     } catch (e) {
@@ -274,7 +280,7 @@ router.put('/prix-cdc/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_cdc.upsert', { produit, prix_vente_cdc: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-cdc/:produit:', e);
@@ -344,7 +350,7 @@ router.put('/prix-achat/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_achat.upsert', { produit, prix_achat: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-achat/:produit:', e);
@@ -411,7 +417,7 @@ router.put('/prix-vente-fournisseur/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_vente.upsert', { produit, prix_vente: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-vente-fournisseur/:produit:', e);
@@ -448,7 +454,7 @@ router.delete('/prix/:produit', async (req, res) => {
         const n = await FournisseurPrix.destroy({ where: { produit } });
         if (n > 0) {
             audit.log(req, 'prix.delete', { produit });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, deleted: n });
     } catch (e) {
@@ -617,7 +623,7 @@ router.put('/alias', async (req, res) => {
             alias_produit: aliasProduit,
             produit_catalog: produitCatalog
         });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true, ...result });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
@@ -637,7 +643,7 @@ router.delete('/alias/:alias', async (req, res) => {
         const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
         if (n > 0) {
             audit.log(req, 'alias.delete', { alias_produit: alias });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, deleted: n });
     } catch (e) {
@@ -696,7 +702,7 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 count: created.length,
                 created
             });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, created });
     } catch (e) {
@@ -1048,17 +1054,34 @@ router.get('/pl', async (req, res) => {
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
 
-        // 6. Variation de stock = stock_soir_fin - stock_matin_debut.
-        // Si pas de saisie pile aux dates: prendre la date la plus
-        // proche <= demandee (sinon 0). On somme sum(total) pour tous
-        // les produits / PV (variation globale entreprise).
+        // 6. Variation de stock = stock_soir(dateFin) - stock_matin(dateDebut).
+        // Si pas de saisie pile aux dates: prendre la date la plus proche <=
+        // demandee (sinon 0). On somme sum(total) pour tous les produits / PV
+        // (variation globale entreprise).
+        //
+        // ATTENTION: stocks.date est stocke en TEXTE format DD-MM-YYYY (cf
+        // db/utils.js#formatDate). Comparer lexicalement contre l'ISO
+        // YYYY-MM-DD donne des resultats faux ("14-05-2026" < "2026-05-01"
+        // lex). On convertit DD-MM-YYYY -> YYYY-MM-DD via substring + concat
+        // (pur string manip, IMMUTABLE - donc indexable, cf
+        // db/update-schema.js#idx_stocks_date_iso). L'ordre lex sur ISO
+        // YYYY-MM-DD = ordre chronologique, donc <= et ORDER BY marchent
+        // directement sur la forme ISO sans cast vers DATE.
         const stockMatinRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
              WHERE type_stock = 'matin'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'matin' AND date <= :dateDebut
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'matin'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateDebut
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
         );
@@ -1067,8 +1090,16 @@ router.get('/pl', async (req, res) => {
              FROM stocks
              WHERE type_stock = 'soir'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'soir' AND date <= :dateFin
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'soir'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateFin
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
         );
@@ -1148,6 +1179,43 @@ function round2(n) {
 // Stock soir: fallback au snapshot le plus proche <= D si pas pile a D.
 // Solde du fournisseur: cumul commission MaaS depuis 1970 jusqu'a D inclus
 // (vision bilan, pas vision flux).
+
+// Memoization du cumul commission par date (key=dateD).
+// computeCreances('1970-01-01', dateD) est couteux (scan tous Ventes +
+// resolution prix point-in-time). Pour les dates PASSEES, le resultat est
+// stable (les ventes ne changent pas retroactivement). Pour la date du
+// jour, on garde le cache court (60s) car de nouvelles ventes arrivent.
+const _cashStockCumulCache = new Map(); // dateD -> { value, ts }
+const CASH_STOCK_CACHE_TODAY_TTL_MS = 60 * 1000;
+function getCachedCumul(dateD, todayISO) {
+    const e = _cashStockCumulCache.get(dateD);
+    if (!e) return null;
+    // Dates strictement < today: cache illimite (stable). Today: TTL 60s.
+    if (dateD < todayISO) return e.value;
+    if (Date.now() - e.ts < CASH_STOCK_CACHE_TODAY_TTL_MS) return e.value;
+    return null;
+}
+function setCachedCumul(dateD, value) {
+    _cashStockCumulCache.set(dateD, { value, ts: Date.now() });
+}
+// Invalidation unifiee de tous les caches derives Finance:
+// - financeCache (catalogue prix + aliases, TTL 60s)
+// - _cashStockCumulCache (cumul commission MaaS par date)
+//
+// A appeler depuis toute mutation qui peut changer les calculs derives
+// (prix, alias, config, charges, paiements, ou retroactivement les ventes).
+// Attache au router pour rester accessible apres le module.exports = router
+// (en fin de fichier) qui remplacerait sinon l'export.
+function invalidateFinanceDerivedCaches() {
+    financeCache.invalidate();
+    _cashStockCumulCache.clear();
+}
+router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
+// Retro-compat: ancien nom expose pour les callers existants.
+router._invalidateCashStockCache = function () {
+    _cashStockCumulCache.clear();
+};
+
 router.get('/cash-stock', async (req, res) => {
     try {
         // Auth: seuls admin et superviseur (meme regle que PL).
@@ -1187,13 +1255,25 @@ router.get('/cash-stock', async (req, res) => {
         }
 
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
+        // stocks.date est en TEXTE DD-MM-YYYY (cf db/utils.js#formatDate);
+        // on convertit en ISO YYYY-MM-DD via substring + concat (IMMUTABLE,
+        // indexable - cf idx_stocks_date_iso). Pas de cast date necessaire:
+        // ordre lex sur ISO = ordre chronologique.
         const stockSoirRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
              WHERE type_stock = 'soir'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'soir' AND date <= :dateD
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'soir'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateD
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }
         );
@@ -1231,14 +1311,19 @@ router.get('/cash-stock', async (req, res) => {
         const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
 
         // 4) Solde du fournisseur = cumul commission MaaS depuis 1970-01-01
-        //    jusqu'a D (vision bilan, pas vision flux). On utilise une borne
-        //    inferieure tres ancienne pour capturer tout l'historique.
-        const { computeCreances } = require('./finance-creances');
-        const creancesCumul = await computeCreances({
-            dateDebut: '1970-01-01',
-            dateFin: dateD
-        });
-        const soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+        //    jusqu'a D (vision bilan, pas vision flux). Memoize: pour dates
+        //    passees le resultat est stable, pour today on cache 60s. Evite
+        //    de scanner toutes les ventes a chaque ouverture du panneau.
+        let soldeDuFournisseur = getCachedCumul(dateD, todayISO);
+        if (soldeDuFournisseur === null) {
+            const { computeCreances } = require('./finance-creances');
+            const creancesCumul = await computeCreances({
+                dateDebut: '1970-01-01',
+                dateFin: dateD
+            });
+            soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+            setCachedCumul(dateD, soldeDuFournisseur);
+        }
 
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - soldeDuFournisseur;
@@ -1307,6 +1392,10 @@ router.put('/config', async (req, res) => {
                 await FinanceConfig.upsert({ key, value, updated_at: now });
             }
         }
+        // commission_pct change -> les calculs derives (commission MaaS cumul
+        // dans cash-stock) doivent etre recomputed. Invalider tous les caches
+        // finance-derives pour rester safe.
+        invalidateFinanceDerivedCaches();
         const rows = await FinanceConfig.findAll();
         const config = {};
         for (const r of rows) config[r.key] = r.value;

@@ -522,6 +522,30 @@ async function updateSchema() {
         `);
         console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
 
+        // Index fonctionnel sur stocks.date pour PL / Cash et Stock.
+        // ATTENTION: TO_DATE est STABLE (depend de lc_time), donc NON utilisable
+        // dans une expression d'index (Postgres exige IMMUTABLE). On contourne
+        // en convertissant DD-MM-YYYY -> YYYY-MM-DD via substring + concat (pur
+        // string manip, IMMUTABLE). L'ordre lex sur YYYY-MM-DD = ordre
+        // chronologique, donc on peut faire ORDER BY et <= directement sur la
+        // forme ISO sans cast vers date. Les queries cote routes/finance.js
+        // utilisent la meme expression pour profiter de cet index.
+        // Guarde par stocksTableExists pour ne pas crasher sur une fresh
+        // install ou la table n'est pas encore creee.
+        if (stocksTableExists) {
+            await sequelize.query(`
+                CREATE INDEX IF NOT EXISTS idx_stocks_date_iso
+                ON stocks (
+                    (substring(date FROM 7 FOR 4) || '-' ||
+                     substring(date FROM 4 FOR 2) || '-' ||
+                     substring(date FROM 1 FOR 2)),
+                    type_stock
+                )
+                WHERE date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+            `);
+            console.log('Index fonctionnel idx_stocks_date_iso verifie');
+        }
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

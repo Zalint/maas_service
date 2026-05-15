@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hub</title>
+    <script src="public/js/tenant-branding.js" defer></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --brand-primary: #0d6efd;
+            --brand-warning: #ffc107;
+            --surface: #ffffff;
+            --bg-1: #eef2ff;
+            --bg-2: #f0f9ff;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background:
+                radial-gradient(1200px 600px at 10% -10%, var(--bg-1) 0%, transparent 60%),
+                radial-gradient(900px 500px at 110% 110%, var(--bg-2) 0%, transparent 55%),
+                #f6f8fb;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+        }
+        .hub-shell {
+            width: 100%;
+            max-width: 1080px;
+            animation: rise 320ms cubic-bezier(.2,.7,.2,1) both;
+        }
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .hub-shell { animation: none; }
+        }
+
+        /* Header bloc */
+        .hub-header {
+            text-align: center;
+            margin-bottom: 28px;
+        }
+        .hub-logo {
+            height: 64px;
+            width: auto;
+            margin-bottom: 16px;
+        }
+        .hub-greeting {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #0f172a;
+            margin: 0;
+            letter-spacing: -0.01em;
+        }
+        .hub-greeting .hub-username {
+            color: var(--brand-primary);
+        }
+        .hub-role-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            padding: 4px 12px;
+            background: #fef3c7;
+            color: #854d0e;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .hub-tenant {
+            color: #64748b;
+            font-size: 0.875rem;
+            margin-top: 6px;
+        }
+
+        /* Cartes choix — colonnes adaptees au nombre de cartes visibles
+           (data-card-count est mis a jour par le script apres role check). */
+        .hub-cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 24px;
+            max-width: 1080px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .hub-cards[data-card-count="2"] {
+            grid-template-columns: repeat(2, 1fr);
+            max-width: 720px;
+        }
+        @media (max-width: 768px) {
+            .hub-cards,
+            .hub-cards[data-card-count="2"] { grid-template-columns: 1fr; }
+        }
+        .hub-card {
+            position: relative;
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 28px 24px;
+            text-decoration: none;
+            color: #0f172a;
+            border: 1px solid rgba(15, 23, 42, 0.06);
+            box-shadow:
+                0 1px 2px rgba(15, 23, 42, 0.04),
+                0 4px 12px rgba(15, 23, 42, 0.04);
+            transition: transform 160ms cubic-bezier(.2,.7,.2,1),
+                        box-shadow 160ms ease,
+                        border-color 160ms ease;
+            display: flex;
+            flex-direction: column;
+            min-height: 260px;
+        }
+        .hub-card:hover,
+        .hub-card:focus-visible {
+            transform: translateY(-3px);
+            box-shadow:
+                0 1px 2px rgba(15, 23, 42, 0.04),
+                0 12px 28px rgba(15, 23, 42, 0.12);
+            border-color: rgba(13, 110, 253, 0.2);
+            color: #0f172a;
+            text-decoration: none;
+            outline: none;
+        }
+        .hub-card:focus-visible {
+            box-shadow:
+                0 0 0 3px rgba(13, 110, 253, 0.25),
+                0 12px 28px rgba(15, 23, 42, 0.12);
+        }
+        .hub-card-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 56px;
+            height: 56px;
+            border-radius: 14px;
+            font-size: 1.5rem;
+            margin-bottom: 16px;
+        }
+        .hub-card-icon.icon-primary { background: #e7f1ff; color: #0d6efd; }
+        .hub-card-icon.icon-gear    { background: #ede9fe; color: #6d28d9; }
+        .hub-card-icon.icon-caisse  { background: #fee2e2; color: #b91c1c; }
+        .hub-card-title {
+            font-size: 1.125rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin: 0 0 8px;
+        }
+        .hub-card-desc {
+            font-size: 0.875rem;
+            color: #64748b;
+            margin: 0;
+            line-height: 1.5;
+            flex: 1;
+        }
+        .hub-card-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 18px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--brand-primary);
+        }
+        .hub-card:hover .hub-card-cta i {
+            transform: translateX(3px);
+        }
+        .hub-card-cta i {
+            transition: transform 160ms ease;
+        }
+
+        /* Footer bouton deconnexion */
+        .hub-footer {
+            text-align: center;
+        }
+        .hub-logout {
+            background: none;
+            border: none;
+            color: #64748b;
+            font-size: 0.875rem;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 120ms ease, color 120ms ease;
+        }
+        .hub-logout:hover,
+        .hub-logout:focus {
+            background: rgba(15, 23, 42, 0.05);
+            color: #0f172a;
+            outline: none;
+        }
+        .hub-logout i { margin-right: 6px; }
+    </style>
+</head>
+<body>
+    <main class="hub-shell" role="main" aria-labelledby="hub-greeting">
+        <div class="hub-header">
+            <img src="image/LogoMatixVect.png" alt="" class="hub-logo"
+                 fetchpriority="high" decoding="async"
+                 onerror="this.style.display='none'">
+            <h1 class="hub-greeting" id="hub-greeting">
+                Bonjour <span class="hub-username" id="username-display">…</span>
+            </h1>
+            <div class="hub-role-badge" id="role-badge" style="display:none">
+                <i class="bi bi-shield-check" aria-hidden="true"></i>
+                <span id="role-label">Utilisateur</span>
+            </div>
+            <div class="hub-tenant" data-tenant-name></div>
+        </div>
+
+        <div class="hub-cards" id="hub-cards" data-card-count="2">
+            <!-- Caisse (visible pour tous) -->
+            <a class="hub-card" href="/pos.html" aria-label="Caisse — Point de vente" accesskey="1">
+                <span class="hub-card-icon icon-caisse" aria-hidden="true">
+                    <i class="bi bi-receipt-cutoff"></i>
+                </span>
+                <h2 class="hub-card-title">Caisse</h2>
+                <p class="hub-card-desc">
+                    Point de vente (POS): encaissement direct, clôture de caisse,
+                    impression tickets.
+                </p>
+                <span class="hub-card-cta">
+                    Entrer <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                </span>
+            </a>
+
+            <!-- Gestion (= ex "Accueil", visible pour tous) -->
+            <a class="hub-card" href="/index.html" aria-label="Gestion — Saisie, Visualisation, Stock, Finance" accesskey="2">
+                <span class="hub-card-icon icon-primary" aria-hidden="true">
+                    <i class="bi bi-clipboard-data-fill"></i>
+                </span>
+                <h2 class="hub-card-title">Gestion</h2>
+                <p class="hub-card-desc">
+                    Saisie des ventes, Visualisation, Stock inventaire, Réconciliation,
+                    Cash Paiement, Finance.
+                </p>
+                <span class="hub-card-cta">
+                    Entrer <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                </span>
+            </a>
+
+            <!-- Administration (visible uniquement si role=admin) -->
+            <a class="hub-card" id="card-admin" href="/admin.html" aria-label="Administration — Points de vente, Prix, Configuration, Utilisateurs" accesskey="3" style="display:none">
+                <span class="hub-card-icon icon-gear" aria-hidden="true">
+                    <i class="bi bi-gear-fill"></i>
+                </span>
+                <h2 class="hub-card-title">Administration</h2>
+                <p class="hub-card-desc">
+                    Points de vente, Prix, Configuration produits, Gestion des stocks,
+                    Modules, Utilisateurs.
+                </p>
+                <span class="hub-card-cta">
+                    Entrer <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                </span>
+            </a>
+        </div>
+
+        <div class="hub-footer">
+            <button type="button" class="hub-logout" id="logout-btn">
+                <i class="bi bi-box-arrow-right" aria-hidden="true"></i>Se déconnecter
+            </button>
+        </div>
+    </main>
+
+    <script>
+        // Labels role lisibles (pour la badge)
+        const ROLE_LABELS = {
+            admin: 'Administrateur',
+            superviseur: 'Superviseur',
+            superutilisateur: 'SuperUtilisateur',
+            user: 'Utilisateur',
+            lecteur: 'Lecteur'
+        };
+
+        // Recupere le user courant pour personnaliser le greeting + cartes.
+        (async function () {
+            try {
+                const r = await fetch('/api/check-session', { credentials: 'include' });
+                if (!r.ok) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                const data = await r.json();
+                if (!data || !data.success || !data.user) {
+                    window.location.href = '/login.html';
+                    return;
+                }
+                const user = data.user;
+                document.getElementById('username-display').textContent = user.username || 'utilisateur';
+
+                // Badge role
+                const role = String(user.role || '').toLowerCase();
+                const isAdmin = role === 'admin' || user.isAdmin === true;
+                const badge = document.getElementById('role-badge');
+                const roleLabel = document.getElementById('role-label');
+                if (badge && roleLabel) {
+                    roleLabel.textContent = ROLE_LABELS[role] || 'Utilisateur';
+                    badge.style.display = '';
+                }
+
+                // Carte Administration visible UNIQUEMENT pour admin.
+                const adminCard = document.getElementById('card-admin');
+                const cardsContainer = document.getElementById('hub-cards');
+                if (isAdmin && adminCard) {
+                    adminCard.style.display = '';
+                    cardsContainer.setAttribute('data-card-count', '3');
+                }
+                // Sinon (data-card-count="2" deja en HTML) -> 2 cartes Caisse + Gestion.
+            } catch (e) {
+                // Erreur reseau ou parse: si on ne peut pas confirmer la
+                // session, on traite comme non-authentifie (meme comportement
+                // que le no-session path du if/else ci-dessus).
+                console.warn('check-session failed', e);
+                window.location.href = '/login.html';
+            }
+        })();
+
+        // Logout
+        document.getElementById('logout-btn').addEventListener('click', async () => {
+            try {
+                await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+            } catch (e) { /* best effort */ }
+            window.location.href = '/login.html';
+        });
+
+        // Raccourcis clavier: 1 -> Caisse, 2 -> Gestion, 3 -> Administration (admin only)
+        document.addEventListener('keydown', (e) => {
+            // Ignore les raccourcis si une touche modificatrice est pressee
+            // (Ctrl+R, Cmd+L, Alt+Tab, Shift+Tab, etc.) — ce sont des actions
+            // navigateur ou autres, pas notre intention de raccourci.
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            // Ignore si focus dans un champ editable (input/textarea/select
+            // ou tout element contentEditable).
+            const t = e.target;
+            if (t) {
+                const tag = t.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+                if (t.isContentEditable) return;
+            }
+            const key = e.key.toLowerCase();
+            if (key === '1' || key === 'c') window.location.href = '/pos.html';
+            else if (key === '2' || key === 'g') window.location.href = '/index.html';
+            else if (key === '3' || key === 'a') {
+                // Optional chaining: si la carte admin est absente (non-admin)
+                // ou supprimee par un autre script, on ne crash pas.
+                const adminCard = document.getElementById('card-admin');
+                if (adminCard && adminCard.style.display !== 'none') {
+                    window.location.href = '/admin.html';
+                }
+            }
+        });
+    </script>
+</body>
+</html>
