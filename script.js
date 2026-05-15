@@ -2754,8 +2754,7 @@ function dvRenderRows(ventes) {
 
         let showDeleteButton = false;
         const currentUser = window.currentUser;
-        const userRole = currentUser ? currentUser.username.toUpperCase() : null;
-        const privilegedUsers = ['SALIOU', 'OUSMANE'];
+        const role = currentUser ? String(currentUser.role || '').toLowerCase() : '';
 
         // Detection des "fake ventes" issues de decoupe_order_logs (id = "cdc-X-Y").
         // Pour ces lignes, le delete touche le LOG entier (toutes les lignes
@@ -2766,11 +2765,11 @@ function dvRenderRows(ventes) {
         if (isDecoupeLine) {
             // Pour les lignes CDC: admin uniquement, pas de restriction temporelle.
             showDeleteButton = !!isAdmin;
-        } else if (userRole && privilegedUsers.includes(userRole)) {
-            // Utilisateurs privilégiés : bouton toujours visible
+        } else if (role === 'admin' || role === 'superviseur') {
+            // Privilegies (par role): bouton toujours visible, pas de restriction temporelle.
             showDeleteButton = true;
-        } else if (userRole) {
-            // Tous les autres utilisateurs (y compris TEST) : vérifier les restrictions temporelles de 4h
+        } else if (currentUser) {
+            // Tous les autres utilisateurs: verifier les restrictions temporelles de 4h.
             if (canPerformActionForDate(vente.Date)) {
                 showDeleteButton = true;
             }
@@ -5289,12 +5288,13 @@ document.addEventListener('DOMContentLoaded', async function() {
                         copierStockItem.style.display = 'none';
                     }
                 } else {
-                    // Liste des utilisateurs autorisés à voir l'onglet Copier Stock
-                    const usersAutorisesCopiage = ['SALIOU', 'PAPI', 'NADOU', 'OUSMANE'];
-                    if (usersAutorisesCopiage.includes(userData.user.username.toUpperCase())) {
-                        if (copierStockItem) {
-                            copierStockItem.style.display = 'block';
-                        }
+                    // Visibilite de l'onglet Copier Stock: roles privilegies
+                    // (admin / superviseur / superutilisateur). Anciennement
+                    // une whitelist hardcodee de usernames.
+                    const role = String(userData.user.role || '').toLowerCase();
+                    const canCopyStock = ['admin', 'superviseur', 'superutilisateur'].includes(role);
+                    if (canCopyStock && copierStockItem) {
+                        copierStockItem.style.display = 'block';
                     }
                 }
             }
@@ -5995,9 +5995,12 @@ function ajouterLigneStock() {
     console.log('Nouvelle ligne de stock ajoutée');
 }
 
-// Fonction pour vérifier les restrictions temporelles pour NADOU et PAPI
+// Fonction pour vérifier les restrictions temporelles pour les SuperUtilisateurs.
+// Anciennement hardcode sur les usernames NADOU et PAPI; maintenant base sur le role.
 function verifierRestrictionsTemporelles(date, username) {
-    if (username === 'NADOU' || username === 'PAPI') {
+    const cu = window.currentUser;
+    const role = cu ? String(cu.role || '').toLowerCase() : '';
+    if (role === 'superutilisateur') {
         const [day, month, year] = date.split('/');
         const dateStock = new Date(year, month - 1, day);
         const maintenant = new Date();

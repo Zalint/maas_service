@@ -2210,8 +2210,9 @@ app.get('/login.html', (req, res) => {
 
 // Route pour l'importation des ventes
 app.post('/api/import-ventes', checkAuth, checkWriteAccess, (req, res) => {
-    // Vérifier les droits d'accès
-    if (req.user.username !== 'SALIOU' && !req.user.isSuperAdmin) {
+    // Vérifier les droits d'accès: reserve aux admin (canImportSales)
+    const user = (req.session && req.session.user) || req.user || null;
+    if (!user || (!user.canImportSales && !user.isSuperAdmin)) {
         return res.status(403).json({
             success: false,
             message: 'Accès non autorisé à l\'importation'
@@ -2329,11 +2330,12 @@ app.post('/api/import-ventes', checkAuth, checkWriteAccess, (req, res) => {
     }
 });
 
-// Route pour vider la base de données des ventes
+// Route pour vider la base de données des ventes — admin uniquement.
+// Action destructive: protege par role admin (anciennement hardcode sur
+// un username specifique).
 app.post('/api/vider-base', async (req, res) => {
     try {
-        // Vérifier si l'utilisateur est SALIOU
-        if (!req.session.user || req.session.user.username !== 'SALIOU') {
+        if (!req.session.user || !req.session.user.isAdmin) {
             return res.status(403).json({ success: false, message: 'Accès non autorisé' });
         }
 
@@ -2428,13 +2430,6 @@ function checkStockTimeRestrictions(dateStr, user) {
     if (privilegedRoles.has(role)) {
         return { allowed: true };
     }
-
-    // Whitelist historique (retro-compat: legacy usernames pre-RBAC qui
-    // pouvaient ne pas avoir de role assigne).
-    const legacyPrivilegedUsernames = new Set(['SALIOU', 'OUSMANE', 'NADOU', 'ADMIN']);
-    if (legacyPrivilegedUsernames.has(username.toUpperCase())) {
-        return { allowed: true };
-    }
     
     // Tous les autres utilisateurs sont soumis aux restrictions temporelles
     try {
@@ -2522,22 +2517,24 @@ function checkStockTimeRestrictionsMiddleware(req, res, next) {
     next();
 }
 
-// Fonction pour vérifier les restrictions temporelles pour les ventes
+// Fonction pour vérifier les restrictions temporelles pour les ventes.
+// Politique par role:
+//   - admin / superviseur: aucune restriction temporelle
+//   - superutilisateur: jour J uniquement
+//   - autres: jour J + jusqu'au lendemain 4h
+//   - user (utilisateur simple): jour J jusqu'a minuit
 function checkSaleTimeRestrictions(dateStr, username, userRole = null) {
     if (!username || !dateStr) return { allowed: false, message: 'Données manquantes' };
-    
-    const userUppercase = username.toUpperCase();
-    const privilegedUsers = ['SALIOU', 'OUSMANE']; // Superviseurs privilégiés
-    const superUtilisateurs = ['NADOU', 'PAPI']; // SuperUtilisateurs
-    const limitedAccessUsers = ['MBA', 'OSF', 'KMS', 'LNG', 'DHR', 'TBM'];
-    
-    // Les utilisateurs privilégiés (SALIOU, OUSMANE) peuvent modifier n'importe quelle date
-    if (privilegedUsers.includes(userUppercase)) {
+
+    const role = String(userRole || '').toLowerCase();
+
+    // Roles privilegies: aucune restriction temporelle.
+    if (role === 'admin' || role === 'superviseur') {
         return { allowed: true };
     }
-    
+
     // SuperUtilisateurs : peuvent modifier/supprimer UNIQUEMENT le jour J
-    if (superUtilisateurs.includes(userUppercase) || userRole === 'superutilisateur') {
+    if (role === 'superutilisateur') {
         try {
             // Parser la date (formats supportés : DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, YYYY/MM/DD)
             const ddmmyyyyRegex = /^(\d{2})[-\/](\d{2})[-\/](\d{4})$/;
@@ -2634,7 +2631,7 @@ function checkSaleTimeRestrictions(dateStr, username, userRole = null) {
         } else {
             return { 
                 allowed: false, 
-                message: `Vous ne pouvez pas ajouter/supprimer de ventes pour cette date (${dateStr}). Les utilisateurs ne peuvent ajouter/supprimer des ventes que le jour J et jusqu'au lendemain avant 4h00 du matin. Seuls SALIOU et OUSMANE sont exemptés de cette restriction.` 
+                message: `Vous ne pouvez pas ajouter/supprimer de ventes pour cette date (${dateStr}). Les utilisateurs ne peuvent ajouter/supprimer des ventes que le jour J et jusqu'au lendemain avant 4h00 du matin. Seuls les administrateurs et superviseurs sont exemptés de cette restriction.`
             };
         }
     } catch (error) {
@@ -2642,15 +2639,19 @@ function checkSaleTimeRestrictions(dateStr, username, userRole = null) {
     }
 }
 
-// Middleware pour vérifier les restrictions temporelles pour NADOU et PAPI
+// Middleware: restrictions temporelles pour les SuperUtilisateurs.
+// admin et superviseur passent (canModifyStockAnytime); les autres roles
+// sont eventuellement gardes par d'autres middlewares (checkWriteAccess).
 function checkTimeRestrictions(req, res, next) {
     const user = req.session.user;
     if (!user) {
         return res.status(401).json({ success: false, error: 'Non authentifié' });
     }
-    
-    // Appliquer les restrictions uniquement pour NADOU et PAPI
-    if (user.username === 'NADOU' || user.username === 'PAPI') {
+
+    // Restrictions appliquees aux superutilisateurs uniquement
+    // (admin/superviseur bypass via canModifyStockAnytime, les utilisateurs
+    // simples sont deja gardes en amont via checkStockTimeRestrictions).
+    if (String(user.role || '').toLowerCase() === 'superutilisateur') {
         let stockDate = null;
         
         // Pour les stocks (structure objet avec clé contenant la date)
@@ -5310,20 +5311,18 @@ app.get('/api/payment-ref-mapping', checkAuth, (req, res) => {
     }
 });
 
-// Middleware pour vérifier les permissions admin ou superutilisateur pour la configuration
+// Middleware: permissions admin ou superutilisateur (base sur le role,
+// pas un username hardcode).
 const checkAdminOrSuperUser = (req, res, next) => {
-    const userRole = req.session.user.username.toUpperCase();
-    const adminUsers = ['SALIOU', 'OUSMANE'];
-    const superUsers = ['NADOU', 'PAPI'];
-    
-    if (adminUsers.includes(userRole) || superUsers.includes(userRole)) {
-        next();
-    } else {
-        res.status(403).json({
-            success: false,
-            message: 'Accès refusé. Permissions administrateur ou superutilisateur requises.'
-        });
+    const user = req.session && req.session.user;
+    const role = user ? String(user.role || '').toLowerCase() : '';
+    if (['admin', 'superutilisateur'].includes(role)) {
+        return next();
     }
+    return res.status(403).json({
+        success: false,
+        message: 'Accès refusé. Permissions administrateur ou superutilisateur requises.'
+    });
 };
 
 // Route pour mettre à jour le mapping des références de paiement

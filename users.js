@@ -127,9 +127,9 @@ async function verifyCredentials(username, password) {
             bypassTimeRestrictions: ['superviseur', 'admin'].includes(role),
             canModifyStockAnytime: ['superviseur', 'admin'].includes(role),
             canAddSalesAnytime: ['superviseur', 'admin'].includes(role),
-            canImportSales: ['SALIOU', 'OUSMANE'].includes(user.username) || ['admin'].includes(role),
+            canImportSales: ['admin'].includes(role),
             canEmptyDatabase: false, // Désactivé pour tous pour sécurité
-            canAccessChat: ['SALIOU', 'OUSMANE'].includes(user.username) || ['superutilisateur', 'superviseur', 'admin'].includes(role),
+            canAccessChat: ['superutilisateur', 'superviseur', 'admin'].includes(role),
             canAccessSpecialFeatures: ['superviseur', 'admin'].includes(role),
             // Fonction utilitaire pour vérifier l'accès à un point de vente
             hasAccessToPointVente: function(pv) {
