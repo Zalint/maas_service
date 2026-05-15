@@ -2413,18 +2413,26 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
 });
 
 // Fonction pour vérifier les restrictions temporelles pour le stock
-function checkStockTimeRestrictions(dateStr, username) {
-    if (!username || !dateStr) return { allowed: false, message: 'Données manquantes' };
-    
-    // Vérifier les permissions basées sur le rôle via la session utilisateur
-    // Note: Cette fonction devrait idéalement recevoir l'objet user complet
-    // Pour l'instant, on accepte les superviseurs et administrateurs
-    const userRole = username.toUpperCase();
-    const privilegedUsers = ['SALIOU', 'OUSMANE']; // Gardés pour rétrocompatibilité
-    const supervisorUsers = ['NADOU']; // Ajout des superviseurs
-    
-    // Les utilisateurs privilégiés et superviseurs peuvent modifier le stock pour n'importe quelle date
-    if (privilegedUsers.includes(userRole) || supervisorUsers.includes(userRole)) {
+function checkStockTimeRestrictions(dateStr, user) {
+    if (!user || !dateStr) return { allowed: false, message: 'Données manquantes' };
+
+    // Compat retro: l'API historique passait juste un username (string).
+    // Maintenant on attend l'objet user complet (ou string fallback).
+    const username = typeof user === 'string' ? user : (user.username || '');
+    const role = typeof user === 'string' ? '' : String(user.role || '').toLowerCase();
+    if (!username) return { allowed: false, message: 'Données manquantes' };
+
+    // Roles privilegies: aucune restriction temporelle (admin, superutilisateur,
+    // superviseur). C'est le check propre, base sur le role du user.
+    const privilegedRoles = new Set(['admin', 'superutilisateur', 'superviseur']);
+    if (privilegedRoles.has(role)) {
+        return { allowed: true };
+    }
+
+    // Whitelist historique (retro-compat: legacy usernames pre-RBAC qui
+    // pouvaient ne pas avoir de role assigne).
+    const legacyPrivilegedUsernames = new Set(['SALIOU', 'OUSMANE', 'NADOU', 'ADMIN']);
+    if (legacyPrivilegedUsernames.has(username.toUpperCase())) {
         return { allowed: true };
     }
     
@@ -2500,8 +2508,9 @@ function checkStockTimeRestrictionsMiddleware(req, res, next) {
         });
     }
     
-    // Vérifier les restrictions temporelles
-    const restriction = checkStockTimeRestrictions(stockDate, user.username);
+    // Vérifier les restrictions temporelles (passe l'objet user complet
+    // pour que le check role-based fonctionne au lieu d'une simple whitelist).
+    const restriction = checkStockTimeRestrictions(stockDate, user);
     if (!restriction.allowed) {
         return res.status(403).json({
             success: false,
