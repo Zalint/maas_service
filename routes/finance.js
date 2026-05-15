@@ -1048,17 +1048,28 @@ router.get('/pl', async (req, res) => {
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
 
-        // 6. Variation de stock = stock_soir_fin - stock_matin_debut.
-        // Si pas de saisie pile aux dates: prendre la date la plus
-        // proche <= demandee (sinon 0). On somme sum(total) pour tous
-        // les produits / PV (variation globale entreprise).
+        // 6. Variation de stock = stock_soir(dateFin) - stock_matin(dateDebut).
+        // Si pas de saisie pile aux dates: prendre la date la plus proche <=
+        // demandee (sinon 0). On somme sum(total) pour tous les produits / PV
+        // (variation globale entreprise).
+        //
+        // ATTENTION: stocks.date est stocke en TEXTE format DD-MM-YYYY (cf
+        // db/utils.js#formatDate). Comparer lexicalement contre l'ISO
+        // YYYY-MM-DD donne des resultats faux ("14-05-2026" < "2026-05-01"
+        // lex). On caste explicitement via TO_DATE pour comparer en vrais
+        // dates. Le filtre regex evite les TO_DATE qui pourraient echouer
+        // sur des lignes mal formatees.
         const stockMatinRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
              WHERE type_stock = 'matin'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'matin' AND date <= :dateDebut
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'matin'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateDebut::date
+                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
         );
@@ -1067,8 +1078,12 @@ router.get('/pl', async (req, res) => {
              FROM stocks
              WHERE type_stock = 'soir'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'soir' AND date <= :dateFin
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'soir'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateFin::date
+                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
         );
@@ -1187,13 +1202,19 @@ router.get('/cash-stock', async (req, res) => {
         }
 
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
+        // stocks.date est en TEXTE DD-MM-YYYY (cf db/utils.js#formatDate);
+        // on caste via TO_DATE pour comparer correctement contre l'ISO.
         const stockSoirRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
              WHERE type_stock = 'soir'
                AND date = (
-                 SELECT MAX(date) FROM stocks
-                 WHERE type_stock = 'soir' AND date <= :dateD
+                 SELECT date FROM stocks
+                 WHERE type_stock = 'soir'
+                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateD::date
+                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                 LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }
         );
