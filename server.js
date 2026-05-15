@@ -2139,7 +2139,7 @@ app.get('/redirect', async (req, res) => {
         return res.redirect('/login.html');
     }
 
-    const allowedScreens = ['index.html', 'pos.html', 'Realtime.html', 'auditClient.html', 'admin.html', 'user-management.html'];
+    const allowedScreens = ['index.html', 'pos.html', 'Realtime.html', 'auditClient.html', 'admin.html', 'user-management.html', 'hub.html'];
 
     // Lire la valeur la plus fraîche depuis la BDD (en cas de changement
     // par admin pendant que l'utilisateur a une session active).
@@ -2165,14 +2165,11 @@ app.get('/redirect', async (req, res) => {
         return res.sendFile(path.join(__dirname, screen));
     }
 
-    // Pas de default_screen → fallbacks historiques par rôle
-    if (req.session.user.username === 'ADMIN') {
-        return res.sendFile(path.join(__dirname, 'user-management.html'));
-    }
-    if (req.session.user.isSuperAdmin) {
-        return res.sendFile(path.join(__dirname, 'admin.html'));
-    }
-    return res.sendFile(path.join(__dirname, 'index.html'));
+    // Pas de default_screen → hub de choix (Caisse / Gestion, + Administration
+    // si role admin). Plus simple et plus coherent que des fallbacks role-par-
+    // role: l'utilisateur choisit explicitement ou il veut aller, et un admin
+    // peut toujours figer le default_screen d'un user pour bypasser le hub.
+    return res.sendFile(path.join(__dirname, 'hub.html'));
 });
 
 // Mettre à jour l'écran par défaut d'un utilisateur
