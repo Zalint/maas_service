@@ -2427,6 +2427,12 @@ function checkStockTimeRestrictions(dateStr, user) {
     if (privilegedRoles.has(role)) {
         return { allowed: true };
     }
+    // Filet de securite: le compte bootstrap 'ADMIN' doit toujours passer,
+    // meme si son role est NULL/inconnu en BDD (cas migration RBAC). Sans ca
+    // un admin freshly-installed sans role assigne se retrouverait bloque.
+    if (username.toUpperCase() === 'ADMIN') {
+        return { allowed: true };
+    }
     
     // Tous les autres utilisateurs sont soumis aux restrictions temporelles
     try {

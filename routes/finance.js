@@ -88,23 +88,29 @@ const { checkAdvancedAccess } = require('../middlewares/auth');
 const router = express.Router();
 
 // ============================================================
-// Guards par prefixe: les utilisateurs simples (role 'utilisateur')
-// peuvent acceder a Creances / Centre de Decoupe / Depenses uniquement.
-// Les routes admin/superviseur/superutilisateur ci-dessous sont gardes
-// individuellement via checkAdvancedAccess.
-// PL et Cash et Stock font leur propre check (admin OR superviseur) dans
-// le handler — on ajoute aussi checkAdvancedAccess en defense en profondeur.
+// Guards par prefixe: les utilisateurs simples (role 'user' dans le
+// RBAC — cf users.js#isUtilisateur) peuvent acceder a Creances /
+// Centre de Decoupe / Depenses uniquement. Les routes admin/
+// superviseur/superutilisateur ci-dessous sont gardees individuellement
+// via checkAdvancedAccess (= canManageAdvanced).
+// PL et Cash et Stock font leur propre check (admin OR superviseur)
+// dans le handler — on ajoute aussi checkAdvancedAccess en defense en
+// profondeur (le superutilisateur passe checkAdvanced mais sera bloque
+// par le check inline).
 // ============================================================
-router.use('/prix', checkAdvancedAccess);
-router.use('/prix-cdc', checkAdvancedAccess);
-router.use('/prix-achat', checkAdvancedAccess);
-router.use('/prix-vente-fournisseur', checkAdvancedAccess);
-router.use('/alias', checkAdvancedAccess);
-router.use('/charges', checkAdvancedAccess);
-router.use('/config', checkAdvancedAccess);
-router.use('/paiements', checkAdvancedAccess);
-router.use('/pl', checkAdvancedAccess);
-router.use('/cash-stock', checkAdvancedAccess);
+const ADVANCED_FINANCE_PREFIXES = [
+    '/prix',
+    '/prix-cdc',
+    '/prix-achat',
+    '/prix-vente-fournisseur',
+    '/alias',
+    '/charges',
+    '/config',
+    '/paiements',
+    '/pl',
+    '/cash-stock'
+];
+ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
 // DELETE /depenses/:id reste admin via inline check (cf le handler).
 
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
@@ -1163,6 +1169,33 @@ function round2(n) {
 // Stock soir: fallback au snapshot le plus proche <= D si pas pile a D.
 // Solde du fournisseur: cumul commission MaaS depuis 1970 jusqu'a D inclus
 // (vision bilan, pas vision flux).
+
+// Memoization du cumul commission par date (key=dateD).
+// computeCreances('1970-01-01', dateD) est couteux (scan tous Ventes +
+// resolution prix point-in-time). Pour les dates PASSEES, le resultat est
+// stable (les ventes ne changent pas retroactivement). Pour la date du
+// jour, on garde le cache court (60s) car de nouvelles ventes arrivent.
+const _cashStockCumulCache = new Map(); // dateD -> { value, ts }
+const CASH_STOCK_CACHE_TODAY_TTL_MS = 60 * 1000;
+function getCachedCumul(dateD, todayISO) {
+    const e = _cashStockCumulCache.get(dateD);
+    if (!e) return null;
+    // Dates strictement < today: cache illimite (stable). Today: TTL 60s.
+    if (dateD < todayISO) return e.value;
+    if (Date.now() - e.ts < CASH_STOCK_CACHE_TODAY_TTL_MS) return e.value;
+    return null;
+}
+function setCachedCumul(dateD, value) {
+    _cashStockCumulCache.set(dateD, { value, ts: Date.now() });
+}
+// Invalidation: appele depuis les routes qui mutent les ventes (POST /api/ventes etc).
+// Attache au router lui-meme car le module.exports = router en fin de fichier
+// remplace tout l'export — donc on accroche sur router pour que la fonction
+// reste accessible via require('./finance.js')._invalidateCashStockCache().
+router._invalidateCashStockCache = function () {
+    _cashStockCumulCache.clear();
+};
+
 router.get('/cash-stock', async (req, res) => {
     try {
         // Auth: seuls admin et superviseur (meme regle que PL).
@@ -1252,14 +1285,19 @@ router.get('/cash-stock', async (req, res) => {
         const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
 
         // 4) Solde du fournisseur = cumul commission MaaS depuis 1970-01-01
-        //    jusqu'a D (vision bilan, pas vision flux). On utilise une borne
-        //    inferieure tres ancienne pour capturer tout l'historique.
-        const { computeCreances } = require('./finance-creances');
-        const creancesCumul = await computeCreances({
-            dateDebut: '1970-01-01',
-            dateFin: dateD
-        });
-        const soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+        //    jusqu'a D (vision bilan, pas vision flux). Memoize: pour dates
+        //    passees le resultat est stable, pour today on cache 60s. Evite
+        //    de scanner toutes les ventes a chaque ouverture du panneau.
+        let soldeDuFournisseur = getCachedCumul(dateD, todayISO);
+        if (soldeDuFournisseur === null) {
+            const { computeCreances } = require('./finance-creances');
+            const creancesCumul = await computeCreances({
+                dateDebut: '1970-01-01',
+                dateFin: dateD
+            });
+            soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+            setCachedCumul(dateD, soldeDuFournisseur);
+        }
 
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - soldeDuFournisseur;

@@ -202,7 +202,9 @@
 <body>
     <main class="hub-shell" role="main" aria-labelledby="hub-greeting">
         <div class="hub-header">
-            <img src="image/LogoMatixVect.png" alt="" class="hub-logo" onerror="this.style.display='none'">
+            <img src="image/LogoMatixVect.png" alt="" class="hub-logo"
+                 fetchpriority="high" decoding="async"
+                 onerror="this.style.display='none'">
             <h1 class="hub-greeting" id="hub-greeting">
                 Bonjour <span class="hub-username" id="username-display">…</span>
             </h1>
@@ -330,8 +332,13 @@
             const key = e.key.toLowerCase();
             if (key === '1' || key === 'c') window.location.href = '/pos.html';
             else if (key === '2' || key === 'g') window.location.href = '/index.html';
-            else if ((key === '3' || key === 'a') && document.getElementById('card-admin').style.display !== 'none') {
-                window.location.href = '/admin.html';
+            else if (key === '3' || key === 'a') {
+                // Optional chaining: si la carte admin est absente (non-admin)
+                // ou supprimee par un autre script, on ne crash pas.
+                const adminCard = document.getElementById('card-admin');
+                if (adminCard && adminCard.style.display !== 'none') {
+                    window.location.href = '/admin.html';
+                }
             }
         });
     </script>

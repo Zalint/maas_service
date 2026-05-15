@@ -71,10 +71,13 @@ const checkSupervisorAccess = (req, res, next) => {
 
 /**
  * Middleware de vérification des droits avancés
- * Vérifie si l'utilisateur a les droits superutilisateur
+ * Vérifie si l'utilisateur a les droits superutilisateur.
+ * Lecture defensive: req.user (alias usuel apres checkAuth) avec fallback
+ * sur req.session.user si la chaine de middlewares a saute checkAuth.
  */
 const checkAdvancedAccess = (req, res, next) => {
-    if (!req.user.canManageAdvanced) {
+    const user = req.user || (req.session && req.session.user) || null;
+    if (!user || !user.canManageAdvanced) {
         return res.status(403).json({ success: false, message: 'Accès non autorisé - Niveau superutilisateur requis' });
     }
     next();

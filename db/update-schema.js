@@ -522,6 +522,21 @@ async function updateSchema() {
         `);
         console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
 
+        // Index fonctionnel sur stocks.date pour les comparaisons TO_DATE
+        // utilisees par PL / Cash et Stock. Sans cet index, les requetes
+        //   WHERE TO_DATE(date, 'DD-MM-YYYY') <= :d
+        //   ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+        // forcent un full-scan + sort en memoire. Cet index permet a Postgres
+        // d'utiliser un scan d'index direct. Filtre regex pour n'indexer que
+        // les lignes au format DD-MM-YYYY (les autres, malformees, ne sont de
+        // toute facon pas matchees par les requetes).
+        await sequelize.query(`
+            CREATE INDEX IF NOT EXISTS idx_stocks_date_iso
+            ON stocks ((TO_DATE(date, 'DD-MM-YYYY')), type_stock)
+            WHERE date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+        `);
+        console.log('Index fonctionnel idx_stocks_date_iso verifie');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {
