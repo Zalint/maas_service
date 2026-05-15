@@ -227,7 +227,7 @@ router.put('/prix', async (req, res) => {
             });
             audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
         }
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         const rows = await FournisseurPrix.findAll({ order: [['produit', 'ASC']] });
         res.json({ success: true, data: rows });
     } catch (e) {
@@ -280,7 +280,7 @@ router.put('/prix-cdc/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_cdc.upsert', { produit, prix_vente_cdc: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-cdc/:produit:', e);
@@ -350,7 +350,7 @@ router.put('/prix-achat/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_achat.upsert', { produit, prix_achat: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-achat/:produit:', e);
@@ -417,7 +417,7 @@ router.put('/prix-vente-fournisseur/:produit', async (req, res) => {
             }, { transaction: t });
         });
         audit.log(req, 'prix_vente.upsert', { produit, prix_vente: prix });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true });
     } catch (e) {
         console.error('PUT /api/finance/prix-vente-fournisseur/:produit:', e);
@@ -454,7 +454,7 @@ router.delete('/prix/:produit', async (req, res) => {
         const n = await FournisseurPrix.destroy({ where: { produit } });
         if (n > 0) {
             audit.log(req, 'prix.delete', { produit });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, deleted: n });
     } catch (e) {
@@ -623,7 +623,7 @@ router.put('/alias', async (req, res) => {
             alias_produit: aliasProduit,
             produit_catalog: produitCatalog
         });
-        financeCache.invalidate();
+        invalidateFinanceDerivedCaches();
         res.json({ success: true, ...result });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
@@ -643,7 +643,7 @@ router.delete('/alias/:alias', async (req, res) => {
         const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
         if (n > 0) {
             audit.log(req, 'alias.delete', { alias_produit: alias });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, deleted: n });
     } catch (e) {
@@ -702,7 +702,7 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 count: created.length,
                 created
             });
-            financeCache.invalidate();
+            invalidateFinanceDerivedCaches();
         }
         res.json({ success: true, created });
     } catch (e) {
@@ -1198,10 +1198,20 @@ function getCachedCumul(dateD, todayISO) {
 function setCachedCumul(dateD, value) {
     _cashStockCumulCache.set(dateD, { value, ts: Date.now() });
 }
-// Invalidation: appele depuis les routes qui mutent les ventes (POST /api/ventes etc).
-// Attache au router lui-meme car le module.exports = router en fin de fichier
-// remplace tout l'export — donc on accroche sur router pour que la fonction
-// reste accessible via require('./finance.js')._invalidateCashStockCache().
+// Invalidation unifiee de tous les caches derives Finance:
+// - financeCache (catalogue prix + aliases, TTL 60s)
+// - _cashStockCumulCache (cumul commission MaaS par date)
+//
+// A appeler depuis toute mutation qui peut changer les calculs derives
+// (prix, alias, config, charges, paiements, ou retroactivement les ventes).
+// Attache au router pour rester accessible apres le module.exports = router
+// (en fin de fichier) qui remplacerait sinon l'export.
+function invalidateFinanceDerivedCaches() {
+    financeCache.invalidate();
+    _cashStockCumulCache.clear();
+}
+router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
+// Retro-compat: ancien nom expose pour les callers existants.
 router._invalidateCashStockCache = function () {
     _cashStockCumulCache.clear();
 };
@@ -1382,6 +1392,10 @@ router.put('/config', async (req, res) => {
                 await FinanceConfig.upsert({ key, value, updated_at: now });
             }
         }
+        // commission_pct change -> les calculs derives (commission MaaS cumul
+        // dans cash-stock) doivent etre recomputed. Invalider tous les caches
+        // finance-derives pour rester safe.
+        invalidateFinanceDerivedCaches();
         const rows = await FinanceConfig.findAll();
         const config = {};
         for (const r of rows) config[r.key] = r.value;

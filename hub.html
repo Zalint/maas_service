@@ -314,7 +314,11 @@
                 }
                 // Sinon (data-card-count="2" deja en HTML) -> 2 cartes Caisse + Gestion.
             } catch (e) {
+                // Erreur reseau ou parse: si on ne peut pas confirmer la
+                // session, on traite comme non-authentifie (meme comportement
+                // que le no-session path du if/else ci-dessus).
                 console.warn('check-session failed', e);
+                window.location.href = '/login.html';
             }
         })();
 
@@ -328,7 +332,18 @@
 
         // Raccourcis clavier: 1 -> Caisse, 2 -> Gestion, 3 -> Administration (admin only)
         document.addEventListener('keydown', (e) => {
-            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+            // Ignore les raccourcis si une touche modificatrice est pressee
+            // (Ctrl+R, Cmd+L, Alt+Tab, Shift+Tab, etc.) — ce sont des actions
+            // navigateur ou autres, pas notre intention de raccourci.
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            // Ignore si focus dans un champ editable (input/textarea/select
+            // ou tout element contentEditable).
+            const t = e.target;
+            if (t) {
+                const tag = t.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+                if (t.isContentEditable) return;
+            }
             const key = e.key.toLowerCase();
             if (key === '1' || key === 'c') window.location.href = '/pos.html';
             else if (key === '2' || key === 'g') window.location.href = '/index.html';

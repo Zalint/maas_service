@@ -2329,10 +2329,12 @@ app.post('/api/import-ventes', checkAuth, checkWriteAccess, (req, res) => {
 
 // Route pour vider la base de données des ventes — admin uniquement.
 // Action destructive: protege par role admin (anciennement hardcode sur
-// un username specifique).
+// un username specifique). Pas de middleware checkAuth ici, donc on check
+// defensivement req.session avant d'acceder a session.user (sinon TypeError
+// 500 si la session middleware n'a pas tourne pour une raison ou une autre).
 app.post('/api/vider-base', async (req, res) => {
     try {
-        if (!req.session.user || !req.session.user.isAdmin) {
+        if (!req.session || !req.session.user || !req.session.user.isAdmin) {
             return res.status(403).json({ success: false, message: 'Accès non autorisé' });
         }
 

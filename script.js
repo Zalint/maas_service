@@ -5992,8 +5992,14 @@ function verifierRestrictionsTemporelles(date, username) {
     const cu = window.currentUser;
     const role = cu ? String(cu.role || '').toLowerCase() : '';
     if (role === 'superutilisateur') {
+        // Parse "DD/MM/YYYY" et reconstruit en ISO YYYY-MM-DDT00:00:00.
+        // Forme explicite pour eviter les ambiguites du constructor
+        // Date(year, monthIndex, day) (mois 0-indexed, conversion implicite
+        // de strings, etc.). new Date("YYYY-MM-DDT00:00:00") (sans Z) est
+        // parsee en LOCAL time -> equivaut a minuit local, ce qu'on veut.
         const [day, month, year] = date.split('/');
-        const dateStock = new Date(year, month - 1, day);
+        const isoLocal = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00:00`;
+        const dateStock = new Date(isoLocal);
         const maintenant = new Date();
         
         // Calculer la date limite : date du stock + 1 jour + 3 heures
