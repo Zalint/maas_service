@@ -2289,50 +2289,41 @@ function updateStockButtonsState() {
     const isStockMatin = typeStock === 'matin';
     const canModifyMatinFields = canModifyStockMatinFields(currentUser.username);
     
-    // Mettre à jour le bouton "Ajouter une ligne"
+    // Mettre à jour le bouton "Ajouter une ligne".
+    // Important: utilise bi-* (Bootstrap Icons, charge dans index.html) et NE PAS
+    // toucher aux classes btn-* (le bouton garde son btn-outline-primary natif).
+    // Le toggle disabled + tooltip suffit a indiquer l'etat. Si on ajoutait
+    // btn-primary par-dessus btn-outline-primary, le texte blanc/bleu devenait
+    // invisible.
     if (addStockButton) {
         let shouldDisable = !canModify;
-        let buttonText = '<i class="fas fa-plus"></i> Ajouter une ligne';
+        let buttonText = '<i class="bi bi-plus-lg"></i> Ajouter une ligne';
         let tooltipText = '';
-        
-        // Restrictions spéciales pour le stock matin
+
         if (isStockMatin && !canModifyMatinFields) {
             shouldDisable = true;
-            buttonText = '<i class="fas fa-plus"></i> Ajouter une ligne (Stock matin automatique)';
+            buttonText = '<i class="bi bi-plus-lg"></i> Ajouter une ligne (Stock matin automatique)';
             tooltipText = 'Le stock matin est rempli automatiquement par le système. Seuls les administrateurs peuvent le modifier manuellement.';
         } else if (!canModify) {
-            buttonText = '<i class="fas fa-plus"></i> Ajouter une ligne (Date non autorisée)';
+            buttonText = '<i class="bi bi-plus-lg"></i> Ajouter une ligne (Date non autorisée)';
             tooltipText = 'Vous ne pouvez pas modifier le stock pour cette date. Modification autorisée seulement le jour J et jusqu\'au lendemain avant 4h00 du matin.';
         }
-        
-        if (shouldDisable) {
-            addStockButton.disabled = true;
-            addStockButton.classList.remove('btn-primary');
-            addStockButton.classList.add('btn-secondary');
-            addStockButton.innerHTML = buttonText;
-            addStockButton.title = tooltipText;
-        } else {
-            addStockButton.disabled = false;
-            addStockButton.classList.remove('btn-secondary');
-            addStockButton.classList.add('btn-primary');
-            addStockButton.innerHTML = buttonText;
-            addStockButton.title = '';
-        }
+
+        addStockButton.disabled = shouldDisable;
+        addStockButton.innerHTML = buttonText;
+        addStockButton.title = tooltipText;
     }
-    
-    // Mettre à jour le bouton "Sauvegarder le stock"
+
+    // Mettre à jour le bouton "Sauvegarder le stock".
+    // Meme principe: on touche pas aux classes btn-*, on bascule disabled + text.
     if (saveStockButton) {
         if (canModify) {
             saveStockButton.disabled = false;
-            saveStockButton.classList.remove('btn-secondary');
-            saveStockButton.classList.add('btn-success');
-            saveStockButton.innerHTML = '<i class="fas fa-save"></i> Sauvegarder le stock';
+            saveStockButton.innerHTML = '<i class="bi bi-save"></i> Sauvegarder le stock';
             saveStockButton.title = '';
         } else {
             saveStockButton.disabled = true;
-            saveStockButton.classList.remove('btn-success');
-            saveStockButton.classList.add('btn-secondary');
-            saveStockButton.innerHTML = '<i class="fas fa-save"></i> Sauvegarder le stock (Date non autorisée)';
+            saveStockButton.innerHTML = '<i class="bi bi-save"></i> Sauvegarder le stock (Date non autorisée)';
             saveStockButton.title = 'Vous ne pouvez pas sauvegarder le stock pour cette date. Modification autorisée seulement le jour J et jusqu\'au lendemain avant 4h00 du matin.';
         }
     }
@@ -6109,7 +6100,11 @@ async function sauvegarderDonneesStock() {
 
         const total = quantite * prixUnitaire;
 
-        // Sauvegarder si quantité != 0 (même négatif pour les produits auto)
+        // Sauvegarder si quantité != 0 (même négatif pour les produits auto).
+        // Les produits en mode 'automatique' sont sauvegardes meme a 0 pour
+        // permettre au serveur de recalculer; mais on ne les liste PAS dans
+        // la modal de confirmation s'ils sont a 0 (sinon bruit visuel enorme:
+        // 50+ lignes "Produit: 0 à X FCFA = 0 FCFA").
         if (quantite !== 0 || modeStock === 'automatique') {
             const key = `${pointVente}-${produit}`;
             donnees[key] = {
@@ -6123,8 +6118,12 @@ async function sauvegarderDonneesStock() {
                 Commentaire: commentaire,
                 mode: modeStock  // Ajouter le mode (manuel ou automatique)
             };
-            resume.push(`${pointVente} - ${produit}: ${quantite} ${modeStock === 'automatique' ? '⚡' : ''} à ${prixUnitaire.toLocaleString('fr-FR')} FCFA = ${total.toLocaleString('fr-FR')} FCFA`);
-            totalGeneral += total;
+            // Resume modal: seulement les lignes avec quantite != 0 (les rows
+            // significatives a montrer a l'utilisateur).
+            if (quantite !== 0) {
+                resume.push(`${pointVente} - ${produit}: ${quantite} ${modeStock === 'automatique' ? '⚡' : ''} à ${prixUnitaire.toLocaleString('fr-FR')} FCFA = ${total.toLocaleString('fr-FR')} FCFA`);
+                totalGeneral += total;
+            }
         }
     }
 
