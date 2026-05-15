@@ -1062,9 +1062,11 @@ router.get('/pl', async (req, res) => {
         // ATTENTION: stocks.date est stocke en TEXTE format DD-MM-YYYY (cf
         // db/utils.js#formatDate). Comparer lexicalement contre l'ISO
         // YYYY-MM-DD donne des resultats faux ("14-05-2026" < "2026-05-01"
-        // lex). On caste explicitement via TO_DATE pour comparer en vrais
-        // dates. Le filtre regex evite les TO_DATE qui pourraient echouer
-        // sur des lignes mal formatees.
+        // lex). On convertit DD-MM-YYYY -> YYYY-MM-DD via substring + concat
+        // (pur string manip, IMMUTABLE - donc indexable, cf
+        // db/update-schema.js#idx_stocks_date_iso). L'ordre lex sur ISO
+        // YYYY-MM-DD = ordre chronologique, donc <= et ORDER BY marchent
+        // directement sur la forme ISO sans cast vers DATE.
         const stockMatinRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
@@ -1073,8 +1075,12 @@ router.get('/pl', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'matin'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateDebut::date
-                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateDebut
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
@@ -1087,8 +1093,12 @@ router.get('/pl', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'soir'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateFin::date
-                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateFin
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
@@ -1236,7 +1246,9 @@ router.get('/cash-stock', async (req, res) => {
 
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
         // stocks.date est en TEXTE DD-MM-YYYY (cf db/utils.js#formatDate);
-        // on caste via TO_DATE pour comparer correctement contre l'ISO.
+        // on convertit en ISO YYYY-MM-DD via substring + concat (IMMUTABLE,
+        // indexable - cf idx_stocks_date_iso). Pas de cast date necessaire:
+        // ordre lex sur ISO = ordre chronologique.
         const stockSoirRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
@@ -1245,8 +1257,12 @@ router.get('/cash-stock', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'soir'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND TO_DATE(date, 'DD-MM-YYYY') <= :dateD::date
-                 ORDER BY TO_DATE(date, 'DD-MM-YYYY') DESC
+                   AND (substring(date FROM 7 FOR 4) || '-' ||
+                        substring(date FROM 4 FOR 2) || '-' ||
+                        substring(date FROM 1 FOR 2)) <= :dateD
+                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
+                          substring(date FROM 4 FOR 2) || '-' ||
+                          substring(date FROM 1 FOR 2)) DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }
