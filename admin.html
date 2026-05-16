@@ -530,11 +530,16 @@
                                                 <span id="recherche-result-count">0 résultat</span>
                                                 <small>· dans les 2 catalogues</small>
                                             </div>
-                                            <select class="recherche-sort-select" id="recherche-sort">
-                                                <option value="name">Nom (A→Z)</option>
-                                                <option value="price-asc">Prix (croissant)</option>
-                                                <option value="price-desc">Prix (décroissant)</option>
-                                            </select>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <select class="recherche-sort-select" id="recherche-sort">
+                                                    <option value="name">Nom (A→Z)</option>
+                                                    <option value="price-asc">Prix (croissant)</option>
+                                                    <option value="price-desc">Prix (décroissant)</option>
+                                                </select>
+                                                <button type="button" class="btn btn-primary btn-sm" id="recherche-add-btn">
+                                                    <i class="bi bi-plus-lg"></i> Ajouter un produit
+                                                </button>
+                                            </div>
                                         </div>
                                         <div class="recherche-results-grid" id="recherche-grid">
                                             <div class="recherche-empty">
@@ -855,6 +860,121 @@
     </div>
 
     <!-- Modal pour ajouter un produit d'inventaire -->
+    <!-- Modal unifie M1: ajouter ou modifier un produit dans les 2 catalogues -->
+    <div class="modal fade" id="productUnifiedModal" tabindex="-1" aria-labelledby="productUnifiedModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="productUnifiedModalLabel">
+                        <i class="bi bi-plus-circle me-2 text-primary"></i><span id="pum-title-text">Ajouter un nouveau produit</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Status banner (existence dans les 2 catalogues) -->
+                    <div id="pum-status" class="alert alert-light border small mb-3 py-2"></div>
+
+                    <form id="pumForm" novalidate>
+                        <input type="hidden" id="pum-mode" value="add">
+                        <input type="hidden" id="pum-original-nom" value="">
+
+                        <!-- Nom partage -->
+                        <div class="mb-3">
+                            <label for="pum-nom" class="form-label fw-semibold">Nom du produit <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="pum-nom" placeholder="Ex: Beurre" required>
+                            <small class="form-text text-muted">Utilisé dans Produits Généraux ET Inventaire (par défaut).</small>
+                        </div>
+
+                        <!-- Prix partage -->
+                        <div class="mb-3">
+                            <label for="pum-prix" class="form-label fw-semibold">Prix <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" id="pum-prix" min="0" step="1" placeholder="0" required>
+                            <small class="form-text text-muted">Prix par défaut pour les 2 catalogues.</small>
+                        </div>
+
+                        <!-- 2 categories -->
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="pum-cat-pg" class="form-label small fw-semibold">
+                                    <i class="bi bi-shop me-1"></i>Catégorie Produits Généraux
+                                </label>
+                                <select id="pum-cat-pg" class="form-select"></select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="pum-cat-inv" class="form-label small fw-semibold">
+                                    <i class="bi bi-box-seam me-1"></i>Catégorie Inventaire
+                                </label>
+                                <select id="pum-cat-inv" class="form-select"></select>
+                            </div>
+                        </div>
+
+                        <!-- Toggle override -->
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" id="pum-override-toggle">
+                            <label class="form-check-label small" for="pum-override-toggle">
+                                Personnaliser le nom ou le prix séparément pour chaque catalogue
+                            </label>
+                        </div>
+
+                        <!-- Section override (cachee par defaut) -->
+                        <div id="pum-override" class="mt-2" style="display:none;
+                            background:#f8fafc; border:1px dashed #cbd5e1;
+                            border-radius:8px; padding:14px;">
+                            <h6 style="font-size:0.8rem; color:#64748b;
+                                text-transform:uppercase; letter-spacing:0.04em;
+                                margin-bottom:12px;">
+                                <i class="bi bi-pencil-square me-1"></i>Personnalisation par catalogue
+                            </h6>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small">Nom (Produits Généraux)</label>
+                                    <input type="text" class="form-control form-control-sm" id="pum-nom-pg">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Nom (Inventaire)</label>
+                                    <input type="text" class="form-control form-control-sm" id="pum-nom-inv">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Prix Produits Généraux</label>
+                                    <input type="number" class="form-control form-control-sm" id="pum-prix-pg" min="0">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Prix Inventaire</label>
+                                    <input type="number" class="form-control form-control-sm" id="pum-prix-inv" min="0">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- En mode edit, choix d'enable chaque cible -->
+                        <div id="pum-targets" class="mt-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="pum-target-pg" checked>
+                                <label class="form-check-label small" for="pum-target-pg">
+                                    <i class="bi bi-shop me-1"></i>Créer/Mettre à jour dans <strong>Produits Généraux</strong>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="pum-target-inv" checked>
+                                <label class="form-check-label small" for="pum-target-inv">
+                                    <i class="bi bi-box-seam me-1"></i>Créer/Mettre à jour dans <strong>Inventaire</strong>
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger me-auto" id="pum-delete-btn" style="display:none">
+                        <i class="bi bi-trash"></i> Supprimer
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
+                    <button type="button" class="btn btn-primary" id="pum-save-btn">
+                        <i class="bi bi-check2-circle me-1"></i><span id="pum-save-label">Ajouter</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="addInventaireProductModal" tabindex="-1" aria-labelledby="addInventaireProductModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -935,6 +1055,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-recherche-spotlight"></script>
+    <script src="admin.js?v=20260516-unified-modal-m1"></script>
 </body>
 </html> 

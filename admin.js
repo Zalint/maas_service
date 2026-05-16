@@ -4296,11 +4296,21 @@ function initRechercheSpotlight() {
         });
     }
 
-    // Click sur card (delegation)
+    // Click sur card (delegation) -> ouvre le modal unifie en mode edit
+    // (le user peut aussi naviguer vers la fiche via le bouton "Voir
+    // dans l'onglet" dans le modal — TODO si demande).
     grid.addEventListener('click', (e) => {
         const card = e.target.closest('.result-card');
         if (!card) return;
-        ouvrirProduitDepuisRecherche(card.dataset.src, card.dataset.name, card.dataset.cat);
+        const src = card.dataset.src;
+        const nom = card.dataset.name;
+        const cat = card.dataset.cat;
+        if (typeof ouvrirModalProduitUnifie === 'function') {
+            ouvrirModalProduitUnifie('edit', { src, nom, cat });
+        } else {
+            // Fallback ancien comportement
+            ouvrirProduitDepuisRecherche(src, nom, cat);
+        }
     });
 
     // Quand le user clique sur l'onglet Recherche, on rebuild la liste
@@ -4324,4 +4334,340 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initRechercheSpotlight);
 } else {
     initRechercheSpotlight();
+}
+
+// =====================================================================
+// MODAL UNIFIE M1 — ajouter ou modifier un produit dans les 2 catalogues
+// Utilise par l'onglet Recherche (bouton Ajouter + click sur une card).
+// =====================================================================
+
+// Remplit un <select> avec des <optgroup> a partir d'un dict {famille: [cat,...]}
+function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
+    if (!selectEl) return;
+    let html = '';
+    for (const [famille, cats] of Object.entries(categoriesParFamille)) {
+        const famIcon = famille === 'Boucherie' ? '🥩' : (famille === 'Épicerie' ? '🛒' : '📦');
+        html += `<optgroup label="${famIcon} ${famille}">`;
+        cats.forEach((cat) => {
+            const sel = (cat === selected) ? ' selected' : '';
+            html += `<option value="${escAttr ? escAttr(cat) : cat}"${sel}>${cat}</option>`;
+        });
+        html += '</optgroup>';
+    }
+    selectEl.innerHTML = html;
+}
+
+// Cherche un produit existant dans Produits Generaux par nom.
+// Retourne { categorie, config } ou null.
+function pumLookupPG(nom) {
+    if (!currentProduitsConfig || !nom) return null;
+    const target = nom.toLowerCase();
+    for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+        if (typeof produits !== 'object' || produits === null) continue;
+        for (const [name, config] of Object.entries(produits)) {
+            if (typeof config !== 'object' || typeof config.default !== 'number') continue;
+            if (name.toLowerCase() === target) {
+                return { categorie: cat, nom: name, config };
+            }
+        }
+    }
+    return null;
+}
+
+// Cherche un produit existant dans Inventaire par nom.
+function pumLookupInv(nom) {
+    if (!currentInventaireConfig || !nom) return null;
+    const target = nom.toLowerCase();
+    for (const [name, config] of Object.entries(currentInventaireConfig)) {
+        if (typeof config !== 'object' || config === null) continue;
+        if (typeof config.prixDefault !== 'number') continue;
+        if (name.toLowerCase() === target) {
+            return { nom: name, config };
+        }
+    }
+    return null;
+}
+
+// Met a jour la banniere status selon les hits dans les 2 catalogues.
+function pumUpdateStatus(nom) {
+    const status = document.getElementById('pum-status');
+    if (!status) return;
+    const pg = pumLookupPG(nom);
+    const inv = pumLookupInv(nom);
+    let html = '';
+    if (pg && inv) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)
+            ET <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    } else if (pg) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe uniquement dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)`;
+    } else if (inv) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe uniquement dans <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    } else {
+        html = `<i class="bi bi-info-circle text-primary me-1"></i>
+            Nouveau produit — sera créé dans les 2 catalogues.`;
+    }
+    status.innerHTML = html;
+}
+
+// Ouvre le modal en mode 'add' ou 'edit'.
+// mode='add' : data peut etre { srcDefault: 'pg'|'inv'|null, categorieDefault: '...' }
+// mode='edit' : data = { src: 'pg'|'inv', nom, cat, prix }
+function ouvrirModalProduitUnifie(mode, data) {
+    data = data || {};
+    const modalEl = document.getElementById('productUnifiedModal');
+    if (!modalEl) return;
+
+    // Populate selects
+    pumPopulerSelect(
+        document.getElementById('pum-cat-pg'),
+        CATEGORIES_PRODUITS_GENERAUX,
+        DEFAULT_CATEGORIE_PRODUITS_GENERAUX
+    );
+    pumPopulerSelect(
+        document.getElementById('pum-cat-inv'),
+        CATEGORIES_INVENTAIRE,
+        DEFAULT_CATEGORIE_INVENTAIRE
+    );
+
+    document.getElementById('pum-mode').value = mode;
+    const titleText = document.getElementById('pum-title-text');
+    const saveLabel = document.getElementById('pum-save-label');
+    const deleteBtn = document.getElementById('pum-delete-btn');
+
+    if (mode === 'edit' && data.nom) {
+        titleText.textContent = `Modifier «${data.nom}»`;
+        saveLabel.textContent = 'Enregistrer';
+        deleteBtn.style.display = '';
+        document.getElementById('pum-original-nom').value = data.nom;
+
+        // Pre-fill from BOTH catalogs (union).
+        const pgHit = pumLookupPG(data.nom);
+        const invHit = pumLookupInv(data.nom);
+        const nom = data.nom;
+        const prix = (data.src === 'pg' ? (pgHit && pgHit.config.default) :
+                     (invHit && invHit.config.prixDefault)) || data.prix || 0;
+        document.getElementById('pum-nom').value = nom;
+        document.getElementById('pum-prix').value = prix;
+        if (pgHit) document.getElementById('pum-cat-pg').value = pgHit.categorie;
+        if (invHit && invHit.config.categorie_affichage) {
+            const inv = invHit.config.categorie_affichage;
+            const opt = document.querySelector(`#pum-cat-inv option[value="${inv}"]`);
+            if (opt) document.getElementById('pum-cat-inv').value = inv;
+        }
+        // Pre-fill override fields too
+        document.getElementById('pum-nom-pg').value = pgHit ? pgHit.nom : nom;
+        document.getElementById('pum-nom-inv').value = invHit ? invHit.nom : nom;
+        document.getElementById('pum-prix-pg').value = pgHit ? pgHit.config.default : prix;
+        document.getElementById('pum-prix-inv').value = invHit ? invHit.config.prixDefault : prix;
+        // Cibles cochees selon existence
+        document.getElementById('pum-target-pg').checked = !!pgHit;
+        document.getElementById('pum-target-inv').checked = !!invHit;
+    } else {
+        // Mode 'add'
+        titleText.textContent = 'Ajouter un nouveau produit';
+        saveLabel.textContent = 'Ajouter';
+        deleteBtn.style.display = 'none';
+        document.getElementById('pum-original-nom').value = '';
+        document.getElementById('pum-nom').value = '';
+        document.getElementById('pum-prix').value = '';
+        document.getElementById('pum-nom-pg').value = '';
+        document.getElementById('pum-nom-inv').value = '';
+        document.getElementById('pum-prix-pg').value = '';
+        document.getElementById('pum-prix-inv').value = '';
+        document.getElementById('pum-target-pg').checked = true;
+        document.getElementById('pum-target-inv').checked = true;
+        if (data.categorieDefault && data.srcDefault === 'pg') {
+            document.getElementById('pum-cat-pg').value = data.categorieDefault;
+        } else if (data.categorieDefault && data.srcDefault === 'inv') {
+            document.getElementById('pum-cat-inv').value = data.categorieDefault;
+        }
+    }
+
+    // Reset override toggle
+    document.getElementById('pum-override-toggle').checked = false;
+    document.getElementById('pum-override').style.display = 'none';
+
+    // Update status banner
+    pumUpdateStatus(document.getElementById('pum-nom').value);
+
+    // Show
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+}
+
+// Sauvegarde: cree/met a jour dans les catalogues coches.
+// Modifie les configs cote client; le bouton global "Sauvegarder" sur
+// chaque onglet ecrira en BDD ensuite. Ici on display-refresh + toast.
+function pumSave() {
+    const mode = document.getElementById('pum-mode').value;
+    const originalNom = document.getElementById('pum-original-nom').value || null;
+    const nomShared = (document.getElementById('pum-nom').value || '').trim();
+    const prixShared = parseFloat(document.getElementById('pum-prix').value) || 0;
+    const catPG = document.getElementById('pum-cat-pg').value;
+    const catInv = document.getElementById('pum-cat-inv').value;
+    const targetPG = document.getElementById('pum-target-pg').checked;
+    const targetInv = document.getElementById('pum-target-inv').checked;
+    const overrideOn = document.getElementById('pum-override-toggle').checked;
+
+    if (!nomShared) {
+        showToast('Le nom est obligatoire', 'warning');
+        return;
+    }
+    if (!targetPG && !targetInv) {
+        showToast('Choisis au moins un catalogue', 'warning');
+        return;
+    }
+
+    // Valeurs finales par catalogue
+    const nomPG = overrideOn ? (document.getElementById('pum-nom-pg').value || nomShared).trim() : nomShared;
+    const nomInv = overrideOn ? (document.getElementById('pum-nom-inv').value || nomShared).trim() : nomShared;
+    const prixPG = overrideOn ? (parseFloat(document.getElementById('pum-prix-pg').value) || prixShared) : prixShared;
+    const prixInv = overrideOn ? (parseFloat(document.getElementById('pum-prix-inv').value) || prixShared) : prixShared;
+
+    let pgChanged = false;
+    let invChanged = false;
+
+    if (targetPG) {
+        // Supprimer l'ancienne entree si rename ou changement de categorie
+        if (mode === 'edit' && originalNom) {
+            for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+                if (typeof produits === 'object' && produits[originalNom]) {
+                    if (cat !== catPG || originalNom !== nomPG) {
+                        delete produits[originalNom];
+                    }
+                }
+            }
+        }
+        if (!currentProduitsConfig[catPG]) currentProduitsConfig[catPG] = {};
+        currentProduitsConfig[catPG][nomPG] = {
+            default: prixPG,
+            alternatives: [prixPG]
+        };
+        pgChanged = true;
+    }
+
+    if (targetInv) {
+        // Inventaire est plat: cle = nom. Supprimer l'ancien si rename.
+        if (mode === 'edit' && originalNom && originalNom !== nomInv) {
+            delete currentInventaireConfig[originalNom];
+        }
+        currentInventaireConfig[nomInv] = {
+            prixDefault: prixInv,
+            alternatives: [prixInv],
+            mode_stock: (currentInventaireConfig[nomInv] && currentInventaireConfig[nomInv].mode_stock) || 'manuel',
+            unite_stock: (currentInventaireConfig[nomInv] && currentInventaireConfig[nomInv].unite_stock) || 'unite',
+            categorie_affichage: catInv
+        };
+        invChanged = true;
+    }
+
+    // Refresh affichages
+    if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+
+    // Refresh la recherche
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    renderRechercheGrid();
+
+    // Toast info
+    const where = [pgChanged && 'Généraux', invChanged && 'Inventaire'].filter(Boolean).join(' + ');
+    const action = mode === 'edit' ? 'modifié' : 'ajouté';
+    showToast(`Produit ${action} dans ${where}. N'oublie pas de cliquer "Sauvegarder" sur l'onglet.`, 'success');
+
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
+// Suppression dans les 2 catalogues (avec confirmation).
+async function pumDelete() {
+    const nom = document.getElementById('pum-original-nom').value;
+    if (!nom) return;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`Supprimer définitivement «${nom}» des 2 catalogues ?`, {
+            title: 'Supprimer le produit', okLabel: 'Supprimer', okVariant: 'danger'
+        })
+        : confirm(`Supprimer "${nom}" des 2 catalogues ?`);
+    if (!ok) return;
+
+    // Retirer de PG
+    let pgChanged = false;
+    for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+        if (typeof produits === 'object' && produits[nom]) {
+            delete produits[nom];
+            pgChanged = true;
+        }
+    }
+    // Retirer de Inv
+    let invChanged = false;
+    if (currentInventaireConfig && currentInventaireConfig[nom]) {
+        delete currentInventaireConfig[nom];
+        invChanged = true;
+    }
+
+    if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    renderRechercheGrid();
+
+    showToast(`«${nom}» supprimé. N'oublie pas de cliquer "Sauvegarder".`, 'success');
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
+// Bind events du modal au load.
+function initModalProduitUnifie() {
+    const modalEl = document.getElementById('productUnifiedModal');
+    if (!modalEl || modalEl.dataset.bound === 'true') return;
+    modalEl.dataset.bound = 'true';
+
+    // Toggle override section
+    const toggle = document.getElementById('pum-override-toggle');
+    if (toggle) {
+        toggle.addEventListener('change', (e) => {
+            document.getElementById('pum-override').style.display = e.target.checked ? '' : 'none';
+        });
+    }
+
+    // Sync nom / prix maîtres -> champs override
+    const nomShared = document.getElementById('pum-nom');
+    if (nomShared) {
+        nomShared.addEventListener('input', (e) => {
+            const v = e.target.value;
+            document.getElementById('pum-nom-pg').value = v;
+            document.getElementById('pum-nom-inv').value = v;
+            pumUpdateStatus(v);
+        });
+    }
+    const prixShared = document.getElementById('pum-prix');
+    if (prixShared) {
+        prixShared.addEventListener('input', (e) => {
+            document.getElementById('pum-prix-pg').value = e.target.value;
+            document.getElementById('pum-prix-inv').value = e.target.value;
+        });
+    }
+
+    // Save + Delete
+    const saveBtn = document.getElementById('pum-save-btn');
+    if (saveBtn) saveBtn.addEventListener('click', pumSave);
+    const deleteBtn = document.getElementById('pum-delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
+
+    // Bouton "+ Ajouter un produit" sur l'onglet Recherche
+    const addBtn = document.getElementById('recherche-add-btn');
+    if (addBtn) {
+        addBtn.addEventListener('click', () => ouvrirModalProduitUnifie('add'));
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initModalProduitUnifie);
+} else {
+    initModalProduitUnifie();
 } 
