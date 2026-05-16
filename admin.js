@@ -4403,13 +4403,16 @@ async function rechercheBatchArchive(targetArchived) {
     let hasInvChanges = false;
     for (const p of toUpdate) {
         if (p.src === 'pg') {
-            const pgHit = pumLookupPG(p.name);
+            // Exact: ne touche QUE le produit dont le nom matche exactement
+            // p.name. Sans ca, un produit 'Pasta' archive pourrait toucher
+            // 'PASTA' (case-different) qui est un produit distinct.
+            const pgHit = pumLookupPG(p.name, { exact: true });
             if (pgHit && currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom]) {
                 currentProduitsConfig[pgHit.categorie][pgHit.nom].archived = targetArchived;
                 hasPgChanges = true;
             }
         } else if (p.src === 'inv') {
-            const invHit = pumLookupInv(p.name);
+            const invHit = pumLookupInv(p.name, { exact: true });
             if (invHit && invHit.parent && invHit.parent[invHit.nom]) {
                 invHit.parent[invHit.nom].archived = targetArchived;
                 hasInvChanges = true;
@@ -4915,10 +4918,33 @@ function pumDefaultModeStock(catInv) {
 }
 
 // Cherche un produit existant dans Produits Generaux par nom.
-// Retourne { categorie, config } ou null.
-function pumLookupPG(nom) {
+// Retourne { categorie, nom, config } ou null.
+//
+// opts.exact (defaut: false):
+//   - false  : match case-insensitive (utile pour le hint "produit similaire")
+//   - true   : match strict par cle (case-sensitive). A utiliser dans TOUS
+//              les chemins destructifs (archive, save, delete) sinon 2
+//              produits distincts qui different uniquement par la casse
+//              (ex: 'Pasta' / 'PASTA' / 'Pomme De Terre Sac' / 'POMME DE
+//              TERRE SAC') seraient conflates et l'admin pourrait toucher
+//              l'un en croyant toucher l'autre.
+function pumLookupPG(nom, opts) {
     if (!currentProduitsConfig || !nom) return null;
-    const target = nom.toLowerCase();
+    const exact = !!(opts && opts.exact);
+    if (exact) {
+        // Lookup direct par cle dans chaque categorie (O(N_cats) au lieu
+        // de O(N_produits) du scan fuzzy).
+        for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            const config = produits[nom];
+            if (typeof config === 'object' && config !== null && typeof config.default === 'number') {
+                return { categorie: cat, nom, config };
+            }
+        }
+        return null;
+    }
+    // Fuzzy: scan case-insensitive (defaut historique)
+    const target = String(nom).toLowerCase();
     for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
         if (typeof produits !== 'object' || produits === null) continue;
         for (const [name, config] of Object.entries(produits)) {
@@ -4938,9 +4964,12 @@ function pumLookupPG(nom) {
 // (root pour les produits flat, ou la categorie personnalisee). Les callers
 // qui suppriment doivent utiliser `delete parent[nom]` plutot que de
 // presumer le root.
-function pumLookupInv(nom) {
+//
+// opts.exact: voir pumLookupPG. Idem semantique.
+function pumLookupInv(nom, opts) {
     if (!currentInventaireConfig || !nom) return null;
-    const target = String(nom).toLowerCase();
+    const exact = !!(opts && opts.exact);
+    const target = exact ? String(nom) : String(nom).toLowerCase();
     // DFS: on parcourt root + sous-objets a 1 niveau (les categories
     // personnalisees). On ne va PAS plus profond car le format admin
     // ne supporte pas l'imbrication arbitraire.
@@ -4948,9 +4977,11 @@ function pumLookupInv(nom) {
         for (const [name, config] of Object.entries(container)) {
             if (typeof config !== 'object' || config === null) continue;
             // Match: produit feuille avec prixDefault
-            if (typeof config.prixDefault === 'number' &&
-                name.toLowerCase() === target) {
-                return { nom: name, config, parent: container };
+            if (typeof config.prixDefault === 'number') {
+                const isMatch = exact ? (name === target) : (name.toLowerCase() === target);
+                if (isMatch) {
+                    return { nom: name, config, parent: container };
+                }
             }
             // Sinon, si c'est un container de categorie (objet sans
             // prixDefault), descendre dedans.
@@ -4992,11 +5023,15 @@ function pumDetectInvConflict(originalNom, nomInv, mode) {
 }
 
 // Met a jour la banniere status selon les hits dans les 2 catalogues.
+// Exact match: la banniere reflete uniquement le produit EXACT que l'admin
+// est en train de saisir/editer. Un match fuzzy serait trompeur — il
+// laisserait croire que le produit existe alors qu'il s'agit en realite
+// d'une variante de casse (ex: 'Pasta' vs 'PASTA').
 function pumUpdateStatus(nom) {
     const status = document.getElementById('pum-status');
     if (!status) return;
-    const pg = pumLookupPG(nom);
-    const inv = pumLookupInv(nom);
+    const pg = pumLookupPG(nom, { exact: true });
+    const inv = pumLookupInv(nom, { exact: true });
     let html = '';
     if (pg && inv) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
@@ -5038,8 +5073,9 @@ function ouvrirModalProduitUnifie(mode, data) {
     let invHit = null;
 
     if (mode === 'edit' && data.nom) {
-        pgHit = pumLookupPG(data.nom);
-        invHit = pumLookupInv(data.nom);
+        // Exact: on n'edite QUE le produit clique, pas une variante de casse
+        pgHit = pumLookupPG(data.nom, { exact: true });
+        invHit = pumLookupInv(data.nom, { exact: true });
         if (pgHit) selPG = pgHit.categorie;
         if (invHit && invHit.config.categorie_affichage) {
             selInv = invHit.config.categorie_affichage;
@@ -5228,7 +5264,10 @@ async function pumSave() {
         // (prix_personnalise, inventaire_parent, prix vente speciaux, etc.).
         let baseConfigPG = {};
         if (mode === 'edit' && originalNom) {
-            const origHit = pumLookupPG(originalNom);
+            // Exact: on edite QUE le produit dont la cle == originalNom.
+            // Une variante de casse (ex: 'PASTA' vs 'Pasta') est un produit
+            // distinct qu'il ne faut pas toucher.
+            const origHit = pumLookupPG(originalNom, { exact: true });
             if (origHit) baseConfigPG = origHit.config;
             // Supprimer l'ancienne entree si rename ou changement de categorie
             for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
@@ -5264,7 +5303,11 @@ async function pumSave() {
         let origInvParent = null;
         let origInvNom = null;
         if (mode === 'edit' && originalNom) {
-            const origHit = pumLookupInv(originalNom);
+            // Exact: idem PG. Sans ca, un edit de 'Pomme De Terre Sac'
+            // pourrait DELETE 'POMME DE TERRE SAC' (case-different produit
+            // distinct) puis recreer une cle 'Pomme De Terre Sac' avec sa
+            // config — corruption silencieuse.
+            const origHit = pumLookupInv(originalNom, { exact: true });
             if (origHit) {
                 baseConfigInv = origHit.config;
                 origInvParent = origHit.parent;
@@ -5541,8 +5584,12 @@ async function pumToggleArchive() {
     const action = targetArchived ? 'Archiver' : 'Désarchiver';
     const actionPast = targetArchived ? 'archivé' : 'désarchivé';
 
-    const pgHit = pumLookupPG(nom);
-    const invHit = pumLookupInv(nom);
+    // Exact match obligatoire ici: l'admin a clique sur UN produit precis
+    // (cle exacte). Un match fuzzy archiverait par accident une variante
+    // de casse (ex: archiver 'Pomme De Terre Sac' ne doit pas toucher
+    // 'POMME DE TERRE SAC' qui est un produit distinct en BDD).
+    const pgHit = pumLookupPG(nom, { exact: true });
+    const invHit = pumLookupInv(nom, { exact: true });
     if (!pgHit && !invHit) return; // rien a faire
 
     const where = [pgHit && 'Généraux', invHit && 'Inventaire'].filter(Boolean).join(' + ');
