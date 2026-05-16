@@ -4362,9 +4362,15 @@ function renderRechercheSelectionBar() {
     `;
 }
 
+// Flag re-entrant pour empecher 2 batchs concurrents (double-click sur
+// le bouton "Archiver/Desarchiver" de l'action bar). Un seul batch a la
+// fois pour eviter des mutations memory paralleles sur currentXConfig.
+let _rechercheBatchInFlight = false;
+
 // Batch: applique archived=targetValue sur tous les produits selectionnes.
 // Itere sur les 2 catalogues et POST en 1 fois par cote (pas N requetes).
 async function rechercheBatchArchive(targetArchived) {
+    if (_rechercheBatchInFlight) return; // garde re-entrante
     const selection = _rechercheState.selection;
     if (selection.size === 0) return;
     const flat = _rechercheState.flat;
@@ -4393,6 +4399,10 @@ async function rechercheBatchArchive(targetArchived) {
         })
         : confirm(`${action} ${toUpdate.length} produits ?`);
     if (!ok) return;
+
+    // Garde re-entrante: bloquer les autres batchs avant TOUTE mutation memory.
+    // Si un autre batch arrive entre temps, il return immediatement (no-op).
+    _rechercheBatchInFlight = true;
 
     // Snapshot pour rollback
     const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
@@ -4463,6 +4473,8 @@ async function rechercheBatchArchive(targetArchived) {
         serverError = err && err.message ? err.message : String(err);
     } finally {
         if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = false);
+        // Liberation du flag re-entrant — TOUJOURS (success + error)
+        _rechercheBatchInFlight = false;
     }
 
     if (!serverOk) {
@@ -4506,10 +4518,12 @@ async function rechercheArchiveSingle(src, nom) {
     if (!target) return;
 
     _rechercheArchiveSingleInFlight.add(key);
-    // Disable visuellement le bouton archive de cette carte (idempotent
-    // si plusieurs cartes existent pour le meme nom dans 2 catalogues).
-    const escKey = key.replace(/"/g, '&quot;');
-    const btn = document.querySelector(`[data-recherche-archive="${escKey}"]`);
+    // Disable visuellement le bouton archive de cette carte. CSS.escape gere
+    // tous les caracteres speciaux des selecteurs (],[,\\,\\n...) — bien plus
+    // robuste qu'un simple replace de ". Supporte tous les navigateurs
+    // modernes.
+    const cssKey = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(key) : key.replace(/(["\\\[\]])/g, '\\$1');
+    const btn = document.querySelector(`[data-recherche-archive="${cssKey}"]`);
     if (btn) btn.disabled = true;
 
     // Sauvegarde de la selection courante, on la remplace temporairement
@@ -4933,9 +4947,12 @@ function pumLookupPG(nom, opts) {
     const exact = !!(opts && opts.exact);
     if (exact) {
         // Lookup direct par cle dans chaque categorie (O(N_cats) au lieu
-        // de O(N_produits) du scan fuzzy).
+        // de O(N_produits) du scan fuzzy). hasOwnProperty.call evite de
+        // matcher les cles heritees du prototype (Object.prototype) si un
+        // produit s'appelle 'constructor', '__proto__', 'toString', etc.
         for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
             if (typeof produits !== 'object' || produits === null) continue;
+            if (!Object.prototype.hasOwnProperty.call(produits, nom)) continue;
             const config = produits[nom];
             if (typeof config === 'object' && config !== null && typeof config.default === 'number') {
                 return { categorie: cat, nom, config };
@@ -4974,7 +4991,12 @@ function pumLookupInv(nom, opts) {
     // personnalisees). On ne va PAS plus profond car le format admin
     // ne supporte pas l'imbrication arbitraire.
     const visit = (container) => {
+        // Object.entries n'enumere que les own properties enumerable donc
+        // pas de leak du prototype. Mais on filtre quand meme via
+        // hasOwnProperty.call par defense en profondeur (au cas ou un parent
+        // serait Object.create(prototypePollue)).
         for (const [name, config] of Object.entries(container)) {
+            if (!Object.prototype.hasOwnProperty.call(container, name)) continue;
             if (typeof config !== 'object' || config === null) continue;
             // Match: produit feuille avec prixDefault
             if (typeof config.prixDefault === 'number') {
@@ -5023,29 +5045,56 @@ function pumDetectInvConflict(originalNom, nomInv, mode) {
 }
 
 // Met a jour la banniere status selon les hits dans les 2 catalogues.
-// Exact match: la banniere reflete uniquement le produit EXACT que l'admin
-// est en train de saisir/editer. Un match fuzzy serait trompeur — il
-// laisserait croire que le produit existe alors qu'il s'agit en realite
-// d'une variante de casse (ex: 'Pasta' vs 'PASTA').
+// Strategie a 2 niveaux:
+// 1. Match EXACT (case-sensitive): "Existe dans X" — c'est le meme produit
+// 2. Si pas d'exact, match FUZZY (case-insensitive): "Similaire dans X
+//    («NomDifferent»)" — produit different a la casse pres, l'admin peut
+//    vouloir le voir comme indice avant de creer une variante.
+// Sans cet hint fuzzy, l'admin pourrait creer 'PASTA' sans savoir que
+// 'Pasta' existe deja en BDD.
 function pumUpdateStatus(nom) {
     const status = document.getElementById('pum-status');
     if (!status) return;
     const pg = pumLookupPG(nom, { exact: true });
     const inv = pumLookupInv(nom, { exact: true });
+    // Hint fuzzy: SEULEMENT si pas d'exact (sinon on a deja l'info)
+    const pgFuzzy = pg ? null : pumLookupPG(nom);
+    const invFuzzy = inv ? null : pumLookupInv(nom);
+
+    // escAttr couvre <,>,&,",' et fait office d'escape texte aussi
+    const fmtExactPG = (h) => `<strong>Produits Généraux</strong> (${escAttr(h.categorie)}, ${h.config.default.toLocaleString('fr-FR')} FCFA)`;
+    const fmtExactInv = (h) => `<strong>Inventaire</strong> (${h.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    const fmtFuzzyPG = (h) => `<strong>Produits Généraux</strong> sous le nom <em>«${escAttr(h.nom)}»</em>`;
+    const fmtFuzzyInv = (h) => `<strong>Inventaire</strong> sous le nom <em>«${escAttr(h.nom)}»</em>`;
+
     let html = '';
     if (pg && inv) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)
-            ET <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactPG(pg)} ET ${fmtExactInv(inv)}`;
     } else if (pg) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe uniquement dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactPG(pg)}`;
+        if (invFuzzy) {
+            html += `<br><i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                <small>Produit similaire dans ${fmtFuzzyInv(invFuzzy)} — variante de casse</small>`;
+        }
     } else if (inv) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe uniquement dans <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactInv(inv)}`;
+        if (pgFuzzy) {
+            html += `<br><i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                <small>Produit similaire dans ${fmtFuzzyPG(pgFuzzy)} — variante de casse</small>`;
+        }
+    } else if (pgFuzzy || invFuzzy) {
+        // Aucun match exact mais un fuzzy → avertir l'admin avant la creation
+        const lignes = [];
+        if (pgFuzzy) lignes.push(fmtFuzzyPG(pgFuzzy));
+        if (invFuzzy) lignes.push(fmtFuzzyInv(invFuzzy));
+        html = `<i class="bi bi-exclamation-triangle text-warning me-1"></i>
+            Nouveau produit, mais un similaire existe : ${lignes.join(' / ')} — confirme que tu veux créer une variante.`;
     } else {
         html = `<i class="bi bi-info-circle text-primary me-1"></i>
-            Nouveau produit — sera créé dans les 2 catalogues.`;
+            Nouveau produit — sera créé dans les catalogues cochés.`;
     }
     status.innerHTML = html;
 }
@@ -5277,9 +5326,16 @@ async function pumSave() {
                     }
                 }
             }
-        } else if (currentProduitsConfig[catPG] && currentProduitsConfig[catPG][nomPG]) {
-            // Mode add avec conflit deja confirme: merger avec l'existant
-            baseConfigPG = currentProduitsConfig[catPG][nomPG];
+        } else if (
+            currentProduitsConfig[catPG] &&
+            Object.prototype.hasOwnProperty.call(currentProduitsConfig[catPG], nomPG)
+        ) {
+            // Mode add avec conflit deja confirme: merger avec l'existant.
+            // hasOwnProperty.call evite de matcher les cles du prototype
+            // (defense contre prototype pollution si un produit s'appelle
+            // 'constructor', '__proto__', etc.).
+            const existing = currentProduitsConfig[catPG][nomPG];
+            if (typeof existing === 'object' && existing !== null) baseConfigPG = existing;
         }
         // Alternatives: preserver l'array existant, ajouter prixPG si absent
         const altsPG = Array.isArray(baseConfigPG.alternatives) ? baseConfigPG.alternatives.slice() : [];
@@ -5313,13 +5369,29 @@ async function pumSave() {
                 origInvParent = origHit.parent;
                 origInvNom = origHit.nom;
             }
-        } else if (currentInventaireConfig[nomInv]) {
-            // Mode add avec conflit confirme: merger avec l'existant root
-            baseConfigInv = currentInventaireConfig[nomInv];
+        } else {
+            // Mode add avec conflit potentiellement confirme: lookup recursif
+            // exact pour merger avec l'existant. Sans recursion, un produit
+            // niche dans une categorie personnalisee serait rate -> on
+            // creerait un produit root parallele a son homonyme nested
+            // (asymetrie avec le edit-mode qui utilise pumLookupInv recursif).
+            const existingHit = pumLookupInv(nomInv, { exact: true });
+            if (existingHit) {
+                baseConfigInv = existingHit.config;
+                origInvParent = existingHit.parent;
+                origInvNom = existingHit.nom;
+            }
         }
-        // Supprimer l'ancien si rename (et seulement si la cle change)
-        if (origInvParent && origInvNom && origInvNom !== nomInv) {
-            delete origInvParent[origInvNom];
+        // Supprimer l'ancien si:
+        //  - rename: la cle change → on doit deplacer
+        //  - match nested: on ecrit au root, donc on doit supprimer le nested
+        //    pour eviter d'avoir 2 entrees du meme produit
+        if (origInvParent && origInvNom) {
+            const sameKey = origInvNom === nomInv;
+            const isNested = origInvParent !== currentInventaireConfig;
+            if (!sameKey || isNested) {
+                delete origInvParent[origInvNom];
+            }
         }
         // Alternatives: preserver + ajouter prixInv si absent
         const altsInv = Array.isArray(baseConfigInv.alternatives) ? baseConfigInv.alternatives.slice() : [];
@@ -5592,7 +5664,18 @@ async function pumToggleArchive() {
     const invHit = pumLookupInv(nom, { exact: true });
     if (!pgHit && !invHit) return; // rien a faire
 
-    const where = [pgHit && 'Généraux', invHit && 'Inventaire'].filter(Boolean).join(' + ');
+    // Determine quels cotes vont REELLEMENT changer d'etat. Si un cote est
+    // deja dans l'etat cible (ex: PG deja archive et user clique "Archiver"
+    // parce que Inv ne l'est pas), on ne le touche pas et on ne le mentionne
+    // pas dans le toast — sinon le message est trompeur.
+    const pgWillChange = !!(pgHit && !!pgHit.config.archived !== targetArchived);
+    const invWillChange = !!(invHit && !!invHit.config.archived !== targetArchived);
+    if (!pgWillChange && !invWillChange) {
+        showToast(`«${nom}» est déjà ${actionPast}.`, 'info');
+        return;
+    }
+
+    const where = [pgWillChange && 'Généraux', invWillChange && 'Inventaire'].filter(Boolean).join(' + ');
     const explainArchive = targetArchived
         ? `\n\nLe produit ne sera plus affiché dans le POS, le stock inventaire, ni dans la recherche admin par défaut. Toutes les données historiques (ventes, prix, etc.) sont conservées.`
         : `\n\nLe produit redeviendra visible dans le POS et le stock inventaire.`;
@@ -5609,12 +5692,13 @@ async function pumToggleArchive() {
     const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
     const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
 
-    // Set le flag en memoire sur les 2 cotes (la ou il existe)
-    if (pgHit) {
+    // Set le flag en memoire SEULEMENT sur les cotes qui changent reellement.
+    // Evite des POST inutiles (cf. plus bas: hasPgChanges = pgWillChange).
+    if (pgWillChange) {
         const target = currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom];
         if (target) target.archived = targetArchived;
     }
-    if (invHit && invHit.parent) {
+    if (invWillChange && invHit.parent) {
         invHit.parent[invHit.nom].archived = targetArchived;
     }
 
@@ -5630,7 +5714,9 @@ async function pumToggleArchive() {
     let serverOk = true;
     let serverError = null;
     try {
-        if (pgHit) {
+        // POST uniquement sur les cotes qui ont change reellement (POST
+        // inutile si le cote etait deja dans l'etat cible).
+        if (pgWillChange) {
             const resp = await fetch('/api/admin/config/produits', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -5643,7 +5729,7 @@ async function pumToggleArchive() {
                 serverError = data.message || data.error || `HTTP ${resp.status}`;
             }
         }
-        if (serverOk && invHit) {
+        if (serverOk && invWillChange) {
             const resp = await fetch('/api/admin/config/produits-inventaire', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

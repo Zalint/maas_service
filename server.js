@@ -1508,7 +1508,39 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
     
     try {
         const { Produit, Category } = require('./db/models');
-        
+        const { Op } = require('sequelize');
+
+        // Pre-pass garde archived: collecte TOUS les produits archives du
+        // batch en 1 seule requete (Op.in sur les noms uniques) avant
+        // d'entamer la boucle d'ecriture. Couvre les 2 catalogues (vente
+        // et inventaire): un produit dont la version vente OU inventaire
+        // est archivee ne doit plus apparaitre dans des ventes/auto-stock.
+        // Meilleur UX qu'un fail-fast: l'admin voit la liste complete des
+        // archives au lieu de re-soumettre N fois.
+        const nomsUniques = [...new Set(entries.map(e => e.produit).filter(Boolean))];
+        if (nomsUniques.length > 0) {
+            const archives = await Produit.findAll({
+                where: {
+                    nom: { [Op.in]: nomsUniques },
+                    archived: true,
+                    type_catalogue: { [Op.in]: ['vente', 'inventaire'] }
+                },
+                attributes: ['nom', 'type_catalogue']
+            });
+            if (archives.length > 0) {
+                // Dedup par nom (un produit peut etre archive des 2 cotes)
+                const archivedSet = new Set(archives.map(p => p.nom));
+                const archivedList = [...archivedSet];
+                return res.status(400).json({
+                    success: false,
+                    message: archivedList.length === 1
+                        ? `Le produit «${archivedList[0]}» est archivé et ne peut plus être vendu. Désarchive-le côté admin si nécessaire.`
+                        : `${archivedList.length} produits sont archivés et ne peuvent plus être vendus : ${archivedList.map(n => `«${n}»`).join(', ')}. Désarchive-les côté admin si nécessaire.`,
+                    archivedProducts: archivedList
+                });
+            }
+        }
+
         // Créer automatiquement les produits qui n'existent pas.
         // Le nom est utilisé tel que reçu — pas de normalisation de casse.
         // Les produits existants gardent leur casse d'origine; seules les
@@ -1526,20 +1558,11 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
 
             // Lookup exact (la casse du nom envoyé par le client doit
             // correspondre à celle stockée en BDD).
+            // La pre-pass au-dessus a deja rejete le batch si un quelconque
+            // produit etait archive, donc on n'a plus besoin de revalider ici.
             let produitVente = await Produit.findOne({
                 where: { nom: produitNom, type_catalogue: 'vente' }
             });
-
-            // Garde serveur: un produit archive ne doit plus etre vendu, meme
-            // si une session POS stale (cache 5min) tente d'envoyer la vente.
-            // On rejette explicitement le batch entier avec un message clair.
-            if (produitVente && produitVente.archived) {
-                return res.status(400).json({
-                    success: false,
-                    message: `Le produit «${produitNom}» est archivé et ne peut plus être vendu. Désarchive-le côté admin si nécessaire.`,
-                    archivedProduct: produitNom
-                });
-            }
 
             if (!produitVente) {
                 produitVente = await Produit.create({
