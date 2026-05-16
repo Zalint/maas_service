@@ -1869,9 +1869,20 @@ const ReconciliationManager = (function() {
         Object.values(produitsMap).forEach(data => {
             data.venteTheorique = data.stockMatin - data.stockSoir + data.transferts;
         });
-        
+
+        // Masquer les produits dont TOUTES les valeurs sont a zero (rien
+        // n'apporte de signal a l'utilisateur). On garde une ligne meme si
+        // une seule des 4 valeurs est non-nulle (ex: stock matin sans soir
+        // = vente partielle, garde-fou utile).
+        const produitsNonZero = Object.values(produitsMap).filter((d) => {
+            return (d.stockMatin || 0) !== 0
+                || (d.stockSoir || 0) !== 0
+                || (d.transferts || 0) !== 0
+                || (d.venteTheorique || 0) !== 0;
+        });
+
         // Convertir en tableau et trier
-        const produitsTries = trierProduits(Object.values(produitsMap));
+        const produitsTries = trierProduits(produitsNonZero);
         
         // Créer les lignes du tableau
         produitsTries.forEach(data => {

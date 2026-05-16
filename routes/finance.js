@@ -85,6 +85,17 @@ const BOUCHERIE_EXCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_EXCLUDE_REGEX
 const { parseCentres } = require('./decoupe-helpers');
 const { checkAdvancedAccess } = require('../middlewares/auth');
 
+// Expression SQL Postgres qui convertit stocks.date (texte DD-MM-YYYY)
+// vers la forme ISO YYYY-MM-DD pour comparaison lex chronologique.
+// IMMUTABLE (pure string manip) -> indexable via idx_stocks_date_iso
+// (cf db/update-schema.js). Doit rester strictement identique a
+// l'expression utilisee dans la definition de l'index, sinon Postgres
+// n'utilisera pas l'index pour les requetes.
+const STOCKS_DATE_AS_ISO_SQL =
+    "(substring(date FROM 7 FOR 4) || '-' || " +
+    "substring(date FROM 4 FOR 2) || '-' || " +
+    "substring(date FROM 1 FOR 2))";
+
 const router = express.Router();
 
 // ============================================================
@@ -1075,12 +1086,8 @@ router.get('/pl', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'matin'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND (substring(date FROM 7 FOR 4) || '-' ||
-                        substring(date FROM 4 FOR 2) || '-' ||
-                        substring(date FROM 1 FOR 2)) <= :dateDebut
-                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
-                          substring(date FROM 4 FOR 2) || '-' ||
-                          substring(date FROM 1 FOR 2)) DESC
+                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateDebut
+                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
@@ -1093,12 +1100,8 @@ router.get('/pl', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'soir'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND (substring(date FROM 7 FOR 4) || '-' ||
-                        substring(date FROM 4 FOR 2) || '-' ||
-                        substring(date FROM 1 FOR 2)) <= :dateFin
-                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
-                          substring(date FROM 4 FOR 2) || '-' ||
-                          substring(date FROM 1 FOR 2)) DESC
+                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateFin
+                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
@@ -1202,8 +1205,12 @@ function setCachedCumul(dateD, value) {
 // - financeCache (catalogue prix + aliases, TTL 60s)
 // - _cashStockCumulCache (cumul commission MaaS par date)
 //
-// A appeler depuis toute mutation qui peut changer les calculs derives
-// (prix, alias, config, charges, paiements, ou retroactivement les ventes).
+// A appeler depuis toute mutation qui peut changer les calculs derives:
+//   - cote routes/finance.js: prix*, alias*, config, charges*, paiements*
+//   - cote server.js: mutations Vente (POST/PUT/DELETE /api/ventes,
+//     /api/ventes/jour/:date, /api/vider-base, conversion precommande,
+//     suppression commande_id). Cf invalidateFinanceCachesOnVenteMutation().
+//
 // Attache au router pour rester accessible apres le module.exports = router
 // (en fin de fichier) qui remplacerait sinon l'export.
 function invalidateFinanceDerivedCaches() {
@@ -1211,10 +1218,6 @@ function invalidateFinanceDerivedCaches() {
     _cashStockCumulCache.clear();
 }
 router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
-// Retro-compat: ancien nom expose pour les callers existants.
-router._invalidateCashStockCache = function () {
-    _cashStockCumulCache.clear();
-};
 
 router.get('/cash-stock', async (req, res) => {
     try {
@@ -1255,10 +1258,10 @@ router.get('/cash-stock', async (req, res) => {
         }
 
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
-        // stocks.date est en TEXTE DD-MM-YYYY (cf db/utils.js#formatDate);
-        // on convertit en ISO YYYY-MM-DD via substring + concat (IMMUTABLE,
-        // indexable - cf idx_stocks_date_iso). Pas de cast date necessaire:
-        // ordre lex sur ISO = ordre chronologique.
+        // stocks.date est en TEXTE DD-MM-YYYY; on convertit en ISO via la
+        // constante STOCKS_DATE_AS_ISO_SQL (IMMUTABLE, indexable - cf
+        // idx_stocks_date_iso). Pas de cast date necessaire: ordre lex sur
+        // ISO = ordre chronologique.
         const stockSoirRows = await sequelize.query(
             `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
              FROM stocks
@@ -1267,12 +1270,8 @@ router.get('/cash-stock', async (req, res) => {
                  SELECT date FROM stocks
                  WHERE type_stock = 'soir'
                    AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND (substring(date FROM 7 FOR 4) || '-' ||
-                        substring(date FROM 4 FOR 2) || '-' ||
-                        substring(date FROM 1 FOR 2)) <= :dateD
-                 ORDER BY (substring(date FROM 7 FOR 4) || '-' ||
-                          substring(date FROM 4 FOR 2) || '-' ||
-                          substring(date FROM 1 FOR 2)) DESC
+                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateD
+                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
                  LIMIT 1
                )`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }

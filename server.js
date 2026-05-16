@@ -579,6 +579,24 @@ app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
 const financeRouter = require('./routes/finance');
 app.use('/api/finance', checkAuth, financeRouter);
 
+// Helper: invalider les caches derives Finance apres mutation Vente.
+// Les routes /api/ventes (POST, PUT, DELETE, DELETE jour) et
+// /api/import-ventes modifient les ventes, qui sont l'entree principale
+// de computeCreances -> cumul commission MaaS cache cote routes/finance.js
+// (_cashStockCumulCache). Sans cette invalidation, une vente passee
+// editee/supprimee laisse un cumul stale jusqu'au prochain reboot.
+// Best-effort: si l'invalidation echoue (helper absent suite a refacto),
+// on log sans faire echouer la mutation.
+function invalidateFinanceCachesOnVenteMutation() {
+    try {
+        if (financeRouter && typeof financeRouter.invalidateFinanceDerivedCaches === 'function') {
+            financeRouter.invalidateFinanceDerivedCaches();
+        }
+    } catch (e) {
+        console.warn('[cache] invalidation Finance apres mutation Vente a echoue:', e.message);
+    }
+}
+
 // Routes pour la gestion du stock automatique
 // SUPPRIMÉ - Stock unifié dans les fichiers JSON
 // app.use('/api/stock-auto', stockAutoRouter);
@@ -1652,7 +1670,8 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
         
         // Insérer les ventes dans la base de données
         await Vente.bulkCreate(ventesToInsert);
-        
+        invalidateFinanceCachesOnVenteMutation();
+
         // =====================================================
         // MISE A JOUR STOCK SOIR POUR PRODUITS AUTO
         // Delegue a recomputeStockSoirForAuto qui:
@@ -1776,7 +1795,8 @@ app.put('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
         
         // Mettre à jour la vente
         await vente.update(updateData);
-        
+        invalidateFinanceCachesOnVenteMutation();
+
         // Récupérer les 10 dernières ventes pour mise à jour de l'affichage
         const dernieresVentes = await Vente.findAll({
             order: [['createdAt', 'DESC']],
@@ -2340,7 +2360,8 @@ app.post('/api/vider-base', async (req, res) => {
 
         // Vider la table des ventes
         await Vente.destroy({ where: {}, truncate: true });
-        
+        invalidateFinanceCachesOnVenteMutation();
+
         res.json({ success: true, message: 'Base de données vidée avec succès' });
     } catch (error) {
         console.error('Erreur lors du vidage de la base:', error);
@@ -3568,11 +3589,12 @@ app.delete('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
 
         // Supprimer la vente
         await vente.destroy();
+        invalidateFinanceCachesOnVenteMutation();
 
         console.log(`Vente ID: ${venteId} supprimée avec succès`);
-        
-        res.json({ 
-            success: true, 
+
+        res.json({
+            success: true,
             message: "Vente supprimée avec succès" 
         });
     } catch (error) {
@@ -3695,7 +3717,8 @@ app.delete('/api/ventes/jour/:date', checkAuth, checkWriteAccess, async (req, re
         
         // Supprimer toutes les ventes
         const deletedCount = await Vente.destroy({ where: whereConditions });
-        
+        if (deletedCount > 0) invalidateFinanceCachesOnVenteMutation();
+
         // Recalculer Stock Soir pour chaque produit affecté (format PLAT)
         for (const [key, info] of produitsARecalculer) {
             try {
@@ -4339,7 +4362,8 @@ app.post('/api/precommandes/:id/convert', checkAuth, checkWriteAccess, async (re
         
         // Créer la vente dans la base de données
         const venteCreee = await Vente.create(nouvelleVente);
-        
+        invalidateFinanceCachesOnVenteMutation();
+
         // Marquer la pré-commande comme convertie au lieu de la supprimer
         await precommande.update({
             statut: 'convertie',
@@ -15835,6 +15859,7 @@ app.delete('/api/commandes/:commandeId', checkAuth, checkWriteAccess, async (req
         }
         await Vente.destroy({ where: { commande_id: commandeId }, transaction });
         await transaction.commit();
+        invalidateFinanceCachesOnVenteMutation();
         res.json({ success: true, message: `Commande supprimée (${ventes.length} ventes)`, deletedCount: ventes.length });
     } catch (error) {
         await transaction.rollback();

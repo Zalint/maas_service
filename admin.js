@@ -1222,9 +1222,58 @@ const inventaireFamilleDefauts = {
     'Abats et Sous-produits': 'Boucherie',
     'Produits sur Pieds': 'Boucherie',
     'Œufs et Produits Laitiers': 'Epicerie',
-    'Déchets': 'Autres',
-    'Autres': 'Autres'
+    'Superette': 'Epicerie',           // NEW: cat. par defaut des produits non-boucherie
+    'Déchets': 'Autres'
+    // 'Autres' supprime de la liste des categories logiques (remplace par 'Superette')
 };
+
+// =====================================================================
+// Catégories standard utilisées dans les <select> des modales d'ajout.
+// Groupées par famille pour l'affichage <optgroup>. Source unique de
+// vérité — utilisé par populerCategorieSelect() et par les classifieurs.
+// =====================================================================
+const CATEGORIES_PRODUITS_GENERAUX = {
+    'Boucherie': ['Bovin', 'Ovin', 'Volaille', 'Caprin', 'Poisson', 'Pack'],
+    'Épicerie':  ['Superette', 'Conserve', 'Riz & Féculents']
+};
+const DEFAULT_CATEGORIE_PRODUITS_GENERAUX = 'Superette';
+
+// Categories Inventaire alignees sur Produits Generaux (taxonomie unique).
+// Les anciennes categories logiques ("Viandes", "Abats et Sous-produits",
+// "Produits sur Pieds", "Œufs et Produits Laitiers", "Déchets") restent
+// supportees pour les produits existants via pumPopulerSelect qui injecte
+// l'option legacy si la valeur courante n'est pas dans la liste.
+const CATEGORIES_INVENTAIRE = CATEGORIES_PRODUITS_GENERAUX;
+const DEFAULT_CATEGORIE_INVENTAIRE = 'Superette';
+
+// Helper: re-route les anciennes selections "Autres" vers la default
+// "Superette". Migration silencieuse cote UI.
+function normaliserCategorieAvecDefaut(categorie, defaut) {
+    if (!categorie || categorie === 'Autres') return defaut;
+    return categorie;
+}
+
+// Mapping: label produit (Bovin, Ovin, Conserve...) -> bucket logique de
+// l'inventaire ("Viandes", "Superette", ...). Les buckets restent grossiers
+// pour l'affichage de l'onglet Inventaire (groupes de viandes / epicerie /
+// dechets) alors que les labels alignes Produits Generaux sont plus fins.
+// Pass-through pour les buckets legacy ('Viandes', 'Déchets', ...) et pour
+// les categories personnalisees (qui ont leur propre bucket cree a la volee).
+const _CAT_AFFICHAGE_TO_BUCKET = {
+    'Bovin': 'Viandes',
+    'Ovin': 'Viandes',
+    'Volaille': 'Viandes',
+    'Caprin': 'Viandes',
+    'Poisson': 'Viandes',
+    'Pack': 'Viandes',
+    'Conserve': 'Superette',
+    'Riz & Féculents': 'Superette'
+    // 'Superette' passe-through (deja un bucket)
+};
+function mapCategorieAffichageVersBucket(cat) {
+    if (!cat) return null;
+    return _CAT_AFFICHAGE_TO_BUCKET[cat] || cat;
+}
 
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
@@ -1247,6 +1296,10 @@ async function chargerConfigProduits() {
         console.error('Erreur lors du chargement de la configuration des produits:', error);
         currentProduitsConfig = {};
     }
+    // Rafraichir la recherche cross-catalogue si l'UI est deja initialisee.
+    // Sinon Recherche affiche 0 resultat au load (les configs arrivent
+    // async apres l'init de l'onglet).
+    refreshRechercheApresConfigLoad();
 }
 
 // Charger la configuration des produits d'inventaire
@@ -1278,6 +1331,27 @@ async function chargerConfigInventaire() {
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'inventaire:', error);
         showToast('Erreur lors du chargement de la configuration d\'inventaire');
+    }
+    // Rafraichir l'onglet Recherche cross-catalogue.
+    refreshRechercheApresConfigLoad();
+}
+
+// Helper: re-render l'onglet Recherche apres un load des configs.
+// No-op si l'UI Recherche n'est pas encore initialisee (avant DOMContentLoaded).
+function refreshRechercheApresConfigLoad() {
+    if (typeof reconstruireFlatRecherche !== 'function') return;
+    const grid = document.getElementById('recherche-grid');
+    if (!grid) return; // tab pas dans le DOM (autre page)
+    try {
+        reconstruireFlatRecherche();
+        updateRechercheCompteurs();
+        if (typeof renderRechercheCategoriesFilter === 'function') {
+            renderRechercheCategoriesFilter();
+        }
+        renderRechercheGrid();
+    } catch (e) {
+        // initRechercheSpotlight n'a pas encore ete appele; le premier
+        // rendu se fera la, donc on no-op silencieusement.
     }
 }
 
@@ -1577,13 +1651,16 @@ function genererLignesProduits(categorie) {
 
 // Reorganiser les produits d'inventaire par catégories logiques + personnalisées
 function reorganiserInventaireParCategories() {
+    // Categories logiques: ordre = ordre d'affichage. "Autres" supprime au
+    // profit de "Superette" (epicerie generique). Tous les produits qui ne
+    // matchent aucun pattern boucherie tombent dans Superette.
     const inventaireParCategories = {
         "Viandes": {},
-        "Œufs et Produits Laitiers": {},
         "Abats et Sous-produits": {},
         "Produits sur Pieds": {},
-        "Déchets": {},
-        "Autres": {}
+        "Œufs et Produits Laitiers": {},
+        "Superette": {},
+        "Déchets": {}
     };
     
     // Liste des catégories personnalisées (stockées dans localStorage ou ajoutées manuellement)
@@ -1629,7 +1706,21 @@ function reorganiserInventaireParCategories() {
         }
         
         if (typeof config === 'object' && config.prixDefault !== undefined) {
-            // Catégoriser les produits selon leur nom
+            // Priorite 1: si le produit a un categorie_affichage explicite
+            // (choisi par l'utilisateur a l'ajout), on l'honore. Depuis que
+            // CATEGORIES_INVENTAIRE = CATEGORIES_PRODUITS_GENERAUX, les labels
+            // saisis sont fins ('Bovin', 'Conserve'...) mais les buckets sont
+            // grossiers ('Viandes', 'Superette'...) — il faut mapper avant le
+            // lookup, sinon la selection explicite est perdue.
+            const mapped = mapCategorieAffichageVersBucket(config.categorie_affichage);
+            const explicitCat = normaliserCategorieAvecDefaut(mapped, DEFAULT_CATEGORIE_INVENTAIRE);
+            if (config.categorie_affichage && explicitCat && inventaireParCategories[explicitCat]) {
+                inventaireParCategories[explicitCat][produit] = config;
+                return;
+            }
+
+            // Priorite 2: classification par nom (heuristique boucherie).
+            // Fallback final = "Superette" (anciennement "Autres").
             if (produit.includes('Boeuf') || produit.includes('Veau') || produit.includes('Poulet') || produit.includes('Agneau')) {
                 inventaireParCategories["Viandes"][produit] = config;
             } else if (produit.includes('Tablette') || produit.includes('Oeuf')) {
@@ -1641,13 +1732,13 @@ function reorganiserInventaireParCategories() {
             } else if (produit.includes('Déchet') || produit.includes('Dechet')) {
                 inventaireParCategories["Déchets"][produit] = config;
             } else {
-                inventaireParCategories["Autres"][produit] = config;
+                inventaireParCategories["Superette"][produit] = config;
             }
         }
     });
-    
+
     // Supprimer les catégories LOGIQUES vides (mais garder les personnalisées)
-    const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Déchets", "Autres"];
+    const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Superette", "Déchets"];
     
     Object.keys(inventaireParCategories).forEach(categorie => {
         // Ne supprimer que les catégories logiques vides, garder les personnalisées
@@ -1661,7 +1752,7 @@ function reorganiserInventaireParCategories() {
 
 // Fonction pour générer le bouton de suppression conditionnel pour l'inventaire
 function getCategorieInventaireDeleteButton(categorie) {
-    const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Déchets', 'Autres'];
+    const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Superette', 'Déchets'];
     
     if (categoriesInventairePrincipales.includes(categorie)) {
         return `<button class="btn btn-sm btn-secondary" disabled title="Catégorie logique - ne peut pas être supprimée">
@@ -3979,9 +4070,1064 @@ function afficherNotification(message, type = 'info') {
     `;
     
     container.appendChild(notification);
-    
+
     // Supprimer automatiquement après 5 secondes
     setTimeout(() => {
         notification.remove();
     }, 5000);
+}
+
+// =====================================================================
+// RECHERCHE SPOTLIGHT — onglet "Recherche" dans Configuration Produits.
+// Recherche cross-catalogue (Produits Generaux + Inventaire) avec
+// filtres source/famille, tri, et navigation vers la fiche du produit.
+// =====================================================================
+
+// State courant des filtres + cache des produits applatis.
+const _rechercheState = {
+    query: '',
+    src: 'all',     // 'all' | 'pg' | 'inv'
+    famille: 'all', // 'all' | 'boucherie' | 'epicerie' | 'autres'
+    cat: 'all',     // 'all' | nom exact de la categorie (ex: 'Superette')
+    sort: 'name',
+    flat: []
+};
+
+// Normalise une chaine en ASCII lowercase (strip diacritics) pour
+// que 'Épicerie' -> 'epicerie' et matche les data-attrs des filtres.
+// Sinon 'Épicerie'.toLowerCase() = 'épicerie' (avec é) != 'epicerie'.
+function normFamille(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+// Mapping categorie -> famille pour Produits Generaux.
+// Reutilise CATEGORIES_PRODUITS_GENERAUX (defini en haut du fichier).
+function familleDeCatPG(categorie) {
+    for (const [fam, cats] of Object.entries(CATEGORIES_PRODUITS_GENERAUX)) {
+        if (cats.includes(categorie)) return normFamille(fam);
+    }
+    return 'autres';
+}
+function familleDeCatInventaire(categorie) {
+    // Reutilise inventaireFamilleDefauts + custom familles localStorage
+    const fam = (familleDeCategorieInventaire
+        ? familleDeCategorieInventaire(categorie)
+        : (inventaireFamilleDefauts[categorie] || 'Autres')
+    );
+    return normFamille(fam);
+}
+
+// Aplatit les 2 catalogues en un tableau unifie pour la recherche.
+// Forme: { src, name, cat, famille, prix }
+function reconstruireFlatRecherche() {
+    const flat = [];
+
+    // Produits Generaux: currentProduitsConfig = { catName: { produitName: {default, alternatives, ...} } }
+    if (typeof currentProduitsConfig === 'object' && currentProduitsConfig) {
+        for (const [catName, produits] of Object.entries(currentProduitsConfig)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            for (const [produitName, config] of Object.entries(produits)) {
+                if (typeof config !== 'object' || config === null) continue;
+                if (typeof config.default !== 'number') continue;
+                flat.push({
+                    src: 'pg',
+                    name: produitName,
+                    cat: catName,
+                    famille: familleDeCatPG(catName),
+                    prix: config.default
+                });
+            }
+        }
+    }
+
+    // Produits Inventaire: structure mixte (flat ou nested).
+    // On reutilise la categorisation logique de reorganiserInventaireParCategories.
+    if (typeof reorganiserInventaireParCategories === 'function') {
+        const parCat = reorganiserInventaireParCategories();
+        for (const [catName, produits] of Object.entries(parCat)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            for (const [produitName, config] of Object.entries(produits)) {
+                if (typeof config !== 'object' || config === null) continue;
+                if (typeof config.prixDefault !== 'number') continue;
+                flat.push({
+                    src: 'inv',
+                    name: produitName,
+                    cat: catName,
+                    famille: familleDeCatInventaire(catName),
+                    prix: config.prixDefault
+                });
+            }
+        }
+    }
+
+    _rechercheState.flat = flat;
+    return flat;
+}
+
+// Filtre + tri en memoire (pas de requete reseau).
+function appliquerFiltresRecherche() {
+    const { query, src, famille, cat, sort, flat } = _rechercheState;
+    const q = query.toLowerCase().trim();
+    let matches = flat;
+    if (src !== 'all') matches = matches.filter(p => p.src === src);
+    if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
+    if (cat !== 'all') matches = matches.filter(p => p.cat === cat);
+    if (q) matches = matches.filter(p => p.name.toLowerCase().includes(q));
+
+    if (sort === 'name') {
+        matches.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sort === 'price-asc') {
+        matches.sort((a, b) => a.prix - b.prix);
+    } else if (sort === 'price-desc') {
+        matches.sort((a, b) => b.prix - a.prix);
+    }
+    return matches;
+}
+
+function renderRechercheGrid() {
+    const grid = document.getElementById('recherche-grid');
+    const countEl = document.getElementById('recherche-result-count');
+    if (!grid || !countEl) return;
+
+    const matches = appliquerFiltresRecherche();
+    countEl.textContent = `${matches.length} résultat${matches.length > 1 ? 's' : ''}`;
+
+    if (matches.length === 0) {
+        grid.innerHTML = `
+            <div class="recherche-empty">
+                <i class="bi bi-search"></i>
+                Aucun produit ne correspond aux filtres.
+            </div>
+        `;
+        return;
+    }
+
+    // escAttr couvre <,>,&,",' pour attrs ET contenu texte. p.src est trusted
+    // ('pg'/'inv' set par notre code) mais on escape par defense. icon/famIcon/
+    // srcLabel sont hardcodes, p.prix passe par toLocaleString (numerique pur).
+    grid.innerHTML = matches.map((p) => {
+        const icon = p.src === 'pg' ? 'bi-shop' : 'bi-box-seam';
+        const srcLabel = p.src === 'pg' ? 'Généraux' : 'Inventaire';
+        const famIcon = p.famille === 'boucherie' ? '🥩' : (p.famille === 'epicerie' ? '🛒' : '📦');
+        const escName = escAttr(p.name);
+        const escCat = escAttr(p.cat);
+        const escSrc = escAttr(p.src);
+        return `
+            <div class="result-card" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}">
+                <div class="result-card-header">
+                    <div class="result-card-icon icon-${escSrc}"><i class="bi ${icon}" aria-hidden="true"></i></div>
+                    <span class="src-badge ${escSrc}">${srcLabel}</span>
+                </div>
+                <div class="result-name" title="${escName}">${escName}</div>
+                <div class="result-cat"><span aria-hidden="true">${famIcon}</span> ${escCat}</div>
+                <div class="result-price">${p.prix.toLocaleString('fr-FR')} <small>FCFA</small></div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Recalcule les compteurs (Tous / PG / Inv) dans la sidebar.
+function updateRechercheCompteurs() {
+    const flat = _rechercheState.flat;
+    const total = flat.length;
+    const pg = flat.filter(p => p.src === 'pg').length;
+    const inv = flat.filter(p => p.src === 'inv').length;
+    const setCount = (sel, n) => {
+        const el = document.querySelector(`[data-count="${sel}"]`);
+        if (el) el.textContent = String(n);
+    };
+    setCount('all', total);
+    setCount('pg', pg);
+    setCount('inv', inv);
+}
+
+// Re-render la liste des categories visibles dans la sidebar.
+// La liste ne montre que les categories presentes dans les resultats
+// pre-filtres par src + famille (mais pas par cat lui-meme, sinon
+// on cacherait toutes les autres apres la 1ere selection).
+function renderRechercheCategoriesFilter() {
+    const list = document.getElementById('recherche-cat-list');
+    if (!list) return;
+    const { src, famille, cat, flat } = _rechercheState;
+
+    // Sous-ensemble pre-filtre (src + famille uniquement)
+    let scope = flat;
+    if (src !== 'all') scope = scope.filter(p => p.src === src);
+    if (famille !== 'all') scope = scope.filter(p => p.famille === famille);
+
+    // Dedup + count par categorie
+    const countByCat = new Map();
+    for (const p of scope) {
+        countByCat.set(p.cat, (countByCat.get(p.cat) || 0) + 1);
+    }
+    // Tri alphabetique
+    const cats = Array.from(countByCat.keys()).sort((a, b) => a.localeCompare(b));
+
+    // Si la categorie selectionnee n'est plus dans le scope, reset a 'all'
+    if (cat !== 'all' && !countByCat.has(cat)) {
+        _rechercheState.cat = 'all';
+    }
+    const currentCat = _rechercheState.cat;
+
+    // Build HTML: "Toutes" + une chip par categorie
+    // escAttr couvre <,>,&,",' donc utilisable a la fois pour attr et texte.
+    const allActive = currentCat === 'all';
+    let html = `
+        <button type="button" class="recherche-filter-item${allActive ? ' active' : ''}" data-recherche-cat="all" aria-pressed="${allActive}">
+            <i class="bi bi-grid" aria-hidden="true"></i> Toutes
+            <span class="recherche-count">${scope.length}</span>
+        </button>
+    `;
+    for (const c of cats) {
+        const escC = escAttr(c);
+        const isActive = c === currentCat;
+        html += `
+            <button type="button" class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${escC}" title="${escC}" aria-pressed="${isActive}">
+                <span class="recherche-cat-label">${escC}</span>
+                <span class="recherche-count">${countByCat.get(c)}</span>
+            </button>
+        `;
+    }
+    list.innerHTML = html;
+
+    // Re-bind clicks (delegation simple via querySelectorAll, idempotent
+    // car le innerHTML reset les anciens listeners)
+    list.querySelectorAll('[data-recherche-cat]').forEach((el) => {
+        el.addEventListener('click', () => {
+            _rechercheState.cat = el.dataset.rechercheCat;
+            // Mettre a jour visuel (active + aria-pressed) + grid
+            list.querySelectorAll('[data-recherche-cat]').forEach((x) => {
+                const isActive = x === el;
+                x.classList.toggle('active', isActive);
+                x.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
+            renderRechercheGrid();
+        });
+    });
+}
+
+// Click sur une card -> activer l'onglet source + scroll vers le produit.
+function ouvrirProduitDepuisRecherche(src, name, cat) {
+    // 1) Activer l'onglet source via Bootstrap
+    const tabBtnId = src === 'pg' ? 'produits-tab' : 'inventaire-tab';
+    const tabBtn = document.getElementById(tabBtnId);
+    if (tabBtn) {
+        if (window.bootstrap && bootstrap.Tab) {
+            const tab = bootstrap.Tab.getOrCreateInstance(tabBtn);
+            tab.show();
+        } else {
+            tabBtn.click();
+        }
+    }
+
+    // 2) Filtrer + scroll au prochain frame (apres le render du tab).
+    setTimeout(() => {
+        if (src === 'inv') {
+            // Utiliser la search input deja en place sur l'onglet Inventaire.
+            const input = document.getElementById('inventaire-search-input');
+            if (input) {
+                input.value = name;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }
+        // Scroll vers la 1ere row qui matche le nom dans n'importe quel
+        // accordion-item (data-produit ou texte de cellule).
+        const containerId = src === 'pg' ? 'produits-categories' : 'inventaire-categories';
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        // 1ere row contenant le nom (matching exact case-insensitive)
+        const rows = container.querySelectorAll('tr');
+        const target = Array.from(rows).find((row) => {
+            if (row.querySelector('th')) return false;
+            const txt = (row.textContent || '').toLowerCase();
+            return txt.includes(name.toLowerCase());
+        });
+        if (target) {
+            // Si la row est dans un accordion-item collapse, l'ouvrir.
+            const item = target.closest('.accordion-item');
+            if (item) {
+                const collapse = item.querySelector('.accordion-collapse');
+                const btn = item.querySelector('.accordion-button');
+                if (collapse && !collapse.classList.contains('show')) {
+                    collapse.classList.add('show');
+                    if (btn && btn.classList.contains('collapsed')) {
+                        btn.classList.remove('collapsed');
+                        btn.setAttribute('aria-expanded', 'true');
+                    }
+                }
+            }
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.style.transition = 'background 1s';
+            target.style.background = '#fef9c3';
+            setTimeout(() => { target.style.background = ''; }, 2000);
+        }
+    }, 150);
+}
+
+// Init listeners au DOMContentLoaded (idempotent).
+function initRechercheSpotlight() {
+    const grid = document.getElementById('recherche-grid');
+    if (!grid || grid.dataset.bound === 'true') return;
+    grid.dataset.bound = 'true';
+
+    // Input search
+    const input = document.getElementById('recherche-input');
+    if (input) {
+        input.addEventListener('input', (e) => {
+            _rechercheState.query = e.target.value || '';
+            renderRechercheGrid();
+        });
+    }
+
+    // Helper: synchronise .active + aria-pressed pour un groupe de toggle-buttons.
+    // selector = attribut data-* (ex: '[data-recherche-src]'), active = element selectionne.
+    const activateFilter = (selector, active) => {
+        document.querySelectorAll(selector).forEach((x) => {
+            const isActive = x === active;
+            x.classList.toggle('active', isActive);
+            x.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+    };
+
+    // Filtres source
+    document.querySelectorAll('[data-recherche-src]').forEach((el) => {
+        el.addEventListener('click', () => {
+            activateFilter('[data-recherche-src]', el);
+            _rechercheState.src = el.dataset.rechercheSrc;
+            // Le scope des categories change avec src -> re-render la liste
+            renderRechercheCategoriesFilter();
+            renderRechercheGrid();
+        });
+    });
+
+    // Filtres famille
+    document.querySelectorAll('[data-recherche-fam]').forEach((el) => {
+        el.addEventListener('click', () => {
+            activateFilter('[data-recherche-fam]', el);
+            _rechercheState.famille = el.dataset.rechercheFam;
+            // Le scope des categories change avec famille -> re-render
+            renderRechercheCategoriesFilter();
+            renderRechercheGrid();
+        });
+    });
+
+    // Sort
+    const sortSel = document.getElementById('recherche-sort');
+    if (sortSel) {
+        sortSel.addEventListener('change', (e) => {
+            _rechercheState.sort = e.target.value;
+            renderRechercheGrid();
+        });
+    }
+
+    // Refresh button: re-fetch les 2 catalogues + rebuild flat
+    const refreshBtn = document.getElementById('recherche-refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+            refreshBtn.disabled = true;
+            try {
+                if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+                if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+                reconstruireFlatRecherche();
+                updateRechercheCompteurs();
+                renderRechercheCategoriesFilter();
+                renderRechercheGrid();
+            } finally {
+                refreshBtn.disabled = false;
+            }
+        });
+    }
+
+    // Click sur card (delegation) -> ouvre le modal unifie en mode edit
+    // (le user peut aussi naviguer vers la fiche via le bouton "Voir
+    // dans l'onglet" dans le modal — TODO si demande).
+    grid.addEventListener('click', (e) => {
+        const card = e.target.closest('.result-card');
+        if (!card) return;
+        const src = card.dataset.src;
+        const nom = card.dataset.name;
+        const cat = card.dataset.cat;
+        if (typeof ouvrirModalProduitUnifie === 'function') {
+            ouvrirModalProduitUnifie('edit', { src, nom, cat });
+        } else {
+            // Fallback ancien comportement
+            ouvrirProduitDepuisRecherche(src, nom, cat);
+        }
+    });
+
+    // Quand le user clique sur l'onglet Recherche, on rebuild la liste
+    // au cas ou les autres onglets ont modifie les configs.
+    const rechercheTab = document.getElementById('recherche-tab');
+    if (rechercheTab) {
+        rechercheTab.addEventListener('shown.bs.tab', () => {
+            reconstruireFlatRecherche();
+            updateRechercheCompteurs();
+            renderRechercheCategoriesFilter();
+            renderRechercheGrid();
+        });
+    }
+
+    // Premier rendu si on a deja les donnees.
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    renderRechercheCategoriesFilter();
+    renderRechercheGrid();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initRechercheSpotlight);
+} else {
+    initRechercheSpotlight();
+}
+
+// =====================================================================
+// MODAL UNIFIE M1 — ajouter ou modifier un produit dans les 2 catalogues
+// Utilise par l'onglet Recherche (bouton Ajouter + click sur une card).
+// =====================================================================
+
+// Remplit un <select> avec des <optgroup> a partir d'un dict {famille: [cat,...]}
+// Si `selected` n'est dans aucune famille (= valeur legacy d'un ancien produit
+// inventaire), on l'injecte dans un optgroup "Anciennes catégories" en haut
+// du select pour preserver la selection et signaler la migration possible.
+// escAttr couvre <,>,&,",' donc utilisable a la fois pour attr et texte.
+function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
+    if (!selectEl) return;
+    // Liste plate de toutes les categories standard
+    const standardCats = new Set();
+    for (const cats of Object.values(categoriesParFamille)) {
+        cats.forEach((c) => standardCats.add(c));
+    }
+    let html = '';
+    // Optgroup legacy en premier si la valeur selectionnee n'est pas standard
+    if (selected && !standardCats.has(selected)) {
+        const escLeg = escAttr(selected);
+        html += `<optgroup label="🗂️ Ancienne catégorie">`;
+        html += `<option value="${escLeg}" selected>${escLeg} (legacy)</option>`;
+        html += `</optgroup>`;
+    }
+    for (const [famille, cats] of Object.entries(categoriesParFamille)) {
+        const famIcon = famille === 'Boucherie' ? '🥩' : (famille === 'Épicerie' ? '🛒' : '📦');
+        // famille est une cle de constante hardcodee, mais escape par defense
+        html += `<optgroup label="${famIcon} ${escAttr(famille)}">`;
+        cats.forEach((cat) => {
+            const escCat = escAttr(cat);
+            const sel = (cat === selected) ? ' selected' : '';
+            html += `<option value="${escCat}"${sel}>${escCat}</option>`;
+        });
+        html += '</optgroup>';
+    }
+    selectEl.innerHTML = html;
+}
+
+// Cherche un produit existant dans Produits Generaux par nom.
+// Retourne { categorie, config } ou null.
+function pumLookupPG(nom) {
+    if (!currentProduitsConfig || !nom) return null;
+    const target = nom.toLowerCase();
+    for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+        if (typeof produits !== 'object' || produits === null) continue;
+        for (const [name, config] of Object.entries(produits)) {
+            if (typeof config !== 'object' || typeof config.default !== 'number') continue;
+            if (name.toLowerCase() === target) {
+                return { categorie: cat, nom: name, config };
+            }
+        }
+    }
+    return null;
+}
+
+// Cherche un produit existant dans Inventaire par nom. Recherche recursive
+// pour trouver aussi les produits niches dans des categories personnalisees
+// (ex: currentInventaireConfig['MaCategorie'] = { produit1: {...} }).
+// Retourne { nom, config, parent } ou parent = l'objet contenant le produit
+// (root pour les produits flat, ou la categorie personnalisee). Les callers
+// qui suppriment doivent utiliser `delete parent[nom]` plutot que de
+// presumer le root.
+function pumLookupInv(nom) {
+    if (!currentInventaireConfig || !nom) return null;
+    const target = String(nom).toLowerCase();
+    // DFS: on parcourt root + sous-objets a 1 niveau (les categories
+    // personnalisees). On ne va PAS plus profond car le format admin
+    // ne supporte pas l'imbrication arbitraire.
+    const visit = (container) => {
+        for (const [name, config] of Object.entries(container)) {
+            if (typeof config !== 'object' || config === null) continue;
+            // Match: produit feuille avec prixDefault
+            if (typeof config.prixDefault === 'number' &&
+                name.toLowerCase() === target) {
+                return { nom: name, config, parent: container };
+            }
+            // Sinon, si c'est un container de categorie (objet sans
+            // prixDefault), descendre dedans.
+            if (config.prixDefault === undefined) {
+                const hit = visit(config);
+                if (hit) return hit;
+            }
+        }
+        return null;
+    };
+    return visit(currentInventaireConfig);
+}
+
+// Detecte un conflit de nom dans Produits Generaux: retourne le hit existant
+// si la sauvegarde a venir ecraserait un autre produit deja en place. Renvoie
+// null si pas de conflit (rename de soi-meme, ou nom totalement nouveau).
+// Case-insensitive (coherent avec pumLookupPG).
+function pumDetectPGConflict(originalNom, nomPG, mode) {
+    // Edit mode sans rename: pas de conflit possible (juste un update sur
+    // place du meme produit)
+    if (mode === 'edit' && originalNom === nomPG) return null;
+    const hit = pumLookupPG(nomPG);
+    if (!hit) return null;
+    // En edit mode, si le hit est exactement l'entree d'origine (meme cle),
+    // ce n'est pas un conflit — c'est juste l'entree qu'on s'apprete a
+    // supprimer pour la remplacer. delete est case-sensitive donc on compare
+    // l'exact match.
+    if (mode === 'edit' && hit.nom === originalNom) return null;
+    return hit; // { categorie, nom, config }
+}
+
+// Pareil pour l'Inventaire.
+function pumDetectInvConflict(originalNom, nomInv, mode) {
+    if (mode === 'edit' && originalNom === nomInv) return null;
+    const hit = pumLookupInv(nomInv);
+    if (!hit) return null;
+    if (mode === 'edit' && hit.nom === originalNom) return null;
+    return hit; // { nom, config, parent }
+}
+
+// Met a jour la banniere status selon les hits dans les 2 catalogues.
+function pumUpdateStatus(nom) {
+    const status = document.getElementById('pum-status');
+    if (!status) return;
+    const pg = pumLookupPG(nom);
+    const inv = pumLookupInv(nom);
+    let html = '';
+    if (pg && inv) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)
+            ET <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    } else if (pg) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe uniquement dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)`;
+    } else if (inv) {
+        html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
+            Existe uniquement dans <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    } else {
+        html = `<i class="bi bi-info-circle text-primary me-1"></i>
+            Nouveau produit — sera créé dans les 2 catalogues.`;
+    }
+    status.innerHTML = html;
+}
+
+// Ouvre le modal en mode 'add' ou 'edit'.
+// mode='add' : data peut etre { srcDefault: 'pg'|'inv'|null, categorieDefault: '...' }
+// mode='edit' : data = { src: 'pg'|'inv', nom, cat, prix }
+function ouvrirModalProduitUnifie(mode, data) {
+    data = data || {};
+    const modalEl = document.getElementById('productUnifiedModal');
+    if (!modalEl) return;
+
+    document.getElementById('pum-mode').value = mode;
+    const titleText = document.getElementById('pum-title-text');
+    const saveLabel = document.getElementById('pum-save-label');
+    const deleteBtn = document.getElementById('pum-delete-btn');
+
+    // Pre-calcul des valeurs selectionnees pour pouvoir les passer a
+    // pumPopulerSelect (qui injecte un optgroup "Ancienne categorie" si
+    // la valeur n'est pas dans la liste standard — utile pour preserver
+    // les categorie_affichage legacy comme 'Viandes', 'Déchets', etc.).
+    let selPG = DEFAULT_CATEGORIE_PRODUITS_GENERAUX;
+    let selInv = DEFAULT_CATEGORIE_INVENTAIRE;
+    let pgHit = null;
+    let invHit = null;
+
+    if (mode === 'edit' && data.nom) {
+        pgHit = pumLookupPG(data.nom);
+        invHit = pumLookupInv(data.nom);
+        if (pgHit) selPG = pgHit.categorie;
+        if (invHit && invHit.config.categorie_affichage) {
+            selInv = invHit.config.categorie_affichage;
+        }
+    } else {
+        // Mode 'add' avec defaut explicite
+        if (data.categorieDefault && data.srcDefault === 'pg') selPG = data.categorieDefault;
+        else if (data.categorieDefault && data.srcDefault === 'inv') selInv = data.categorieDefault;
+    }
+
+    // Populate selects avec les valeurs cibles
+    pumPopulerSelect(
+        document.getElementById('pum-cat-pg'),
+        CATEGORIES_PRODUITS_GENERAUX,
+        selPG
+    );
+    pumPopulerSelect(
+        document.getElementById('pum-cat-inv'),
+        CATEGORIES_INVENTAIRE,
+        selInv
+    );
+
+    if (mode === 'edit' && data.nom) {
+        titleText.textContent = `Modifier «${data.nom}»`;
+        saveLabel.textContent = 'Enregistrer';
+        deleteBtn.style.display = '';
+        document.getElementById('pum-original-nom').value = data.nom;
+
+        const nom = data.nom;
+        const prix = (data.src === 'pg' ? (pgHit && pgHit.config.default) :
+                     (invHit && invHit.config.prixDefault)) || data.prix || 0;
+        document.getElementById('pum-nom').value = nom;
+        document.getElementById('pum-prix').value = prix;
+        // Pre-fill override fields too
+        document.getElementById('pum-nom-pg').value = pgHit ? pgHit.nom : nom;
+        document.getElementById('pum-nom-inv').value = invHit ? invHit.nom : nom;
+        document.getElementById('pum-prix-pg').value = pgHit ? pgHit.config.default : prix;
+        document.getElementById('pum-prix-inv').value = invHit ? invHit.config.prixDefault : prix;
+        // Cibles cochees selon existence
+        document.getElementById('pum-target-pg').checked = !!pgHit;
+        document.getElementById('pum-target-inv').checked = !!invHit;
+    } else {
+        // Mode 'add'
+        titleText.textContent = 'Ajouter un nouveau produit';
+        saveLabel.textContent = 'Ajouter';
+        deleteBtn.style.display = 'none';
+        document.getElementById('pum-original-nom').value = '';
+        document.getElementById('pum-nom').value = '';
+        document.getElementById('pum-prix').value = '';
+        document.getElementById('pum-nom-pg').value = '';
+        document.getElementById('pum-nom-inv').value = '';
+        document.getElementById('pum-prix-pg').value = '';
+        document.getElementById('pum-prix-inv').value = '';
+        document.getElementById('pum-target-pg').checked = true;
+        document.getElementById('pum-target-inv').checked = true;
+    }
+
+    // Reset override toggle
+    document.getElementById('pum-override-toggle').checked = false;
+    document.getElementById('pum-override').style.display = 'none';
+
+    // Update status banner
+    pumUpdateStatus(document.getElementById('pum-nom').value);
+
+    // Show
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+}
+
+// Sauvegarde: cree/met a jour dans les catalogues coches.
+// Modifie les configs cote client; le bouton global "Sauvegarder" sur
+// chaque onglet ecrira en BDD ensuite. Ici on display-refresh + toast.
+async function pumSave() {
+    const mode = document.getElementById('pum-mode').value;
+    const originalNom = document.getElementById('pum-original-nom').value || null;
+    const nomShared = (document.getElementById('pum-nom').value || '').trim();
+    const prixShared = parseFloat(document.getElementById('pum-prix').value) || 0;
+    const catPG = document.getElementById('pum-cat-pg').value;
+    const catInv = document.getElementById('pum-cat-inv').value;
+    const targetPG = document.getElementById('pum-target-pg').checked;
+    const targetInv = document.getElementById('pum-target-inv').checked;
+    const overrideOn = document.getElementById('pum-override-toggle').checked;
+
+    if (!nomShared) {
+        showToast('Le nom est obligatoire', 'warning');
+        return;
+    }
+    if (!targetPG && !targetInv) {
+        showToast('Choisis au moins un catalogue', 'warning');
+        return;
+    }
+
+    // Valeurs finales par catalogue
+    const nomPG = overrideOn ? (document.getElementById('pum-nom-pg').value || nomShared).trim() : nomShared;
+    const nomInv = overrideOn ? (document.getElementById('pum-nom-inv').value || nomShared).trim() : nomShared;
+    const prixPG = overrideOn ? (parseFloat(document.getElementById('pum-prix-pg').value) || prixShared) : prixShared;
+    const prixInv = overrideOn ? (parseFloat(document.getElementById('pum-prix-inv').value) || prixShared) : prixShared;
+
+    // Detection de doublons: on ne reecrit JAMAIS les noms saisis par l'admin.
+    // Si la sauvegarde a venir ecraserait une entree differente (meme nom dans
+    // l'autre catalogue, ou nom existant lors d'un rename), on demande
+    // confirmation explicite.
+    const conflicts = [];
+    if (targetPG) {
+        const c = pumDetectPGConflict(originalNom, nomPG, mode);
+        if (c) {
+            conflicts.push({
+                label: `Produits Généraux (catégorie « ${c.categorie} », ${c.config.default.toLocaleString('fr-FR')} FCFA)`,
+                nom: c.nom
+            });
+        }
+    }
+    if (targetInv) {
+        const c = pumDetectInvConflict(originalNom, nomInv, mode);
+        if (c) {
+            conflicts.push({
+                label: `Inventaire (${c.config.prixDefault.toLocaleString('fr-FR')} FCFA)`,
+                nom: c.nom
+            });
+        }
+    }
+    if (conflicts.length > 0) {
+        const lines = conflicts.map(c => `• « ${c.nom} » dans ${c.label}`).join('\n');
+        const msg = `Un produit avec ce nom existe déjà :\n\n${lines}\n\nVeux-tu écraser cette/ces entrée(s) ?`;
+        const ok = typeof showConfirmModal === 'function'
+            ? await showConfirmModal(msg, {
+                title: 'Écraser le produit existant ?',
+                okLabel: 'Écraser',
+                okVariant: 'warning'
+            })
+            : confirm(msg);
+        if (!ok) return; // pas de toast: l'utilisateur a annule volontairement
+    }
+
+    // Snapshot pour rollback en cas d'echec serveur
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    let pgChanged = false;
+    let invChanged = false;
+
+    if (targetPG) {
+        // Lookup de l'entree d'origine pour preserver les champs non touches
+        // (prix_personnalise, inventaire_parent, prix vente speciaux, etc.).
+        let baseConfigPG = {};
+        if (mode === 'edit' && originalNom) {
+            const origHit = pumLookupPG(originalNom);
+            if (origHit) baseConfigPG = origHit.config;
+            // Supprimer l'ancienne entree si rename ou changement de categorie
+            for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+                if (typeof produits === 'object' && produits[originalNom]) {
+                    if (cat !== catPG || originalNom !== nomPG) {
+                        delete produits[originalNom];
+                    }
+                }
+            }
+        } else if (currentProduitsConfig[catPG] && currentProduitsConfig[catPG][nomPG]) {
+            // Mode add avec conflit deja confirme: merger avec l'existant
+            baseConfigPG = currentProduitsConfig[catPG][nomPG];
+        }
+        // Alternatives: preserver l'array existant, ajouter prixPG si absent
+        const altsPG = Array.isArray(baseConfigPG.alternatives) ? baseConfigPG.alternatives.slice() : [];
+        if (!altsPG.includes(prixPG)) altsPG.push(prixPG);
+
+        if (!currentProduitsConfig[catPG]) currentProduitsConfig[catPG] = {};
+        currentProduitsConfig[catPG][nomPG] = {
+            ...baseConfigPG,
+            default: prixPG,
+            alternatives: altsPG
+        };
+        pgChanged = true;
+    }
+
+    if (targetInv) {
+        // Lookup recursif pour trouver l'entree d'origine (peut etre nichee
+        // dans une categorie personnalisee). On preserve tous ses champs
+        // (ventes, ventilation_poids, mode_stock, unite_stock, prix vente
+        // PV-specific, etc.).
+        let baseConfigInv = {};
+        let origInvParent = null;
+        let origInvNom = null;
+        if (mode === 'edit' && originalNom) {
+            const origHit = pumLookupInv(originalNom);
+            if (origHit) {
+                baseConfigInv = origHit.config;
+                origInvParent = origHit.parent;
+                origInvNom = origHit.nom;
+            }
+        } else if (currentInventaireConfig[nomInv]) {
+            // Mode add avec conflit confirme: merger avec l'existant root
+            baseConfigInv = currentInventaireConfig[nomInv];
+        }
+        // Supprimer l'ancien si rename (et seulement si la cle change)
+        if (origInvParent && origInvNom && origInvNom !== nomInv) {
+            delete origInvParent[origInvNom];
+        }
+        // Alternatives: preserver + ajouter prixInv si absent
+        const altsInv = Array.isArray(baseConfigInv.alternatives) ? baseConfigInv.alternatives.slice() : [];
+        if (!altsInv.includes(prixInv)) altsInv.push(prixInv);
+
+        currentInventaireConfig[nomInv] = {
+            ...baseConfigInv,
+            prixDefault: prixInv,
+            alternatives: altsInv,
+            mode_stock: baseConfigInv.mode_stock || 'manuel',
+            unite_stock: baseConfigInv.unite_stock || 'unite',
+            categorie_affichage: catInv
+        };
+        invChanged = true;
+    }
+
+    // Disable boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const cancelBtn = document.querySelector('#productUnifiedModal [data-bs-dismiss="modal"]');
+    const closeBtn = document.querySelector('#productUnifiedModal .btn-close');
+    const originalSaveHtml = saveBtn ? saveBtn.innerHTML : '';
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Sauvegarde…';
+    }
+    if (delBtn) delBtn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (closeBtn) closeBtn.disabled = true;
+
+    // POST aux API existantes (qui sauvegardent + rechargent serveur).
+    // Les fonctions sauvegarderConfigProduits/Inventaire affichent leurs
+    // propres toasts en cas d'erreur reseau, mais on capture aussi ici
+    // pour rollback de l'etat local.
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (pgChanged) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invChanged) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        // Reload serveur (sync caches in-process) si tout est OK
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = originalSaveHtml;
+        }
+        if (delBtn) delBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (closeBtn) closeBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        // Rollback in-memory pour eviter qu'un refresh ulterieur ne perde
+        // ou n'ecrase les vraies donnees serveur.
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        // Si on a eu un partial save (PG ok, Inv ko), le serveur a la moitie
+        // des changements. Refetch les configs depuis le serveur pour resync
+        // l'etat local avec la realite. Operation defensive: meme si pas de
+        // partial, refetch est idempotent (chargerConfig* re-affiche les
+        // onglets et la recherche).
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur de sauvegarde: ${serverError}`, 'danger');
+        return; // modal reste ouvert pour que l'user puisse retry
+    }
+
+    // Refresh affichages onglets
+    if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+
+    // Refresh la recherche
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
+    renderRechercheGrid();
+
+    // Toast succes
+    const where = [pgChanged && 'Généraux', invChanged && 'Inventaire'].filter(Boolean).join(' + ');
+    const action = mode === 'edit' ? 'modifié' : 'ajouté';
+    showToast(`Produit ${action} dans ${where} et sauvegardé.`, 'success');
+
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
+// Suppression dans les 2 catalogues (avec confirmation).
+async function pumDelete() {
+    const nom = document.getElementById('pum-original-nom').value;
+    if (!nom) return;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`Supprimer définitivement «${nom}» des 2 catalogues ?`, {
+            title: 'Supprimer le produit', okLabel: 'Supprimer', okVariant: 'danger'
+        })
+        : confirm(`Supprimer "${nom}" des 2 catalogues ?`);
+    if (!ok) return;
+
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    // Retirer de PG
+    let pgChanged = false;
+    for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
+        if (typeof produits === 'object' && produits[nom]) {
+            delete produits[nom];
+            pgChanged = true;
+        }
+    }
+    // Retirer de Inv
+    let invChanged = false;
+    if (currentInventaireConfig && currentInventaireConfig[nom]) {
+        delete currentInventaireConfig[nom];
+        invChanged = true;
+    }
+
+    if (!pgChanged && !invChanged) {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+        if (modal) modal.hide();
+        return;
+    }
+
+    // Disable les boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const originalDelHtml = delBtn ? delBtn.innerHTML : '';
+    if (delBtn) {
+        delBtn.disabled = true;
+        delBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Suppression…';
+    }
+    if (saveBtn) saveBtn.disabled = true;
+
+    // Persister la suppression cote serveur
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (pgChanged) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invChanged) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (delBtn) {
+            delBtn.disabled = false;
+            delBtn.innerHTML = originalDelHtml;
+        }
+        if (saveBtn) saveBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        // Idem pumSave: refetch defensif pour resync apres partial save.
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur de suppression: ${serverError}`, 'danger');
+        return; // modal reste ouvert
+    }
+
+    if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
+    renderRechercheGrid();
+
+    showToast(`«${nom}» supprimé et sauvegardé.`, 'success');
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
+// Bind events du modal au load.
+function initModalProduitUnifie() {
+    const modalEl = document.getElementById('productUnifiedModal');
+    if (!modalEl || modalEl.dataset.bound === 'true') return;
+    modalEl.dataset.bound = 'true';
+
+    // Toggle override section
+    const toggle = document.getElementById('pum-override-toggle');
+    if (toggle) {
+        toggle.addEventListener('change', (e) => {
+            document.getElementById('pum-override').style.display = e.target.checked ? '' : 'none';
+        });
+    }
+
+    // Sync nom / prix maîtres -> champs override
+    const nomShared = document.getElementById('pum-nom');
+    if (nomShared) {
+        nomShared.addEventListener('input', (e) => {
+            const v = e.target.value;
+            document.getElementById('pum-nom-pg').value = v;
+            document.getElementById('pum-nom-inv').value = v;
+            pumUpdateStatus(v);
+        });
+    }
+    const prixShared = document.getElementById('pum-prix');
+    if (prixShared) {
+        prixShared.addEventListener('input', (e) => {
+            document.getElementById('pum-prix-pg').value = e.target.value;
+            document.getElementById('pum-prix-inv').value = e.target.value;
+        });
+    }
+
+    // Save + Delete
+    const saveBtn = document.getElementById('pum-save-btn');
+    if (saveBtn) saveBtn.addEventListener('click', pumSave);
+    const deleteBtn = document.getElementById('pum-delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
+
+    // Bouton "+ Ajouter un produit" sur l'onglet Recherche
+    const addBtn = document.getElementById('recherche-add-btn');
+    if (addBtn) {
+        addBtn.addEventListener('click', () => ouvrirModalProduitUnifie('add'));
+    }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initModalProduitUnifie);
+} else {
+    initModalProduitUnifie();
 } 

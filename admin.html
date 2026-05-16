@@ -31,6 +31,168 @@
             border-radius: 5px;
             margin-bottom: 20px;
         }
+
+        /* ============ RECHERCHE SPOTLIGHT (onglet Configuration Produits) ============
+           Port du mockup S3 (mockup-search-s3.html) — scope: .recherche-spotlight
+           pour ne pas leak les styles dans le reste de admin.html. */
+        .recherche-spotlight .recherche-grid {
+            display: grid;
+            grid-template-columns: 240px 1fr;
+            min-height: 520px;
+            overflow: hidden;
+            border-radius: 8px;
+        }
+        @media (max-width: 768px) {
+            .recherche-spotlight .recherche-grid { grid-template-columns: 1fr; }
+        }
+        .recherche-spotlight .recherche-sidebar {
+            background: #f8fafc;
+            padding: 20px 16px;
+            border-right: 1px solid #e2e8f0;
+        }
+        .recherche-spotlight .recherche-search-input {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        .recherche-spotlight .recherche-search-input i {
+            position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+            color: #94a3b8;
+        }
+        .recherche-spotlight .recherche-search-input input {
+            width: 100%;
+            padding: 10px 12px 10px 36px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 120ms;
+        }
+        .recherche-spotlight .recherche-search-input input:focus { border-color: #0d6efd; }
+
+        .recherche-spotlight .recherche-filter-section { margin-bottom: 20px; }
+        .recherche-spotlight .recherche-filter-title {
+            font-size: 0.7rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            color: #94a3b8; margin-bottom: 8px;
+        }
+        .recherche-spotlight .recherche-filter-list { display: flex; flex-direction: column; gap: 4px; }
+        .recherche-spotlight .recherche-filter-item {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            color: #475569;
+            cursor: pointer;
+            transition: background 80ms;
+            /* Reset des styles par defaut <button> (passe de <div> a <button>) */
+            background: transparent;
+            border: 0;
+            text-align: left;
+            font-family: inherit;
+            width: 100%;
+        }
+        .recherche-spotlight .recherche-filter-item:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
+        }
+        .recherche-spotlight .recherche-filter-item:hover { background: #e2e8f0; }
+        .recherche-spotlight .recherche-filter-item.active,
+        .recherche-spotlight .recherche-filter-item[aria-pressed="true"] {
+            background: #e7f1ff; color: #0d6efd; font-weight: 600;
+        }
+        .recherche-spotlight .recherche-count {
+            margin-left: auto;
+            font-size: 0.72rem; color: #94a3b8;
+            background: #f1f5f9; padding: 1px 6px; border-radius: 999px;
+        }
+        .recherche-spotlight .recherche-filter-item.active .recherche-count {
+            background: #cfe2ff; color: #0a58ca;
+        }
+        /* Labels de categories: truncation gracieuse si nom long */
+        .recherche-spotlight .recherche-cat-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            min-width: 0; flex: 1;
+        }
+
+        .recherche-spotlight .recherche-main {
+            padding: 24px 28px;
+            overflow-y: auto;
+            background: #fff;
+        }
+        .recherche-spotlight .recherche-results-header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .recherche-spotlight .recherche-results-count {
+            color: #0f172a; font-weight: 600;
+        }
+        .recherche-spotlight .recherche-results-count small { color: #64748b; font-weight: 400; }
+        .recherche-spotlight .recherche-sort-select {
+            font-size: 0.825rem;
+            padding: 4px 8px;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            background: #fff;
+            color: #475569;
+        }
+        .recherche-spotlight .recherche-results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+        }
+        .recherche-spotlight .result-card {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 14px;
+            cursor: pointer;
+            transition: all 120ms ease;
+        }
+        .recherche-spotlight .result-card:hover {
+            border-color: #0d6efd;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+        }
+        .recherche-spotlight .result-card-header {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 10px;
+        }
+        .recherche-spotlight .result-card-icon {
+            width: 32px; height: 32px; border-radius: 8px;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 0.95rem;
+        }
+        .recherche-spotlight .icon-pg { background: #e7f1ff; color: #0d6efd; }
+        .recherche-spotlight .icon-inv { background: #dcfce7; color: #166534; }
+        .recherche-spotlight .src-badge {
+            font-size: 0.65rem; font-weight: 700;
+            text-transform: uppercase;
+            padding: 2px 6px; border-radius: 4px;
+        }
+        .recherche-spotlight .src-badge.pg { background: #e7f1ff; color: #0d6efd; }
+        .recherche-spotlight .src-badge.inv { background: #dcfce7; color: #166534; }
+        .recherche-spotlight .result-name {
+            font-weight: 700; font-size: 0.95rem; color: #0f172a;
+            margin-bottom: 4px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .recherche-spotlight .result-cat {
+            font-size: 0.78rem; color: #64748b;
+            margin-bottom: 10px;
+        }
+        .recherche-spotlight .result-price {
+            font-weight: 700; color: #0d6efd;
+            font-size: 1.05rem;
+        }
+        .recherche-spotlight .result-price small { color: #94a3b8; font-weight: 400; font-size: 0.7rem; }
+        .recherche-spotlight .recherche-empty {
+            grid-column: 1 / -1;
+            text-align: center; padding: 60px 20px;
+            color: #94a3b8;
+        }
+        .recherche-spotlight .recherche-empty i { font-size: 2.5rem; display: block; margin-bottom: 12px; }
     </style>
 </head>
 <body>
@@ -303,27 +465,124 @@
                     <div class="col-12">
                         <ul class="nav nav-tabs" id="configTabs" role="tablist">
                             <li class="nav-item" role="presentation">
-                                <button class="nav-link active" id="inventaire-tab" data-bs-toggle="tab" data-bs-target="#inventaire-content" type="button" role="tab" aria-controls="inventaire-content" aria-selected="true">
-                                    <i class="fas fa-warehouse"></i> Produits Inventaire (produitsInventaire.js)
+                                <button class="nav-link active" id="recherche-tab" data-bs-toggle="tab" data-bs-target="#recherche-content" type="button" role="tab" aria-controls="recherche-content" aria-selected="true">
+                                    <i class="bi bi-search"></i> Recherche
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="inventaire-tab" data-bs-toggle="tab" data-bs-target="#inventaire-content" type="button" role="tab" aria-controls="inventaire-content" aria-selected="false">
+                                    <i class="fas fa-warehouse"></i> Produits Inventaire
                                 </button>
                             </li>
                             <li class="nav-item" role="presentation">
                                 <button class="nav-link" id="produits-tab" data-bs-toggle="tab" data-bs-target="#produits-content" type="button" role="tab" aria-controls="produits-content" aria-selected="false">
-                                    <i class="fas fa-box-open"></i> Produits Généraux (produits.js)
+                                    <i class="fas fa-box-open"></i> Produits Généraux
                                 </button>
                             </li>
                             <li class="nav-item" role="presentation">
                                 <button class="nav-link" id="abonnement-tab" data-bs-toggle="tab" data-bs-target="#abonnement-content" type="button" role="tab" aria-controls="abonnement-content" aria-selected="false">
-                                    <i class="fas fa-star"></i> Produits Abonnement (produitsAbonnement.js)
+                                    <i class="fas fa-star"></i> Produits Abonnement
                                 </button>
                             </li>
                         </ul>
                     </div>
                 </div>
 
-                <!-- Configuration Produits Inventaire (premier onglet) -->
+                <!-- Configuration Produits -->
                 <div class="tab-content" id="configTabContent">
-                    <div class="tab-pane fade show active" id="inventaire-content" role="tabpanel" aria-labelledby="inventaire-tab">
+                    <!-- Onglet Recherche cross-catalogue (Spotlight panel S3) -->
+                    <div class="tab-pane fade show active" id="recherche-content" role="tabpanel" aria-labelledby="recherche-tab">
+                        <div class="card mt-3 shadow-sm border-0 recherche-spotlight">
+                            <div class="card-body p-0">
+                                <div class="recherche-grid">
+                                    <aside class="recherche-sidebar">
+                                        <div class="recherche-search-input">
+                                            <i class="bi bi-search" aria-hidden="true"></i>
+                                            <label for="recherche-input" class="visually-hidden">Rechercher un produit dans les catalogues</label>
+                                            <input type="search" id="recherche-input" placeholder="Rechercher un produit…" autocomplete="off" aria-label="Rechercher un produit">
+                                        </div>
+
+                                        <div class="recherche-filter-section">
+                                            <div class="recherche-filter-title" id="recherche-filter-src-label">Catalogue</div>
+                                            <div class="recherche-filter-list" role="group" aria-labelledby="recherche-filter-src-label">
+                                                <button type="button" class="recherche-filter-item active" data-recherche-src="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Tous
+                                                    <span class="recherche-count" data-count="all">0</span>
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-src="pg" aria-pressed="false">
+                                                    <i class="bi bi-shop" aria-hidden="true"></i> Généraux
+                                                    <span class="recherche-count" data-count="pg">0</span>
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-src="inv" aria-pressed="false">
+                                                    <i class="bi bi-box-seam" aria-hidden="true"></i> Inventaire
+                                                    <span class="recherche-count" data-count="inv">0</span>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="recherche-filter-section">
+                                            <div class="recherche-filter-title" id="recherche-filter-fam-label">Famille</div>
+                                            <div class="recherche-filter-list" role="group" aria-labelledby="recherche-filter-fam-label">
+                                                <button type="button" class="recherche-filter-item active" data-recherche-fam="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Toutes
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="boucherie" aria-pressed="false">
+                                                    <span aria-hidden="true">🥩</span> Boucherie
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="epicerie" aria-pressed="false">
+                                                    <span aria-hidden="true">🛒</span> Épicerie
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="autres" aria-pressed="false">
+                                                    <span aria-hidden="true">📦</span> Autres
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="recherche-filter-section">
+                                            <div class="recherche-filter-title" id="recherche-filter-cat-label">Catégorie</div>
+                                            <div class="recherche-filter-list" id="recherche-cat-list" role="group" aria-labelledby="recherche-filter-cat-label">
+                                                <!-- Rempli dynamiquement par renderRechercheCategoriesFilter() -->
+                                                <button type="button" class="recherche-filter-item active" data-recherche-cat="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Toutes
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <button class="btn btn-outline-secondary btn-sm w-100 mt-2" id="recherche-refresh-btn">
+                                            <i class="bi bi-arrow-clockwise"></i> Rafraîchir
+                                        </button>
+                                    </aside>
+
+                                    <main class="recherche-main">
+                                        <div class="recherche-results-header">
+                                            <div class="recherche-results-count">
+                                                <span id="recherche-result-count">0 résultat</span>
+                                                <small>· dans les 2 catalogues</small>
+                                            </div>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <select class="recherche-sort-select" id="recherche-sort">
+                                                    <option value="name">Nom (A→Z)</option>
+                                                    <option value="price-asc">Prix (croissant)</option>
+                                                    <option value="price-desc">Prix (décroissant)</option>
+                                                </select>
+                                                <button type="button" class="btn btn-primary btn-sm" id="recherche-add-btn">
+                                                    <i class="bi bi-plus-lg"></i> Ajouter un produit
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="recherche-results-grid" id="recherche-grid">
+                                            <div class="recherche-empty">
+                                                <i class="bi bi-hourglass-split"></i>
+                                                Chargement des produits…
+                                            </div>
+                                        </div>
+                                    </main>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="inventaire-content" role="tabpanel" aria-labelledby="inventaire-tab">
                         <div class="card mt-3 shadow-sm border-0">
                             <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
                                 <h5 class="card-title mb-0">
@@ -630,6 +889,121 @@
     </div>
 
     <!-- Modal pour ajouter un produit d'inventaire -->
+    <!-- Modal unifie M1: ajouter ou modifier un produit dans les 2 catalogues -->
+    <div class="modal fade" id="productUnifiedModal" tabindex="-1" aria-labelledby="productUnifiedModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="productUnifiedModalLabel">
+                        <i class="bi bi-plus-circle me-2 text-primary"></i><span id="pum-title-text">Ajouter un nouveau produit</span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Status banner (existence dans les 2 catalogues) -->
+                    <div id="pum-status" class="alert alert-light border small mb-3 py-2"></div>
+
+                    <form id="pumForm" novalidate>
+                        <input type="hidden" id="pum-mode" value="add">
+                        <input type="hidden" id="pum-original-nom" value="">
+
+                        <!-- Nom partage -->
+                        <div class="mb-3">
+                            <label for="pum-nom" class="form-label fw-semibold">Nom du produit <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="pum-nom" placeholder="Ex: Beurre" required>
+                            <small class="form-text text-muted">Utilisé dans Produits Généraux ET Inventaire (par défaut).</small>
+                        </div>
+
+                        <!-- Prix partage -->
+                        <div class="mb-3">
+                            <label for="pum-prix" class="form-label fw-semibold">Prix <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" id="pum-prix" min="0" step="1" placeholder="0" required>
+                            <small class="form-text text-muted">Prix par défaut pour les 2 catalogues.</small>
+                        </div>
+
+                        <!-- 2 categories -->
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="pum-cat-pg" class="form-label small fw-semibold">
+                                    <i class="bi bi-shop me-1"></i>Catégorie Produits Généraux
+                                </label>
+                                <select id="pum-cat-pg" class="form-select"></select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="pum-cat-inv" class="form-label small fw-semibold">
+                                    <i class="bi bi-box-seam me-1"></i>Catégorie Inventaire
+                                </label>
+                                <select id="pum-cat-inv" class="form-select"></select>
+                            </div>
+                        </div>
+
+                        <!-- Toggle override -->
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" id="pum-override-toggle">
+                            <label class="form-check-label small" for="pum-override-toggle">
+                                Personnaliser le nom ou le prix séparément pour chaque catalogue
+                            </label>
+                        </div>
+
+                        <!-- Section override (cachee par defaut) -->
+                        <div id="pum-override" class="mt-2" style="display:none;
+                            background:#f8fafc; border:1px dashed #cbd5e1;
+                            border-radius:8px; padding:14px;">
+                            <h6 style="font-size:0.8rem; color:#64748b;
+                                text-transform:uppercase; letter-spacing:0.04em;
+                                margin-bottom:12px;">
+                                <i class="bi bi-pencil-square me-1"></i>Personnalisation par catalogue
+                            </h6>
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small">Nom (Produits Généraux)</label>
+                                    <input type="text" class="form-control form-control-sm" id="pum-nom-pg">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Nom (Inventaire)</label>
+                                    <input type="text" class="form-control form-control-sm" id="pum-nom-inv">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Prix Produits Généraux</label>
+                                    <input type="number" class="form-control form-control-sm" id="pum-prix-pg" min="0">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">Prix Inventaire</label>
+                                    <input type="number" class="form-control form-control-sm" id="pum-prix-inv" min="0">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- En mode edit, choix d'enable chaque cible -->
+                        <div id="pum-targets" class="mt-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="pum-target-pg" checked>
+                                <label class="form-check-label small" for="pum-target-pg">
+                                    <i class="bi bi-shop me-1"></i>Créer/Mettre à jour dans <strong>Produits Généraux</strong>
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="pum-target-inv" checked>
+                                <label class="form-check-label small" for="pum-target-inv">
+                                    <i class="bi bi-box-seam me-1"></i>Créer/Mettre à jour dans <strong>Inventaire</strong>
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger me-auto" id="pum-delete-btn" style="display:none">
+                        <i class="bi bi-trash"></i> Supprimer
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
+                    <button type="button" class="btn btn-primary" id="pum-save-btn">
+                        <i class="bi bi-check2-circle me-1"></i><span id="pum-save-label">Ajouter</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="addInventaireProductModal" tabindex="-1" aria-labelledby="addInventaireProductModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -710,6 +1084,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-search-fix-v5"></script>
+    <script src="admin.js?v=20260516-review2-a11y-merge"></script>
 </body>
 </html> 
