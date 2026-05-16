@@ -4091,8 +4091,17 @@ const _rechercheState = {
     cat: 'all',     // 'all' | nom exact de la categorie (ex: 'Superette')
     sort: 'name',
     showArchived: false, // false = cacher les archives (defaut), true = inclure
-    flat: []
+    flat: [],
+    // Selection multiple pour les actions batch (archiver/desarchiver).
+    // Set de cles "src::nom" (ex: 'pg::Spaghetti 250g').
+    selection: new Set()
 };
+
+// Cle unique de selection pour un produit (src+nom). Un produit peut
+// exister dans les 2 catalogues — la selection est independante.
+function _rechercheSelKey(src, nom) {
+    return `${src}::${nom}`;
+}
 
 // Normalise une chaine en ASCII lowercase (strip diacritics) pour
 // que 'Épicerie' -> 'epicerie' et matche les data-attrs des filtres.
@@ -4211,6 +4220,7 @@ function renderRechercheGrid() {
     // escAttr couvre <,>,&,",' pour attrs ET contenu texte. p.src est trusted
     // ('pg'/'inv' set par notre code) mais on escape par defense. icon/famIcon/
     // srcLabel sont hardcodes, p.prix passe par toLocaleString (numerique pur).
+    const selection = _rechercheState.selection;
     grid.innerHTML = matches.map((p) => {
         const icon = p.src === 'pg' ? 'bi-shop' : 'bi-box-seam';
         const srcLabel = p.src === 'pg' ? 'Généraux' : 'Inventaire';
@@ -4223,8 +4233,20 @@ function renderRechercheGrid() {
         const archivedBadge = p.archived
             ? `<span class="archived-badge" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive" aria-hidden="true"></i> Archivé</span>`
             : '';
+        const selKey = _rechercheSelKey(p.src, p.name);
+        const isSelected = selection.has(selKey);
+        const selectedClass = isSelected ? ' is-selected' : '';
+        const archiveQuickIcon = p.archived ? 'bi-archive-fill' : 'bi-archive';
+        const archiveQuickTitle = p.archived ? 'Désarchiver ce produit' : 'Archiver ce produit';
+        const archiveQuickLabel = p.archived ? 'Désarchiver' : 'Archiver';
         return `
-            <div class="result-card${archivedClass}" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}" data-archived="${p.archived ? 'true' : 'false'}">
+            <div class="result-card${archivedClass}${selectedClass}" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}" data-archived="${p.archived ? 'true' : 'false'}">
+                <label class="result-card-checkbox" title="Sélectionner pour action groupée" aria-label="Sélectionner ${escName}">
+                    <input type="checkbox" class="result-card-checkbox-input" data-recherche-select="${escSrc}::${escName}"${isSelected ? ' checked' : ''}>
+                </label>
+                <button type="button" class="result-card-archive-btn" data-recherche-archive="${escSrc}::${escName}" title="${archiveQuickTitle}" aria-label="${archiveQuickLabel} ${escName}">
+                    <i class="bi ${archiveQuickIcon}" aria-hidden="true"></i>
+                </button>
                 <div class="result-card-header">
                     <div class="result-card-icon icon-${escSrc}"><i class="bi ${icon}" aria-hidden="true"></i></div>
                     <span class="src-badge ${escSrc}">${srcLabel}</span>
@@ -4236,6 +4258,206 @@ function renderRechercheGrid() {
             </div>
         `;
     }).join('');
+
+    // Re-render l'action bar (depend de la selection)
+    renderRechercheSelectionBar();
+}
+
+// Rend la barre d'action selection (apparait quand selection > 0).
+// Affiche "X selectionnes" + boutons Archiver / Desarchiver /
+// Effacer la selection. Idempotent: re-cree le DOM a chaque appel.
+function renderRechercheSelectionBar() {
+    const bar = document.getElementById('recherche-selection-bar');
+    if (!bar) return;
+    const selection = _rechercheState.selection;
+    const count = selection.size;
+    if (count === 0) {
+        bar.style.display = 'none';
+        bar.innerHTML = '';
+        return;
+    }
+    // Determine si tous les selectionnes sont deja archives (pour decider
+    // quel bouton dominant proposer: archiver vs desarchiver).
+    const flat = _rechercheState.flat;
+    let allArchived = true;
+    let anyArchived = false;
+    for (const p of flat) {
+        const key = _rechercheSelKey(p.src, p.name);
+        if (selection.has(key)) {
+            if (p.archived) anyArchived = true;
+            else allArchived = false;
+        }
+    }
+    bar.style.display = '';
+    bar.innerHTML = `
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-semibold">
+                <i class="bi bi-check-square me-1" aria-hidden="true"></i>
+                ${count} produit${count > 1 ? 's' : ''} sélectionné${count > 1 ? 's' : ''}
+            </span>
+            <div class="ms-auto d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-warning" id="recherche-batch-archive" ${allArchived ? 'disabled title="Tous déjà archivés"' : ''}>
+                    <i class="bi bi-archive" aria-hidden="true"></i> Archiver
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-success" id="recherche-batch-unarchive" ${!anyArchived ? 'disabled title="Aucun n\'est archivé"' : ''}>
+                    <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i> Désarchiver
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="recherche-batch-clear">
+                    <i class="bi bi-x-lg" aria-hidden="true"></i> Désélectionner
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+// Batch: applique archived=targetValue sur tous les produits selectionnes.
+// Itere sur les 2 catalogues et POST en 1 fois par cote (pas N requetes).
+async function rechercheBatchArchive(targetArchived) {
+    const selection = _rechercheState.selection;
+    if (selection.size === 0) return;
+    const flat = _rechercheState.flat;
+
+    // Trouver les produits selectionnes via leur cle src::nom
+    const selectedItems = flat.filter(p => selection.has(_rechercheSelKey(p.src, p.name)));
+    if (selectedItems.length === 0) return;
+
+    // Filtre: ne traiter que ceux dont l'etat change reellement
+    const toUpdate = selectedItems.filter(p => !!p.archived !== targetArchived);
+    if (toUpdate.length === 0) {
+        showToast('Aucun changement à appliquer.', 'info');
+        return;
+    }
+
+    const action = targetArchived ? 'archiver' : 'désarchiver';
+    const actionPast = targetArchived ? 'archivés' : 'désarchivés';
+    const explain = targetArchived
+        ? `\n\nIls ne seront plus affichés dans le POS, le stock inventaire, ni dans la recherche admin par défaut.`
+        : `\n\nIls redeviendront visibles dans le POS et le stock inventaire.`;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`${action[0].toUpperCase() + action.slice(1)} ${toUpdate.length} produit${toUpdate.length > 1 ? 's' : ''} ?${explain}`, {
+            title: `${action[0].toUpperCase() + action.slice(1)} en lot`,
+            okLabel: action[0].toUpperCase() + action.slice(1),
+            okVariant: targetArchived ? 'warning' : 'success'
+        })
+        : confirm(`${action} ${toUpdate.length} produits ?`);
+    if (!ok) return;
+
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    // Set le flag en memoire sur les 2 catalogues
+    let hasPgChanges = false;
+    let hasInvChanges = false;
+    for (const p of toUpdate) {
+        if (p.src === 'pg') {
+            const pgHit = pumLookupPG(p.name);
+            if (pgHit && currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom]) {
+                currentProduitsConfig[pgHit.categorie][pgHit.nom].archived = targetArchived;
+                hasPgChanges = true;
+            }
+        } else if (p.src === 'inv') {
+            const invHit = pumLookupInv(p.name);
+            if (invHit && invHit.parent && invHit.parent[invHit.nom]) {
+                invHit.parent[invHit.nom].archived = targetArchived;
+                hasInvChanges = true;
+            }
+        }
+    }
+
+    // Disable bar pendant la sauvegarde
+    const bar = document.getElementById('recherche-selection-bar');
+    if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (hasPgChanges) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && hasInvChanges) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur batch: ${serverError}`, 'danger');
+        return;
+    }
+
+    // Reset selection apres succes (les produits "actifs" ne sont plus
+    // visibles si on archive et qu'on affiche pas les archives, etc.)
+    _rechercheState.selection.clear();
+
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') renderRechercheCategoriesFilter();
+    renderRechercheGrid();
+
+    showToast(`${toUpdate.length} produit${toUpdate.length > 1 ? 's' : ''} ${actionPast}.`, 'success');
+}
+
+// Archive rapide un seul produit (bouton sur la carte). Reutilise la
+// fonction batch avec un Set d'un seul element.
+async function rechercheArchiveSingle(src, nom) {
+    const flat = _rechercheState.flat;
+    const target = flat.find(p => p.src === src && p.name === nom);
+    if (!target) return;
+    // Sauvegarde de la selection courante, on la remplace temporairement
+    const previousSelection = new Set(_rechercheState.selection);
+    _rechercheState.selection = new Set([_rechercheSelKey(src, nom)]);
+    try {
+        await rechercheBatchArchive(!target.archived);
+    } finally {
+        // Si la selection precedente etait non-vide et que le user vient
+        // d'archiver un produit en plus, on garde la selection vide (batch
+        // la reset deja). Sinon on restore. Comportement intuitif: le clic
+        // sur l'icone individuel ne pollue pas la selection multiple.
+        if (previousSelection.size === 0) {
+            _rechercheState.selection.clear();
+        } else {
+            _rechercheState.selection = previousSelection;
+        }
+        renderRechercheGrid();
+    }
 }
 
 // Recalcule les compteurs (Tous / PG / Inv) dans la sidebar.
@@ -4466,10 +4688,40 @@ function initRechercheSpotlight() {
         });
     }
 
-    // Click sur card (delegation) -> ouvre le modal unifie en mode edit
-    // (le user peut aussi naviguer vers la fiche via le bouton "Voir
-    // dans l'onglet" dans le modal — TODO si demande).
+    // Click sur card (delegation). Trois paths:
+    // 1) Click sur la checkbox -> toggle selection (pas d'ouverture modal)
+    // 2) Click sur le bouton archive rapide -> archive/desarchive le produit
+    // 3) Click ailleurs sur la card -> ouvre le modal unifie en mode edit
     grid.addEventListener('click', (e) => {
+        // Path 1: checkbox de selection
+        const cbInput = e.target.closest('.result-card-checkbox-input');
+        if (cbInput) {
+            const key = cbInput.dataset.rechercheSelect;
+            if (cbInput.checked) _rechercheState.selection.add(key);
+            else _rechercheState.selection.delete(key);
+            // Toggle visuel sur la card sans tout re-render
+            const card = cbInput.closest('.result-card');
+            if (card) card.classList.toggle('is-selected', cbInput.checked);
+            renderRechercheSelectionBar();
+            return; // ne pas ouvrir le modal
+        }
+        // Le label autour de la checkbox: laisser le click se propager au
+        // input natif, et stop la propagation pour eviter l'ouverture modal.
+        const cbLabel = e.target.closest('.result-card-checkbox');
+        if (cbLabel) {
+            e.stopPropagation();
+            return;
+        }
+        // Path 2: bouton archive rapide
+        const archBtn = e.target.closest('[data-recherche-archive]');
+        if (archBtn) {
+            e.stopPropagation();
+            const [src, ...nameParts] = archBtn.dataset.rechercheArchive.split('::');
+            const nom = nameParts.join('::'); // au cas ou un nom contient '::'
+            rechercheArchiveSingle(src, nom);
+            return;
+        }
+        // Path 3: ouverture modal (comportement par defaut)
         const card = e.target.closest('.result-card');
         if (!card) return;
         const src = card.dataset.src;
@@ -4482,6 +4734,23 @@ function initRechercheSpotlight() {
             ouvrirProduitDepuisRecherche(src, nom, cat);
         }
     });
+
+    // Bind action bar (delegation: le contenu est recree a chaque render).
+    const selectionBar = document.getElementById('recherche-selection-bar');
+    if (selectionBar) {
+        selectionBar.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            if (btn.id === 'recherche-batch-archive') {
+                rechercheBatchArchive(true);
+            } else if (btn.id === 'recherche-batch-unarchive') {
+                rechercheBatchArchive(false);
+            } else if (btn.id === 'recherche-batch-clear') {
+                _rechercheState.selection.clear();
+                renderRechercheGrid();
+            }
+        });
+    }
 
     // Quand le user clique sur l'onglet Recherche, on rebuild la liste
     // au cas ou les autres onglets ont modifie les configs.
