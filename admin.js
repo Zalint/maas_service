@@ -4559,6 +4559,21 @@ function pumSyncModeStockEnabled() {
     if (helpEl) helpEl.style.opacity = enabled ? '' : '0.5';
 }
 
+// Regle metier: famille Boucherie + Pack = manuel (verrou defensif aligne
+// sur la migration db/update-schema.js qui force mode_stock='manuel' pour
+// ces categories au demarrage). Autres categories = automatique par defaut.
+// Couvre aussi les anciennes categories legacy (Viandes, Abats, etc.) pour
+// que les produits non-migres aient le bon defaut.
+const _CATS_BOUCHERIE_MANUEL = new Set([
+    // Categories alignees Produits Generaux
+    'Bovin', 'Ovin', 'Volaille', 'Caprin', 'Poisson', 'Pack',
+    // Buckets legacy (compatibilite avec ancienne taxonomie inventaire)
+    'Viandes', 'Abats et Sous-produits', 'Produits sur Pieds'
+]);
+function pumDefaultModeStock(catInv) {
+    return _CATS_BOUCHERIE_MANUEL.has(catInv) ? 'manuel' : 'automatique';
+}
+
 // Cherche un produit existant dans Produits Generaux par nom.
 // Retourne { categorie, config } ou null.
 function pumLookupPG(nom) {
@@ -4762,12 +4777,24 @@ function ouvrirModalProduitUnifie(mode, data) {
         document.getElementById('pum-target-inv').checked = true;
     }
 
-    // Mode de stock (Inventaire uniquement) — defaut 'manuel'.
-    // En edit on prefille depuis invHit si dispo, sinon 'manuel'.
+    // Mode de stock (Inventaire uniquement):
+    // - En EDIT: prefill depuis invHit.config.mode_stock (preserve le choix
+    //   existant, meme s'il "viole" la regle famille — l'admin peut avoir
+    //   une raison metier specifique).
+    // - En ADD: defaut base sur la categorie Inv choisie (regle famille
+    //   Boucherie+Pack = manuel, autres = automatique).
     const modeStockSel = document.getElementById('pum-mode-stock');
     if (modeStockSel) {
-        const currentMode = (invHit && invHit.config && invHit.config.mode_stock) || 'manuel';
-        modeStockSel.value = (currentMode === 'automatique') ? 'automatique' : 'manuel';
+        let initialMode;
+        if (mode === 'edit' && invHit && invHit.config && invHit.config.mode_stock) {
+            initialMode = invHit.config.mode_stock;
+        } else {
+            initialMode = pumDefaultModeStock(selInv);
+        }
+        modeStockSel.value = (initialMode === 'automatique') ? 'automatique' : 'manuel';
+        // Reset le flag "user override": permet au changement de categorie
+        // de re-appliquer le defaut tant que l'admin n'a pas touche le select.
+        modeStockSel.dataset.userOverride = 'false';
         // Disabled si Inventaire pas coche (n'aura pas d'effet)
         pumSyncModeStockEnabled();
     }
@@ -5330,6 +5357,23 @@ function initModalProduitUnifie() {
     const targetInv = document.getElementById('pum-target-inv');
     if (targetInv) {
         targetInv.addEventListener('change', pumSyncModeStockEnabled);
+    }
+
+    // Auto-application du defaut mode_stock selon la categorie Inv choisie
+    // (regle famille Boucherie+Pack=manuel, autres=automatique). Ne se
+    // declenche QUE si l'admin n'a pas explicitement touche le select.
+    const catInvSel = document.getElementById('pum-cat-inv');
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    if (catInvSel && modeStockSel) {
+        catInvSel.addEventListener('change', (e) => {
+            if (modeStockSel.dataset.userOverride === 'true') return;
+            modeStockSel.value = pumDefaultModeStock(e.target.value);
+        });
+        // Quand l'admin change manuellement le mode_stock, on marque
+        // l'override pour ne pas l'ecraser au prochain changement de cat.
+        modeStockSel.addEventListener('change', () => {
+            modeStockSel.dataset.userOverride = 'true';
+        });
     }
 
     // Bouton "+ Ajouter un produit" sur l'onglet Recherche
