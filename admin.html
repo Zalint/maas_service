@@ -161,8 +161,15 @@
             cursor: pointer; margin: 0;
         }
         .recherche-spotlight .result-card:hover .result-card-checkbox,
-        .recherche-spotlight .result-card.is-selected .result-card-checkbox {
+        .recherche-spotlight .result-card.is-selected .result-card-checkbox,
+        .recherche-spotlight .result-card:focus-within .result-card-checkbox,
+        .recherche-spotlight .result-card-checkbox:focus-within {
             opacity: 1;
+        }
+        /* Focus visible du native checkbox quand on tabe au clavier */
+        .recherche-spotlight .result-card-checkbox-input:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
         }
         .recherche-spotlight .result-card.is-selected {
             outline: 2px solid #0d6efd;
@@ -181,7 +188,13 @@
             color: #64748b;
             box-shadow: 0 1px 3px rgba(0,0,0,0.08);
         }
-        .recherche-spotlight .result-card:hover .result-card-archive-btn { opacity: 1; }
+        .recherche-spotlight .result-card:hover .result-card-archive-btn,
+        .recherche-spotlight .result-card:focus-within .result-card-archive-btn,
+        .recherche-spotlight .result-card-archive-btn:focus { opacity: 1; }
+        .recherche-spotlight .result-card-archive-btn:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
+        }
         .recherche-spotlight .result-card-archive-btn:hover {
             background: #fef3c7; color: #b45309; border-color: #fde68a;
         }
@@ -1141,8 +1154,13 @@
                     <button type="button" class="btn btn-outline-danger me-auto" id="pum-delete-btn" style="display:none">
                         <i class="bi bi-trash" aria-hidden="true"></i> Supprimer
                     </button>
-                    <button type="button" class="btn btn-outline-warning" id="pum-archive-btn" style="display:none">
+                    <button type="button" class="btn btn-outline-warning" id="pum-archive-btn" style="display:none" data-archive-target="true">
                         <i class="bi bi-archive" aria-hidden="true"></i> <span id="pum-archive-label">Archiver</span>
+                    </button>
+                    <!-- 2e bouton visible UNIQUEMENT en etat "mixed" (PG archive et Inv non, ou inverse). Permet a l'admin de choisir
+                         la direction d'alignement: harmoniser via desarchive (primary), ou via archive (secondary). -->
+                    <button type="button" class="btn btn-outline-success" id="pum-archive-btn-2" style="display:none" data-archive-target="false">
+                        <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i> <span id="pum-archive-label-2">Désarchiver</span>
                     </button>
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
                     <button type="button" class="btn btn-primary" id="pum-save-btn">
@@ -1233,6 +1251,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260517-review4-polish"></script>
+    <script src="admin.js?v=20260517-review5-mixed-a11y"></script>
 </body>
 </html> 

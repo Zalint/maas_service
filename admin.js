@@ -4752,7 +4752,11 @@ function initRechercheSpotlight() {
         archivedToggle.checked = _rechercheState.showArchived;
         archivedToggle.addEventListener('change', (e) => {
             _rechercheState.showArchived = !!e.target.checked;
-            // Le scope categorie change quand on inclut/exclut les archives
+            // Les compteurs Tous/PG/Inv dependent de showArchived (cf.
+            // updateRechercheCompteurs qui filtre scope = !p.archived si
+            // !showArchived). Sans ce refresh, les badges restent stales.
+            updateRechercheCompteurs();
+            // Le scope categorie change aussi quand on inclut/exclut les archives
             renderRechercheCategoriesFilter();
             renderRechercheGrid();
         });
@@ -4776,27 +4780,33 @@ function initRechercheSpotlight() {
         });
     }
 
-    // Click sur card (delegation). Trois paths:
-    // 1) Click sur la checkbox -> toggle selection (pas d'ouverture modal)
-    // 2) Click sur le bouton archive rapide -> archive/desarchive le produit
-    // 3) Click ailleurs sur la card -> ouvre le modal unifie en mode edit
-    grid.addEventListener('click', (e) => {
-        // Path 1: checkbox de selection
+    // Selection bookkeeping via 'change' event sur l'input natif:
+    // - Marche pour click sur input ET label (browser forward le click)
+    // - Marche pour clavier (Space pour toggle quand input focused)
+    // - Marche pour set programmatique de .checked (avec dispatch d'event)
+    // Plus robuste qu'un click handler qui doit gerer plusieurs paths.
+    grid.addEventListener('change', (e) => {
         const cbInput = e.target.closest('.result-card-checkbox-input');
-        if (cbInput) {
-            const key = cbInput.dataset.rechercheSelect;
-            if (cbInput.checked) _rechercheState.selection.add(key);
-            else _rechercheState.selection.delete(key);
-            // Toggle visuel sur la card sans tout re-render
-            const card = cbInput.closest('.result-card');
-            if (card) card.classList.toggle('is-selected', cbInput.checked);
-            renderRechercheSelectionBar();
-            return; // ne pas ouvrir le modal
-        }
-        // Le label autour de la checkbox: laisser le click se propager au
-        // input natif, et stop la propagation pour eviter l'ouverture modal.
-        const cbLabel = e.target.closest('.result-card-checkbox');
-        if (cbLabel) {
+        if (!cbInput) return;
+        const key = cbInput.dataset.rechercheSelect;
+        if (cbInput.checked) _rechercheState.selection.add(key);
+        else _rechercheState.selection.delete(key);
+        const card = cbInput.closest('.result-card');
+        if (card) card.classList.toggle('is-selected', cbInput.checked);
+        renderRechercheSelectionBar();
+    });
+
+    // Click delegation pour:
+    //  - Archive rapide (path 2)
+    //  - Ouverture modal (path 3, defaut)
+    // La checkbox (input + label wrapper) stoppe la propagation pour eviter
+    // que le click de la checkbox/label ouvre le modal. La selection elle-
+    // meme est geree par le 'change' event ci-dessus.
+    grid.addEventListener('click', (e) => {
+        // Stop propagation sur checkbox input ET son label wrapper.
+        // Le browser toggle l'input via le label, dispatch un 'change' event
+        // qui sera capture par le listener au-dessus.
+        if (e.target.closest('.result-card-checkbox')) {
             e.stopPropagation();
             return;
         }
@@ -5147,28 +5157,80 @@ function ouvrirModalProduitUnifie(mode, data) {
         selInv
     );
 
-    // Etat d'archivage: TRUE si l'un des 2 catalogues a archived=true.
-    // (Si le produit existe dans les 2 catalogues, on considere archive si au
-    // moins un cote est archive — l'admin pourra archiver/desarchiver les deux
-    // d'un coup via le bouton.)
-    const isArchived = !!(
-        (pgHit && pgHit.config && pgHit.config.archived) ||
-        (invHit && invHit.config && invHit.config.archived)
-    );
+    // Etat d'archivage par cote (PG / Inv) - permet de distinguer 3 cas:
+    //  - both: les 2 cotes sont archives -> bouton "Desarchiver" (vert)
+    //  - none: aucun cote archive -> bouton "Archiver" (jaune)
+    //  - mixed: un seul cote archive -> 2 boutons (aligne en desarchive vert
+    //    OU en archive jaune, l'admin choisit)
+    // Si un cote n'existe pas (pgHit ou invHit null), on le considere comme
+    // "non archive" — l'action portera uniquement sur le cote existant.
+    const pgArchived = !!(pgHit && pgHit.config && pgHit.config.archived);
+    const invArchived = !!(invHit && invHit.config && invHit.config.archived);
     const archiveBtn = document.getElementById('pum-archive-btn');
     const archiveLabel = document.getElementById('pum-archive-label');
+    const archiveBtn2 = document.getElementById('pum-archive-btn-2');
+    const archiveLabel2 = document.getElementById('pum-archive-label-2');
+
+    // Si une seule des 2 entrees existe, le mixed n'a pas de sens (on
+    // ne peut pas archiver/desarchiver un cote qui n'existe pas).
+    const bothExist = !!(pgHit && invHit);
+    const archivedState = bothExist
+        ? (pgArchived && invArchived ? 'both' :
+           (!pgArchived && !invArchived ? 'none' : 'mixed'))
+        : (pgArchived || invArchived ? 'both' : 'none'); // single side -> traite comme both/none
+
+    // Labels mixed: indiquent quel cote sera touche dans chaque direction
+    const sideArchived = pgArchived ? 'Généraux' : 'Inventaire';
+    const sideActive = pgArchived ? 'Inventaire' : 'Généraux';
 
     if (mode === 'edit' && data.nom) {
-        titleText.textContent = `Modifier «${data.nom}»${isArchived ? ' (archivé)' : ''}`;
+        const titleArchived = (archivedState === 'both') ? ' (archivé)' :
+                              (archivedState === 'mixed' ? ` (archivé côté ${sideArchived})` : '');
+        titleText.textContent = `Modifier «${data.nom}»${titleArchived}`;
         saveLabel.textContent = 'Enregistrer';
         deleteBtn.style.display = '';
+        // Configuration des boutons archive selon l'etat
         if (archiveBtn) {
-            archiveBtn.style.display = '';
-            archiveBtn.dataset.archived = isArchived ? 'true' : 'false';
-            archiveLabel.textContent = isArchived ? 'Désarchiver' : 'Archiver';
-            // Couleur: jaune si on va archiver, vert si on va desarchiver
-            archiveBtn.classList.toggle('btn-outline-warning', !isArchived);
-            archiveBtn.classList.toggle('btn-outline-success', isArchived);
+            // dataset.archivedState pour le caller (debug / autres handlers)
+            archiveBtn.dataset.archivedState = archivedState;
+            if (archivedState === 'both') {
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'false';
+                archiveLabel.textContent = 'Désarchiver';
+                archiveBtn.classList.remove('btn-outline-warning');
+                archiveBtn.classList.add('btn-outline-success');
+            } else if (archivedState === 'none') {
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'true';
+                archiveLabel.textContent = 'Archiver';
+                archiveBtn.classList.add('btn-outline-warning');
+                archiveBtn.classList.remove('btn-outline-success');
+            } else {
+                // mixed: bouton principal = desarchiver le cote archive (default)
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'false';
+                archiveLabel.textContent = `Désarchiver côté ${sideArchived}`;
+                archiveBtn.classList.remove('btn-outline-warning');
+                archiveBtn.classList.add('btn-outline-success');
+            }
+        }
+        if (archiveBtn2) {
+            if (archivedState === 'mixed') {
+                // Bouton secondaire en mixed: archive le cote actif
+                archiveBtn2.style.display = '';
+                archiveBtn2.dataset.archiveTarget = 'true';
+                archiveLabel2.textContent = `Archiver côté ${sideActive}`;
+                archiveBtn2.classList.add('btn-outline-warning');
+                archiveBtn2.classList.remove('btn-outline-success');
+                // Icon: archive (yellow) plutot que arrow-counterclockwise
+                const icon = archiveBtn2.querySelector('i');
+                if (icon) {
+                    icon.classList.remove('bi-arrow-counterclockwise');
+                    icon.classList.add('bi-archive');
+                }
+            } else {
+                archiveBtn2.style.display = 'none';
+            }
         }
         document.getElementById('pum-original-nom').value = data.nom;
 
@@ -5191,6 +5253,7 @@ function ouvrirModalProduitUnifie(mode, data) {
         saveLabel.textContent = 'Ajouter';
         deleteBtn.style.display = 'none';
         if (archiveBtn) archiveBtn.style.display = 'none';
+        if (archiveBtn2) archiveBtn2.style.display = 'none';
         document.getElementById('pum-original-nom').value = '';
         document.getElementById('pum-nom').value = '';
         document.getElementById('pum-prix').value = '';
@@ -5645,14 +5708,18 @@ async function pumDelete() {
 // Toggle archive: bascule le flag archived sur les 2 catalogues ou il existe.
 // Soft-delete reversible — pas de confirmation aussi forte que pumDelete car
 // l'operation est non destructive.
-async function pumToggleArchive() {
+async function pumToggleArchive(evt) {
     const nom = document.getElementById('pum-original-nom').value;
     if (!nom) return;
-    const btn = document.getElementById('pum-archive-btn');
+    // Direction: lue depuis le bouton clique (data-archive-target='true'|'false').
+    // En mixed state, il y a 2 boutons distincts (primary = desarchive,
+    // secondary = archive) — chacun avec son propre target. evt.currentTarget
+    // est le bouton clique.
+    const btn = (evt && evt.currentTarget && evt.currentTarget.dataset && evt.currentTarget.dataset.archiveTarget !== undefined)
+        ? evt.currentTarget
+        : document.getElementById('pum-archive-btn');
     if (!btn) return;
-    // Direction: si actuellement archive -> desarchiver, sinon -> archiver
-    const currentlyArchived = btn.dataset.archived === 'true';
-    const targetArchived = !currentlyArchived;
+    const targetArchived = btn.dataset.archiveTarget === 'true';
     const action = targetArchived ? 'Archiver' : 'Désarchiver';
     const actionPast = targetArchived ? 'archivé' : 'désarchivé';
 
@@ -5823,6 +5890,10 @@ function initModalProduitUnifie() {
     if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
     const archiveBtn = document.getElementById('pum-archive-btn');
     if (archiveBtn) archiveBtn.addEventListener('click', pumToggleArchive);
+    // 2e bouton archive visible uniquement en etat "mixed" (un seul cote
+    // archive). data-archive-target indique la direction de l'action.
+    const archiveBtn2 = document.getElementById('pum-archive-btn-2');
+    if (archiveBtn2) archiveBtn2.addEventListener('click', pumToggleArchive);
 
     // Sync l'enable du select Mode de stock avec la cible Inventaire.
     // Si l'admin decoche Inventaire, le select est griseé (pas de sens
