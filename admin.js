@@ -4242,6 +4242,7 @@ function renderRechercheCategoriesFilter() {
     const currentCat = _rechercheState.cat;
 
     // Build HTML: "Toutes" + une chip par categorie
+    // escAttr couvre <,>,&,",' donc utilisable a la fois pour attr et texte.
     let html = `
         <div class="recherche-filter-item${currentCat === 'all' ? ' active' : ''}" data-recherche-cat="all">
             <i class="bi bi-grid"></i> Toutes
@@ -4249,11 +4250,11 @@ function renderRechercheCategoriesFilter() {
         </div>
     `;
     for (const c of cats) {
-        const esc = String(c).replace(/"/g, '&quot;');
+        const escC = escAttr(c);
         const isActive = c === currentCat;
         html += `
-            <div class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${esc}" title="${esc}">
-                <span class="recherche-cat-label">${c}</span>
+            <div class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${escC}" title="${escC}">
+                <span class="recherche-cat-label">${escC}</span>
                 <span class="recherche-count">${countByCat.get(c)}</span>
             </div>
         `;
@@ -4448,6 +4449,7 @@ if (document.readyState === 'loading') {
 // Si `selected` n'est dans aucune famille (= valeur legacy d'un ancien produit
 // inventaire), on l'injecte dans un optgroup "Anciennes catégories" en haut
 // du select pour preserver la selection et signaler la migration possible.
+// escAttr couvre <,>,&,",' donc utilisable a la fois pour attr et texte.
 function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     if (!selectEl) return;
     // Liste plate de toutes les categories standard
@@ -4458,17 +4460,19 @@ function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     let html = '';
     // Optgroup legacy en premier si la valeur selectionnee n'est pas standard
     if (selected && !standardCats.has(selected)) {
-        const escLeg = (escAttr ? escAttr(selected) : selected);
+        const escLeg = escAttr(selected);
         html += `<optgroup label="🗂️ Ancienne catégorie">`;
-        html += `<option value="${escLeg}" selected>${selected} (legacy)</option>`;
+        html += `<option value="${escLeg}" selected>${escLeg} (legacy)</option>`;
         html += `</optgroup>`;
     }
     for (const [famille, cats] of Object.entries(categoriesParFamille)) {
         const famIcon = famille === 'Boucherie' ? '🥩' : (famille === 'Épicerie' ? '🛒' : '📦');
-        html += `<optgroup label="${famIcon} ${famille}">`;
+        // famille est une cle de constante hardcodee, mais escape par defense
+        html += `<optgroup label="${famIcon} ${escAttr(famille)}">`;
         cats.forEach((cat) => {
+            const escCat = escAttr(cat);
             const sel = (cat === selected) ? ' selected' : '';
-            html += `<option value="${escAttr ? escAttr(cat) : cat}"${sel}>${cat}</option>`;
+            html += `<option value="${escCat}"${sel}>${escCat}</option>`;
         });
         html += '</optgroup>';
     }
@@ -4504,6 +4508,33 @@ function pumLookupInv(nom) {
         }
     }
     return null;
+}
+
+// Detecte un conflit de nom dans Produits Generaux: retourne le hit existant
+// si la sauvegarde a venir ecraserait un autre produit deja en place. Renvoie
+// null si pas de conflit (rename de soi-meme, ou nom totalement nouveau).
+// Case-insensitive (coherent avec pumLookupPG).
+function pumDetectPGConflict(originalNom, nomPG, mode) {
+    // Edit mode sans rename: pas de conflit possible (juste un update sur
+    // place du meme produit)
+    if (mode === 'edit' && originalNom === nomPG) return null;
+    const hit = pumLookupPG(nomPG);
+    if (!hit) return null;
+    // En edit mode, si le hit est exactement l'entree d'origine (meme cle),
+    // ce n'est pas un conflit — c'est juste l'entree qu'on s'apprete a
+    // supprimer pour la remplacer. delete est case-sensitive donc on compare
+    // l'exact match.
+    if (mode === 'edit' && hit.nom === originalNom) return null;
+    return hit; // { categorie, nom, config }
+}
+
+// Pareil pour l'Inventaire.
+function pumDetectInvConflict(originalNom, nomInv, mode) {
+    if (mode === 'edit' && originalNom === nomInv) return null;
+    const hit = pumLookupInv(nomInv);
+    if (!hit) return null;
+    if (mode === 'edit' && hit.nom === originalNom) return null;
+    return hit; // { nom, config }
 }
 
 // Met a jour la banniere status selon les hits dans les 2 catalogues.
@@ -4653,6 +4684,42 @@ async function pumSave() {
     const prixPG = overrideOn ? (parseFloat(document.getElementById('pum-prix-pg').value) || prixShared) : prixShared;
     const prixInv = overrideOn ? (parseFloat(document.getElementById('pum-prix-inv').value) || prixShared) : prixShared;
 
+    // Detection de doublons: on ne reecrit JAMAIS les noms saisis par l'admin.
+    // Si la sauvegarde a venir ecraserait une entree differente (meme nom dans
+    // l'autre catalogue, ou nom existant lors d'un rename), on demande
+    // confirmation explicite.
+    const conflicts = [];
+    if (targetPG) {
+        const c = pumDetectPGConflict(originalNom, nomPG, mode);
+        if (c) {
+            conflicts.push({
+                label: `Produits Généraux (catégorie « ${c.categorie} », ${c.config.default.toLocaleString('fr-FR')} FCFA)`,
+                nom: c.nom
+            });
+        }
+    }
+    if (targetInv) {
+        const c = pumDetectInvConflict(originalNom, nomInv, mode);
+        if (c) {
+            conflicts.push({
+                label: `Inventaire (${c.config.prixDefault.toLocaleString('fr-FR')} FCFA)`,
+                nom: c.nom
+            });
+        }
+    }
+    if (conflicts.length > 0) {
+        const lines = conflicts.map(c => `• « ${c.nom} » dans ${c.label}`).join('\n');
+        const msg = `Un produit avec ce nom existe déjà :\n\n${lines}\n\nVeux-tu écraser cette/ces entrée(s) ?`;
+        const ok = typeof showConfirmModal === 'function'
+            ? await showConfirmModal(msg, {
+                title: 'Écraser le produit existant ?',
+                okLabel: 'Écraser',
+                okVariant: 'warning'
+            })
+            : confirm(msg);
+        if (!ok) return; // pas de toast: l'utilisateur a annule volontairement
+    }
+
     // Snapshot pour rollback en cas d'echec serveur
     const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
     const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
@@ -4765,7 +4832,16 @@ async function pumSave() {
         // ou n'ecrase les vraies donnees serveur.
         currentProduitsConfig = snapPG;
         currentInventaireConfig = snapInv;
-        showToast(`Erreur de sauvegarde: ${serverError}`, 'error');
+        // Si on a eu un partial save (PG ok, Inv ko), le serveur a la moitie
+        // des changements. Refetch les configs depuis le serveur pour resync
+        // l'etat local avec la realite. Operation defensive: meme si pas de
+        // partial, refetch est idempotent (chargerConfig* re-affiche les
+        // onglets et la recherche).
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur de sauvegarde: ${serverError}`, 'danger');
         return; // modal reste ouvert pour que l'user puisse retry
     }
 
@@ -4886,7 +4962,12 @@ async function pumDelete() {
     if (!serverOk) {
         currentProduitsConfig = snapPG;
         currentInventaireConfig = snapInv;
-        showToast(`Erreur de suppression: ${serverError}`, 'error');
+        // Idem pumSave: refetch defensif pour resync apres partial save.
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur de suppression: ${serverError}`, 'danger');
         return; // modal reste ouvert
     }
 
