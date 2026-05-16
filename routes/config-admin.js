@@ -16,6 +16,17 @@ const { sequelize } = require('../db');
 const { User, PointVente, Category, InventaireCategory, Produit, PrixPointVente, PrixHistorique } = require('../db/models');
 const { Op } = require('sequelize');
 
+// Cles "reservees" du config produit inventaire qui ne doivent jamais
+// etre traitees comme un prix par point de vente. Le filtre est applique
+// dans le POST /produits-inventaire pour eviter qu'un champ booleen ou
+// chaine comme 'archived' / 'categorie_affichage' soit converti en prix
+// si typeof verification passe par hasard. Hoiste au module-scope pour
+// eviter l'allocation N fois dans la boucle traiterProduit.
+const INVENTAIRE_RESERVED_CONFIG_KEYS = [
+    'prixDefault', 'alternatives', 'mode_stock', 'unite_stock',
+    'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'
+];
+
 // Middleware pour vérifier que l'utilisateur est admin
 const requireAdmin = (req, res, next) => {
   // Vérifier si l'utilisateur est authentifié et est admin
@@ -957,12 +968,9 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       }
       
       // Prix par point de vente — lookup via map en mémoire.
-      // 'archived' est un boolean donc filtre par typeof === 'number' suffit,
-      // mais ajout dans le skip set par defense (au cas ou un consumer
-      // envoie archived: 0|1).
-      const RESERVED_KEYS = ['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'];
+      // Skip set hoiste au module-scope (INVENTAIRE_RESERVED_CONFIG_KEYS).
       for (const [key, value] of Object.entries(config)) {
-        if (!RESERVED_KEYS.includes(key) && typeof value === 'number') {
+        if (!INVENTAIRE_RESERVED_CONFIG_KEYS.includes(key) && typeof value === 'number') {
           const pointVente = pointsVenteByNom.get(key);
           if (pointVente) {
             await PrixPointVente.upsert({

@@ -4489,13 +4489,29 @@ async function rechercheBatchArchive(targetArchived) {
 
 // Archive rapide un seul produit (bouton sur la carte). Reutilise la
 // fonction batch avec un Set d'un seul element.
+// Set des keys en cours de traitement pour eviter les double-clicks
+// (le confirm modal etant async, 2 clics rapides peuvent empiler 2 confirms).
+const _rechercheArchiveSingleInFlight = new Set();
+
 async function rechercheArchiveSingle(src, nom) {
+    const key = _rechercheSelKey(src, nom);
+    // Garde re-entrante: si deja en cours pour ce produit, ignore.
+    if (_rechercheArchiveSingleInFlight.has(key)) return;
+
     const flat = _rechercheState.flat;
     const target = flat.find(p => p.src === src && p.name === nom);
     if (!target) return;
+
+    _rechercheArchiveSingleInFlight.add(key);
+    // Disable visuellement le bouton archive de cette carte (idempotent
+    // si plusieurs cartes existent pour le meme nom dans 2 catalogues).
+    const escKey = key.replace(/"/g, '&quot;');
+    const btn = document.querySelector(`[data-recherche-archive="${escKey}"]`);
+    if (btn) btn.disabled = true;
+
     // Sauvegarde de la selection courante, on la remplace temporairement
     const previousSelection = new Set(_rechercheState.selection);
-    _rechercheState.selection = new Set([_rechercheSelKey(src, nom)]);
+    _rechercheState.selection = new Set([key]);
     try {
         await rechercheBatchArchive(!target.archived);
     } finally {
@@ -4508,6 +4524,9 @@ async function rechercheArchiveSingle(src, nom) {
         } else {
             _rechercheState.selection = previousSelection;
         }
+        _rechercheArchiveSingleInFlight.delete(key);
+        // Le re-render renderRechercheGrid recree le DOM donc le bouton
+        // disabled est remplace par un neuf. Pas besoin de re-enable.
         renderRechercheGrid();
     }
 }

@@ -278,8 +278,11 @@ async function computeStockSoirAutoValues(dateInput) {
   }
   const dateBdd = formatDate(parsed);
 
+  // Filtre archived:false — un produit archive ne doit plus declencher de
+  // calcul auto-stock le soir, sinon on recalcule du stock pour un produit
+  // qui n'est plus cense apparaitre dans l'UI stock inventaire.
   const autoProduits = await Produit.findAll({
-    where: { mode_stock: 'automatique', type_catalogue: 'inventaire' },
+    where: { mode_stock: 'automatique', type_catalogue: 'inventaire', archived: false },
     attributes: ['nom', 'prix_defaut']
   });
   const autoSet = new Set(autoProduits.map((p) => p.nom));

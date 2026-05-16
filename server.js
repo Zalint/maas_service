@@ -1530,6 +1530,17 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 where: { nom: produitNom, type_catalogue: 'vente' }
             });
 
+            // Garde serveur: un produit archive ne doit plus etre vendu, meme
+            // si une session POS stale (cache 5min) tente d'envoyer la vente.
+            // On rejette explicitement le batch entier avec un message clair.
+            if (produitVente && produitVente.archived) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Le produit «${produitNom}» est archivé et ne peut plus être vendu. Désarchive-le côté admin si nécessaire.`,
+                    archivedProduct: produitNom
+                });
+            }
+
             if (!produitVente) {
                 produitVente = await Produit.create({
                     nom: produitNom,
