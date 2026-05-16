@@ -1238,11 +1238,12 @@ const CATEGORIES_PRODUITS_GENERAUX = {
 };
 const DEFAULT_CATEGORIE_PRODUITS_GENERAUX = 'Superette';
 
-const CATEGORIES_INVENTAIRE = {
-    'Boucherie': ['Viandes', 'Abats et Sous-produits', 'Produits sur Pieds'],
-    'Épicerie':  ['Œufs et Produits Laitiers', 'Superette'],
-    'Autres':    ['Déchets']
-};
+// Categories Inventaire alignees sur Produits Generaux (taxonomie unique).
+// Les anciennes categories logiques ("Viandes", "Abats et Sous-produits",
+// "Produits sur Pieds", "Œufs et Produits Laitiers", "Déchets") restent
+// supportees pour les produits existants via pumPopulerSelect qui injecte
+// l'option legacy si la valeur courante n'est pas dans la liste.
+const CATEGORIES_INVENTAIRE = CATEGORIES_PRODUITS_GENERAUX;
 const DEFAULT_CATEGORIE_INVENTAIRE = 'Superette';
 
 // Helper: re-route les anciennes selections "Autres" vers la default
@@ -4444,9 +4445,24 @@ if (document.readyState === 'loading') {
 // =====================================================================
 
 // Remplit un <select> avec des <optgroup> a partir d'un dict {famille: [cat,...]}
+// Si `selected` n'est dans aucune famille (= valeur legacy d'un ancien produit
+// inventaire), on l'injecte dans un optgroup "Anciennes catégories" en haut
+// du select pour preserver la selection et signaler la migration possible.
 function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     if (!selectEl) return;
+    // Liste plate de toutes les categories standard
+    const standardCats = new Set();
+    for (const cats of Object.values(categoriesParFamille)) {
+        cats.forEach((c) => standardCats.add(c));
+    }
     let html = '';
+    // Optgroup legacy en premier si la valeur selectionnee n'est pas standard
+    if (selected && !standardCats.has(selected)) {
+        const escLeg = (escAttr ? escAttr(selected) : selected);
+        html += `<optgroup label="🗂️ Ancienne catégorie">`;
+        html += `<option value="${escLeg}" selected>${selected} (legacy)</option>`;
+        html += `</optgroup>`;
+    }
     for (const [famille, cats] of Object.entries(categoriesParFamille)) {
         const famIcon = famille === 'Boucherie' ? '🥩' : (famille === 'Épicerie' ? '🛒' : '📦');
         html += `<optgroup label="${famIcon} ${famille}">`;
@@ -4522,22 +4538,44 @@ function ouvrirModalProduitUnifie(mode, data) {
     const modalEl = document.getElementById('productUnifiedModal');
     if (!modalEl) return;
 
-    // Populate selects
-    pumPopulerSelect(
-        document.getElementById('pum-cat-pg'),
-        CATEGORIES_PRODUITS_GENERAUX,
-        DEFAULT_CATEGORIE_PRODUITS_GENERAUX
-    );
-    pumPopulerSelect(
-        document.getElementById('pum-cat-inv'),
-        CATEGORIES_INVENTAIRE,
-        DEFAULT_CATEGORIE_INVENTAIRE
-    );
-
     document.getElementById('pum-mode').value = mode;
     const titleText = document.getElementById('pum-title-text');
     const saveLabel = document.getElementById('pum-save-label');
     const deleteBtn = document.getElementById('pum-delete-btn');
+
+    // Pre-calcul des valeurs selectionnees pour pouvoir les passer a
+    // pumPopulerSelect (qui injecte un optgroup "Ancienne categorie" si
+    // la valeur n'est pas dans la liste standard — utile pour preserver
+    // les categorie_affichage legacy comme 'Viandes', 'Déchets', etc.).
+    let selPG = DEFAULT_CATEGORIE_PRODUITS_GENERAUX;
+    let selInv = DEFAULT_CATEGORIE_INVENTAIRE;
+    let pgHit = null;
+    let invHit = null;
+
+    if (mode === 'edit' && data.nom) {
+        pgHit = pumLookupPG(data.nom);
+        invHit = pumLookupInv(data.nom);
+        if (pgHit) selPG = pgHit.categorie;
+        if (invHit && invHit.config.categorie_affichage) {
+            selInv = invHit.config.categorie_affichage;
+        }
+    } else {
+        // Mode 'add' avec defaut explicite
+        if (data.categorieDefault && data.srcDefault === 'pg') selPG = data.categorieDefault;
+        else if (data.categorieDefault && data.srcDefault === 'inv') selInv = data.categorieDefault;
+    }
+
+    // Populate selects avec les valeurs cibles
+    pumPopulerSelect(
+        document.getElementById('pum-cat-pg'),
+        CATEGORIES_PRODUITS_GENERAUX,
+        selPG
+    );
+    pumPopulerSelect(
+        document.getElementById('pum-cat-inv'),
+        CATEGORIES_INVENTAIRE,
+        selInv
+    );
 
     if (mode === 'edit' && data.nom) {
         titleText.textContent = `Modifier «${data.nom}»`;
@@ -4545,20 +4583,11 @@ function ouvrirModalProduitUnifie(mode, data) {
         deleteBtn.style.display = '';
         document.getElementById('pum-original-nom').value = data.nom;
 
-        // Pre-fill from BOTH catalogs (union).
-        const pgHit = pumLookupPG(data.nom);
-        const invHit = pumLookupInv(data.nom);
         const nom = data.nom;
         const prix = (data.src === 'pg' ? (pgHit && pgHit.config.default) :
                      (invHit && invHit.config.prixDefault)) || data.prix || 0;
         document.getElementById('pum-nom').value = nom;
         document.getElementById('pum-prix').value = prix;
-        if (pgHit) document.getElementById('pum-cat-pg').value = pgHit.categorie;
-        if (invHit && invHit.config.categorie_affichage) {
-            const inv = invHit.config.categorie_affichage;
-            const opt = document.querySelector(`#pum-cat-inv option[value="${inv}"]`);
-            if (opt) document.getElementById('pum-cat-inv').value = inv;
-        }
         // Pre-fill override fields too
         document.getElementById('pum-nom-pg').value = pgHit ? pgHit.nom : nom;
         document.getElementById('pum-nom-inv').value = invHit ? invHit.nom : nom;
@@ -4581,11 +4610,6 @@ function ouvrirModalProduitUnifie(mode, data) {
         document.getElementById('pum-prix-inv').value = '';
         document.getElementById('pum-target-pg').checked = true;
         document.getElementById('pum-target-inv').checked = true;
-        if (data.categorieDefault && data.srcDefault === 'pg') {
-            document.getElementById('pum-cat-pg').value = data.categorieDefault;
-        } else if (data.categorieDefault && data.srcDefault === 'inv') {
-            document.getElementById('pum-cat-inv').value = data.categorieDefault;
-        }
     }
 
     // Reset override toggle
