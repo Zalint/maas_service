@@ -84,9 +84,22 @@
             color: #475569;
             cursor: pointer;
             transition: background 80ms;
+            /* Reset des styles par defaut <button> (passe de <div> a <button>) */
+            background: transparent;
+            border: 0;
+            text-align: left;
+            font-family: inherit;
+            width: 100%;
+        }
+        .recherche-spotlight .recherche-filter-item:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
         }
         .recherche-spotlight .recherche-filter-item:hover { background: #e2e8f0; }
-        .recherche-spotlight .recherche-filter-item.active { background: #e7f1ff; color: #0d6efd; font-weight: 600; }
+        .recherche-spotlight .recherche-filter-item.active,
+        .recherche-spotlight .recherche-filter-item[aria-pressed="true"] {
+            background: #e7f1ff; color: #0d6efd; font-weight: 600;
+        }
         .recherche-spotlight .recherche-count {
             margin-left: auto;
             font-size: 0.72rem; color: #94a3b8;
@@ -484,53 +497,54 @@
                                 <div class="recherche-grid">
                                     <aside class="recherche-sidebar">
                                         <div class="recherche-search-input">
-                                            <i class="bi bi-search"></i>
-                                            <input type="text" id="recherche-input" placeholder="Rechercher un produit…" autocomplete="off">
+                                            <i class="bi bi-search" aria-hidden="true"></i>
+                                            <label for="recherche-input" class="visually-hidden">Rechercher un produit dans les catalogues</label>
+                                            <input type="search" id="recherche-input" placeholder="Rechercher un produit…" autocomplete="off" aria-label="Rechercher un produit">
                                         </div>
 
                                         <div class="recherche-filter-section">
-                                            <div class="recherche-filter-title">Catalogue</div>
-                                            <div class="recherche-filter-list">
-                                                <div class="recherche-filter-item active" data-recherche-src="all">
-                                                    <i class="bi bi-grid"></i> Tous
+                                            <div class="recherche-filter-title" id="recherche-filter-src-label">Catalogue</div>
+                                            <div class="recherche-filter-list" role="group" aria-labelledby="recherche-filter-src-label">
+                                                <button type="button" class="recherche-filter-item active" data-recherche-src="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Tous
                                                     <span class="recherche-count" data-count="all">0</span>
-                                                </div>
-                                                <div class="recherche-filter-item" data-recherche-src="pg">
-                                                    <i class="bi bi-shop"></i> Généraux
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-src="pg" aria-pressed="false">
+                                                    <i class="bi bi-shop" aria-hidden="true"></i> Généraux
                                                     <span class="recherche-count" data-count="pg">0</span>
-                                                </div>
-                                                <div class="recherche-filter-item" data-recherche-src="inv">
-                                                    <i class="bi bi-box-seam"></i> Inventaire
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-src="inv" aria-pressed="false">
+                                                    <i class="bi bi-box-seam" aria-hidden="true"></i> Inventaire
                                                     <span class="recherche-count" data-count="inv">0</span>
-                                                </div>
+                                                </button>
                                             </div>
                                         </div>
 
                                         <div class="recherche-filter-section">
-                                            <div class="recherche-filter-title">Famille</div>
-                                            <div class="recherche-filter-list">
-                                                <div class="recherche-filter-item active" data-recherche-fam="all">
-                                                    <i class="bi bi-grid"></i> Toutes
-                                                </div>
-                                                <div class="recherche-filter-item" data-recherche-fam="boucherie">
-                                                    🥩 Boucherie
-                                                </div>
-                                                <div class="recherche-filter-item" data-recherche-fam="epicerie">
-                                                    🛒 Épicerie
-                                                </div>
-                                                <div class="recherche-filter-item" data-recherche-fam="autres">
-                                                    📦 Autres
-                                                </div>
+                                            <div class="recherche-filter-title" id="recherche-filter-fam-label">Famille</div>
+                                            <div class="recherche-filter-list" role="group" aria-labelledby="recherche-filter-fam-label">
+                                                <button type="button" class="recherche-filter-item active" data-recherche-fam="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Toutes
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="boucherie" aria-pressed="false">
+                                                    <span aria-hidden="true">🥩</span> Boucherie
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="epicerie" aria-pressed="false">
+                                                    <span aria-hidden="true">🛒</span> Épicerie
+                                                </button>
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="autres" aria-pressed="false">
+                                                    <span aria-hidden="true">📦</span> Autres
+                                                </button>
                                             </div>
                                         </div>
 
                                         <div class="recherche-filter-section">
-                                            <div class="recherche-filter-title">Catégorie</div>
-                                            <div class="recherche-filter-list" id="recherche-cat-list">
+                                            <div class="recherche-filter-title" id="recherche-filter-cat-label">Catégorie</div>
+                                            <div class="recherche-filter-list" id="recherche-cat-list" role="group" aria-labelledby="recherche-filter-cat-label">
                                                 <!-- Rempli dynamiquement par renderRechercheCategoriesFilter() -->
-                                                <div class="recherche-filter-item active" data-recherche-cat="all">
-                                                    <i class="bi bi-grid"></i> Toutes
-                                                </div>
+                                                <button type="button" class="recherche-filter-item active" data-recherche-cat="all" aria-pressed="true">
+                                                    <i class="bi bi-grid" aria-hidden="true"></i> Toutes
+                                                </button>
                                             </div>
                                         </div>
 
@@ -1070,6 +1084,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-pum-review-fixes"></script>
+    <script src="admin.js?v=20260516-review2-a11y-merge"></script>
 </body>
 </html> 

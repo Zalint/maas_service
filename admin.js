@@ -1253,6 +1253,28 @@ function normaliserCategorieAvecDefaut(categorie, defaut) {
     return categorie;
 }
 
+// Mapping: label produit (Bovin, Ovin, Conserve...) -> bucket logique de
+// l'inventaire ("Viandes", "Superette", ...). Les buckets restent grossiers
+// pour l'affichage de l'onglet Inventaire (groupes de viandes / epicerie /
+// dechets) alors que les labels alignes Produits Generaux sont plus fins.
+// Pass-through pour les buckets legacy ('Viandes', 'Déchets', ...) et pour
+// les categories personnalisees (qui ont leur propre bucket cree a la volee).
+const _CAT_AFFICHAGE_TO_BUCKET = {
+    'Bovin': 'Viandes',
+    'Ovin': 'Viandes',
+    'Volaille': 'Viandes',
+    'Caprin': 'Viandes',
+    'Poisson': 'Viandes',
+    'Pack': 'Viandes',
+    'Conserve': 'Superette',
+    'Riz & Féculents': 'Superette'
+    // 'Superette' passe-through (deja un bucket)
+};
+function mapCategorieAffichageVersBucket(cat) {
+    if (!cat) return null;
+    return _CAT_AFFICHAGE_TO_BUCKET[cat] || cat;
+}
+
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
     try {
@@ -1685,12 +1707,14 @@ function reorganiserInventaireParCategories() {
         
         if (typeof config === 'object' && config.prixDefault !== undefined) {
             // Priorite 1: si le produit a un categorie_affichage explicite
-            // (choisi par l'utilisateur a l'ajout), on l'honore. C'est ce qui
-            // donne sa valeur au <select> Categorie du modal d'ajout.
-            const explicitCat = normaliserCategorieAvecDefaut(
-                config.categorie_affichage, null
-            );
-            if (explicitCat && inventaireParCategories[explicitCat]) {
+            // (choisi par l'utilisateur a l'ajout), on l'honore. Depuis que
+            // CATEGORIES_INVENTAIRE = CATEGORIES_PRODUITS_GENERAUX, les labels
+            // saisis sont fins ('Bovin', 'Conserve'...) mais les buckets sont
+            // grossiers ('Viandes', 'Superette'...) — il faut mapper avant le
+            // lookup, sinon la selection explicite est perdue.
+            const mapped = mapCategorieAffichageVersBucket(config.categorie_affichage);
+            const explicitCat = normaliserCategorieAvecDefaut(mapped, DEFAULT_CATEGORIE_INVENTAIRE);
+            if (config.categorie_affichage && explicitCat && inventaireParCategories[explicitCat]) {
                 inventaireParCategories[explicitCat][produit] = config;
                 return;
             }
@@ -4178,20 +4202,24 @@ function renderRechercheGrid() {
         return;
     }
 
+    // escAttr couvre <,>,&,",' pour attrs ET contenu texte. p.src est trusted
+    // ('pg'/'inv' set par notre code) mais on escape par defense. icon/famIcon/
+    // srcLabel sont hardcodes, p.prix passe par toLocaleString (numerique pur).
     grid.innerHTML = matches.map((p) => {
         const icon = p.src === 'pg' ? 'bi-shop' : 'bi-box-seam';
         const srcLabel = p.src === 'pg' ? 'Généraux' : 'Inventaire';
         const famIcon = p.famille === 'boucherie' ? '🥩' : (p.famille === 'epicerie' ? '🛒' : '📦');
-        const escName = String(p.name).replace(/"/g, '&quot;');
-        const escCat = String(p.cat).replace(/"/g, '&quot;');
+        const escName = escAttr(p.name);
+        const escCat = escAttr(p.cat);
+        const escSrc = escAttr(p.src);
         return `
-            <div class="result-card" data-src="${p.src}" data-name="${escName}" data-cat="${escCat}">
+            <div class="result-card" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}">
                 <div class="result-card-header">
-                    <div class="result-card-icon icon-${p.src}"><i class="bi ${icon}"></i></div>
-                    <span class="src-badge ${p.src}">${srcLabel}</span>
+                    <div class="result-card-icon icon-${escSrc}"><i class="bi ${icon}" aria-hidden="true"></i></div>
+                    <span class="src-badge ${escSrc}">${srcLabel}</span>
                 </div>
-                <div class="result-name" title="${escName}">${p.name}</div>
-                <div class="result-cat">${famIcon} ${p.cat}</div>
+                <div class="result-name" title="${escName}">${escName}</div>
+                <div class="result-cat"><span aria-hidden="true">${famIcon}</span> ${escCat}</div>
                 <div class="result-price">${p.prix.toLocaleString('fr-FR')} <small>FCFA</small></div>
             </div>
         `;
@@ -4243,20 +4271,21 @@ function renderRechercheCategoriesFilter() {
 
     // Build HTML: "Toutes" + une chip par categorie
     // escAttr couvre <,>,&,",' donc utilisable a la fois pour attr et texte.
+    const allActive = currentCat === 'all';
     let html = `
-        <div class="recherche-filter-item${currentCat === 'all' ? ' active' : ''}" data-recherche-cat="all">
-            <i class="bi bi-grid"></i> Toutes
+        <button type="button" class="recherche-filter-item${allActive ? ' active' : ''}" data-recherche-cat="all" aria-pressed="${allActive}">
+            <i class="bi bi-grid" aria-hidden="true"></i> Toutes
             <span class="recherche-count">${scope.length}</span>
-        </div>
+        </button>
     `;
     for (const c of cats) {
         const escC = escAttr(c);
         const isActive = c === currentCat;
         html += `
-            <div class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${escC}" title="${escC}">
+            <button type="button" class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${escC}" title="${escC}" aria-pressed="${isActive}">
                 <span class="recherche-cat-label">${escC}</span>
                 <span class="recherche-count">${countByCat.get(c)}</span>
-            </div>
+            </button>
         `;
     }
     list.innerHTML = html;
@@ -4266,9 +4295,12 @@ function renderRechercheCategoriesFilter() {
     list.querySelectorAll('[data-recherche-cat]').forEach((el) => {
         el.addEventListener('click', () => {
             _rechercheState.cat = el.dataset.rechercheCat;
-            // Mettre a jour visuel + grid
-            list.querySelectorAll('[data-recherche-cat]').forEach((x) => x.classList.remove('active'));
-            el.classList.add('active');
+            // Mettre a jour visuel (active + aria-pressed) + grid
+            list.querySelectorAll('[data-recherche-cat]').forEach((x) => {
+                const isActive = x === el;
+                x.classList.toggle('active', isActive);
+                x.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            });
             renderRechercheGrid();
         });
     });
@@ -4347,11 +4379,20 @@ function initRechercheSpotlight() {
         });
     }
 
+    // Helper: synchronise .active + aria-pressed pour un groupe de toggle-buttons.
+    // selector = attribut data-* (ex: '[data-recherche-src]'), active = element selectionne.
+    const activateFilter = (selector, active) => {
+        document.querySelectorAll(selector).forEach((x) => {
+            const isActive = x === active;
+            x.classList.toggle('active', isActive);
+            x.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+    };
+
     // Filtres source
     document.querySelectorAll('[data-recherche-src]').forEach((el) => {
         el.addEventListener('click', () => {
-            document.querySelectorAll('[data-recherche-src]').forEach((x) => x.classList.remove('active'));
-            el.classList.add('active');
+            activateFilter('[data-recherche-src]', el);
             _rechercheState.src = el.dataset.rechercheSrc;
             // Le scope des categories change avec src -> re-render la liste
             renderRechercheCategoriesFilter();
@@ -4362,8 +4403,7 @@ function initRechercheSpotlight() {
     // Filtres famille
     document.querySelectorAll('[data-recherche-fam]').forEach((el) => {
         el.addEventListener('click', () => {
-            document.querySelectorAll('[data-recherche-fam]').forEach((x) => x.classList.remove('active'));
-            el.classList.add('active');
+            activateFilter('[data-recherche-fam]', el);
             _rechercheState.famille = el.dataset.rechercheFam;
             // Le scope des categories change avec famille -> re-render
             renderRechercheCategoriesFilter();
@@ -4496,18 +4536,37 @@ function pumLookupPG(nom) {
     return null;
 }
 
-// Cherche un produit existant dans Inventaire par nom.
+// Cherche un produit existant dans Inventaire par nom. Recherche recursive
+// pour trouver aussi les produits niches dans des categories personnalisees
+// (ex: currentInventaireConfig['MaCategorie'] = { produit1: {...} }).
+// Retourne { nom, config, parent } ou parent = l'objet contenant le produit
+// (root pour les produits flat, ou la categorie personnalisee). Les callers
+// qui suppriment doivent utiliser `delete parent[nom]` plutot que de
+// presumer le root.
 function pumLookupInv(nom) {
     if (!currentInventaireConfig || !nom) return null;
-    const target = nom.toLowerCase();
-    for (const [name, config] of Object.entries(currentInventaireConfig)) {
-        if (typeof config !== 'object' || config === null) continue;
-        if (typeof config.prixDefault !== 'number') continue;
-        if (name.toLowerCase() === target) {
-            return { nom: name, config };
+    const target = String(nom).toLowerCase();
+    // DFS: on parcourt root + sous-objets a 1 niveau (les categories
+    // personnalisees). On ne va PAS plus profond car le format admin
+    // ne supporte pas l'imbrication arbitraire.
+    const visit = (container) => {
+        for (const [name, config] of Object.entries(container)) {
+            if (typeof config !== 'object' || config === null) continue;
+            // Match: produit feuille avec prixDefault
+            if (typeof config.prixDefault === 'number' &&
+                name.toLowerCase() === target) {
+                return { nom: name, config, parent: container };
+            }
+            // Sinon, si c'est un container de categorie (objet sans
+            // prixDefault), descendre dedans.
+            if (config.prixDefault === undefined) {
+                const hit = visit(config);
+                if (hit) return hit;
+            }
         }
-    }
-    return null;
+        return null;
+    };
+    return visit(currentInventaireConfig);
 }
 
 // Detecte un conflit de nom dans Produits Generaux: retourne le hit existant
@@ -4534,7 +4593,7 @@ function pumDetectInvConflict(originalNom, nomInv, mode) {
     const hit = pumLookupInv(nomInv);
     if (!hit) return null;
     if (mode === 'edit' && hit.nom === originalNom) return null;
-    return hit; // { nom, config }
+    return hit; // { nom, config, parent }
 }
 
 // Met a jour la banniere status selon les hits dans les 2 catalogues.
@@ -4728,8 +4787,13 @@ async function pumSave() {
     let invChanged = false;
 
     if (targetPG) {
-        // Supprimer l'ancienne entree si rename ou changement de categorie
+        // Lookup de l'entree d'origine pour preserver les champs non touches
+        // (prix_personnalise, inventaire_parent, prix vente speciaux, etc.).
+        let baseConfigPG = {};
         if (mode === 'edit' && originalNom) {
+            const origHit = pumLookupPG(originalNom);
+            if (origHit) baseConfigPG = origHit.config;
+            // Supprimer l'ancienne entree si rename ou changement de categorie
             for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
                 if (typeof produits === 'object' && produits[originalNom]) {
                     if (cat !== catPG || originalNom !== nomPG) {
@@ -4737,25 +4801,56 @@ async function pumSave() {
                     }
                 }
             }
+        } else if (currentProduitsConfig[catPG] && currentProduitsConfig[catPG][nomPG]) {
+            // Mode add avec conflit deja confirme: merger avec l'existant
+            baseConfigPG = currentProduitsConfig[catPG][nomPG];
         }
+        // Alternatives: preserver l'array existant, ajouter prixPG si absent
+        const altsPG = Array.isArray(baseConfigPG.alternatives) ? baseConfigPG.alternatives.slice() : [];
+        if (!altsPG.includes(prixPG)) altsPG.push(prixPG);
+
         if (!currentProduitsConfig[catPG]) currentProduitsConfig[catPG] = {};
         currentProduitsConfig[catPG][nomPG] = {
+            ...baseConfigPG,
             default: prixPG,
-            alternatives: [prixPG]
+            alternatives: altsPG
         };
         pgChanged = true;
     }
 
     if (targetInv) {
-        // Inventaire est plat: cle = nom. Supprimer l'ancien si rename.
-        if (mode === 'edit' && originalNom && originalNom !== nomInv) {
-            delete currentInventaireConfig[originalNom];
+        // Lookup recursif pour trouver l'entree d'origine (peut etre nichee
+        // dans une categorie personnalisee). On preserve tous ses champs
+        // (ventes, ventilation_poids, mode_stock, unite_stock, prix vente
+        // PV-specific, etc.).
+        let baseConfigInv = {};
+        let origInvParent = null;
+        let origInvNom = null;
+        if (mode === 'edit' && originalNom) {
+            const origHit = pumLookupInv(originalNom);
+            if (origHit) {
+                baseConfigInv = origHit.config;
+                origInvParent = origHit.parent;
+                origInvNom = origHit.nom;
+            }
+        } else if (currentInventaireConfig[nomInv]) {
+            // Mode add avec conflit confirme: merger avec l'existant root
+            baseConfigInv = currentInventaireConfig[nomInv];
         }
+        // Supprimer l'ancien si rename (et seulement si la cle change)
+        if (origInvParent && origInvNom && origInvNom !== nomInv) {
+            delete origInvParent[origInvNom];
+        }
+        // Alternatives: preserver + ajouter prixInv si absent
+        const altsInv = Array.isArray(baseConfigInv.alternatives) ? baseConfigInv.alternatives.slice() : [];
+        if (!altsInv.includes(prixInv)) altsInv.push(prixInv);
+
         currentInventaireConfig[nomInv] = {
+            ...baseConfigInv,
             prixDefault: prixInv,
-            alternatives: [prixInv],
-            mode_stock: (currentInventaireConfig[nomInv] && currentInventaireConfig[nomInv].mode_stock) || 'manuel',
-            unite_stock: (currentInventaireConfig[nomInv] && currentInventaireConfig[nomInv].unite_stock) || 'unite',
+            alternatives: altsInv,
+            mode_stock: baseConfigInv.mode_stock || 'manuel',
+            unite_stock: baseConfigInv.unite_stock || 'unite',
             categorie_affichage: catInv
         };
         invChanged = true;
