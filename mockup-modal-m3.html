@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mockup M3 — Section principale + toggle Inventaire</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { background: #f1f5f9; padding: 40px 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+        .mockup-shell { max-width: 600px; margin: 0 auto; }
+        .mockup-title { color: #0f172a; font-weight: 700; margin-bottom: 8px; }
+        .mockup-sub { color: #64748b; margin-bottom: 24px; }
+        .mockup-card {
+            background: #fff; border-radius: 12px; padding: 28px 32px;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .mockup-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+        .mockup-card-title { font-size: 1.125rem; font-weight: 600; margin: 0; color: #0f172a; }
+        .section-title {
+            font-size: 0.75rem; font-weight: 700;
+            color: #6366f1; text-transform: uppercase; letter-spacing: 0.06em;
+            margin-bottom: 12px; padding-bottom: 6px;
+            border-bottom: 2px solid #e0e7ff;
+        }
+        .section-title.inv-color { color: #166534; border-bottom-color: #d1fae5; }
+        .inv-block {
+            background: #fafff5; border: 1px solid #d1fae5; border-radius: 10px;
+            padding: 16px; margin-top: 16px;
+            transition: opacity 200ms ease;
+        }
+        .inv-block.disabled { opacity: 0.4; pointer-events: none; }
+        .heritage-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px;
+            background: #f0fdf4; border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.875rem;
+        }
+        .heritage-label { color: #64748b; font-size: 0.8rem; min-width: 80px; }
+        .heritage-value { font-weight: 600; color: #0f172a; }
+        .heritage-edit {
+            margin-left: auto;
+            color: #6366f1; text-decoration: none; font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .heritage-edit:hover { text-decoration: underline; }
+        .form-label { font-weight: 500; font-size: 0.875rem; color: #334155; }
+        .mockup-footer { text-align: center; margin-top: 16px; color: #94a3b8; font-size: 0.875rem; }
+        .toggle-creer {
+            background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
+            padding: 10px 14px; margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="mockup-shell">
+        <h2 class="mockup-title">M3 — Section principale + toggle Inventaire</h2>
+        <p class="mockup-sub">Saisie Produits Généraux. Toggle "Créer aussi dans Inventaire" (ON par défaut). Nom + Prix hérités, override via liens.</p>
+
+        <div class="mockup-card">
+            <div class="mockup-card-header">
+                <h5 class="mockup-card-title"><i class="bi bi-plus-circle me-2 text-primary"></i>Ajouter un nouveau produit</h5>
+                <button type="button" class="btn-close" aria-label="Close"></button>
+            </div>
+
+            <form id="m3-form" novalidate>
+                <!-- Section principale : Produits Généraux -->
+                <div class="section-title"><i class="bi bi-shop me-1"></i>Produits Généraux (catalogue ventes)</div>
+
+                <div class="mb-3">
+                    <label class="form-label">Nom du produit *</label>
+                    <input type="text" class="form-control" id="m3-nom" value="Beurre" placeholder="Ex: Beurre">
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Prix vente *</label>
+                        <input type="number" class="form-control" id="m3-prix" value="500">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Catégorie *</label>
+                        <select class="form-select">
+                            <optgroup label="🥩 Boucherie">
+                                <option>Bovin</option><option>Ovin</option>
+                                <option>Volaille</option><option>Caprin</option>
+                                <option>Poisson</option><option>Pack</option>
+                            </optgroup>
+                            <optgroup label="🛒 Épicerie">
+                                <option selected>Superette</option>
+                                <option>Conserve</option>
+                                <option>Riz & Féculents</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Toggle créer aussi en inventaire -->
+                <div class="toggle-creer mt-3">
+                    <div class="form-check mb-0">
+                        <input class="form-check-input" type="checkbox" id="m3-toggle-inv" checked>
+                        <label class="form-check-label" for="m3-toggle-inv">
+                            <i class="bi bi-box-seam me-1"></i>
+                            <strong>Créer aussi ce produit dans Inventaire</strong>
+                            <span class="text-muted small d-block">Pour suivre le stock physique de ce produit en parallèle.</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Section Inventaire (visible si toggle ON) -->
+                <div class="inv-block" id="m3-inv-block">
+                    <div class="section-title inv-color"><i class="bi bi-box-seam me-1"></i>Inventaire (stock interne)</div>
+
+                    <div class="heritage-row">
+                        <span class="heritage-label">Nom :</span>
+                        <span class="heritage-value" id="m3-heritage-nom">Beurre</span>
+                        <a class="heritage-edit" id="m3-edit-nom"><i class="bi bi-pencil"></i> modifier</a>
+                    </div>
+                    <div id="m3-nom-inv-wrap" style="display:none" class="mb-2">
+                        <label class="form-label small">Nom (Inventaire)</label>
+                        <input type="text" class="form-control form-control-sm" id="m3-nom-inv" value="Beurre">
+                    </div>
+
+                    <div class="heritage-row">
+                        <span class="heritage-label">Prix :</span>
+                        <span class="heritage-value" id="m3-heritage-prix">500</span>
+                        <a class="heritage-edit" id="m3-edit-prix"><i class="bi bi-pencil"></i> modifier</a>
+                    </div>
+                    <div id="m3-prix-inv-wrap" style="display:none" class="mb-2">
+                        <label class="form-label small">Prix achat (Inventaire)</label>
+                        <input type="number" class="form-control form-control-sm" id="m3-prix-inv" value="500">
+                    </div>
+
+                    <div>
+                        <label class="form-label">Catégorie Inventaire *</label>
+                        <select class="form-select form-select-sm">
+                            <optgroup label="🥩 Boucherie">
+                                <option>Viandes</option>
+                                <option>Abats et Sous-produits</option>
+                                <option>Produits sur Pieds</option>
+                            </optgroup>
+                            <optgroup label="🛒 Épicerie">
+                                <option>Œufs et Produits Laitiers</option>
+                                <option selected>Superette</option>
+                            </optgroup>
+                            <optgroup label="Autres">
+                                <option>Déchets</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-end gap-2 mt-4">
+                    <button type="button" class="btn btn-outline-secondary">Annuler</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check2-circle me-1"></i>Ajouter
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <p class="mockup-footer">M3 · Minimal : focus sur Produits Généraux, Inventaire optionnel</p>
+    </div>
+
+    <script>
+        // Toggle inventaire block
+        document.getElementById('m3-toggle-inv').addEventListener('change', (e) => {
+            document.getElementById('m3-inv-block').classList.toggle('disabled', !e.target.checked);
+        });
+
+        // Sync héritage nom/prix
+        document.getElementById('m3-nom').addEventListener('input', (e) => {
+            document.getElementById('m3-heritage-nom').textContent = e.target.value || '—';
+            document.getElementById('m3-nom-inv').value = e.target.value;
+        });
+        document.getElementById('m3-prix').addEventListener('input', (e) => {
+            document.getElementById('m3-heritage-prix').textContent = e.target.value || '—';
+            document.getElementById('m3-prix-inv').value = e.target.value;
+        });
+
+        // Boutons "modifier" : remplacer la heritage-row par un input
+        document.getElementById('m3-edit-nom').addEventListener('click', () => {
+            document.getElementById('m3-edit-nom').closest('.heritage-row').style.display = 'none';
+            document.getElementById('m3-nom-inv-wrap').style.display = '';
+            document.getElementById('m3-nom-inv').focus();
+        });
+        document.getElementById('m3-edit-prix').addEventListener('click', () => {
+            document.getElementById('m3-edit-prix').closest('.heritage-row').style.display = 'none';
+            document.getElementById('m3-prix-inv-wrap').style.display = '';
+            document.getElementById('m3-prix-inv').focus();
+        });
+
+        document.getElementById('m3-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            alert('M3: produit serait créé. (mockup statique)');
+        });
+    </script>
+</body>
+</html>

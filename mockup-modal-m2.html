@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mockup M2 — Deux colonnes synchronisées</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { background: #f1f5f9; padding: 40px 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+        .mockup-shell { max-width: 860px; margin: 0 auto; }
+        .mockup-title { color: #0f172a; font-weight: 700; margin-bottom: 8px; }
+        .mockup-sub { color: #64748b; margin-bottom: 24px; }
+        .mockup-card {
+            background: #fff; border-radius: 12px; padding: 28px 32px;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08);
+        }
+        .mockup-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+        .mockup-card-title { font-size: 1.125rem; font-weight: 600; margin: 0; color: #0f172a; }
+        .col-section {
+            padding: 16px;
+            border-radius: 10px;
+            background: #fafbff;
+            border: 1px solid #e2e8f0;
+            height: 100%;
+        }
+        .col-section.col-inv { background: #fafff5; border-color: #e5eed8; }
+        .col-header {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 16px; padding-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .col-header .icon {
+            width: 28px; height: 28px; border-radius: 6px;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 0.9rem;
+        }
+        .col-pg .icon { background: #e7f1ff; color: #0d6efd; }
+        .col-inv .icon { background: #dcfce7; color: #166534; }
+        .col-title { font-weight: 600; font-size: 0.95rem; margin: 0; color: #0f172a; }
+        .col-subtitle { font-size: 0.72rem; color: #64748b; font-weight: 400; }
+        .sync-badge {
+            display: inline-flex; align-items: center; gap: 3px;
+            background: #e0e7ff; color: #4338ca;
+            font-size: 0.65rem; font-weight: 600;
+            padding: 2px 6px; border-radius: 4px;
+            margin-left: 6px;
+            cursor: pointer;
+        }
+        .field-locked input { background: #f8fafc; color: #475569; }
+        .form-label { font-weight: 500; font-size: 0.875rem; color: #334155; }
+        .mockup-footer { text-align: center; margin-top: 16px; color: #94a3b8; font-size: 0.875rem; }
+    </style>
+</head>
+<body>
+    <div class="mockup-shell">
+        <h2 class="mockup-title">M2 — Deux colonnes synchronisées</h2>
+        <p class="mockup-sub">Ce qui est tapé à gauche se réplique à droite. Click sur un champ de droite pour le désynchroniser et le personnaliser.</p>
+
+        <div class="mockup-card">
+            <div class="mockup-card-header">
+                <h5 class="mockup-card-title"><i class="bi bi-plus-circle me-2 text-primary"></i>Ajouter un nouveau produit</h5>
+                <button type="button" class="btn-close" aria-label="Close"></button>
+            </div>
+
+            <form id="m2-form" novalidate>
+                <div class="row g-3">
+                    <!-- Colonne Produits Généraux -->
+                    <div class="col-md-6">
+                        <div class="col-section col-pg">
+                            <div class="col-header">
+                                <span class="icon"><i class="bi bi-shop"></i></span>
+                                <div>
+                                    <p class="col-title">Produits Généraux</p>
+                                    <div class="col-subtitle">Catalogue de ventes au client</div>
+                                </div>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">Nom *</label>
+                                <input type="text" class="form-control" id="m2-nom-pg" value="Beurre" placeholder="Ex: Beurre">
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">Prix vente *</label>
+                                <input type="number" class="form-control" id="m2-prix-pg" value="500">
+                            </div>
+                            <div>
+                                <label class="form-label">Catégorie *</label>
+                                <select class="form-select" id="m2-cat-pg">
+                                    <optgroup label="🥩 Boucherie">
+                                        <option>Bovin</option><option>Ovin</option>
+                                        <option>Volaille</option><option>Caprin</option>
+                                        <option>Poisson</option><option>Pack</option>
+                                    </optgroup>
+                                    <optgroup label="🛒 Épicerie">
+                                        <option selected>Superette</option>
+                                        <option>Conserve</option>
+                                        <option>Riz & Féculents</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Colonne Inventaire -->
+                    <div class="col-md-6">
+                        <div class="col-section col-inv">
+                            <div class="col-header">
+                                <span class="icon"><i class="bi bi-box-seam"></i></span>
+                                <div>
+                                    <p class="col-title">Inventaire</p>
+                                    <div class="col-subtitle">Stock interne (réception)</div>
+                                </div>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">
+                                    Nom *
+                                    <span class="sync-badge" id="m2-sync-nom" title="Synchronisé avec Produits Généraux">
+                                        <i class="bi bi-link-45deg"></i> sync
+                                    </span>
+                                </label>
+                                <input type="text" class="form-control field-locked" id="m2-nom-inv" value="Beurre" readonly>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">
+                                    Prix achat *
+                                    <span class="sync-badge" id="m2-sync-prix" title="Synchronisé avec Produits Généraux">
+                                        <i class="bi bi-link-45deg"></i> sync
+                                    </span>
+                                </label>
+                                <input type="number" class="form-control field-locked" id="m2-prix-inv" value="500" readonly>
+                            </div>
+                            <div>
+                                <label class="form-label">Catégorie *</label>
+                                <select class="form-select" id="m2-cat-inv">
+                                    <optgroup label="🥩 Boucherie">
+                                        <option>Viandes</option>
+                                        <option>Abats et Sous-produits</option>
+                                        <option>Produits sur Pieds</option>
+                                    </optgroup>
+                                    <optgroup label="🛒 Épicerie">
+                                        <option>Œufs et Produits Laitiers</option>
+                                        <option selected>Superette</option>
+                                    </optgroup>
+                                    <optgroup label="Autres">
+                                        <option>Déchets</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="alert alert-light border mt-3 mb-3 py-2 small">
+                    <i class="bi bi-info-circle me-1 text-primary"></i>
+                    Les champs <strong>sync</strong> à droite suivent la colonne de gauche. Clique dessus pour les personnaliser séparément.
+                </div>
+
+                <div class="d-flex justify-content-end gap-2">
+                    <button type="button" class="btn btn-outline-secondary">Annuler</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check2-circle me-1"></i>Ajouter dans les 2 catalogues
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <p class="mockup-footer">M2 · Transparent : tu vois exactement ce qui sera créé dans chaque catalogue</p>
+    </div>
+
+    <script>
+        // État de sync nom + prix
+        const sync = { nom: true, prix: true };
+
+        // Quand on tape à gauche, mettre à jour à droite si encore synchronisé
+        document.getElementById('m2-nom-pg').addEventListener('input', (e) => {
+            if (sync.nom) document.getElementById('m2-nom-inv').value = e.target.value;
+        });
+        document.getElementById('m2-prix-pg').addEventListener('input', (e) => {
+            if (sync.prix) document.getElementById('m2-prix-inv').value = e.target.value;
+        });
+
+        // Click sur le badge "sync" OU sur le champ verrouillé = désynchroniser
+        function unsyncNom() {
+            sync.nom = false;
+            document.getElementById('m2-sync-nom').style.display = 'none';
+            const inp = document.getElementById('m2-nom-inv');
+            inp.removeAttribute('readonly');
+            inp.classList.remove('field-locked');
+            inp.focus();
+            inp.select();
+        }
+        function unsyncPrix() {
+            sync.prix = false;
+            document.getElementById('m2-sync-prix').style.display = 'none';
+            const inp = document.getElementById('m2-prix-inv');
+            inp.removeAttribute('readonly');
+            inp.classList.remove('field-locked');
+            inp.focus();
+            inp.select();
+        }
+        document.getElementById('m2-sync-nom').addEventListener('click', unsyncNom);
+        document.getElementById('m2-sync-prix').addEventListener('click', unsyncPrix);
+        document.getElementById('m2-nom-inv').addEventListener('click', () => { if (sync.nom) unsyncNom(); });
+        document.getElementById('m2-prix-inv').addEventListener('click', () => { if (sync.prix) unsyncPrix(); });
+
+        document.getElementById('m2-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            alert('M2: produit serait créé dans les 2 catalogues. (mockup statique)');
+        });
+    </script>
+</body>
+</html>
