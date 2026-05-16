@@ -4090,6 +4090,7 @@ const _rechercheState = {
     famille: 'all', // 'all' | 'boucherie' | 'epicerie' | 'autres'
     cat: 'all',     // 'all' | nom exact de la categorie (ex: 'Superette')
     sort: 'name',
+    showArchived: false, // false = cacher les archives (defaut), true = inclure
     flat: []
 };
 
@@ -4118,7 +4119,7 @@ function familleDeCatInventaire(categorie) {
 }
 
 // Aplatit les 2 catalogues en un tableau unifie pour la recherche.
-// Forme: { src, name, cat, famille, prix }
+// Forme: { src, name, cat, famille, prix, archived }
 function reconstruireFlatRecherche() {
     const flat = [];
 
@@ -4134,7 +4135,8 @@ function reconstruireFlatRecherche() {
                     name: produitName,
                     cat: catName,
                     famille: familleDeCatPG(catName),
-                    prix: config.default
+                    prix: config.default,
+                    archived: !!config.archived
                 });
             }
         }
@@ -4154,7 +4156,8 @@ function reconstruireFlatRecherche() {
                     name: produitName,
                     cat: catName,
                     famille: familleDeCatInventaire(catName),
-                    prix: config.prixDefault
+                    prix: config.prixDefault,
+                    archived: !!config.archived
                 });
             }
         }
@@ -4166,9 +4169,12 @@ function reconstruireFlatRecherche() {
 
 // Filtre + tri en memoire (pas de requete reseau).
 function appliquerFiltresRecherche() {
-    const { query, src, famille, cat, sort, flat } = _rechercheState;
+    const { query, src, famille, cat, sort, showArchived, flat } = _rechercheState;
     const q = query.toLowerCase().trim();
     let matches = flat;
+    // Filtre archive: par defaut on cache les archives. Si showArchived=true,
+    // on les inclut (mais visuellement differents — cf. renderRechercheGrid).
+    if (!showArchived) matches = matches.filter(p => !p.archived);
     if (src !== 'all') matches = matches.filter(p => p.src === src);
     if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
     if (cat !== 'all') matches = matches.filter(p => p.cat === cat);
@@ -4212,11 +4218,17 @@ function renderRechercheGrid() {
         const escName = escAttr(p.name);
         const escCat = escAttr(p.cat);
         const escSrc = escAttr(p.src);
+        // Cartes archivees: classe + badge "Archivé" en plus du badge source.
+        const archivedClass = p.archived ? ' is-archived' : '';
+        const archivedBadge = p.archived
+            ? `<span class="archived-badge" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive" aria-hidden="true"></i> Archivé</span>`
+            : '';
         return `
-            <div class="result-card" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}">
+            <div class="result-card${archivedClass}" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}" data-archived="${p.archived ? 'true' : 'false'}">
                 <div class="result-card-header">
                     <div class="result-card-icon icon-${escSrc}"><i class="bi ${icon}" aria-hidden="true"></i></div>
                     <span class="src-badge ${escSrc}">${srcLabel}</span>
+                    ${archivedBadge}
                 </div>
                 <div class="result-name" title="${escName}">${escName}</div>
                 <div class="result-cat"><span aria-hidden="true">${famIcon}</span> ${escCat}</div>
@@ -4227,11 +4239,14 @@ function renderRechercheGrid() {
 }
 
 // Recalcule les compteurs (Tous / PG / Inv) dans la sidebar.
+// Les compteurs respectent le toggle "Afficher les archives" pour rester
+// coherents avec ce qui est visible dans la grille.
 function updateRechercheCompteurs() {
-    const flat = _rechercheState.flat;
-    const total = flat.length;
-    const pg = flat.filter(p => p.src === 'pg').length;
-    const inv = flat.filter(p => p.src === 'inv').length;
+    const { flat, showArchived } = _rechercheState;
+    const scope = showArchived ? flat : flat.filter(p => !p.archived);
+    const total = scope.length;
+    const pg = scope.filter(p => p.src === 'pg').length;
+    const inv = scope.filter(p => p.src === 'inv').length;
     const setCount = (sel, n) => {
         const el = document.querySelector(`[data-count="${sel}"]`);
         if (el) el.textContent = String(n);
@@ -4248,10 +4263,11 @@ function updateRechercheCompteurs() {
 function renderRechercheCategoriesFilter() {
     const list = document.getElementById('recherche-cat-list');
     if (!list) return;
-    const { src, famille, cat, flat } = _rechercheState;
+    const { src, famille, cat, showArchived, flat } = _rechercheState;
 
-    // Sous-ensemble pre-filtre (src + famille uniquement)
+    // Sous-ensemble pre-filtre (archived + src + famille)
     let scope = flat;
+    if (!showArchived) scope = scope.filter(p => !p.archived);
     if (src !== 'all') scope = scope.filter(p => p.src === src);
     if (famille !== 'all') scope = scope.filter(p => p.famille === famille);
 
@@ -4416,6 +4432,18 @@ function initRechercheSpotlight() {
     if (sortSel) {
         sortSel.addEventListener('change', (e) => {
             _rechercheState.sort = e.target.value;
+            renderRechercheGrid();
+        });
+    }
+
+    // Toggle "Afficher les archives" (defaut: off — on cache les archives)
+    const archivedToggle = document.getElementById('recherche-show-archived');
+    if (archivedToggle) {
+        archivedToggle.checked = _rechercheState.showArchived;
+        archivedToggle.addEventListener('change', (e) => {
+            _rechercheState.showArchived = !!e.target.checked;
+            // Le scope categorie change quand on inclut/exclut les archives
+            renderRechercheCategoriesFilter();
             renderRechercheGrid();
         });
     }
@@ -4667,10 +4695,29 @@ function ouvrirModalProduitUnifie(mode, data) {
         selInv
     );
 
+    // Etat d'archivage: TRUE si l'un des 2 catalogues a archived=true.
+    // (Si le produit existe dans les 2 catalogues, on considere archive si au
+    // moins un cote est archive — l'admin pourra archiver/desarchiver les deux
+    // d'un coup via le bouton.)
+    const isArchived = !!(
+        (pgHit && pgHit.config && pgHit.config.archived) ||
+        (invHit && invHit.config && invHit.config.archived)
+    );
+    const archiveBtn = document.getElementById('pum-archive-btn');
+    const archiveLabel = document.getElementById('pum-archive-label');
+
     if (mode === 'edit' && data.nom) {
-        titleText.textContent = `Modifier «${data.nom}»`;
+        titleText.textContent = `Modifier «${data.nom}»${isArchived ? ' (archivé)' : ''}`;
         saveLabel.textContent = 'Enregistrer';
         deleteBtn.style.display = '';
+        if (archiveBtn) {
+            archiveBtn.style.display = '';
+            archiveBtn.dataset.archived = isArchived ? 'true' : 'false';
+            archiveLabel.textContent = isArchived ? 'Désarchiver' : 'Archiver';
+            // Couleur: jaune si on va archiver, vert si on va desarchiver
+            archiveBtn.classList.toggle('btn-outline-warning', !isArchived);
+            archiveBtn.classList.toggle('btn-outline-success', isArchived);
+        }
         document.getElementById('pum-original-nom').value = data.nom;
 
         const nom = data.nom;
@@ -4691,6 +4738,7 @@ function ouvrirModalProduitUnifie(mode, data) {
         titleText.textContent = 'Ajouter un nouveau produit';
         saveLabel.textContent = 'Ajouter';
         deleteBtn.style.display = 'none';
+        if (archiveBtn) archiveBtn.style.display = 'none';
         document.getElementById('pum-original-nom').value = '';
         document.getElementById('pum-nom').value = '';
         document.getElementById('pum-prix').value = '';
@@ -5081,6 +5129,130 @@ async function pumDelete() {
     if (modal) modal.hide();
 }
 
+// Toggle archive: bascule le flag archived sur les 2 catalogues ou il existe.
+// Soft-delete reversible — pas de confirmation aussi forte que pumDelete car
+// l'operation est non destructive.
+async function pumToggleArchive() {
+    const nom = document.getElementById('pum-original-nom').value;
+    if (!nom) return;
+    const btn = document.getElementById('pum-archive-btn');
+    if (!btn) return;
+    // Direction: si actuellement archive -> desarchiver, sinon -> archiver
+    const currentlyArchived = btn.dataset.archived === 'true';
+    const targetArchived = !currentlyArchived;
+    const action = targetArchived ? 'Archiver' : 'Désarchiver';
+    const actionPast = targetArchived ? 'archivé' : 'désarchivé';
+
+    const pgHit = pumLookupPG(nom);
+    const invHit = pumLookupInv(nom);
+    if (!pgHit && !invHit) return; // rien a faire
+
+    const where = [pgHit && 'Généraux', invHit && 'Inventaire'].filter(Boolean).join(' + ');
+    const explainArchive = targetArchived
+        ? `\n\nLe produit ne sera plus affiché dans le POS, le stock inventaire, ni dans la recherche admin par défaut. Toutes les données historiques (ventes, prix, etc.) sont conservées.`
+        : `\n\nLe produit redeviendra visible dans le POS et le stock inventaire.`;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`${action} «${nom}» dans ${where} ?${explainArchive}`, {
+            title: `${action} le produit`,
+            okLabel: action,
+            okVariant: targetArchived ? 'warning' : 'success'
+        })
+        : confirm(`${action} "${nom}" dans ${where} ?`);
+    if (!ok) return;
+
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    // Set le flag en memoire sur les 2 cotes (la ou il existe)
+    if (pgHit) {
+        const target = currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom];
+        if (target) target.archived = targetArchived;
+    }
+    if (invHit && invHit.parent) {
+        invHit.parent[invHit.nom].archived = targetArchived;
+    }
+
+    // Disable boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const originalLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> ${action}…`;
+    if (saveBtn) saveBtn.disabled = true;
+    if (delBtn) delBtn.disabled = true;
+
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (pgHit) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invHit) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalLabel;
+        if (saveBtn) saveBtn.disabled = false;
+        if (delBtn) delBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur: ${serverError}`, 'danger');
+        return;
+    }
+
+    // Refresh affichages
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
+    renderRechercheGrid();
+
+    showToast(`«${nom}» ${actionPast} dans ${where}.`, 'success');
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
 // Bind events du modal au load.
 function initModalProduitUnifie() {
     const modalEl = document.getElementById('productUnifiedModal');
@@ -5113,11 +5285,13 @@ function initModalProduitUnifie() {
         });
     }
 
-    // Save + Delete
+    // Save + Delete + Archive
     const saveBtn = document.getElementById('pum-save-btn');
     if (saveBtn) saveBtn.addEventListener('click', pumSave);
     const deleteBtn = document.getElementById('pum-delete-btn');
     if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
+    const archiveBtn = document.getElementById('pum-archive-btn');
+    if (archiveBtn) archiveBtn.addEventListener('click', pumToggleArchive);
 
     // Bouton "+ Ajouter un produit" sur l'onglet Recherche
     const addBtn = document.getElementById('recherche-add-btn');

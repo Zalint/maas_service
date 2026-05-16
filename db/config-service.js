@@ -292,19 +292,23 @@ async function getCategories() {
 
 /**
  * Récupère les produits au format de l'ancien fichier produits.js
+ * Exclut systématiquement les produits archivés (soft-deleted via le flag
+ * `archived`) car cette fonction sert UNIQUEMENT les endpoints publics
+ * (POS, stock inventaire). Les routes admin interrogent Produit.findAll
+ * directement et doivent inclure les archives.
  * @param {string} typeCatalogue - 'vente', 'abonnement', ou 'inventaire'
  */
 async function getProduitsAsLegacy(typeCatalogue = 'vente') {
   if (isCacheValid() && cache.produits[typeCatalogue]) {
     return cache.produits[typeCatalogue];
   }
-  
+
   const produits = await Produit.findAll({
-    where: { type_catalogue: typeCatalogue },
+    where: { type_catalogue: typeCatalogue, archived: false },
     include: [
       { model: Category, as: 'categorie' },
-      { 
-        model: PrixPointVente, 
+      {
+        model: PrixPointVente,
         as: 'prixParPointVente',
         include: [{ model: PointVente, as: 'pointVente' }]
       }

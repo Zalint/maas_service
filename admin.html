@@ -113,6 +113,35 @@
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             min-width: 0; flex: 1;
         }
+        /* Carte archivee: grisee + badge */
+        .recherche-spotlight .result-card.is-archived {
+            opacity: 0.55;
+            background: repeating-linear-gradient(
+                45deg,
+                #f8fafc,
+                #f8fafc 8px,
+                #f1f5f9 8px,
+                #f1f5f9 16px
+            );
+        }
+        .recherche-spotlight .result-card.is-archived:hover { opacity: 0.85; }
+        .recherche-spotlight .archived-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            margin-left: 6px;
+            font-size: 0.7rem;
+            color: #b45309; background: #fef3c7;
+            padding: 2px 7px; border-radius: 999px;
+            font-weight: 600;
+        }
+        /* Toggle "Afficher les archives" */
+        .recherche-spotlight .recherche-archived-toggle {
+            padding: 6px 10px;
+            border-top: 1px solid #e2e8f0;
+            color: #475569;
+        }
+        .recherche-spotlight .recherche-archived-toggle .form-check-label {
+            cursor: pointer;
+        }
 
         .recherche-spotlight .recherche-main {
             padding: 24px 28px;
@@ -546,6 +575,16 @@
                                                     <i class="bi bi-grid" aria-hidden="true"></i> Toutes
                                                 </button>
                                             </div>
+                                        </div>
+
+                                        <div class="recherche-archived-toggle mt-3">
+                                            <label class="form-check d-flex align-items-center" for="recherche-show-archived">
+                                                <input type="checkbox" class="form-check-input me-2" id="recherche-show-archived">
+                                                <span class="form-check-label small">
+                                                    <i class="bi bi-archive" aria-hidden="true"></i>
+                                                    Afficher les archivés
+                                                </span>
+                                            </label>
                                         </div>
 
                                         <button class="btn btn-outline-secondary btn-sm w-100 mt-2" id="recherche-refresh-btn">
@@ -993,11 +1032,14 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-danger me-auto" id="pum-delete-btn" style="display:none">
-                        <i class="bi bi-trash"></i> Supprimer
+                        <i class="bi bi-trash" aria-hidden="true"></i> Supprimer
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" id="pum-archive-btn" style="display:none">
+                        <i class="bi bi-archive" aria-hidden="true"></i> <span id="pum-archive-label">Archiver</span>
                     </button>
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
                     <button type="button" class="btn btn-primary" id="pum-save-btn">
-                        <i class="bi bi-check2-circle me-1"></i><span id="pum-save-label">Ajouter</span>
+                        <i class="bi bi-check2-circle me-1" aria-hidden="true"></i><span id="pum-save-label">Ajouter</span>
                     </button>
                 </div>
             </div>
@@ -1084,6 +1126,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-review2-a11y-merge"></script>
+    <script src="admin.js?v=20260517-archive-mvp"></script>
 </body>
 </html> 

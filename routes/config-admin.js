@@ -503,7 +503,12 @@ router.get('/produits', requireAdmin, async (req, res) => {
 
       const config = {
         default: parseFloat(produit.prix_defaut) || 0,
-        alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : []
+        alternatives: produit.prix_alternatifs ? produit.prix_alternatifs.map(p => parseFloat(p)) : [],
+        // Soft-delete flag pour la transition de taxonomie. Inclus dans la
+        // reponse admin pour que l'UI puisse afficher/cacher les archives
+        // et toggler l'etat. Les endpoints publics (POS/stock) excluent les
+        // archives directement via SQL (cf. config-service).
+        archived: !!produit.archived
       };
 
       // Ajouter les prix par point de vente
@@ -570,7 +575,9 @@ router.get('/produits-inventaire', requireAuthenticated, async (req, res) => {
         mode_stock: produit.mode_stock || 'manuel',
         unite_stock: produit.unite_stock || 'unite',
         ventes: Array.isArray(produit.ventes) ? produit.ventes : [],
-        ventilation_poids: !!produit.ventilation_poids
+        ventilation_poids: !!produit.ventilation_poids,
+        // Soft-delete flag pour la transition (cf. GET /produits ci-dessus).
+        archived: !!produit.archived
       };
       
       if (produit.prixParPointVente) {
@@ -707,20 +714,28 @@ router.post('/produits', requireAdmin, async (req, res) => {
       // Pour chaque produit dans la catégorie
       for (const [produitName, config] of Object.entries(produitsCategorie)) {
         if (typeof config !== 'object') continue;
-        
+
         const prixDefaut = config.default || 0;
         const alternatives = config.alternatives || [];
-        
+        // Soft-delete flag pour la transition de taxonomie. On accepte
+        // boolean OU undefined. undefined = on ne touche pas au flag
+        // existant (admin a post sans le champ — ne pas re-activer un
+        // produit archive accidentellement).
+        const archivedRequested = (typeof config.archived === 'boolean')
+          ? config.archived
+          : undefined;
+
         // Trouver le produit existant ou en créer un nouveau
         let [produit, wasCreated] = await Produit.findOrCreate({
           where: { nom: produitName, type_catalogue: 'vente' },
           defaults: {
             categorie_id: category.id,
             prix_defaut: prixDefaut,
-            prix_alternatifs: alternatives
+            prix_alternatifs: alternatives,
+            archived: archivedRequested === true
           }
         });
-        
+
         if (wasCreated) {
           created++;
         } else {
@@ -729,7 +744,8 @@ router.post('/produits', requireAdmin, async (req, res) => {
           const oldAlternatives = produit.prix_alternatifs || [];
           const priceDiffers = oldPrix !== prixDefaut;
           const altsDiffers = JSON.stringify(oldAlternatives) !== JSON.stringify(alternatives);
-          if (priceDiffers || altsDiffers) {
+          const archivedDiffers = (archivedRequested !== undefined) && (!!produit.archived !== archivedRequested);
+          if (priceDiffers || altsDiffers || archivedDiffers) {
             // Enregistrer l'historique si le prix change
             if (priceDiffers) {
               await PrixHistorique.create({
@@ -749,6 +765,9 @@ router.post('/produits', requireAdmin, async (req, res) => {
               prix_defaut: prixDefaut,
               prix_alternatifs: alternatives
             };
+            if (archivedDiffers) {
+              updatePayload.archived = archivedRequested;
+            }
             const hasParent = ventesAvecParent.has(produitName);
             if (hasParent && !produit.prix_personnalise) {
               updatePayload.prix_personnalise = true;
@@ -824,6 +843,10 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       const ventesList = Array.isArray(config.ventes)
         ? config.ventes.filter((v) => typeof v === 'string' && v.trim().length > 0)
         : [];
+      // Soft-delete flag pour la transition. undefined = ne pas toucher.
+      const archivedRequested = (typeof config.archived === 'boolean')
+        ? config.archived
+        : undefined;
 
       let [produit, wasCreated] = await Produit.findOrCreate({
         where: { nom: produitName, type_catalogue: 'inventaire' },
@@ -834,7 +857,8 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
           unite_stock: uniteStock,
           categorie_affichage: categorieAffichage,
           ventes: ventesList,
-          ventilation_poids: ventilationPoids
+          ventilation_poids: ventilationPoids,
+          archived: archivedRequested === true
         }
       });
 
@@ -852,13 +876,15 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
         const oldAlternatives = (produit.prix_alternatifs || []).map((p) => parseFloat(p));
         const newAlternatives = (alternatives || []).map((p) => parseFloat(p));
         const oldVentes = Array.isArray(produit.ventes) ? produit.ventes : [];
+        const archivedDiffers = (archivedRequested !== undefined) && (!!produit.archived !== archivedRequested);
         const needsUpdate = oldPrix !== prixDefaut ||
           JSON.stringify(oldAlternatives) !== JSON.stringify(newAlternatives) ||
           produit.mode_stock !== modeStock ||
           produit.unite_stock !== uniteStock ||
           produit.categorie_affichage !== categorieAffichage ||
           JSON.stringify(oldVentes) !== JSON.stringify(ventesList) ||
-          !!produit.ventilation_poids !== ventilationPoids;
+          !!produit.ventilation_poids !== ventilationPoids ||
+          archivedDiffers;
 
         if (needsUpdate) {
           if (oldPrix !== prixDefaut) {
@@ -874,7 +900,7 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
             priceChanged = true;
           }
 
-          await produit.update({
+          const updatePayload = {
             prix_defaut: prixDefaut,
             prix_alternatifs: alternatives,
             mode_stock: modeStock,
@@ -882,9 +908,13 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
             categorie_affichage: categorieAffichage,
             ventes: ventesList,
             ventilation_poids: ventilationPoids
-          });
+          };
+          if (archivedDiffers) {
+            updatePayload.archived = archivedRequested;
+          }
+          await produit.update(updatePayload);
           updated++;
-          console.log(`  🔄 Produit mis à jour: ${produitName}`);
+          console.log(`  🔄 Produit mis à jour: ${produitName}${archivedDiffers ? ` (archived=${archivedRequested})` : ''}`);
         }
       }
 
@@ -927,8 +957,12 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       }
       
       // Prix par point de vente — lookup via map en mémoire.
+      // 'archived' est un boolean donc filtre par typeof === 'number' suffit,
+      // mais ajout dans le skip set par defense (au cas ou un consumer
+      // envoie archived: 0|1).
+      const RESERVED_KEYS = ['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'];
       for (const [key, value] of Object.entries(config)) {
-        if (!['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes'].includes(key) && typeof value === 'number') {
+        if (!RESERVED_KEYS.includes(key) && typeof value === 'number') {
           const pointVente = pointsVenteByNom.get(key);
           if (pointVente) {
             await PrixPointVente.upsert({
