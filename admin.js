@@ -1322,6 +1322,9 @@ function refreshRechercheApresConfigLoad() {
     try {
         reconstruireFlatRecherche();
         updateRechercheCompteurs();
+        if (typeof renderRechercheCategoriesFilter === 'function') {
+            renderRechercheCategoriesFilter();
+        }
         renderRechercheGrid();
     } catch (e) {
         // initRechercheSpotlight n'a pas encore ete appele; le premier
@@ -4060,24 +4063,33 @@ const _rechercheState = {
     query: '',
     src: 'all',     // 'all' | 'pg' | 'inv'
     famille: 'all', // 'all' | 'boucherie' | 'epicerie' | 'autres'
+    cat: 'all',     // 'all' | nom exact de la categorie (ex: 'Superette')
     sort: 'name',
     flat: []
 };
+
+// Normalise une chaine en ASCII lowercase (strip diacritics) pour
+// que 'Épicerie' -> 'epicerie' et matche les data-attrs des filtres.
+// Sinon 'Épicerie'.toLowerCase() = 'épicerie' (avec é) != 'epicerie'.
+function normFamille(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
 
 // Mapping categorie -> famille pour Produits Generaux.
 // Reutilise CATEGORIES_PRODUITS_GENERAUX (defini en haut du fichier).
 function familleDeCatPG(categorie) {
     for (const [fam, cats] of Object.entries(CATEGORIES_PRODUITS_GENERAUX)) {
-        if (cats.includes(categorie)) return fam.toLowerCase();
+        if (cats.includes(categorie)) return normFamille(fam);
     }
     return 'autres';
 }
 function familleDeCatInventaire(categorie) {
     // Reutilise inventaireFamilleDefauts + custom familles localStorage
-    return (familleDeCategorieInventaire
+    const fam = (familleDeCategorieInventaire
         ? familleDeCategorieInventaire(categorie)
         : (inventaireFamilleDefauts[categorie] || 'Autres')
-    ).toLowerCase();
+    );
+    return normFamille(fam);
 }
 
 // Aplatit les 2 catalogues en un tableau unifie pour la recherche.
@@ -4129,11 +4141,12 @@ function reconstruireFlatRecherche() {
 
 // Filtre + tri en memoire (pas de requete reseau).
 function appliquerFiltresRecherche() {
-    const { query, src, famille, sort, flat } = _rechercheState;
+    const { query, src, famille, cat, sort, flat } = _rechercheState;
     const q = query.toLowerCase().trim();
     let matches = flat;
     if (src !== 'all') matches = matches.filter(p => p.src === src);
     if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
+    if (cat !== 'all') matches = matches.filter(p => p.cat === cat);
     if (q) matches = matches.filter(p => p.name.toLowerCase().includes(q));
 
     if (sort === 'name') {
@@ -4197,6 +4210,66 @@ function updateRechercheCompteurs() {
     setCount('all', total);
     setCount('pg', pg);
     setCount('inv', inv);
+}
+
+// Re-render la liste des categories visibles dans la sidebar.
+// La liste ne montre que les categories presentes dans les resultats
+// pre-filtres par src + famille (mais pas par cat lui-meme, sinon
+// on cacherait toutes les autres apres la 1ere selection).
+function renderRechercheCategoriesFilter() {
+    const list = document.getElementById('recherche-cat-list');
+    if (!list) return;
+    const { src, famille, cat, flat } = _rechercheState;
+
+    // Sous-ensemble pre-filtre (src + famille uniquement)
+    let scope = flat;
+    if (src !== 'all') scope = scope.filter(p => p.src === src);
+    if (famille !== 'all') scope = scope.filter(p => p.famille === famille);
+
+    // Dedup + count par categorie
+    const countByCat = new Map();
+    for (const p of scope) {
+        countByCat.set(p.cat, (countByCat.get(p.cat) || 0) + 1);
+    }
+    // Tri alphabetique
+    const cats = Array.from(countByCat.keys()).sort((a, b) => a.localeCompare(b));
+
+    // Si la categorie selectionnee n'est plus dans le scope, reset a 'all'
+    if (cat !== 'all' && !countByCat.has(cat)) {
+        _rechercheState.cat = 'all';
+    }
+    const currentCat = _rechercheState.cat;
+
+    // Build HTML: "Toutes" + une chip par categorie
+    let html = `
+        <div class="recherche-filter-item${currentCat === 'all' ? ' active' : ''}" data-recherche-cat="all">
+            <i class="bi bi-grid"></i> Toutes
+            <span class="recherche-count">${scope.length}</span>
+        </div>
+    `;
+    for (const c of cats) {
+        const esc = String(c).replace(/"/g, '&quot;');
+        const isActive = c === currentCat;
+        html += `
+            <div class="recherche-filter-item${isActive ? ' active' : ''}" data-recherche-cat="${esc}" title="${esc}">
+                <span class="recherche-cat-label">${c}</span>
+                <span class="recherche-count">${countByCat.get(c)}</span>
+            </div>
+        `;
+    }
+    list.innerHTML = html;
+
+    // Re-bind clicks (delegation simple via querySelectorAll, idempotent
+    // car le innerHTML reset les anciens listeners)
+    list.querySelectorAll('[data-recherche-cat]').forEach((el) => {
+        el.addEventListener('click', () => {
+            _rechercheState.cat = el.dataset.rechercheCat;
+            // Mettre a jour visuel + grid
+            list.querySelectorAll('[data-recherche-cat]').forEach((x) => x.classList.remove('active'));
+            el.classList.add('active');
+            renderRechercheGrid();
+        });
+    });
 }
 
 // Click sur une card -> activer l'onglet source + scroll vers le produit.
@@ -4278,6 +4351,8 @@ function initRechercheSpotlight() {
             document.querySelectorAll('[data-recherche-src]').forEach((x) => x.classList.remove('active'));
             el.classList.add('active');
             _rechercheState.src = el.dataset.rechercheSrc;
+            // Le scope des categories change avec src -> re-render la liste
+            renderRechercheCategoriesFilter();
             renderRechercheGrid();
         });
     });
@@ -4288,6 +4363,8 @@ function initRechercheSpotlight() {
             document.querySelectorAll('[data-recherche-fam]').forEach((x) => x.classList.remove('active'));
             el.classList.add('active');
             _rechercheState.famille = el.dataset.rechercheFam;
+            // Le scope des categories change avec famille -> re-render
+            renderRechercheCategoriesFilter();
             renderRechercheGrid();
         });
     });
@@ -4311,6 +4388,7 @@ function initRechercheSpotlight() {
                 if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
                 reconstruireFlatRecherche();
                 updateRechercheCompteurs();
+                renderRechercheCategoriesFilter();
                 renderRechercheGrid();
             } finally {
                 refreshBtn.disabled = false;
@@ -4342,6 +4420,7 @@ function initRechercheSpotlight() {
         rechercheTab.addEventListener('shown.bs.tab', () => {
             reconstruireFlatRecherche();
             updateRechercheCompteurs();
+            renderRechercheCategoriesFilter();
             renderRechercheGrid();
         });
     }
@@ -4349,6 +4428,7 @@ function initRechercheSpotlight() {
     // Premier rendu si on a deja les donnees.
     reconstruireFlatRecherche();
     updateRechercheCompteurs();
+    renderRechercheCategoriesFilter();
     renderRechercheGrid();
 }
 

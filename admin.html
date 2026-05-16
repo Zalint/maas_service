@@ -95,6 +95,11 @@
         .recherche-spotlight .recherche-filter-item.active .recherche-count {
             background: #cfe2ff; color: #0a58ca;
         }
+        /* Labels de categories: truncation gracieuse si nom long */
+        .recherche-spotlight .recherche-cat-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            min-width: 0; flex: 1;
+        }
 
         .recherche-spotlight .recherche-main {
             padding: 24px 28px;
@@ -515,6 +520,16 @@
                                                 </div>
                                                 <div class="recherche-filter-item" data-recherche-fam="autres">
                                                     📦 Autres
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="recherche-filter-section">
+                                            <div class="recherche-filter-title">Catégorie</div>
+                                            <div class="recherche-filter-list" id="recherche-cat-list">
+                                                <!-- Rempli dynamiquement par renderRechercheCategoriesFilter() -->
+                                                <div class="recherche-filter-item active" data-recherche-cat="all">
+                                                    <i class="bi bi-grid"></i> Toutes
                                                 </div>
                                             </div>
                                         </div>
@@ -1055,6 +1070,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-recherche-autoload"></script>
+    <script src="admin.js?v=20260516-recherche-catfilter"></script>
 </body>
 </html> 
