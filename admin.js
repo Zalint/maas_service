@@ -1222,9 +1222,35 @@ const inventaireFamilleDefauts = {
     'Abats et Sous-produits': 'Boucherie',
     'Produits sur Pieds': 'Boucherie',
     'Œufs et Produits Laitiers': 'Epicerie',
-    'Déchets': 'Autres',
-    'Autres': 'Autres'
+    'Superette': 'Epicerie',           // NEW: cat. par defaut des produits non-boucherie
+    'Déchets': 'Autres'
+    // 'Autres' supprime de la liste des categories logiques (remplace par 'Superette')
 };
+
+// =====================================================================
+// Catégories standard utilisées dans les <select> des modales d'ajout.
+// Groupées par famille pour l'affichage <optgroup>. Source unique de
+// vérité — utilisé par populerCategorieSelect() et par les classifieurs.
+// =====================================================================
+const CATEGORIES_PRODUITS_GENERAUX = {
+    'Boucherie': ['Bovin', 'Ovin', 'Volaille', 'Caprin', 'Poisson', 'Pack'],
+    'Épicerie':  ['Superette', 'Conserve', 'Riz & Féculents']
+};
+const DEFAULT_CATEGORIE_PRODUITS_GENERAUX = 'Superette';
+
+const CATEGORIES_INVENTAIRE = {
+    'Boucherie': ['Viandes', 'Abats et Sous-produits', 'Produits sur Pieds'],
+    'Épicerie':  ['Œufs et Produits Laitiers', 'Superette'],
+    'Autres':    ['Déchets']
+};
+const DEFAULT_CATEGORIE_INVENTAIRE = 'Superette';
+
+// Helper: re-route les anciennes selections "Autres" vers la default
+// "Superette". Migration silencieuse cote UI.
+function normaliserCategorieAvecDefaut(categorie, defaut) {
+    if (!categorie || categorie === 'Autres') return defaut;
+    return categorie;
+}
 
 // Charger la configuration des produits généraux
 async function chargerConfigProduits() {
@@ -1577,13 +1603,16 @@ function genererLignesProduits(categorie) {
 
 // Reorganiser les produits d'inventaire par catégories logiques + personnalisées
 function reorganiserInventaireParCategories() {
+    // Categories logiques: ordre = ordre d'affichage. "Autres" supprime au
+    // profit de "Superette" (epicerie generique). Tous les produits qui ne
+    // matchent aucun pattern boucherie tombent dans Superette.
     const inventaireParCategories = {
         "Viandes": {},
-        "Œufs et Produits Laitiers": {},
         "Abats et Sous-produits": {},
         "Produits sur Pieds": {},
-        "Déchets": {},
-        "Autres": {}
+        "Œufs et Produits Laitiers": {},
+        "Superette": {},
+        "Déchets": {}
     };
     
     // Liste des catégories personnalisées (stockées dans localStorage ou ajoutées manuellement)
@@ -1629,7 +1658,19 @@ function reorganiserInventaireParCategories() {
         }
         
         if (typeof config === 'object' && config.prixDefault !== undefined) {
-            // Catégoriser les produits selon leur nom
+            // Priorite 1: si le produit a un categorie_affichage explicite
+            // (choisi par l'utilisateur a l'ajout), on l'honore. C'est ce qui
+            // donne sa valeur au <select> Categorie du modal d'ajout.
+            const explicitCat = normaliserCategorieAvecDefaut(
+                config.categorie_affichage, null
+            );
+            if (explicitCat && inventaireParCategories[explicitCat]) {
+                inventaireParCategories[explicitCat][produit] = config;
+                return;
+            }
+
+            // Priorite 2: classification par nom (heuristique boucherie).
+            // Fallback final = "Superette" (anciennement "Autres").
             if (produit.includes('Boeuf') || produit.includes('Veau') || produit.includes('Poulet') || produit.includes('Agneau')) {
                 inventaireParCategories["Viandes"][produit] = config;
             } else if (produit.includes('Tablette') || produit.includes('Oeuf')) {
@@ -1641,13 +1682,13 @@ function reorganiserInventaireParCategories() {
             } else if (produit.includes('Déchet') || produit.includes('Dechet')) {
                 inventaireParCategories["Déchets"][produit] = config;
             } else {
-                inventaireParCategories["Autres"][produit] = config;
+                inventaireParCategories["Superette"][produit] = config;
             }
         }
     });
-    
+
     // Supprimer les catégories LOGIQUES vides (mais garder les personnalisées)
-    const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Déchets", "Autres"];
+    const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Superette", "Déchets"];
     
     Object.keys(inventaireParCategories).forEach(categorie => {
         // Ne supprimer que les catégories logiques vides, garder les personnalisées
@@ -1661,7 +1702,7 @@ function reorganiserInventaireParCategories() {
 
 // Fonction pour générer le bouton de suppression conditionnel pour l'inventaire
 function getCategorieInventaireDeleteButton(categorie) {
-    const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Déchets', 'Autres'];
+    const categoriesInventairePrincipales = ['Viandes', 'Œufs et Produits Laitiers', 'Abats et Sous-produits', 'Produits sur Pieds', 'Superette', 'Déchets'];
     
     if (categoriesInventairePrincipales.includes(categorie)) {
         return `<button class="btn btn-sm btn-secondary" disabled title="Catégorie logique - ne peut pas être supprimée">
@@ -3979,9 +4020,308 @@ function afficherNotification(message, type = 'info') {
     `;
     
     container.appendChild(notification);
-    
+
     // Supprimer automatiquement après 5 secondes
     setTimeout(() => {
         notification.remove();
     }, 5000);
+}
+
+// =====================================================================
+// RECHERCHE SPOTLIGHT — onglet "Recherche" dans Configuration Produits.
+// Recherche cross-catalogue (Produits Generaux + Inventaire) avec
+// filtres source/famille, tri, et navigation vers la fiche du produit.
+// =====================================================================
+
+// State courant des filtres + cache des produits applatis.
+const _rechercheState = {
+    query: '',
+    src: 'all',     // 'all' | 'pg' | 'inv'
+    famille: 'all', // 'all' | 'boucherie' | 'epicerie' | 'autres'
+    sort: 'name',
+    flat: []
+};
+
+// Mapping categorie -> famille pour Produits Generaux.
+// Reutilise CATEGORIES_PRODUITS_GENERAUX (defini en haut du fichier).
+function familleDeCatPG(categorie) {
+    for (const [fam, cats] of Object.entries(CATEGORIES_PRODUITS_GENERAUX)) {
+        if (cats.includes(categorie)) return fam.toLowerCase();
+    }
+    return 'autres';
+}
+function familleDeCatInventaire(categorie) {
+    // Reutilise inventaireFamilleDefauts + custom familles localStorage
+    return (familleDeCategorieInventaire
+        ? familleDeCategorieInventaire(categorie)
+        : (inventaireFamilleDefauts[categorie] || 'Autres')
+    ).toLowerCase();
+}
+
+// Aplatit les 2 catalogues en un tableau unifie pour la recherche.
+// Forme: { src, name, cat, famille, prix }
+function reconstruireFlatRecherche() {
+    const flat = [];
+
+    // Produits Generaux: currentProduitsConfig = { catName: { produitName: {default, alternatives, ...} } }
+    if (typeof currentProduitsConfig === 'object' && currentProduitsConfig) {
+        for (const [catName, produits] of Object.entries(currentProduitsConfig)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            for (const [produitName, config] of Object.entries(produits)) {
+                if (typeof config !== 'object' || config === null) continue;
+                if (typeof config.default !== 'number') continue;
+                flat.push({
+                    src: 'pg',
+                    name: produitName,
+                    cat: catName,
+                    famille: familleDeCatPG(catName),
+                    prix: config.default
+                });
+            }
+        }
+    }
+
+    // Produits Inventaire: structure mixte (flat ou nested).
+    // On reutilise la categorisation logique de reorganiserInventaireParCategories.
+    if (typeof reorganiserInventaireParCategories === 'function') {
+        const parCat = reorganiserInventaireParCategories();
+        for (const [catName, produits] of Object.entries(parCat)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            for (const [produitName, config] of Object.entries(produits)) {
+                if (typeof config !== 'object' || config === null) continue;
+                if (typeof config.prixDefault !== 'number') continue;
+                flat.push({
+                    src: 'inv',
+                    name: produitName,
+                    cat: catName,
+                    famille: familleDeCatInventaire(catName),
+                    prix: config.prixDefault
+                });
+            }
+        }
+    }
+
+    _rechercheState.flat = flat;
+    return flat;
+}
+
+// Filtre + tri en memoire (pas de requete reseau).
+function appliquerFiltresRecherche() {
+    const { query, src, famille, sort, flat } = _rechercheState;
+    const q = query.toLowerCase().trim();
+    let matches = flat;
+    if (src !== 'all') matches = matches.filter(p => p.src === src);
+    if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
+    if (q) matches = matches.filter(p => p.name.toLowerCase().includes(q));
+
+    if (sort === 'name') {
+        matches.sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sort === 'price-asc') {
+        matches.sort((a, b) => a.prix - b.prix);
+    } else if (sort === 'price-desc') {
+        matches.sort((a, b) => b.prix - a.prix);
+    }
+    return matches;
+}
+
+function renderRechercheGrid() {
+    const grid = document.getElementById('recherche-grid');
+    const countEl = document.getElementById('recherche-result-count');
+    if (!grid || !countEl) return;
+
+    const matches = appliquerFiltresRecherche();
+    countEl.textContent = `${matches.length} résultat${matches.length > 1 ? 's' : ''}`;
+
+    if (matches.length === 0) {
+        grid.innerHTML = `
+            <div class="recherche-empty">
+                <i class="bi bi-search"></i>
+                Aucun produit ne correspond aux filtres.
+            </div>
+        `;
+        return;
+    }
+
+    grid.innerHTML = matches.map((p) => {
+        const icon = p.src === 'pg' ? 'bi-shop' : 'bi-box-seam';
+        const srcLabel = p.src === 'pg' ? 'Généraux' : 'Inventaire';
+        const famIcon = p.famille === 'boucherie' ? '🥩' : (p.famille === 'epicerie' ? '🛒' : '📦');
+        const escName = String(p.name).replace(/"/g, '&quot;');
+        const escCat = String(p.cat).replace(/"/g, '&quot;');
+        return `
+            <div class="result-card" data-src="${p.src}" data-name="${escName}" data-cat="${escCat}">
+                <div class="result-card-header">
+                    <div class="result-card-icon icon-${p.src}"><i class="bi ${icon}"></i></div>
+                    <span class="src-badge ${p.src}">${srcLabel}</span>
+                </div>
+                <div class="result-name" title="${escName}">${p.name}</div>
+                <div class="result-cat">${famIcon} ${p.cat}</div>
+                <div class="result-price">${p.prix.toLocaleString('fr-FR')} <small>FCFA</small></div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Recalcule les compteurs (Tous / PG / Inv) dans la sidebar.
+function updateRechercheCompteurs() {
+    const flat = _rechercheState.flat;
+    const total = flat.length;
+    const pg = flat.filter(p => p.src === 'pg').length;
+    const inv = flat.filter(p => p.src === 'inv').length;
+    const setCount = (sel, n) => {
+        const el = document.querySelector(`[data-count="${sel}"]`);
+        if (el) el.textContent = String(n);
+    };
+    setCount('all', total);
+    setCount('pg', pg);
+    setCount('inv', inv);
+}
+
+// Click sur une card -> activer l'onglet source + scroll vers le produit.
+function ouvrirProduitDepuisRecherche(src, name, cat) {
+    // 1) Activer l'onglet source via Bootstrap
+    const tabBtnId = src === 'pg' ? 'produits-tab' : 'inventaire-tab';
+    const tabBtn = document.getElementById(tabBtnId);
+    if (tabBtn) {
+        if (window.bootstrap && bootstrap.Tab) {
+            const tab = bootstrap.Tab.getOrCreateInstance(tabBtn);
+            tab.show();
+        } else {
+            tabBtn.click();
+        }
+    }
+
+    // 2) Filtrer + scroll au prochain frame (apres le render du tab).
+    setTimeout(() => {
+        if (src === 'inv') {
+            // Utiliser la search input deja en place sur l'onglet Inventaire.
+            const input = document.getElementById('inventaire-search-input');
+            if (input) {
+                input.value = name;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }
+        // Scroll vers la 1ere row qui matche le nom dans n'importe quel
+        // accordion-item (data-produit ou texte de cellule).
+        const containerId = src === 'pg' ? 'produits-categories' : 'inventaire-categories';
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        // 1ere row contenant le nom (matching exact case-insensitive)
+        const rows = container.querySelectorAll('tr');
+        const target = Array.from(rows).find((row) => {
+            if (row.querySelector('th')) return false;
+            const txt = (row.textContent || '').toLowerCase();
+            return txt.includes(name.toLowerCase());
+        });
+        if (target) {
+            // Si la row est dans un accordion-item collapse, l'ouvrir.
+            const item = target.closest('.accordion-item');
+            if (item) {
+                const collapse = item.querySelector('.accordion-collapse');
+                const btn = item.querySelector('.accordion-button');
+                if (collapse && !collapse.classList.contains('show')) {
+                    collapse.classList.add('show');
+                    if (btn && btn.classList.contains('collapsed')) {
+                        btn.classList.remove('collapsed');
+                        btn.setAttribute('aria-expanded', 'true');
+                    }
+                }
+            }
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.style.transition = 'background 1s';
+            target.style.background = '#fef9c3';
+            setTimeout(() => { target.style.background = ''; }, 2000);
+        }
+    }, 150);
+}
+
+// Init listeners au DOMContentLoaded (idempotent).
+function initRechercheSpotlight() {
+    const grid = document.getElementById('recherche-grid');
+    if (!grid || grid.dataset.bound === 'true') return;
+    grid.dataset.bound = 'true';
+
+    // Input search
+    const input = document.getElementById('recherche-input');
+    if (input) {
+        input.addEventListener('input', (e) => {
+            _rechercheState.query = e.target.value || '';
+            renderRechercheGrid();
+        });
+    }
+
+    // Filtres source
+    document.querySelectorAll('[data-recherche-src]').forEach((el) => {
+        el.addEventListener('click', () => {
+            document.querySelectorAll('[data-recherche-src]').forEach((x) => x.classList.remove('active'));
+            el.classList.add('active');
+            _rechercheState.src = el.dataset.rechercheSrc;
+            renderRechercheGrid();
+        });
+    });
+
+    // Filtres famille
+    document.querySelectorAll('[data-recherche-fam]').forEach((el) => {
+        el.addEventListener('click', () => {
+            document.querySelectorAll('[data-recherche-fam]').forEach((x) => x.classList.remove('active'));
+            el.classList.add('active');
+            _rechercheState.famille = el.dataset.rechercheFam;
+            renderRechercheGrid();
+        });
+    });
+
+    // Sort
+    const sortSel = document.getElementById('recherche-sort');
+    if (sortSel) {
+        sortSel.addEventListener('change', (e) => {
+            _rechercheState.sort = e.target.value;
+            renderRechercheGrid();
+        });
+    }
+
+    // Refresh button: re-fetch les 2 catalogues + rebuild flat
+    const refreshBtn = document.getElementById('recherche-refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', async () => {
+            refreshBtn.disabled = true;
+            try {
+                if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+                if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+                reconstruireFlatRecherche();
+                updateRechercheCompteurs();
+                renderRechercheGrid();
+            } finally {
+                refreshBtn.disabled = false;
+            }
+        });
+    }
+
+    // Click sur card (delegation)
+    grid.addEventListener('click', (e) => {
+        const card = e.target.closest('.result-card');
+        if (!card) return;
+        ouvrirProduitDepuisRecherche(card.dataset.src, card.dataset.name, card.dataset.cat);
+    });
+
+    // Quand le user clique sur l'onglet Recherche, on rebuild la liste
+    // au cas ou les autres onglets ont modifie les configs.
+    const rechercheTab = document.getElementById('recherche-tab');
+    if (rechercheTab) {
+        rechercheTab.addEventListener('shown.bs.tab', () => {
+            reconstruireFlatRecherche();
+            updateRechercheCompteurs();
+            renderRechercheGrid();
+        });
+    }
+
+    // Premier rendu si on a deja les donnees.
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    renderRechercheGrid();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initRechercheSpotlight);
+} else {
+    initRechercheSpotlight();
 } 
