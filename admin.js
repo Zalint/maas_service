@@ -1273,6 +1273,10 @@ async function chargerConfigProduits() {
         console.error('Erreur lors du chargement de la configuration des produits:', error);
         currentProduitsConfig = {};
     }
+    // Rafraichir la recherche cross-catalogue si l'UI est deja initialisee.
+    // Sinon Recherche affiche 0 resultat au load (les configs arrivent
+    // async apres l'init de l'onglet).
+    refreshRechercheApresConfigLoad();
 }
 
 // Charger la configuration des produits d'inventaire
@@ -1304,6 +1308,24 @@ async function chargerConfigInventaire() {
     } catch (error) {
         console.error('Erreur lors du chargement de la configuration d\'inventaire:', error);
         showToast('Erreur lors du chargement de la configuration d\'inventaire');
+    }
+    // Rafraichir l'onglet Recherche cross-catalogue.
+    refreshRechercheApresConfigLoad();
+}
+
+// Helper: re-render l'onglet Recherche apres un load des configs.
+// No-op si l'UI Recherche n'est pas encore initialisee (avant DOMContentLoaded).
+function refreshRechercheApresConfigLoad() {
+    if (typeof reconstruireFlatRecherche !== 'function') return;
+    const grid = document.getElementById('recherche-grid');
+    if (!grid) return; // tab pas dans le DOM (autre page)
+    try {
+        reconstruireFlatRecherche();
+        updateRechercheCompteurs();
+        renderRechercheGrid();
+    } catch (e) {
+        // initRechercheSpotlight n'a pas encore ete appele; le premier
+        // rendu se fera la, donc on no-op silencieusement.
     }
 }
 
