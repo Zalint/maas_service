@@ -1253,6 +1253,41 @@ function normaliserCategorieAvecDefaut(categorie, defaut) {
     return categorie;
 }
 
+// Toggle global "Afficher les archives" partage entre les onglets
+// Produits Generaux et Produits Inventaire. False par defaut (cache les
+// archives, comme dans le POS et le stock inventaire). L'onglet Recherche
+// a son propre toggle (_rechercheState.showArchived) car son scope est
+// plus large (les 2 catalogues fusionnes).
+let _showArchivedInTabs = false;
+
+// Synchronise toutes les checkboxes data-show-archived-tabs avec l'etat
+// et re-rend les 2 onglets. Bind au load + au change de n'importe quelle
+// checkbox dans le groupe.
+function syncShowArchivedTabs(value) {
+    _showArchivedInTabs = !!value;
+    document.querySelectorAll('[data-show-archived-tabs]').forEach((cb) => {
+        if (cb.checked !== _showArchivedInTabs) cb.checked = _showArchivedInTabs;
+    });
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+}
+
+// Bind des toggles "Afficher les archives" sur les onglets PG + Inv.
+// Idempotent via flag, peut etre rappele si le DOM est modifie.
+function initShowArchivedTabsToggles() {
+    document.querySelectorAll('[data-show-archived-tabs]').forEach((cb) => {
+        if (cb.dataset.bound === 'true') return;
+        cb.dataset.bound = 'true';
+        cb.checked = _showArchivedInTabs; // sync initial
+        cb.addEventListener('change', (e) => syncShowArchivedTabs(e.target.checked));
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initShowArchivedTabsToggles);
+} else {
+    initShowArchivedTabsToggles();
+}
+
 // Mapping: label produit (Bovin, Ovin, Conserve...) -> bucket logique de
 // l'inventaire ("Viandes", "Superette", ...). Les buckets restent grossiers
 // pour l'affichage de l'onglet Inventaire (groupes de viandes / epicerie /
@@ -1586,13 +1621,19 @@ function afficherProduitsConfig() {
 function genererLignesProduits(categorie) {
     let html = '';
     const produits = currentProduitsConfig[categorie];
-    
+
     Object.keys(produits).forEach(produit => {
         const config = produits[produit];
         if (typeof config === 'object' && config.default !== undefined) {
+            // Filtre archive: cache par defaut (coherent avec le POS et la
+            // recherche). Le toggle "Afficher les archives" du tab inclut
+            // ces produits avec un marquage visuel.
+            if (config.archived && !_showArchivedInTabs) return;
+            const isArchived = !!config.archived;
+
             const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
             const prixSpeciaux = Object.keys(config)
-                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key))
+                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent', 'archived'].includes(key))
                 .map(key => `${key}: ${config[key]}`)
                 .join(', ');
 
@@ -1612,13 +1653,16 @@ function genererLignesProduits(categorie) {
                     lienBadge = `<span class="badge bg-info text-dark" title="Prix hérité de '${parent}'. Modifier le prix ici détachera automatiquement.">🔗 ${parent}</span>`;
                 }
             }
+            const archivedBadge = isArchived
+                ? `<span class="badge bg-warning text-dark ms-1" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive"></i> Archivé</span>`
+                : '';
 
             html += `
-                <tr>
+                <tr class="${isArchived ? 'row-archived' : ''}">
                     <td>
                         <input type="text" class="form-control form-control-sm" value="${produit}"
                                onchange="modifierNomProduit('${categorie}', '${produit}', this.value)">
-                        ${lienBadge ? `<div class="mt-1">${lienBadge}</div>` : ''}
+                        ${(lienBadge || archivedBadge) ? `<div class="mt-1">${lienBadge}${archivedBadge}</div>` : ''}
                     </td>
                     <td>
                         <input type="number" class="form-control form-control-sm" value="${config.default}"
@@ -2008,9 +2052,13 @@ function genererLignesProduitsInventaire(produits, categorie) {
     
     Object.keys(produits).forEach(produit => {
         const config = produits[produit];
+        // Filtre archive: cache par defaut (coherent avec le stock inventaire).
+        if (config.archived && !_showArchivedInTabs) return;
+        const isArchived = !!config.archived;
+
         const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
         const prixSpeciaux = Object.keys(config)
-            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids'].includes(key))
+            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'].includes(key))
             .map(key => `${key}: ${config[key]}`)
             .join(', ');
 
@@ -2021,11 +2069,15 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const escProduit = produit.replace(/'/g, "\\'");
         const ventilationCheckboxId = `ventilation-${produit.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
+        const archivedBadgeInv = isArchived
+            ? `<div class="mt-1"><span class="badge bg-warning text-dark" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive"></i> Archivé</span></div>`
+            : '';
         html += `
-            <tr data-produit="${escAttr(produit)}">
+            <tr class="${isArchived ? 'row-archived' : ''}" data-produit="${escAttr(produit)}">
                 <td>
                     <input type="text" class="form-control form-control-sm" value="${produit}"
                            onchange="modifierNomProduitInventaire('${produit}', this.value, ${catParam})">
+                    ${archivedBadgeInv}
                 </td>
                 <td>
                     <input type="number" class="form-control form-control-sm" value="${config.prixDefault}"
