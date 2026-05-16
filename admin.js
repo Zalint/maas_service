@@ -4547,6 +4547,18 @@ function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     selectEl.innerHTML = html;
 }
 
+// Active/desactive le select Mode de stock en fonction de la cible
+// Inventaire (mode_stock n'a de sens que pour les produits Inventaire).
+function pumSyncModeStockEnabled() {
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    const targetInv = document.getElementById('pum-target-inv');
+    const helpEl = document.getElementById('pum-mode-stock-help');
+    if (!modeStockSel || !targetInv) return;
+    const enabled = !!targetInv.checked;
+    modeStockSel.disabled = !enabled;
+    if (helpEl) helpEl.style.opacity = enabled ? '' : '0.5';
+}
+
 // Cherche un produit existant dans Produits Generaux par nom.
 // Retourne { categorie, config } ou null.
 function pumLookupPG(nom) {
@@ -4750,6 +4762,16 @@ function ouvrirModalProduitUnifie(mode, data) {
         document.getElementById('pum-target-inv').checked = true;
     }
 
+    // Mode de stock (Inventaire uniquement) — defaut 'manuel'.
+    // En edit on prefille depuis invHit si dispo, sinon 'manuel'.
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    if (modeStockSel) {
+        const currentMode = (invHit && invHit.config && invHit.config.mode_stock) || 'manuel';
+        modeStockSel.value = (currentMode === 'automatique') ? 'automatique' : 'manuel';
+        // Disabled si Inventaire pas coche (n'aura pas d'effet)
+        pumSyncModeStockEnabled();
+    }
+
     // Reset override toggle
     document.getElementById('pum-override-toggle').checked = false;
     document.getElementById('pum-override').style.display = 'none';
@@ -4893,11 +4915,20 @@ async function pumSave() {
         const altsInv = Array.isArray(baseConfigInv.alternatives) ? baseConfigInv.alternatives.slice() : [];
         if (!altsInv.includes(prixInv)) altsInv.push(prixInv);
 
+        // Mode de stock: valeur du select (override l'existant), fallback sur
+        // baseConfigInv.mode_stock ou 'manuel'. Whitelist stricte pour ne pas
+        // injecter une valeur arbitraire (la colonne DB est un ENUM).
+        const modeStockEl = document.getElementById('pum-mode-stock');
+        const requestedMode = modeStockEl ? modeStockEl.value : null;
+        const modeStockFinal = (requestedMode === 'automatique' || requestedMode === 'manuel')
+            ? requestedMode
+            : (baseConfigInv.mode_stock || 'manuel');
+
         currentInventaireConfig[nomInv] = {
             ...baseConfigInv,
             prixDefault: prixInv,
             alternatives: altsInv,
-            mode_stock: baseConfigInv.mode_stock || 'manuel',
+            mode_stock: modeStockFinal,
             unite_stock: baseConfigInv.unite_stock || 'unite',
             categorie_affichage: catInv
         };
@@ -5292,6 +5323,14 @@ function initModalProduitUnifie() {
     if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
     const archiveBtn = document.getElementById('pum-archive-btn');
     if (archiveBtn) archiveBtn.addEventListener('click', pumToggleArchive);
+
+    // Sync l'enable du select Mode de stock avec la cible Inventaire.
+    // Si l'admin decoche Inventaire, le select est griseé (pas de sens
+    // de le configurer pour un produit qui n'ira pas dans Inventaire).
+    const targetInv = document.getElementById('pum-target-inv');
+    if (targetInv) {
+        targetInv.addEventListener('change', pumSyncModeStockEnabled);
+    }
 
     // Bouton "+ Ajouter un produit" sur l'onglet Recherche
     const addBtn = document.getElementById('recherche-add-btn');

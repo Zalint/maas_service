@@ -976,6 +976,25 @@
                             </div>
                         </div>
 
+                        <!-- Mode de stock (Inventaire uniquement) -->
+                        <div class="row g-3 mt-1">
+                            <div class="col-md-12">
+                                <label for="pum-mode-stock" class="form-label small fw-semibold">
+                                    <i class="bi bi-box-seam me-1"></i>Mode de stock
+                                    <span class="text-muted fw-normal">(Inventaire uniquement)</span>
+                                </label>
+                                <select id="pum-mode-stock" class="form-select">
+                                    <option value="manuel">Manuel — stock soir saisi à la main</option>
+                                    <option value="automatique">Automatique — stock soir = stock matin − ventes</option>
+                                </select>
+                                <div class="form-text small" id="pum-mode-stock-help">
+                                    Mode <strong>Automatique</strong> recommandé pour les produits dont
+                                    les ventes sont fiables (boucherie en gros). Mode <strong>Manuel</strong>
+                                    pour les produits pesés / re-comptés en fin de journée.
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Toggle override -->
                         <div class="form-check mt-3">
                             <input class="form-check-input" type="checkbox" id="pum-override-toggle">
@@ -1126,6 +1145,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260517-archive-mvp"></script>
+    <script src="admin.js?v=20260517-mode-stock"></script>
 </body>
 </html> 
