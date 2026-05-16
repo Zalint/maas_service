@@ -4603,7 +4603,7 @@ function ouvrirModalProduitUnifie(mode, data) {
 // Sauvegarde: cree/met a jour dans les catalogues coches.
 // Modifie les configs cote client; le bouton global "Sauvegarder" sur
 // chaque onglet ecrira en BDD ensuite. Ici on display-refresh + toast.
-function pumSave() {
+async function pumSave() {
     const mode = document.getElementById('pum-mode').value;
     const originalNom = document.getElementById('pum-original-nom').value || null;
     const nomShared = (document.getElementById('pum-nom').value || '').trim();
@@ -4628,6 +4628,10 @@ function pumSave() {
     const nomInv = overrideOn ? (document.getElementById('pum-nom-inv').value || nomShared).trim() : nomShared;
     const prixPG = overrideOn ? (parseFloat(document.getElementById('pum-prix-pg').value) || prixShared) : prixShared;
     const prixInv = overrideOn ? (parseFloat(document.getElementById('pum-prix-inv').value) || prixShared) : prixShared;
+
+    // Snapshot pour rollback en cas d'echec serveur
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
 
     let pgChanged = false;
     let invChanged = false;
@@ -4666,19 +4670,97 @@ function pumSave() {
         invChanged = true;
     }
 
-    // Refresh affichages
+    // Disable boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const cancelBtn = document.querySelector('#productUnifiedModal [data-bs-dismiss="modal"]');
+    const closeBtn = document.querySelector('#productUnifiedModal .btn-close');
+    const originalSaveHtml = saveBtn ? saveBtn.innerHTML : '';
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Sauvegarde…';
+    }
+    if (delBtn) delBtn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (closeBtn) closeBtn.disabled = true;
+
+    // POST aux API existantes (qui sauvegardent + rechargent serveur).
+    // Les fonctions sauvegarderConfigProduits/Inventaire affichent leurs
+    // propres toasts en cas d'erreur reseau, mais on capture aussi ici
+    // pour rollback de l'etat local.
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (pgChanged) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invChanged) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        // Reload serveur (sync caches in-process) si tout est OK
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = originalSaveHtml;
+        }
+        if (delBtn) delBtn.disabled = false;
+        if (cancelBtn) cancelBtn.disabled = false;
+        if (closeBtn) closeBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        // Rollback in-memory pour eviter qu'un refresh ulterieur ne perde
+        // ou n'ecrase les vraies donnees serveur.
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        showToast(`Erreur de sauvegarde: ${serverError}`, 'error');
+        return; // modal reste ouvert pour que l'user puisse retry
+    }
+
+    // Refresh affichages onglets
     if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
     if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
 
     // Refresh la recherche
     reconstruireFlatRecherche();
     updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
     renderRechercheGrid();
 
-    // Toast info
+    // Toast succes
     const where = [pgChanged && 'Généraux', invChanged && 'Inventaire'].filter(Boolean).join(' + ');
     const action = mode === 'edit' ? 'modifié' : 'ajouté';
-    showToast(`Produit ${action} dans ${where}. N'oublie pas de cliquer "Sauvegarder" sur l'onglet.`, 'success');
+    showToast(`Produit ${action} dans ${where} et sauvegardé.`, 'success');
 
     // Close modal
     const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
@@ -4696,6 +4778,10 @@ async function pumDelete() {
         : confirm(`Supprimer "${nom}" des 2 catalogues ?`);
     if (!ok) return;
 
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
     // Retirer de PG
     let pgChanged = false;
     for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
@@ -4711,13 +4797,85 @@ async function pumDelete() {
         invChanged = true;
     }
 
+    if (!pgChanged && !invChanged) {
+        const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+        if (modal) modal.hide();
+        return;
+    }
+
+    // Disable les boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const originalDelHtml = delBtn ? delBtn.innerHTML : '';
+    if (delBtn) {
+        delBtn.disabled = true;
+        delBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Suppression…';
+    }
+    if (saveBtn) saveBtn.disabled = true;
+
+    // Persister la suppression cote serveur
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (pgChanged) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invChanged) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (delBtn) {
+            delBtn.disabled = false;
+            delBtn.innerHTML = originalDelHtml;
+        }
+        if (saveBtn) saveBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        showToast(`Erreur de suppression: ${serverError}`, 'error');
+        return; // modal reste ouvert
+    }
+
     if (pgChanged && typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
     if (invChanged && typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
     reconstruireFlatRecherche();
     updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
     renderRechercheGrid();
 
-    showToast(`«${nom}» supprimé. N'oublie pas de cliquer "Sauvegarder".`, 'success');
+    showToast(`«${nom}» supprimé et sauvegardé.`, 'success');
 
     const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
     if (modal) modal.hide();
