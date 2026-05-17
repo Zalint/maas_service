@@ -16302,10 +16302,16 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
             cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
-                const existing = await CashPayment.findOne({ where: { date: isoDate, point_de_vente: pointVente, payment_type: 'CASH', is_manual: true }, transaction });
+                // Discrimine les entries de cloture par payment_reference (deterministe
+                // par PV via generateCashReference, ex: 'CASH_MBA' pour Mbao). Avant on
+                // utilisait payment_type='CASH' mais cette colonne n'existe pas dans le
+                // modele CashPayment ni en BDD -> "column CashPayment.payment_type does
+                // not exist". Les paiements manuels de /api/admin/cash-payment n'ont
+                // pas payment_reference set, donc le filtre les exclut correctement.
+                const existing = await CashPayment.findOne({ where: { date: isoDate, point_de_vente: pointVente, payment_reference: cashRef, is_manual: true }, transaction });
                 const commentCash = `Clôture caisse par ${commercial} (cloture_id:${cloture.id})`;
                 if (existing) { await existing.update({ amount: parseFloat(montantEspeces), comment: commentCash, created_by: username, payment_reference: cashRef }, { transaction }); }
-                else { await CashPayment.create({ date: isoDate, created_at: new Date(), point_de_vente: pointVente, amount: parseFloat(montantEspeces), payment_reference: cashRef, payment_type: 'CASH', reference: cashRef, comment: commentCash, is_manual: true, created_by: username }, { transaction }); }
+                else { await CashPayment.create({ date: isoDate, created_at: new Date(), point_de_vente: pointVente, amount: parseFloat(montantEspeces), payment_reference: cashRef, reference: cashRef, comment: commentCash, is_manual: true, created_by: username }, { transaction }); }
             }
             await transaction.commit();
         } catch (txError) { await transaction.rollback(); throw txError; }
