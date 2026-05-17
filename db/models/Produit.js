@@ -83,6 +83,13 @@ const Produit = sequelize.define('Produit', {
     defaultValue: false,
     field: 'ventilation_poids',
     comment: 'Inventaire: si TRUE, les transferts de ce produit acceptent une ventilation par calibre (poids_kg + quantite) dans transferts.extension.calibres'
+  },
+  archived: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'archived',
+    comment: 'Soft-delete pour la transition de taxonomie. TRUE = cache dans POS, stock inventaire et UI admin par defaut (toggle pour les revoir). Conserve toutes les donnees historiques.'
   }
 }, {
   tableName: 'produits',
@@ -99,6 +106,11 @@ const Produit = sequelize.define('Produit', {
     },
     {
       fields: ['type_catalogue']
+    },
+    {
+      // Index partiel pour accelerer le filtre "produits actifs" (POS, stock)
+      fields: ['archived'],
+      name: 'produits_archived_idx'
     }
   ]
 });

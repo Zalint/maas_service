@@ -113,6 +113,118 @@
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             min-width: 0; flex: 1;
         }
+        /* Carte archivee: grisee + badge */
+        .recherche-spotlight .result-card.is-archived {
+            opacity: 0.55;
+            background: repeating-linear-gradient(
+                45deg,
+                #f8fafc,
+                #f8fafc 8px,
+                #f1f5f9 8px,
+                #f1f5f9 16px
+            );
+        }
+        .recherche-spotlight .result-card.is-archived:hover { opacity: 0.85; }
+        .recherche-spotlight .archived-badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            margin-left: 6px;
+            font-size: 0.7rem;
+            color: #b45309; background: #fef3c7;
+            padding: 2px 7px; border-radius: 999px;
+            font-weight: 600;
+        }
+        /* Toggle "Afficher les archives" */
+        .recherche-spotlight .recherche-archived-toggle {
+            padding: 6px 10px;
+            border-top: 1px solid #e2e8f0;
+            color: #475569;
+        }
+        .recherche-spotlight .recherche-archived-toggle .form-check-label {
+            cursor: pointer;
+        }
+        /* Selection multiple: checkbox + bouton archive rapide sur carte */
+        .recherche-spotlight .result-card {
+            position: relative;
+        }
+        .recherche-spotlight .result-card-checkbox {
+            position: absolute; top: 8px; left: 8px;
+            z-index: 2;
+            opacity: 0; transition: opacity 120ms;
+            cursor: pointer;
+            background: #fff;
+            border-radius: 4px;
+            padding: 2px;
+            display: inline-flex;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .recherche-spotlight .result-card-checkbox-input {
+            cursor: pointer; margin: 0;
+        }
+        .recherche-spotlight .result-card:hover .result-card-checkbox,
+        .recherche-spotlight .result-card.is-selected .result-card-checkbox,
+        .recherche-spotlight .result-card:focus-within .result-card-checkbox,
+        .recherche-spotlight .result-card-checkbox:focus-within {
+            opacity: 1;
+        }
+        /* Focus visible du native checkbox quand on tabe au clavier */
+        .recherche-spotlight .result-card-checkbox-input:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
+        }
+        .recherche-spotlight .result-card.is-selected {
+            outline: 2px solid #0d6efd;
+            outline-offset: -2px;
+        }
+        .recherche-spotlight .result-card-archive-btn {
+            position: absolute; top: 8px; right: 8px;
+            z-index: 2;
+            opacity: 0; transition: opacity 120ms, background 80ms;
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: #64748b;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .recherche-spotlight .result-card:hover .result-card-archive-btn,
+        .recherche-spotlight .result-card:focus-within .result-card-archive-btn,
+        .recherche-spotlight .result-card-archive-btn:focus { opacity: 1; }
+        .recherche-spotlight .result-card-archive-btn:focus-visible {
+            outline: 2px solid #0d6efd;
+            outline-offset: 1px;
+        }
+        .recherche-spotlight .result-card-archive-btn:hover {
+            background: #fef3c7; color: #b45309; border-color: #fde68a;
+        }
+        .recherche-spotlight .result-card.is-archived .result-card-archive-btn:hover {
+            background: #d1fae5; color: #047857; border-color: #a7f3d0;
+        }
+        /* Action bar selection multiple */
+        .recherche-spotlight .recherche-selection-bar {
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 14px;
+            color: #1e40af;
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+        /* Rangees archivees dans les onglets PG / Inventaire */
+        tr.row-archived {
+            opacity: 0.6;
+            background: repeating-linear-gradient(
+                45deg,
+                #fafafa,
+                #fafafa 6px,
+                #f5f5f5 6px,
+                #f5f5f5 12px
+            );
+        }
+        tr.row-archived:hover { opacity: 0.85; }
 
         .recherche-spotlight .recherche-main {
             padding: 24px 28px;
@@ -548,6 +660,16 @@
                                             </div>
                                         </div>
 
+                                        <div class="recherche-archived-toggle mt-3">
+                                            <label class="form-check d-flex align-items-center" for="recherche-show-archived">
+                                                <input type="checkbox" class="form-check-input me-2" id="recherche-show-archived">
+                                                <span class="form-check-label small">
+                                                    <i class="bi bi-archive" aria-hidden="true"></i>
+                                                    Afficher les archivés
+                                                </span>
+                                            </label>
+                                        </div>
+
                                         <button class="btn btn-outline-secondary btn-sm w-100 mt-2" id="recherche-refresh-btn">
                                             <i class="bi bi-arrow-clockwise"></i> Rafraîchir
                                         </button>
@@ -560,16 +682,18 @@
                                                 <small>· dans les 2 catalogues</small>
                                             </div>
                                             <div class="d-flex align-items-center gap-2">
-                                                <select class="recherche-sort-select" id="recherche-sort">
+                                                <select class="recherche-sort-select" id="recherche-sort" aria-label="Trier les résultats">
                                                     <option value="name">Nom (A→Z)</option>
                                                     <option value="price-asc">Prix (croissant)</option>
                                                     <option value="price-desc">Prix (décroissant)</option>
                                                 </select>
                                                 <button type="button" class="btn btn-primary btn-sm" id="recherche-add-btn">
-                                                    <i class="bi bi-plus-lg"></i> Ajouter un produit
+                                                    <i class="bi bi-plus-lg" aria-hidden="true"></i> Ajouter un produit
                                                 </button>
                                             </div>
                                         </div>
+                                        <!-- Action bar pour selection multiple (cachée tant que selection vide) -->
+                                        <div class="recherche-selection-bar" id="recherche-selection-bar" role="region" aria-label="Actions sur la sélection" style="display:none"></div>
                                         <div class="recherche-results-grid" id="recherche-grid">
                                             <div class="recherche-empty">
                                                 <i class="bi bi-hourglass-split"></i>
@@ -608,12 +732,19 @@
                                         <!-- Boutons remplis par JS pour refleter currentInventaireFamilleFilter -->
                                     </div>
                                     <div class="input-group input-group-sm" style="max-width: 320px;">
-                                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                                        <span class="input-group-text"><i class="bi bi-search" aria-hidden="true"></i></span>
                                         <input type="search" id="inventaire-search-input" class="form-control"
                                                placeholder="Rechercher un produit…"
                                                autocomplete="off"
                                                aria-label="Rechercher un produit dans l'inventaire">
                                     </div>
+                                    <label class="form-check ms-auto d-flex align-items-center" for="inventaire-show-archived">
+                                        <input type="checkbox" class="form-check-input me-2" id="inventaire-show-archived" data-show-archived-tabs>
+                                        <span class="form-check-label small">
+                                            <i class="bi bi-archive" aria-hidden="true"></i>
+                                            Afficher les archivés
+                                        </span>
+                                    </label>
                                 </div>
                                 <div id="inventaire-categories" class="accordion">
                                     <!-- Les catégories seront générées dynamiquement -->
@@ -643,6 +774,15 @@
                                 </div>
                             </div>
                             <div class="card-body">
+                                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                                    <label class="form-check ms-auto d-flex align-items-center" for="produits-show-archived">
+                                        <input type="checkbox" class="form-check-input me-2" id="produits-show-archived" data-show-archived-tabs>
+                                        <span class="form-check-label small">
+                                            <i class="bi bi-archive" aria-hidden="true"></i>
+                                            Afficher les archivés
+                                        </span>
+                                    </label>
+                                </div>
                                 <div id="produits-categories" class="accordion">
                                     <!-- Les catégories seront générées dynamiquement -->
                                 </div>
@@ -937,6 +1077,25 @@
                             </div>
                         </div>
 
+                        <!-- Mode de stock (Inventaire uniquement) -->
+                        <div class="row g-3 mt-1">
+                            <div class="col-md-12">
+                                <label for="pum-mode-stock" class="form-label small fw-semibold">
+                                    <i class="bi bi-box-seam me-1"></i>Mode de stock
+                                    <span class="text-muted fw-normal">(Inventaire uniquement)</span>
+                                </label>
+                                <select id="pum-mode-stock" class="form-select">
+                                    <option value="manuel">Manuel — stock soir saisi à la main</option>
+                                    <option value="automatique">Automatique — stock soir = stock matin − ventes</option>
+                                </select>
+                                <div class="form-text small" id="pum-mode-stock-help">
+                                    Mode <strong>Automatique</strong> recommandé pour les produits dont
+                                    les ventes sont fiables (boucherie en gros). Mode <strong>Manuel</strong>
+                                    pour les produits pesés / re-comptés en fin de journée.
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Toggle override -->
                         <div class="form-check mt-3">
                             <input class="form-check-input" type="checkbox" id="pum-override-toggle">
@@ -993,11 +1152,19 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-danger me-auto" id="pum-delete-btn" style="display:none">
-                        <i class="bi bi-trash"></i> Supprimer
+                        <i class="bi bi-trash" aria-hidden="true"></i> Supprimer
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" id="pum-archive-btn" style="display:none" data-archive-target="true">
+                        <i class="bi bi-archive" aria-hidden="true"></i> <span id="pum-archive-label">Archiver</span>
+                    </button>
+                    <!-- 2e bouton visible UNIQUEMENT en etat "mixed" (PG archive et Inv non, ou inverse). Permet a l'admin de choisir
+                         la direction d'alignement: harmoniser via desarchive (primary), ou via archive (secondary). -->
+                    <button type="button" class="btn btn-outline-success" id="pum-archive-btn-2" style="display:none" data-archive-target="false">
+                        <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i> <span id="pum-archive-label-2">Désarchiver</span>
                     </button>
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
                     <button type="button" class="btn btn-primary" id="pum-save-btn">
-                        <i class="bi bi-check2-circle me-1"></i><span id="pum-save-label">Ajouter</span>
+                        <i class="bi bi-check2-circle me-1" aria-hidden="true"></i><span id="pum-save-label">Ajouter</span>
                     </button>
                 </div>
             </div>
@@ -1084,6 +1251,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260516-review2-a11y-merge"></script>
+    <script src="admin.js?v=20260517-review5-mixed-a11y"></script>
 </body>
 </html> 

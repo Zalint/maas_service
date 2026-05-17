@@ -1253,6 +1253,41 @@ function normaliserCategorieAvecDefaut(categorie, defaut) {
     return categorie;
 }
 
+// Toggle global "Afficher les archives" partage entre les onglets
+// Produits Generaux et Produits Inventaire. False par defaut (cache les
+// archives, comme dans le POS et le stock inventaire). L'onglet Recherche
+// a son propre toggle (_rechercheState.showArchived) car son scope est
+// plus large (les 2 catalogues fusionnes).
+let _showArchivedInTabs = false;
+
+// Synchronise toutes les checkboxes data-show-archived-tabs avec l'etat
+// et re-rend les 2 onglets. Bind au load + au change de n'importe quelle
+// checkbox dans le groupe.
+function syncShowArchivedTabs(value) {
+    _showArchivedInTabs = !!value;
+    document.querySelectorAll('[data-show-archived-tabs]').forEach((cb) => {
+        if (cb.checked !== _showArchivedInTabs) cb.checked = _showArchivedInTabs;
+    });
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+}
+
+// Bind des toggles "Afficher les archives" sur les onglets PG + Inv.
+// Idempotent via flag, peut etre rappele si le DOM est modifie.
+function initShowArchivedTabsToggles() {
+    document.querySelectorAll('[data-show-archived-tabs]').forEach((cb) => {
+        if (cb.dataset.bound === 'true') return;
+        cb.dataset.bound = 'true';
+        cb.checked = _showArchivedInTabs; // sync initial
+        cb.addEventListener('change', (e) => syncShowArchivedTabs(e.target.checked));
+    });
+}
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initShowArchivedTabsToggles);
+} else {
+    initShowArchivedTabsToggles();
+}
+
 // Mapping: label produit (Bovin, Ovin, Conserve...) -> bucket logique de
 // l'inventaire ("Viandes", "Superette", ...). Les buckets restent grossiers
 // pour l'affichage de l'onglet Inventaire (groupes de viandes / epicerie /
@@ -1586,13 +1621,19 @@ function afficherProduitsConfig() {
 function genererLignesProduits(categorie) {
     let html = '';
     const produits = currentProduitsConfig[categorie];
-    
+
     Object.keys(produits).forEach(produit => {
         const config = produits[produit];
         if (typeof config === 'object' && config.default !== undefined) {
+            // Filtre archive: cache par defaut (coherent avec le POS et la
+            // recherche). Le toggle "Afficher les archives" du tab inclut
+            // ces produits avec un marquage visuel.
+            if (config.archived && !_showArchivedInTabs) return;
+            const isArchived = !!config.archived;
+
             const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
             const prixSpeciaux = Object.keys(config)
-                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent'].includes(key))
+                .filter(key => !['default', 'alternatives', 'prix_personnalise', 'inventaire_parent', 'archived'].includes(key))
                 .map(key => `${key}: ${config[key]}`)
                 .join(', ');
 
@@ -1612,13 +1653,16 @@ function genererLignesProduits(categorie) {
                     lienBadge = `<span class="badge bg-info text-dark" title="Prix hérité de '${parent}'. Modifier le prix ici détachera automatiquement.">🔗 ${parent}</span>`;
                 }
             }
+            const archivedBadge = isArchived
+                ? `<span class="badge bg-warning text-dark ms-1" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive"></i> Archivé</span>`
+                : '';
 
             html += `
-                <tr>
+                <tr class="${isArchived ? 'row-archived' : ''}">
                     <td>
                         <input type="text" class="form-control form-control-sm" value="${produit}"
                                onchange="modifierNomProduit('${categorie}', '${produit}', this.value)">
-                        ${lienBadge ? `<div class="mt-1">${lienBadge}</div>` : ''}
+                        ${(lienBadge || archivedBadge) ? `<div class="mt-1">${lienBadge}${archivedBadge}</div>` : ''}
                     </td>
                     <td>
                         <input type="number" class="form-control form-control-sm" value="${config.default}"
@@ -2008,9 +2052,13 @@ function genererLignesProduitsInventaire(produits, categorie) {
     
     Object.keys(produits).forEach(produit => {
         const config = produits[produit];
+        // Filtre archive: cache par defaut (coherent avec le stock inventaire).
+        if (config.archived && !_showArchivedInTabs) return;
+        const isArchived = !!config.archived;
+
         const alternatives = config.alternatives ? config.alternatives.join(', ') : '';
         const prixSpeciaux = Object.keys(config)
-            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids'].includes(key))
+            .filter(key => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock', 'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'].includes(key))
             .map(key => `${key}: ${config[key]}`)
             .join(', ');
 
@@ -2021,11 +2069,15 @@ function genererLignesProduitsInventaire(produits, categorie) {
         const escProduit = produit.replace(/'/g, "\\'");
         const ventilationCheckboxId = `ventilation-${produit.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
+        const archivedBadgeInv = isArchived
+            ? `<div class="mt-1"><span class="badge bg-warning text-dark" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive"></i> Archivé</span></div>`
+            : '';
         html += `
-            <tr data-produit="${escAttr(produit)}">
+            <tr class="${isArchived ? 'row-archived' : ''}" data-produit="${escAttr(produit)}">
                 <td>
                     <input type="text" class="form-control form-control-sm" value="${produit}"
                            onchange="modifierNomProduitInventaire('${produit}', this.value, ${catParam})">
+                    ${archivedBadgeInv}
                 </td>
                 <td>
                     <input type="number" class="form-control form-control-sm" value="${config.prixDefault}"
@@ -4090,8 +4142,18 @@ const _rechercheState = {
     famille: 'all', // 'all' | 'boucherie' | 'epicerie' | 'autres'
     cat: 'all',     // 'all' | nom exact de la categorie (ex: 'Superette')
     sort: 'name',
-    flat: []
+    showArchived: false, // false = cacher les archives (defaut), true = inclure
+    flat: [],
+    // Selection multiple pour les actions batch (archiver/desarchiver).
+    // Set de cles "src::nom" (ex: 'pg::Spaghetti 250g').
+    selection: new Set()
 };
+
+// Cle unique de selection pour un produit (src+nom). Un produit peut
+// exister dans les 2 catalogues — la selection est independante.
+function _rechercheSelKey(src, nom) {
+    return `${src}::${nom}`;
+}
 
 // Normalise une chaine en ASCII lowercase (strip diacritics) pour
 // que 'Épicerie' -> 'epicerie' et matche les data-attrs des filtres.
@@ -4118,7 +4180,7 @@ function familleDeCatInventaire(categorie) {
 }
 
 // Aplatit les 2 catalogues en un tableau unifie pour la recherche.
-// Forme: { src, name, cat, famille, prix }
+// Forme: { src, name, cat, famille, prix, archived }
 function reconstruireFlatRecherche() {
     const flat = [];
 
@@ -4134,7 +4196,8 @@ function reconstruireFlatRecherche() {
                     name: produitName,
                     cat: catName,
                     famille: familleDeCatPG(catName),
-                    prix: config.default
+                    prix: config.default,
+                    archived: !!config.archived
                 });
             }
         }
@@ -4154,7 +4217,8 @@ function reconstruireFlatRecherche() {
                     name: produitName,
                     cat: catName,
                     famille: familleDeCatInventaire(catName),
-                    prix: config.prixDefault
+                    prix: config.prixDefault,
+                    archived: !!config.archived
                 });
             }
         }
@@ -4166,9 +4230,12 @@ function reconstruireFlatRecherche() {
 
 // Filtre + tri en memoire (pas de requete reseau).
 function appliquerFiltresRecherche() {
-    const { query, src, famille, cat, sort, flat } = _rechercheState;
+    const { query, src, famille, cat, sort, showArchived, flat } = _rechercheState;
     const q = query.toLowerCase().trim();
     let matches = flat;
+    // Filtre archive: par defaut on cache les archives. Si showArchived=true,
+    // on les inclut (mais visuellement differents — cf. renderRechercheGrid).
+    if (!showArchived) matches = matches.filter(p => !p.archived);
     if (src !== 'all') matches = matches.filter(p => p.src === src);
     if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
     if (cat !== 'all') matches = matches.filter(p => p.cat === cat);
@@ -4205,6 +4272,7 @@ function renderRechercheGrid() {
     // escAttr couvre <,>,&,",' pour attrs ET contenu texte. p.src est trusted
     // ('pg'/'inv' set par notre code) mais on escape par defense. icon/famIcon/
     // srcLabel sont hardcodes, p.prix passe par toLocaleString (numerique pur).
+    const selection = _rechercheState.selection;
     grid.innerHTML = matches.map((p) => {
         const icon = p.src === 'pg' ? 'bi-shop' : 'bi-box-seam';
         const srcLabel = p.src === 'pg' ? 'Généraux' : 'Inventaire';
@@ -4212,11 +4280,29 @@ function renderRechercheGrid() {
         const escName = escAttr(p.name);
         const escCat = escAttr(p.cat);
         const escSrc = escAttr(p.src);
+        // Cartes archivees: classe + badge "Archivé" en plus du badge source.
+        const archivedClass = p.archived ? ' is-archived' : '';
+        const archivedBadge = p.archived
+            ? `<span class="archived-badge" title="Produit archivé — masqué du POS et du stock inventaire"><i class="bi bi-archive" aria-hidden="true"></i> Archivé</span>`
+            : '';
+        const selKey = _rechercheSelKey(p.src, p.name);
+        const isSelected = selection.has(selKey);
+        const selectedClass = isSelected ? ' is-selected' : '';
+        const archiveQuickIcon = p.archived ? 'bi-archive-fill' : 'bi-archive';
+        const archiveQuickTitle = p.archived ? 'Désarchiver ce produit' : 'Archiver ce produit';
+        const archiveQuickLabel = p.archived ? 'Désarchiver' : 'Archiver';
         return `
-            <div class="result-card" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}">
+            <div class="result-card${archivedClass}${selectedClass}" data-src="${escSrc}" data-name="${escName}" data-cat="${escCat}" data-archived="${p.archived ? 'true' : 'false'}">
+                <label class="result-card-checkbox" title="Sélectionner pour action groupée" aria-label="Sélectionner ${escName}">
+                    <input type="checkbox" class="result-card-checkbox-input" data-recherche-select="${escSrc}::${escName}"${isSelected ? ' checked' : ''}>
+                </label>
+                <button type="button" class="result-card-archive-btn" data-recherche-archive="${escSrc}::${escName}" title="${archiveQuickTitle}" aria-label="${archiveQuickLabel} ${escName}">
+                    <i class="bi ${archiveQuickIcon}" aria-hidden="true"></i>
+                </button>
                 <div class="result-card-header">
                     <div class="result-card-icon icon-${escSrc}"><i class="bi ${icon}" aria-hidden="true"></i></div>
                     <span class="src-badge ${escSrc}">${srcLabel}</span>
+                    ${archivedBadge}
                 </div>
                 <div class="result-name" title="${escName}">${escName}</div>
                 <div class="result-cat"><span aria-hidden="true">${famIcon}</span> ${escCat}</div>
@@ -4224,14 +4310,253 @@ function renderRechercheGrid() {
             </div>
         `;
     }).join('');
+
+    // Re-render l'action bar (depend de la selection)
+    renderRechercheSelectionBar();
+}
+
+// Rend la barre d'action selection (apparait quand selection > 0).
+// Affiche "X selectionnes" + boutons Archiver / Desarchiver /
+// Effacer la selection. Idempotent: re-cree le DOM a chaque appel.
+function renderRechercheSelectionBar() {
+    const bar = document.getElementById('recherche-selection-bar');
+    if (!bar) return;
+    const selection = _rechercheState.selection;
+    const count = selection.size;
+    if (count === 0) {
+        bar.style.display = 'none';
+        bar.innerHTML = '';
+        return;
+    }
+    // Determine si tous les selectionnes sont deja archives (pour decider
+    // quel bouton dominant proposer: archiver vs desarchiver).
+    const flat = _rechercheState.flat;
+    let allArchived = true;
+    let anyArchived = false;
+    for (const p of flat) {
+        const key = _rechercheSelKey(p.src, p.name);
+        if (selection.has(key)) {
+            if (p.archived) anyArchived = true;
+            else allArchived = false;
+        }
+    }
+    bar.style.display = '';
+    bar.innerHTML = `
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+            <span class="fw-semibold">
+                <i class="bi bi-check-square me-1" aria-hidden="true"></i>
+                ${count} produit${count > 1 ? 's' : ''} sélectionné${count > 1 ? 's' : ''}
+            </span>
+            <div class="ms-auto d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-warning" id="recherche-batch-archive" ${allArchived ? 'disabled title="Tous déjà archivés"' : ''}>
+                    <i class="bi bi-archive" aria-hidden="true"></i> Archiver
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-success" id="recherche-batch-unarchive" ${!anyArchived ? 'disabled title="Aucun n\'est archivé"' : ''}>
+                    <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i> Désarchiver
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="recherche-batch-clear">
+                    <i class="bi bi-x-lg" aria-hidden="true"></i> Désélectionner
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+// Flag re-entrant pour empecher 2 batchs concurrents (double-click sur
+// le bouton "Archiver/Desarchiver" de l'action bar). Un seul batch a la
+// fois pour eviter des mutations memory paralleles sur currentXConfig.
+let _rechercheBatchInFlight = false;
+
+// Batch: applique archived=targetValue sur tous les produits selectionnes.
+// Itere sur les 2 catalogues et POST en 1 fois par cote (pas N requetes).
+async function rechercheBatchArchive(targetArchived) {
+    if (_rechercheBatchInFlight) return; // garde re-entrante
+    const selection = _rechercheState.selection;
+    if (selection.size === 0) return;
+    const flat = _rechercheState.flat;
+
+    // Trouver les produits selectionnes via leur cle src::nom
+    const selectedItems = flat.filter(p => selection.has(_rechercheSelKey(p.src, p.name)));
+    if (selectedItems.length === 0) return;
+
+    // Filtre: ne traiter que ceux dont l'etat change reellement
+    const toUpdate = selectedItems.filter(p => !!p.archived !== targetArchived);
+    if (toUpdate.length === 0) {
+        showToast('Aucun changement à appliquer.', 'info');
+        return;
+    }
+
+    const action = targetArchived ? 'archiver' : 'désarchiver';
+    const actionPast = targetArchived ? 'archivés' : 'désarchivés';
+    const explain = targetArchived
+        ? `\n\nIls ne seront plus affichés dans le POS, le stock inventaire, ni dans la recherche admin par défaut.`
+        : `\n\nIls redeviendront visibles dans le POS et le stock inventaire.`;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`${action[0].toUpperCase() + action.slice(1)} ${toUpdate.length} produit${toUpdate.length > 1 ? 's' : ''} ?${explain}`, {
+            title: `${action[0].toUpperCase() + action.slice(1)} en lot`,
+            okLabel: action[0].toUpperCase() + action.slice(1),
+            okVariant: targetArchived ? 'warning' : 'success'
+        })
+        : confirm(`${action} ${toUpdate.length} produits ?`);
+    if (!ok) return;
+
+    // Garde re-entrante: bloquer les autres batchs avant TOUTE mutation memory.
+    // Si un autre batch arrive entre temps, il return immediatement (no-op).
+    _rechercheBatchInFlight = true;
+
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    // Set le flag en memoire sur les 2 catalogues
+    let hasPgChanges = false;
+    let hasInvChanges = false;
+    for (const p of toUpdate) {
+        if (p.src === 'pg') {
+            // Exact: ne touche QUE le produit dont le nom matche exactement
+            // p.name. Sans ca, un produit 'Pasta' archive pourrait toucher
+            // 'PASTA' (case-different) qui est un produit distinct.
+            const pgHit = pumLookupPG(p.name, { exact: true });
+            if (pgHit && currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom]) {
+                currentProduitsConfig[pgHit.categorie][pgHit.nom].archived = targetArchived;
+                hasPgChanges = true;
+            }
+        } else if (p.src === 'inv') {
+            const invHit = pumLookupInv(p.name, { exact: true });
+            if (invHit && invHit.parent && invHit.parent[invHit.nom]) {
+                invHit.parent[invHit.nom].archived = targetArchived;
+                hasInvChanges = true;
+            }
+        }
+    }
+
+    // Disable bar pendant la sauvegarde
+    const bar = document.getElementById('recherche-selection-bar');
+    if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = true);
+
+    let serverOk = true;
+    let serverError = null;
+    try {
+        if (hasPgChanges) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && hasInvChanges) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        if (bar) bar.querySelectorAll('button').forEach(b => b.disabled = false);
+        // Liberation du flag re-entrant — TOUJOURS (success + error)
+        _rechercheBatchInFlight = false;
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur batch: ${serverError}`, 'danger');
+        return;
+    }
+
+    // Reset selection apres succes (les produits "actifs" ne sont plus
+    // visibles si on archive et qu'on affiche pas les archives, etc.)
+    _rechercheState.selection.clear();
+
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') renderRechercheCategoriesFilter();
+    renderRechercheGrid();
+
+    showToast(`${toUpdate.length} produit${toUpdate.length > 1 ? 's' : ''} ${actionPast}.`, 'success');
+}
+
+// Archive rapide un seul produit (bouton sur la carte). Reutilise la
+// fonction batch avec un Set d'un seul element.
+// Set des keys en cours de traitement pour eviter les double-clicks
+// (le confirm modal etant async, 2 clics rapides peuvent empiler 2 confirms).
+const _rechercheArchiveSingleInFlight = new Set();
+
+async function rechercheArchiveSingle(src, nom) {
+    const key = _rechercheSelKey(src, nom);
+    // Garde re-entrante: si deja en cours pour ce produit, ignore.
+    if (_rechercheArchiveSingleInFlight.has(key)) return;
+
+    const flat = _rechercheState.flat;
+    const target = flat.find(p => p.src === src && p.name === nom);
+    if (!target) return;
+
+    _rechercheArchiveSingleInFlight.add(key);
+    // Disable visuellement le bouton archive de cette carte. CSS.escape gere
+    // tous les caracteres speciaux des selecteurs (],[,\\,\\n...) — bien plus
+    // robuste qu'un simple replace de ". Supporte tous les navigateurs
+    // modernes.
+    const cssKey = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(key) : key.replace(/(["\\\[\]])/g, '\\$1');
+    const btn = document.querySelector(`[data-recherche-archive="${cssKey}"]`);
+    if (btn) btn.disabled = true;
+
+    // Sauvegarde de la selection courante, on la remplace temporairement
+    const previousSelection = new Set(_rechercheState.selection);
+    _rechercheState.selection = new Set([key]);
+    try {
+        await rechercheBatchArchive(!target.archived);
+    } finally {
+        // Si la selection precedente etait non-vide et que le user vient
+        // d'archiver un produit en plus, on garde la selection vide (batch
+        // la reset deja). Sinon on restore. Comportement intuitif: le clic
+        // sur l'icone individuel ne pollue pas la selection multiple.
+        if (previousSelection.size === 0) {
+            _rechercheState.selection.clear();
+        } else {
+            _rechercheState.selection = previousSelection;
+        }
+        _rechercheArchiveSingleInFlight.delete(key);
+        // Le re-render renderRechercheGrid recree le DOM donc le bouton
+        // disabled est remplace par un neuf. Pas besoin de re-enable.
+        renderRechercheGrid();
+    }
 }
 
 // Recalcule les compteurs (Tous / PG / Inv) dans la sidebar.
+// Les compteurs respectent le toggle "Afficher les archives" pour rester
+// coherents avec ce qui est visible dans la grille.
 function updateRechercheCompteurs() {
-    const flat = _rechercheState.flat;
-    const total = flat.length;
-    const pg = flat.filter(p => p.src === 'pg').length;
-    const inv = flat.filter(p => p.src === 'inv').length;
+    const { flat, showArchived } = _rechercheState;
+    const scope = showArchived ? flat : flat.filter(p => !p.archived);
+    const total = scope.length;
+    const pg = scope.filter(p => p.src === 'pg').length;
+    const inv = scope.filter(p => p.src === 'inv').length;
     const setCount = (sel, n) => {
         const el = document.querySelector(`[data-count="${sel}"]`);
         if (el) el.textContent = String(n);
@@ -4248,10 +4573,11 @@ function updateRechercheCompteurs() {
 function renderRechercheCategoriesFilter() {
     const list = document.getElementById('recherche-cat-list');
     if (!list) return;
-    const { src, famille, cat, flat } = _rechercheState;
+    const { src, famille, cat, showArchived, flat } = _rechercheState;
 
-    // Sous-ensemble pre-filtre (src + famille uniquement)
+    // Sous-ensemble pre-filtre (archived + src + famille)
     let scope = flat;
+    if (!showArchived) scope = scope.filter(p => !p.archived);
     if (src !== 'all') scope = scope.filter(p => p.src === src);
     if (famille !== 'all') scope = scope.filter(p => p.famille === famille);
 
@@ -4420,6 +4746,22 @@ function initRechercheSpotlight() {
         });
     }
 
+    // Toggle "Afficher les archives" (defaut: off — on cache les archives)
+    const archivedToggle = document.getElementById('recherche-show-archived');
+    if (archivedToggle) {
+        archivedToggle.checked = _rechercheState.showArchived;
+        archivedToggle.addEventListener('change', (e) => {
+            _rechercheState.showArchived = !!e.target.checked;
+            // Les compteurs Tous/PG/Inv dependent de showArchived (cf.
+            // updateRechercheCompteurs qui filtre scope = !p.archived si
+            // !showArchived). Sans ce refresh, les badges restent stales.
+            updateRechercheCompteurs();
+            // Le scope categorie change aussi quand on inclut/exclut les archives
+            renderRechercheCategoriesFilter();
+            renderRechercheGrid();
+        });
+    }
+
     // Refresh button: re-fetch les 2 catalogues + rebuild flat
     const refreshBtn = document.getElementById('recherche-refresh-btn');
     if (refreshBtn) {
@@ -4438,10 +4780,46 @@ function initRechercheSpotlight() {
         });
     }
 
-    // Click sur card (delegation) -> ouvre le modal unifie en mode edit
-    // (le user peut aussi naviguer vers la fiche via le bouton "Voir
-    // dans l'onglet" dans le modal — TODO si demande).
+    // Selection bookkeeping via 'change' event sur l'input natif:
+    // - Marche pour click sur input ET label (browser forward le click)
+    // - Marche pour clavier (Space pour toggle quand input focused)
+    // - Marche pour set programmatique de .checked (avec dispatch d'event)
+    // Plus robuste qu'un click handler qui doit gerer plusieurs paths.
+    grid.addEventListener('change', (e) => {
+        const cbInput = e.target.closest('.result-card-checkbox-input');
+        if (!cbInput) return;
+        const key = cbInput.dataset.rechercheSelect;
+        if (cbInput.checked) _rechercheState.selection.add(key);
+        else _rechercheState.selection.delete(key);
+        const card = cbInput.closest('.result-card');
+        if (card) card.classList.toggle('is-selected', cbInput.checked);
+        renderRechercheSelectionBar();
+    });
+
+    // Click delegation pour:
+    //  - Archive rapide (path 2)
+    //  - Ouverture modal (path 3, defaut)
+    // La checkbox (input + label wrapper) stoppe la propagation pour eviter
+    // que le click de la checkbox/label ouvre le modal. La selection elle-
+    // meme est geree par le 'change' event ci-dessus.
     grid.addEventListener('click', (e) => {
+        // Stop propagation sur checkbox input ET son label wrapper.
+        // Le browser toggle l'input via le label, dispatch un 'change' event
+        // qui sera capture par le listener au-dessus.
+        if (e.target.closest('.result-card-checkbox')) {
+            e.stopPropagation();
+            return;
+        }
+        // Path 2: bouton archive rapide
+        const archBtn = e.target.closest('[data-recherche-archive]');
+        if (archBtn) {
+            e.stopPropagation();
+            const [src, ...nameParts] = archBtn.dataset.rechercheArchive.split('::');
+            const nom = nameParts.join('::'); // au cas ou un nom contient '::'
+            rechercheArchiveSingle(src, nom);
+            return;
+        }
+        // Path 3: ouverture modal (comportement par defaut)
         const card = e.target.closest('.result-card');
         if (!card) return;
         const src = card.dataset.src;
@@ -4454,6 +4832,23 @@ function initRechercheSpotlight() {
             ouvrirProduitDepuisRecherche(src, nom, cat);
         }
     });
+
+    // Bind action bar (delegation: le contenu est recree a chaque render).
+    const selectionBar = document.getElementById('recherche-selection-bar');
+    if (selectionBar) {
+        selectionBar.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn) return;
+            if (btn.id === 'recherche-batch-archive') {
+                rechercheBatchArchive(true);
+            } else if (btn.id === 'recherche-batch-unarchive') {
+                rechercheBatchArchive(false);
+            } else if (btn.id === 'recherche-batch-clear') {
+                _rechercheState.selection.clear();
+                renderRechercheGrid();
+            }
+        });
+    }
 
     // Quand le user clique sur l'onglet Recherche, on rebuild la liste
     // au cas ou les autres onglets ont modifie les configs.
@@ -4519,11 +4914,64 @@ function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     selectEl.innerHTML = html;
 }
 
+// Active/desactive le select Mode de stock en fonction de la cible
+// Inventaire (mode_stock n'a de sens que pour les produits Inventaire).
+function pumSyncModeStockEnabled() {
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    const targetInv = document.getElementById('pum-target-inv');
+    const helpEl = document.getElementById('pum-mode-stock-help');
+    if (!modeStockSel || !targetInv) return;
+    const enabled = !!targetInv.checked;
+    modeStockSel.disabled = !enabled;
+    if (helpEl) helpEl.style.opacity = enabled ? '' : '0.5';
+}
+
+// Regle metier: famille Boucherie + Pack = manuel (verrou defensif aligne
+// sur la migration db/update-schema.js qui force mode_stock='manuel' pour
+// ces categories au demarrage). Autres categories = automatique par defaut.
+// Couvre aussi les anciennes categories legacy (Viandes, Abats, etc.) pour
+// que les produits non-migres aient le bon defaut.
+const _CATS_BOUCHERIE_MANUEL = new Set([
+    // Categories alignees Produits Generaux
+    'Bovin', 'Ovin', 'Volaille', 'Caprin', 'Poisson', 'Pack',
+    // Buckets legacy (compatibilite avec ancienne taxonomie inventaire)
+    'Viandes', 'Abats et Sous-produits', 'Produits sur Pieds'
+]);
+function pumDefaultModeStock(catInv) {
+    return _CATS_BOUCHERIE_MANUEL.has(catInv) ? 'manuel' : 'automatique';
+}
+
 // Cherche un produit existant dans Produits Generaux par nom.
-// Retourne { categorie, config } ou null.
-function pumLookupPG(nom) {
+// Retourne { categorie, nom, config } ou null.
+//
+// opts.exact (defaut: false):
+//   - false  : match case-insensitive (utile pour le hint "produit similaire")
+//   - true   : match strict par cle (case-sensitive). A utiliser dans TOUS
+//              les chemins destructifs (archive, save, delete) sinon 2
+//              produits distincts qui different uniquement par la casse
+//              (ex: 'Pasta' / 'PASTA' / 'Pomme De Terre Sac' / 'POMME DE
+//              TERRE SAC') seraient conflates et l'admin pourrait toucher
+//              l'un en croyant toucher l'autre.
+function pumLookupPG(nom, opts) {
     if (!currentProduitsConfig || !nom) return null;
-    const target = nom.toLowerCase();
+    const exact = !!(opts && opts.exact);
+    if (exact) {
+        // Lookup direct par cle dans chaque categorie (O(N_cats) au lieu
+        // de O(N_produits) du scan fuzzy). hasOwnProperty.call evite de
+        // matcher les cles heritees du prototype (Object.prototype) si un
+        // produit s'appelle 'constructor', '__proto__', 'toString', etc.
+        for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
+            if (typeof produits !== 'object' || produits === null) continue;
+            if (!Object.prototype.hasOwnProperty.call(produits, nom)) continue;
+            const config = produits[nom];
+            if (typeof config === 'object' && config !== null && typeof config.default === 'number') {
+                return { categorie: cat, nom, config };
+            }
+        }
+        return null;
+    }
+    // Fuzzy: scan case-insensitive (defaut historique)
+    const target = String(nom).toLowerCase();
     for (const [cat, produits] of Object.entries(currentProduitsConfig)) {
         if (typeof produits !== 'object' || produits === null) continue;
         for (const [name, config] of Object.entries(produits)) {
@@ -4543,19 +4991,29 @@ function pumLookupPG(nom) {
 // (root pour les produits flat, ou la categorie personnalisee). Les callers
 // qui suppriment doivent utiliser `delete parent[nom]` plutot que de
 // presumer le root.
-function pumLookupInv(nom) {
+//
+// opts.exact: voir pumLookupPG. Idem semantique.
+function pumLookupInv(nom, opts) {
     if (!currentInventaireConfig || !nom) return null;
-    const target = String(nom).toLowerCase();
+    const exact = !!(opts && opts.exact);
+    const target = exact ? String(nom) : String(nom).toLowerCase();
     // DFS: on parcourt root + sous-objets a 1 niveau (les categories
     // personnalisees). On ne va PAS plus profond car le format admin
     // ne supporte pas l'imbrication arbitraire.
     const visit = (container) => {
+        // Object.entries n'enumere que les own properties enumerable donc
+        // pas de leak du prototype. Mais on filtre quand meme via
+        // hasOwnProperty.call par defense en profondeur (au cas ou un parent
+        // serait Object.create(prototypePollue)).
         for (const [name, config] of Object.entries(container)) {
+            if (!Object.prototype.hasOwnProperty.call(container, name)) continue;
             if (typeof config !== 'object' || config === null) continue;
             // Match: produit feuille avec prixDefault
-            if (typeof config.prixDefault === 'number' &&
-                name.toLowerCase() === target) {
-                return { nom: name, config, parent: container };
+            if (typeof config.prixDefault === 'number') {
+                const isMatch = exact ? (name === target) : (name.toLowerCase() === target);
+                if (isMatch) {
+                    return { nom: name, config, parent: container };
+                }
             }
             // Sinon, si c'est un container de categorie (objet sans
             // prixDefault), descendre dedans.
@@ -4597,25 +5055,56 @@ function pumDetectInvConflict(originalNom, nomInv, mode) {
 }
 
 // Met a jour la banniere status selon les hits dans les 2 catalogues.
+// Strategie a 2 niveaux:
+// 1. Match EXACT (case-sensitive): "Existe dans X" — c'est le meme produit
+// 2. Si pas d'exact, match FUZZY (case-insensitive): "Similaire dans X
+//    («NomDifferent»)" — produit different a la casse pres, l'admin peut
+//    vouloir le voir comme indice avant de creer une variante.
+// Sans cet hint fuzzy, l'admin pourrait creer 'PASTA' sans savoir que
+// 'Pasta' existe deja en BDD.
 function pumUpdateStatus(nom) {
     const status = document.getElementById('pum-status');
     if (!status) return;
-    const pg = pumLookupPG(nom);
-    const inv = pumLookupInv(nom);
+    const pg = pumLookupPG(nom, { exact: true });
+    const inv = pumLookupInv(nom, { exact: true });
+    // Hint fuzzy: SEULEMENT si pas d'exact (sinon on a deja l'info)
+    const pgFuzzy = pg ? null : pumLookupPG(nom);
+    const invFuzzy = inv ? null : pumLookupInv(nom);
+
+    // escAttr couvre <,>,&,",' et fait office d'escape texte aussi
+    const fmtExactPG = (h) => `<strong>Produits Généraux</strong> (${escAttr(h.categorie)}, ${h.config.default.toLocaleString('fr-FR')} FCFA)`;
+    const fmtExactInv = (h) => `<strong>Inventaire</strong> (${h.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+    const fmtFuzzyPG = (h) => `<strong>Produits Généraux</strong> sous le nom <em>«${escAttr(h.nom)}»</em>`;
+    const fmtFuzzyInv = (h) => `<strong>Inventaire</strong> sous le nom <em>«${escAttr(h.nom)}»</em>`;
+
     let html = '';
     if (pg && inv) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)
-            ET <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactPG(pg)} ET ${fmtExactInv(inv)}`;
     } else if (pg) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe uniquement dans <strong>Produits Généraux</strong> (${pg.categorie}, ${pg.config.default.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactPG(pg)}`;
+        if (invFuzzy) {
+            html += `<br><i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                <small>Produit similaire dans ${fmtFuzzyInv(invFuzzy)} — variante de casse</small>`;
+        }
     } else if (inv) {
         html = `<i class="bi bi-check-circle-fill text-success me-1"></i>
-            Existe uniquement dans <strong>Inventaire</strong> (${inv.config.prixDefault.toLocaleString('fr-FR')} FCFA)`;
+            Existe dans ${fmtExactInv(inv)}`;
+        if (pgFuzzy) {
+            html += `<br><i class="bi bi-exclamation-triangle text-warning me-1"></i>
+                <small>Produit similaire dans ${fmtFuzzyPG(pgFuzzy)} — variante de casse</small>`;
+        }
+    } else if (pgFuzzy || invFuzzy) {
+        // Aucun match exact mais un fuzzy → avertir l'admin avant la creation
+        const lignes = [];
+        if (pgFuzzy) lignes.push(fmtFuzzyPG(pgFuzzy));
+        if (invFuzzy) lignes.push(fmtFuzzyInv(invFuzzy));
+        html = `<i class="bi bi-exclamation-triangle text-warning me-1"></i>
+            Nouveau produit, mais un similaire existe : ${lignes.join(' / ')} — confirme que tu veux créer une variante.`;
     } else {
         html = `<i class="bi bi-info-circle text-primary me-1"></i>
-            Nouveau produit — sera créé dans les 2 catalogues.`;
+            Nouveau produit — sera créé dans les catalogues cochés.`;
     }
     status.innerHTML = html;
 }
@@ -4643,8 +5132,9 @@ function ouvrirModalProduitUnifie(mode, data) {
     let invHit = null;
 
     if (mode === 'edit' && data.nom) {
-        pgHit = pumLookupPG(data.nom);
-        invHit = pumLookupInv(data.nom);
+        // Exact: on n'edite QUE le produit clique, pas une variante de casse
+        pgHit = pumLookupPG(data.nom, { exact: true });
+        invHit = pumLookupInv(data.nom, { exact: true });
         if (pgHit) selPG = pgHit.categorie;
         if (invHit && invHit.config.categorie_affichage) {
             selInv = invHit.config.categorie_affichage;
@@ -4667,10 +5157,81 @@ function ouvrirModalProduitUnifie(mode, data) {
         selInv
     );
 
+    // Etat d'archivage par cote (PG / Inv) - permet de distinguer 3 cas:
+    //  - both: les 2 cotes sont archives -> bouton "Desarchiver" (vert)
+    //  - none: aucun cote archive -> bouton "Archiver" (jaune)
+    //  - mixed: un seul cote archive -> 2 boutons (aligne en desarchive vert
+    //    OU en archive jaune, l'admin choisit)
+    // Si un cote n'existe pas (pgHit ou invHit null), on le considere comme
+    // "non archive" — l'action portera uniquement sur le cote existant.
+    const pgArchived = !!(pgHit && pgHit.config && pgHit.config.archived);
+    const invArchived = !!(invHit && invHit.config && invHit.config.archived);
+    const archiveBtn = document.getElementById('pum-archive-btn');
+    const archiveLabel = document.getElementById('pum-archive-label');
+    const archiveBtn2 = document.getElementById('pum-archive-btn-2');
+    const archiveLabel2 = document.getElementById('pum-archive-label-2');
+
+    // Si une seule des 2 entrees existe, le mixed n'a pas de sens (on
+    // ne peut pas archiver/desarchiver un cote qui n'existe pas).
+    const bothExist = !!(pgHit && invHit);
+    const archivedState = bothExist
+        ? (pgArchived && invArchived ? 'both' :
+           (!pgArchived && !invArchived ? 'none' : 'mixed'))
+        : (pgArchived || invArchived ? 'both' : 'none'); // single side -> traite comme both/none
+
+    // Labels mixed: indiquent quel cote sera touche dans chaque direction
+    const sideArchived = pgArchived ? 'Généraux' : 'Inventaire';
+    const sideActive = pgArchived ? 'Inventaire' : 'Généraux';
+
     if (mode === 'edit' && data.nom) {
-        titleText.textContent = `Modifier «${data.nom}»`;
+        const titleArchived = (archivedState === 'both') ? ' (archivé)' :
+                              (archivedState === 'mixed' ? ` (archivé côté ${sideArchived})` : '');
+        titleText.textContent = `Modifier «${data.nom}»${titleArchived}`;
         saveLabel.textContent = 'Enregistrer';
         deleteBtn.style.display = '';
+        // Configuration des boutons archive selon l'etat
+        if (archiveBtn) {
+            // dataset.archivedState pour le caller (debug / autres handlers)
+            archiveBtn.dataset.archivedState = archivedState;
+            if (archivedState === 'both') {
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'false';
+                archiveLabel.textContent = 'Désarchiver';
+                archiveBtn.classList.remove('btn-outline-warning');
+                archiveBtn.classList.add('btn-outline-success');
+            } else if (archivedState === 'none') {
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'true';
+                archiveLabel.textContent = 'Archiver';
+                archiveBtn.classList.add('btn-outline-warning');
+                archiveBtn.classList.remove('btn-outline-success');
+            } else {
+                // mixed: bouton principal = desarchiver le cote archive (default)
+                archiveBtn.style.display = '';
+                archiveBtn.dataset.archiveTarget = 'false';
+                archiveLabel.textContent = `Désarchiver côté ${sideArchived}`;
+                archiveBtn.classList.remove('btn-outline-warning');
+                archiveBtn.classList.add('btn-outline-success');
+            }
+        }
+        if (archiveBtn2) {
+            if (archivedState === 'mixed') {
+                // Bouton secondaire en mixed: archive le cote actif
+                archiveBtn2.style.display = '';
+                archiveBtn2.dataset.archiveTarget = 'true';
+                archiveLabel2.textContent = `Archiver côté ${sideActive}`;
+                archiveBtn2.classList.add('btn-outline-warning');
+                archiveBtn2.classList.remove('btn-outline-success');
+                // Icon: archive (yellow) plutot que arrow-counterclockwise
+                const icon = archiveBtn2.querySelector('i');
+                if (icon) {
+                    icon.classList.remove('bi-arrow-counterclockwise');
+                    icon.classList.add('bi-archive');
+                }
+            } else {
+                archiveBtn2.style.display = 'none';
+            }
+        }
         document.getElementById('pum-original-nom').value = data.nom;
 
         const nom = data.nom;
@@ -4691,6 +5252,8 @@ function ouvrirModalProduitUnifie(mode, data) {
         titleText.textContent = 'Ajouter un nouveau produit';
         saveLabel.textContent = 'Ajouter';
         deleteBtn.style.display = 'none';
+        if (archiveBtn) archiveBtn.style.display = 'none';
+        if (archiveBtn2) archiveBtn2.style.display = 'none';
         document.getElementById('pum-original-nom').value = '';
         document.getElementById('pum-nom').value = '';
         document.getElementById('pum-prix').value = '';
@@ -4700,6 +5263,28 @@ function ouvrirModalProduitUnifie(mode, data) {
         document.getElementById('pum-prix-inv').value = '';
         document.getElementById('pum-target-pg').checked = true;
         document.getElementById('pum-target-inv').checked = true;
+    }
+
+    // Mode de stock (Inventaire uniquement):
+    // - En EDIT: prefill depuis invHit.config.mode_stock (preserve le choix
+    //   existant, meme s'il "viole" la regle famille — l'admin peut avoir
+    //   une raison metier specifique).
+    // - En ADD: defaut base sur la categorie Inv choisie (regle famille
+    //   Boucherie+Pack = manuel, autres = automatique).
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    if (modeStockSel) {
+        let initialMode;
+        if (mode === 'edit' && invHit && invHit.config && invHit.config.mode_stock) {
+            initialMode = invHit.config.mode_stock;
+        } else {
+            initialMode = pumDefaultModeStock(selInv);
+        }
+        modeStockSel.value = (initialMode === 'automatique') ? 'automatique' : 'manuel';
+        // Reset le flag "user override": permet au changement de categorie
+        // de re-appliquer le defaut tant que l'admin n'a pas touche le select.
+        modeStockSel.dataset.userOverride = 'false';
+        // Disabled si Inventaire pas coche (n'aura pas d'effet)
+        pumSyncModeStockEnabled();
     }
 
     // Reset override toggle
@@ -4791,7 +5376,10 @@ async function pumSave() {
         // (prix_personnalise, inventaire_parent, prix vente speciaux, etc.).
         let baseConfigPG = {};
         if (mode === 'edit' && originalNom) {
-            const origHit = pumLookupPG(originalNom);
+            // Exact: on edite QUE le produit dont la cle == originalNom.
+            // Une variante de casse (ex: 'PASTA' vs 'Pasta') est un produit
+            // distinct qu'il ne faut pas toucher.
+            const origHit = pumLookupPG(originalNom, { exact: true });
             if (origHit) baseConfigPG = origHit.config;
             // Supprimer l'ancienne entree si rename ou changement de categorie
             for (const [cat, produits] of Object.entries(currentProduitsConfig || {})) {
@@ -4801,9 +5389,16 @@ async function pumSave() {
                     }
                 }
             }
-        } else if (currentProduitsConfig[catPG] && currentProduitsConfig[catPG][nomPG]) {
-            // Mode add avec conflit deja confirme: merger avec l'existant
-            baseConfigPG = currentProduitsConfig[catPG][nomPG];
+        } else if (
+            currentProduitsConfig[catPG] &&
+            Object.prototype.hasOwnProperty.call(currentProduitsConfig[catPG], nomPG)
+        ) {
+            // Mode add avec conflit deja confirme: merger avec l'existant.
+            // hasOwnProperty.call evite de matcher les cles du prototype
+            // (defense contre prototype pollution si un produit s'appelle
+            // 'constructor', '__proto__', etc.).
+            const existing = currentProduitsConfig[catPG][nomPG];
+            if (typeof existing === 'object' && existing !== null) baseConfigPG = existing;
         }
         // Alternatives: preserver l'array existant, ajouter prixPG si absent
         const altsPG = Array.isArray(baseConfigPG.alternatives) ? baseConfigPG.alternatives.slice() : [];
@@ -4827,29 +5422,58 @@ async function pumSave() {
         let origInvParent = null;
         let origInvNom = null;
         if (mode === 'edit' && originalNom) {
-            const origHit = pumLookupInv(originalNom);
+            // Exact: idem PG. Sans ca, un edit de 'Pomme De Terre Sac'
+            // pourrait DELETE 'POMME DE TERRE SAC' (case-different produit
+            // distinct) puis recreer une cle 'Pomme De Terre Sac' avec sa
+            // config — corruption silencieuse.
+            const origHit = pumLookupInv(originalNom, { exact: true });
             if (origHit) {
                 baseConfigInv = origHit.config;
                 origInvParent = origHit.parent;
                 origInvNom = origHit.nom;
             }
-        } else if (currentInventaireConfig[nomInv]) {
-            // Mode add avec conflit confirme: merger avec l'existant root
-            baseConfigInv = currentInventaireConfig[nomInv];
+        } else {
+            // Mode add avec conflit potentiellement confirme: lookup recursif
+            // exact pour merger avec l'existant. Sans recursion, un produit
+            // niche dans une categorie personnalisee serait rate -> on
+            // creerait un produit root parallele a son homonyme nested
+            // (asymetrie avec le edit-mode qui utilise pumLookupInv recursif).
+            const existingHit = pumLookupInv(nomInv, { exact: true });
+            if (existingHit) {
+                baseConfigInv = existingHit.config;
+                origInvParent = existingHit.parent;
+                origInvNom = existingHit.nom;
+            }
         }
-        // Supprimer l'ancien si rename (et seulement si la cle change)
-        if (origInvParent && origInvNom && origInvNom !== nomInv) {
-            delete origInvParent[origInvNom];
+        // Supprimer l'ancien si:
+        //  - rename: la cle change → on doit deplacer
+        //  - match nested: on ecrit au root, donc on doit supprimer le nested
+        //    pour eviter d'avoir 2 entrees du meme produit
+        if (origInvParent && origInvNom) {
+            const sameKey = origInvNom === nomInv;
+            const isNested = origInvParent !== currentInventaireConfig;
+            if (!sameKey || isNested) {
+                delete origInvParent[origInvNom];
+            }
         }
         // Alternatives: preserver + ajouter prixInv si absent
         const altsInv = Array.isArray(baseConfigInv.alternatives) ? baseConfigInv.alternatives.slice() : [];
         if (!altsInv.includes(prixInv)) altsInv.push(prixInv);
 
+        // Mode de stock: valeur du select (override l'existant), fallback sur
+        // baseConfigInv.mode_stock ou 'manuel'. Whitelist stricte pour ne pas
+        // injecter une valeur arbitraire (la colonne DB est un ENUM).
+        const modeStockEl = document.getElementById('pum-mode-stock');
+        const requestedMode = modeStockEl ? modeStockEl.value : null;
+        const modeStockFinal = (requestedMode === 'automatique' || requestedMode === 'manuel')
+            ? requestedMode
+            : (baseConfigInv.mode_stock || 'manuel');
+
         currentInventaireConfig[nomInv] = {
             ...baseConfigInv,
             prixDefault: prixInv,
             alternatives: altsInv,
-            mode_stock: baseConfigInv.mode_stock || 'manuel',
+            mode_stock: modeStockFinal,
             unite_stock: baseConfigInv.unite_stock || 'unite',
             categorie_affichage: catInv
         };
@@ -5081,6 +5705,152 @@ async function pumDelete() {
     if (modal) modal.hide();
 }
 
+// Toggle archive: bascule le flag archived sur les 2 catalogues ou il existe.
+// Soft-delete reversible — pas de confirmation aussi forte que pumDelete car
+// l'operation est non destructive.
+async function pumToggleArchive(evt) {
+    const nom = document.getElementById('pum-original-nom').value;
+    if (!nom) return;
+    // Direction: lue depuis le bouton clique (data-archive-target='true'|'false').
+    // En mixed state, il y a 2 boutons distincts (primary = desarchive,
+    // secondary = archive) — chacun avec son propre target. evt.currentTarget
+    // est le bouton clique.
+    const btn = (evt && evt.currentTarget && evt.currentTarget.dataset && evt.currentTarget.dataset.archiveTarget !== undefined)
+        ? evt.currentTarget
+        : document.getElementById('pum-archive-btn');
+    if (!btn) return;
+    const targetArchived = btn.dataset.archiveTarget === 'true';
+    const action = targetArchived ? 'Archiver' : 'Désarchiver';
+    const actionPast = targetArchived ? 'archivé' : 'désarchivé';
+
+    // Exact match obligatoire ici: l'admin a clique sur UN produit precis
+    // (cle exacte). Un match fuzzy archiverait par accident une variante
+    // de casse (ex: archiver 'Pomme De Terre Sac' ne doit pas toucher
+    // 'POMME DE TERRE SAC' qui est un produit distinct en BDD).
+    const pgHit = pumLookupPG(nom, { exact: true });
+    const invHit = pumLookupInv(nom, { exact: true });
+    if (!pgHit && !invHit) return; // rien a faire
+
+    // Determine quels cotes vont REELLEMENT changer d'etat. Si un cote est
+    // deja dans l'etat cible (ex: PG deja archive et user clique "Archiver"
+    // parce que Inv ne l'est pas), on ne le touche pas et on ne le mentionne
+    // pas dans le toast — sinon le message est trompeur.
+    const pgWillChange = !!(pgHit && !!pgHit.config.archived !== targetArchived);
+    const invWillChange = !!(invHit && !!invHit.config.archived !== targetArchived);
+    if (!pgWillChange && !invWillChange) {
+        showToast(`«${nom}» est déjà ${actionPast}.`, 'info');
+        return;
+    }
+
+    const where = [pgWillChange && 'Généraux', invWillChange && 'Inventaire'].filter(Boolean).join(' + ');
+    const explainArchive = targetArchived
+        ? `\n\nLe produit ne sera plus affiché dans le POS, le stock inventaire, ni dans la recherche admin par défaut. Toutes les données historiques (ventes, prix, etc.) sont conservées.`
+        : `\n\nLe produit redeviendra visible dans le POS et le stock inventaire.`;
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal(`${action} «${nom}» dans ${where} ?${explainArchive}`, {
+            title: `${action} le produit`,
+            okLabel: action,
+            okVariant: targetArchived ? 'warning' : 'success'
+        })
+        : confirm(`${action} "${nom}" dans ${where} ?`);
+    if (!ok) return;
+
+    // Snapshot pour rollback
+    const snapPG = JSON.parse(JSON.stringify(currentProduitsConfig || {}));
+    const snapInv = JSON.parse(JSON.stringify(currentInventaireConfig || {}));
+
+    // Set le flag en memoire SEULEMENT sur les cotes qui changent reellement.
+    // Evite des POST inutiles (cf. plus bas: hasPgChanges = pgWillChange).
+    if (pgWillChange) {
+        const target = currentProduitsConfig[pgHit.categorie] && currentProduitsConfig[pgHit.categorie][pgHit.nom];
+        if (target) target.archived = targetArchived;
+    }
+    if (invWillChange && invHit.parent) {
+        invHit.parent[invHit.nom].archived = targetArchived;
+    }
+
+    // Disable boutons pendant la sauvegarde
+    const saveBtn = document.getElementById('pum-save-btn');
+    const delBtn = document.getElementById('pum-delete-btn');
+    const originalLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span> ${action}…`;
+    if (saveBtn) saveBtn.disabled = true;
+    if (delBtn) delBtn.disabled = true;
+
+    let serverOk = true;
+    let serverError = null;
+    try {
+        // POST uniquement sur les cotes qui ont change reellement (POST
+        // inutile si le cote etait deja dans l'etat cible).
+        if (pgWillChange) {
+            const resp = await fetch('/api/admin/config/produits', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produits: currentProduitsConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk && invWillChange) {
+            const resp = await fetch('/api/admin/config/produits-inventaire', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ produitsInventaire: currentInventaireConfig })
+            });
+            const data = await resp.json();
+            if (!resp.ok || !data.success) {
+                serverOk = false;
+                serverError = data.message || data.error || `HTTP ${resp.status}`;
+            }
+        }
+        if (serverOk) {
+            try {
+                await fetch('/api/admin/reload-products', { method: 'POST', credentials: 'include' });
+            } catch (_) { /* non bloquant */ }
+        }
+    } catch (err) {
+        serverOk = false;
+        serverError = err && err.message ? err.message : String(err);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalLabel;
+        if (saveBtn) saveBtn.disabled = false;
+        if (delBtn) delBtn.disabled = false;
+    }
+
+    if (!serverOk) {
+        currentProduitsConfig = snapPG;
+        currentInventaireConfig = snapInv;
+        try {
+            if (typeof chargerConfigProduits === 'function') await chargerConfigProduits();
+            if (typeof chargerConfigInventaire === 'function') await chargerConfigInventaire();
+        } catch (_) { /* best effort */ }
+        showToast(`Erreur: ${serverError}`, 'danger');
+        return;
+    }
+
+    // Refresh affichages
+    if (typeof afficherProduitsConfig === 'function') afficherProduitsConfig();
+    if (typeof afficherInventaireConfig === 'function') afficherInventaireConfig();
+    reconstruireFlatRecherche();
+    updateRechercheCompteurs();
+    if (typeof renderRechercheCategoriesFilter === 'function') {
+        renderRechercheCategoriesFilter();
+    }
+    renderRechercheGrid();
+
+    showToast(`«${nom}» ${actionPast} dans ${where}.`, 'success');
+
+    const modal = bootstrap.Modal.getInstance(document.getElementById('productUnifiedModal'));
+    if (modal) modal.hide();
+}
+
 // Bind events du modal au load.
 function initModalProduitUnifie() {
     const modalEl = document.getElementById('productUnifiedModal');
@@ -5113,11 +5883,42 @@ function initModalProduitUnifie() {
         });
     }
 
-    // Save + Delete
+    // Save + Delete + Archive
     const saveBtn = document.getElementById('pum-save-btn');
     if (saveBtn) saveBtn.addEventListener('click', pumSave);
     const deleteBtn = document.getElementById('pum-delete-btn');
     if (deleteBtn) deleteBtn.addEventListener('click', pumDelete);
+    const archiveBtn = document.getElementById('pum-archive-btn');
+    if (archiveBtn) archiveBtn.addEventListener('click', pumToggleArchive);
+    // 2e bouton archive visible uniquement en etat "mixed" (un seul cote
+    // archive). data-archive-target indique la direction de l'action.
+    const archiveBtn2 = document.getElementById('pum-archive-btn-2');
+    if (archiveBtn2) archiveBtn2.addEventListener('click', pumToggleArchive);
+
+    // Sync l'enable du select Mode de stock avec la cible Inventaire.
+    // Si l'admin decoche Inventaire, le select est griseé (pas de sens
+    // de le configurer pour un produit qui n'ira pas dans Inventaire).
+    const targetInv = document.getElementById('pum-target-inv');
+    if (targetInv) {
+        targetInv.addEventListener('change', pumSyncModeStockEnabled);
+    }
+
+    // Auto-application du defaut mode_stock selon la categorie Inv choisie
+    // (regle famille Boucherie+Pack=manuel, autres=automatique). Ne se
+    // declenche QUE si l'admin n'a pas explicitement touche le select.
+    const catInvSel = document.getElementById('pum-cat-inv');
+    const modeStockSel = document.getElementById('pum-mode-stock');
+    if (catInvSel && modeStockSel) {
+        catInvSel.addEventListener('change', (e) => {
+            if (modeStockSel.dataset.userOverride === 'true') return;
+            modeStockSel.value = pumDefaultModeStock(e.target.value);
+        });
+        // Quand l'admin change manuellement le mode_stock, on marque
+        // l'override pour ne pas l'ecraser au prochain changement de cat.
+        modeStockSel.addEventListener('change', () => {
+            modeStockSel.dataset.userOverride = 'true';
+        });
+    }
 
     // Bouton "+ Ajouter un produit" sur l'onglet Recherche
     const addBtn = document.getElementById('recherche-add-btn');

@@ -77,9 +77,17 @@ async function updateSchema() {
                 ALTER TABLE produits
                 ADD COLUMN IF NOT EXISTS "ventes" TEXT[] DEFAULT '{}',
                 ADD COLUMN IF NOT EXISTS "prix_personnalise" BOOLEAN NOT NULL DEFAULT FALSE,
-                ADD COLUMN IF NOT EXISTS "ventilation_poids" BOOLEAN NOT NULL DEFAULT FALSE
+                ADD COLUMN IF NOT EXISTS "ventilation_poids" BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS "archived" BOOLEAN NOT NULL DEFAULT FALSE
             `);
-            console.log('Colonnes ventes / prix_personnalise / ventilation_poids vérifiées/ajoutées dans la table produits');
+            console.log('Colonnes ventes / prix_personnalise / ventilation_poids / archived vérifiées/ajoutées dans la table produits');
+
+            // Index partiel pour accelerer le filtre WHERE archived = FALSE
+            // (utilise par tous les endpoints POS / stock — chemin chaud).
+            await sequelize.query(`
+                CREATE INDEX IF NOT EXISTS produits_archived_idx
+                  ON produits (archived)
+            `);
 
             // Activer la ventilation par défaut pour Poulet (inventaire) sur les
             // tenants existants. Idempotent: ne touche rien si déjà à TRUE.
