@@ -54,6 +54,26 @@ async function updateSchema() {
         } else {
             console.log('La table cash_payments existe déjà');
         }
+
+        // Unique index sur (date, point_de_vente, payment_reference, is_manual).
+        // Garantit qu'une cloture de caisse pour un PV+date donne ne peut creer
+        // qu'UNE seule entree cash_payments (race-safe vs 2 admins qui valident
+        // simultanement). Pour les autres entries (paiements manuels admin avec
+        // payment_reference=NULL, imports Bictorys avec tx_id unique), Postgres
+        // traite NULL != NULL donc pas de blocage parasite. Idempotent.
+        // Si des doublons existent deja en BDD, la creation echoue → log warn
+        // mais l'app continue sans la protection race.
+        try {
+            await sequelize.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS cash_payments_cloture_unique
+                ON cash_payments (date, point_de_vente, payment_reference, is_manual)
+            `);
+            console.log('Index unique cash_payments_cloture_unique vérifié/créé');
+        } catch (idxErr) {
+            console.warn('⚠️ Echec création index unique cash_payments_cloture_unique:', idxErr.message);
+            console.warn('   Probablement des doublons existants. Vérifier manuellement avec:');
+            console.warn('   SELECT date, point_de_vente, payment_reference, is_manual, COUNT(*) FROM cash_payments GROUP BY 1,2,3,4 HAVING COUNT(*) > 1;');
+        }
         
         // Ajouter la colonne default_screen à la table users si la table existe.
         // Sur tenant vierge (avant sequelize.sync), users n'existe pas encore →

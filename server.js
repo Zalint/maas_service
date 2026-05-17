@@ -16302,16 +16302,44 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
             cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
-                // Discrimine les entries de cloture par payment_reference (deterministe
-                // par PV via generateCashReference, ex: 'CASH_MBA' pour Mbao). Avant on
-                // utilisait payment_type='CASH' mais cette colonne n'existe pas dans le
-                // modele CashPayment ni en BDD -> "column CashPayment.payment_type does
-                // not exist". Les paiements manuels de /api/admin/cash-payment n'ont
-                // pas payment_reference set, donc le filtre les exclut correctement.
-                const existing = await CashPayment.findOne({ where: { date: isoDate, point_de_vente: pointVente, payment_reference: cashRef, is_manual: true }, transaction });
+                // Upsert atomic via INSERT ... ON CONFLICT DO UPDATE.
+                // Remplace le pattern findOne+create/update qui n'etait pas
+                // atomic entre 2 transactions concurrentes (double-clic Valider
+                // ou 2 admins simultanes -> 2 lignes possibles).
+                //
+                // Requiert l'index unique cash_payments_cloture_unique sur
+                // (date, point_de_vente, payment_reference, is_manual)
+                // cree dans db/update-schema.js.
+                //
+                // Si l'index n'existe pas (migration echouee), ON CONFLICT
+                // n'aura pas de cible -> erreur SQL. Dans ce cas l'app loggue
+                // et l'admin doit dedupliquer manuellement (cf. warn migration).
                 const commentCash = `Clôture caisse par ${commercial} (cloture_id:${cloture.id})`;
-                if (existing) { await existing.update({ amount: parseFloat(montantEspeces), comment: commentCash, created_by: username, payment_reference: cashRef }, { transaction }); }
-                else { await CashPayment.create({ date: isoDate, created_at: new Date(), point_de_vente: pointVente, amount: parseFloat(montantEspeces), payment_reference: cashRef, reference: cashRef, comment: commentCash, is_manual: true, created_by: username }, { transaction }); }
+                const now = new Date();
+                await sequelize.query(`
+                    INSERT INTO cash_payments
+                        (date, point_de_vente, amount, payment_reference, reference, comment, is_manual, created_by, created_at, "createdAt", "updatedAt")
+                    VALUES
+                        (:date, :pv, :amount, :ref, :ref, :comment, true, :user, :now, :now, :now)
+                    ON CONFLICT (date, point_de_vente, payment_reference, is_manual)
+                    DO UPDATE SET
+                        amount = EXCLUDED.amount,
+                        comment = EXCLUDED.comment,
+                        created_by = EXCLUDED.created_by,
+                        "updatedAt" = EXCLUDED."updatedAt"
+                `, {
+                    replacements: {
+                        date: isoDate,
+                        pv: pointVente,
+                        amount: parseFloat(montantEspeces),
+                        ref: cashRef,
+                        comment: commentCash,
+                        user: username,
+                        now
+                    },
+                    transaction,
+                    type: sequelize.QueryTypes.INSERT
+                });
             }
             await transaction.commit();
         } catch (txError) { await transaction.rollback(); throw txError; }
