@@ -108,6 +108,19 @@
                         <button class="admin-menu-item" onclick="posLayoutReset(); toggleAdminMenu();">
                             <i class="fas fa-columns"></i> Réinitialiser le layout
                         </button>
+                        <!-- Zoom POS : equivalents Ctrl+- / Ctrl+0 / Ctrl+= via menu.
+                             Pratique sur tactile/iPad ou les raccourcis clavier ne sont
+                             pas dispo. La fonction posZoomApply utilise document.body.style.zoom
+                             donc affecte tout le POS sans dependance au mode expert. -->
+                        <button class="admin-menu-item" onclick="posZoomDecrease(); toggleAdminMenu();" aria-keyshortcuts="Control+-">
+                            <i class="fas fa-search-minus"></i> Zoom arrière <span class="admin-menu-kbd">Ctrl −</span>
+                        </button>
+                        <button class="admin-menu-item" onclick="posZoomReset(); toggleAdminMenu();" aria-keyshortcuts="Control+0">
+                            <i class="fas fa-search"></i> Zoom 100% <span class="admin-menu-kbd">Ctrl 0</span>
+                        </button>
+                        <button class="admin-menu-item" onclick="posZoomIncrease(); toggleAdminMenu();" aria-keyshortcuts="Control+=">
+                            <i class="fas fa-search-plus"></i> Zoom avant <span class="admin-menu-kbd">Ctrl +</span>
+                        </button>
                     </div>
                 </div>
 

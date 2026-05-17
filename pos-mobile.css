@@ -447,7 +447,7 @@ html, body {
         color: var(--text-dark);
     }
 
-    .mobile-cart-header i {
+    .mobile-cart-header > div > i {
         color: var(--primary-color);
         font-size: 1.5rem;
     }
@@ -1140,5 +1140,43 @@ html, body {
     
     .weborders-modal-draggable .modal-content {
         min-width: auto !important;
+    }
+}
+
+/* ============================================================================
+   MINIATURE 3-COLUMN LAYOUT ON TABLET + SMALL DESKTOP
+   Garde la disposition desktop (Produits | Panier | Résumé) sur tablette et
+   petits desktops au lieu de basculer sur le panneau panier fixe en bas.
+   Override des règles responsives plus haut qui masquent .pos-cart/.pos-summary
+   et affichent .mobile-cart-panel.
+
+   BORNE BASSE 768px : sous 768px (smartphones), on conserve le layout
+   single-column + .mobile-cart-panel. Sans cette borne, le 3-col écrasait
+   le mobile via !important — illisible sur écran de téléphone.
+
+   Sans !important sur les display: l'ordre source (cette regle en fin de
+   fichier) suffit a battre les regles mobile placees plus haut. Garde
+   !important uniquement la ou des regles inline ou plus specifiques
+   risquent de gagner (grid-template-columns sur .pos-main est defini
+   plusieurs fois ailleurs avec specificite egale).
+   ============================================================================ */
+@media (min-width: 768px) and (max-width: 1366px) {
+    .pos-cart,
+    .pos-summary {
+        display: flex;
+    }
+
+    .mobile-cart-panel {
+        display: none;
+    }
+
+    .pos-main {
+        grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.6fr) minmax(0, 1.2fr) !important;
+        gap: 0.5rem;
+        padding: 0.5rem;
+        padding-bottom: 0.5rem;
+        height: auto;
+        min-height: 0;
+        overflow: visible;
     }
 }

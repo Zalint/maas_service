@@ -329,6 +329,26 @@ body.header-hidden-state .header-reveal-tab {
     margin-left: auto;
 }
 
+/* Hint raccourci clavier dans le menu admin (ex: zoom Ctrl-/0/+).
+   Aligne a droite, discret, monospace pour le tabular feel. */
+.admin-menu-item .admin-menu-kbd {
+    margin-left: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #e5e7eb;
+    white-space: nowrap;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}
+.admin-menu-item:hover .admin-menu-kbd {
+    background: #e5e7eb;
+    color: #374151;
+}
+
 /* ===== Main Content ===== */
 .pos-main {
     display: grid;
@@ -689,7 +709,7 @@ body.header-hidden-state .header-reveal-tab {
     text-align: center;
 }
 
-.cart-empty i {
+.cart-empty > i {
     font-size: 4rem;
     margin-bottom: 1rem;
     opacity: 0.3;
