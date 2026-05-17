@@ -689,7 +689,7 @@ body.header-hidden-state .header-reveal-tab {
     text-align: center;
 }
 
-.cart-empty i {
+.cart-empty > i {
     font-size: 4rem;
     margin-bottom: 1rem;
     opacity: 0.3;
