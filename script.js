@@ -8757,6 +8757,10 @@ function afficherAlertesAccumulation(alertes) {
 function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
+    // Recherche texte libre (substring, case-insensitive). Combine en AND avec
+    // le select "filtre-produit". Vide = pas de filtre texte applique.
+    const rechercheEl = document.getElementById('filtre-produit-recherche');
+    const produitRecherche = rechercheEl ? rechercheEl.value.toLowerCase().trim() : '';
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
     // Toggle "Masquer les produits automatiques" — coché par défaut.
     // Cocher = cacher les ⚡, décocher = les afficher.
@@ -8764,7 +8768,7 @@ function filtrerStock() {
     const masquerAuto = masquerAutoEl ? masquerAutoEl.checked : true;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
+    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Recherche: "${produitRecherche}", Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
 
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
@@ -8803,10 +8807,13 @@ function filtrerStock() {
 
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
+        // Recherche libre: substring case-insensitive sur le nom du produit.
+        // Vide -> pas de filtre (match=true).
+        const matchRecherche = !produitRecherche || produit.toLowerCase().includes(produitRecherche);
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
         const matchAuto = !masquerAuto || !isAuto;
 
-        if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
+        if (matchPointVente && matchProduit && matchRecherche && matchQuantite && matchAuto) {
             row.style.display = '';
         } else {
             row.style.display = 'none';
@@ -8857,7 +8864,14 @@ function initFilterStock() {
     if (filtreProduit) {
         filtreProduit.addEventListener('change', filtrerStock);
     }
-    
+
+    // Bind sur l'input recherche libre. Event 'input' (chaque caractere) plutot
+    // que 'change' (blur uniquement) pour avoir un filtre incremental.
+    const filtreProduitRecherche = document.getElementById('filtre-produit-recherche');
+    if (filtreProduitRecherche) {
+        filtreProduitRecherche.addEventListener('input', filtrerStock);
+    }
+
     if (masquerQuantiteZero) {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }

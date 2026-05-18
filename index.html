@@ -1710,9 +1710,21 @@
                                 <label for="filtre-produit" class="form-label small fw-semibold text-muted">
                                     <i class="bi bi-box me-1"></i>Produit
                                 </label>
-                                <select id="filtre-produit" class="form-select">
-                                    <option value="tous">Tous les produits</option>
-                                </select>
+                                <!-- Select pour selection exacte + input search pour filtre libre.
+                                     Les 2 se combinent (AND): on peut limiter au produit X via le
+                                     select ET filtrer par texte. Cas typique: dropdown lourd avec
+                                     beaucoup de produits — l'input permet de chercher rapidement
+                                     sans scroller. -->
+                                <div class="d-flex gap-2">
+                                    <select id="filtre-produit" class="form-select" style="flex: 1 1 50%;">
+                                        <option value="tous">Tous les produits</option>
+                                    </select>
+                                    <input type="search" id="filtre-produit-recherche" class="form-control"
+                                           style="flex: 1 1 50%;"
+                                           placeholder="Rechercher…"
+                                           autocomplete="off"
+                                           aria-label="Rechercher un produit dans le stock">
+                                </div>
                             </div>
                         </div>
 
