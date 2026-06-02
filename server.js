@@ -9141,6 +9141,145 @@ $content | Out-Printer -Name $printerName;
 });
 console.log('✅ Route impression directe chargée');
 
+// ============================================================
+// UI SETTINGS — Mode Moderne (rouge boucherie + sidebar)
+// ============================================================
+// Stockage 1 ligne par tenant dans la table ui_settings.
+// L'activation est par role : new_ui_roles = JSON array.
+// POS (pos.html) ignore ces settings — geré cote client dans modern-ui.js.
+//
+// GET  /api/ui-settings : publique. Retourne enabledForCurrentUser calcule
+//                         selon le role de la session courante.
+// PUT  /api/ui-settings : admin only. Valide rôles + thème, upsert.
+// ============================================================
+const UISettings = require('./db/models/UISettings');
+const VALID_UI_ROLES = ['admin', 'superviseur', 'superutilisateur', 'user', 'lecteur', 'chef_livreur', 'matapay'];
+const VALID_UI_THEMES = ['auto', 'light', 'dark'];
+const DEFAULT_UI_SETTINGS = { newUiRoles: [], sidebarPosition: 'right', defaultTheme: 'auto' };
+
+function normalizeUiRole(role) {
+    return String(role || '').toLowerCase().trim();
+}
+function isUiEnabledForUser(roles, user) {
+    if (!Array.isArray(roles) || roles.length === 0) return false;
+    if (!user) return false;
+    const userRole = normalizeUiRole(user.role);
+    return roles.map(normalizeUiRole).indexOf(userRole) >= 0;
+}
+
+// Middleware strict admin : seul role='admin' accepte (vs checkAdminOnly qui
+// accepte admin+superviseur).
+function checkAdminStrict(req, res, next) {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ success: false, message: 'Non authentifie' });
+    }
+    if (req.session.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Acces reserve aux administrateurs' });
+    }
+    next();
+}
+
+app.get('/api/ui-settings', async (req, res) => {
+    try {
+        const tenant = process.env.MATIX_TENANT || 'MATA';
+        const row = await UISettings.findOne({ where: { tenant } });
+        const user = (req.session && req.session.user) ? req.session.user : null;
+
+        if (!row) {
+            return res.json({
+                success: true,
+                tenant,
+                newUiRoles: [],
+                sidebarPosition: 'right',
+                defaultTheme: 'auto',
+                enabledForCurrentUser: false,
+                // back-compat : ancien client lit encore newUiEnabled
+                newUiEnabled: false
+            });
+        }
+        const roles = row.new_ui_roles || [];
+        const enabledForCurrentUser = isUiEnabledForUser(roles, user);
+        const defaultTheme = VALID_UI_THEMES.indexOf(row.default_theme) >= 0 ? row.default_theme : 'auto';
+        res.json({
+            success: true,
+            tenant,
+            newUiRoles: roles,
+            sidebarPosition: row.sidebar_position === 'left' ? 'left' : 'right',
+            defaultTheme,
+            enabledForCurrentUser,
+            // back-compat
+            newUiEnabled: enabledForCurrentUser,
+            updatedAt: row.updated_at,
+            updatedBy: row.updated_by
+        });
+    } catch (e) {
+        console.error('GET /api/ui-settings error:', e.message);
+        res.json({
+            success: true,
+            ...DEFAULT_UI_SETTINGS,
+            enabledForCurrentUser: false,
+            newUiEnabled: false,
+            fallback: true
+        });
+    }
+});
+
+app.put('/api/ui-settings', checkAuth, checkAdminStrict, async (req, res) => {
+    try {
+        const tenant = process.env.MATIX_TENANT || 'MATA';
+        const body = req.body || {};
+        const { sidebarPosition } = body;
+
+        // Accepte 2 formats :
+        //   - newUiRoles: string[]  (nouveau, multi-role)
+        //   - newUiEnabled: bool    (legacy, applique a tous les roles)
+        let newUiRoles = body.newUiRoles;
+        if (Array.isArray(newUiRoles)) {
+            // Validation : chaque role doit etre dans VALID_UI_ROLES
+            newUiRoles = newUiRoles.map(normalizeUiRole).filter(r => VALID_UI_ROLES.indexOf(r) >= 0);
+        } else if (typeof body.newUiEnabled === 'boolean') {
+            newUiRoles = body.newUiEnabled ? VALID_UI_ROLES.slice() : [];
+        } else {
+            return res.status(400).json({ success: false, message: 'newUiRoles (array) ou newUiEnabled (bool) requis' });
+        }
+
+        if (!['left', 'right'].includes(sidebarPosition)) {
+            return res.status(400).json({ success: false, message: 'sidebarPosition doit etre "left" ou "right"' });
+        }
+
+        // defaultTheme : optionnel, defaut 'auto' si non fourni.
+        let defaultTheme = body.defaultTheme || 'auto';
+        if (VALID_UI_THEMES.indexOf(defaultTheme) < 0) {
+            return res.status(400).json({ success: false, message: 'defaultTheme doit etre "auto", "light" ou "dark"' });
+        }
+
+        const username = (req.session && req.session.user && req.session.user.username) || 'unknown';
+        await UISettings.upsert({
+            tenant,
+            new_ui_enabled: newUiRoles.length > 0, // back-compat
+            new_ui_roles: newUiRoles,
+            sidebar_position: sidebarPosition,
+            default_theme: defaultTheme,
+            updated_by: username
+        });
+        // Re-read (upsert returning est inconsistant entre dialects)
+        const row = await UISettings.findOne({ where: { tenant } });
+
+        res.json({
+            success: true,
+            tenant,
+            newUiRoles: row.new_ui_roles || [],
+            sidebarPosition: row.sidebar_position,
+            defaultTheme: row.default_theme,
+            updatedBy: username
+        });
+    } catch (e) {
+        console.error('PUT /api/ui-settings error:', e.message);
+        res.status(500).json({ success: false, message: 'Erreur sauvegarde UI settings' });
+    }
+});
+console.log('✅ Routes UI settings (mode moderne) chargees');
+
 // Démarrage du serveur
 app.listen(PORT, async () => {
     console.log(`Serveur démarré sur le port ${PORT}`);
