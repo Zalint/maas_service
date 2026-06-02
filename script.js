@@ -8757,6 +8757,10 @@ function afficherAlertesAccumulation(alertes) {
 function filtrerStock() {
     const pointVenteFiltre = document.getElementById('filtre-point-vente').value;
     const produitFiltre = document.getElementById('filtre-produit').value;
+    // Recherche texte libre (substring, case-insensitive). Combine en AND avec
+    // le select "filtre-produit". Vide = pas de filtre texte applique.
+    const rechercheEl = document.getElementById('filtre-produit-recherche');
+    const produitRecherche = rechercheEl ? rechercheEl.value.toLowerCase().trim() : '';
     const masquerQuantiteZero = document.getElementById('masquer-quantite-zero').checked;
     // Toggle "Masquer les produits automatiques" — coché par défaut.
     // Cocher = cacher les ⚡, décocher = les afficher.
@@ -8764,7 +8768,7 @@ function filtrerStock() {
     const masquerAuto = masquerAutoEl ? masquerAutoEl.checked : true;
     const rows = document.querySelectorAll('#stock-table tbody tr');
 
-    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
+    console.log(`Filtrage stock - PV: ${pointVenteFiltre}, Produit: ${produitFiltre}, Recherche: "${produitRecherche}", Masquer 0: ${masquerQuantiteZero}, Masquer auto: ${masquerAuto}`);
 
     rows.forEach(row => {
         // Point de vente: peut être un select (manuel) ou du texte (automatique)
@@ -8803,10 +8807,13 @@ function filtrerStock() {
 
         const matchPointVente = pointVenteFiltre === 'tous' || pointVente === pointVenteFiltre;
         const matchProduit = produitFiltre === 'tous' || produit === produitFiltre;
+        // Recherche libre: substring case-insensitive sur le nom du produit.
+        // Vide -> pas de filtre (match=true).
+        const matchRecherche = !produitRecherche || produit.toLowerCase().includes(produitRecherche);
         const matchQuantite = !masquerQuantiteZero || quantite > 0;
         const matchAuto = !masquerAuto || !isAuto;
 
-        if (matchPointVente && matchProduit && matchQuantite && matchAuto) {
+        if (matchPointVente && matchProduit && matchRecherche && matchQuantite && matchAuto) {
             row.style.display = '';
         } else {
             row.style.display = 'none';
@@ -8857,7 +8864,14 @@ function initFilterStock() {
     if (filtreProduit) {
         filtreProduit.addEventListener('change', filtrerStock);
     }
-    
+
+    // Bind sur l'input recherche libre. Event 'input' (chaque caractere) plutot
+    // que 'change' (blur uniquement) pour avoir un filtre incremental.
+    const filtreProduitRecherche = document.getElementById('filtre-produit-recherche');
+    if (filtreProduitRecherche) {
+        filtreProduitRecherche.addEventListener('input', filtrerStock);
+    }
+
     if (masquerQuantiteZero) {
         masquerQuantiteZero.addEventListener('change', filtrerStock);
     }
@@ -9111,9 +9125,75 @@ function initTabListeners() {
     });
 }
 
+// ============================================================
+// Persist onglet courant dans l'URL (?tab=X) pour resister au F5
+// ============================================================
+// Whitelist stricte des onglets valides — securite : evite que
+// l'attaquant puisse forcer un click sur un selector arbitraire
+// via ?tab=<script>... ou ?tab=#some-modal-trigger.
+var TAB_WHITELIST = [
+    'saisie-tab',
+    'visualisation-tab',
+    'import-tab',
+    'import-image-tab',
+    'stock-inventaire-tab',
+    'copier-stock-tab',
+    'reconciliation-tab',
+    'reconciliation-mois-tab',
+    'stock-alerte-tab',
+    'cash-payment-tab',
+    'finance-tab',
+    'suivi-achat-boeuf-tab',
+    'estimation-tab',
+    'precommande-tab',
+    'payment-links-tab'
+];
+
+// Click sur un tab -> persiste l'id dans l'URL (replaceState, pas pushState,
+// pour ne pas polluer l'historique back/forward).
+function persistTabInUrl(tabId) {
+    if (!tabId || TAB_WHITELIST.indexOf(tabId) < 0) return;
+    try {
+        var url = new URL(location.href);
+        url.searchParams.set('tab', tabId);
+        history.replaceState(null, '', url.toString());
+    } catch (e) { /* URL API indispo sur tres vieux browsers */ }
+}
+
+// Au chargement: lit ?tab=X de l'URL et active l'onglet (via click sur
+// le handler existant). Whitelist + verif visibilite (role-based hide).
+function activateTabFromUrl() {
+    try {
+        var params = new URLSearchParams(location.search);
+        var targetTab = params.get('tab');
+        if (!targetTab || TAB_WHITELIST.indexOf(targetTab) < 0) return;
+        var el = document.getElementById(targetTab);
+        if (!el) return;
+        // Si l'item est cache par role (display: none sur le <li> parent),
+        // ne pas tenter de l'activer.
+        var li = el.closest('li.nav-item');
+        if (li && li.style.display === 'none') return;
+        // setTimeout 0 pour laisser tous les handlers s'attacher d'abord
+        // (les handlers ligne 9135+ se bindent au script load, mais on
+        // veut etre 100% sur).
+        setTimeout(function () { el.click(); }, 50);
+    } catch (e) { /* noop */ }
+}
+
+// Bind: a chaque click sur un .nav-link de la navbar principale, persiste
+// son id dans l'URL. Delegation simple via document (idempotent meme si
+// d'autres handlers existent).
+document.addEventListener('click', function (e) {
+    var link = e.target.closest && e.target.closest('a.nav-link[id]');
+    if (link && TAB_WHITELIST.indexOf(link.id) >= 0) {
+        persistTabInUrl(link.id);
+    }
+});
+
 // Appeler l'initialisation des écouteurs d'onglets au chargement de la page
 document.addEventListener('DOMContentLoaded', function() {
     initTabListeners();
+    activateTabFromUrl();
     // ... autres initialisations existantes ...
 });
 

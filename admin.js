@@ -156,25 +156,70 @@ function initDatePickers() {
     }
 }
 
+// Whitelist stricte des sections admin valides. Securite: evite que
+// l'attaquant puisse forcer un selector arbitraire via ?section=<script>...
+const ADMIN_SECTION_WHITELIST = [
+    'points-vente',
+    'prix',
+    'config-produits',
+    'stocks',
+    'corrections',
+    'abonnements',
+    'modules',
+    'ui-settings'
+];
+
+// Persiste la section courante dans l'URL (?section=X) au click. Utilise
+// replaceState pour ne pas polluer l'historique back/forward.
+function persistSectionInUrl(section) {
+    if (!section || ADMIN_SECTION_WHITELIST.indexOf(section) < 0) return;
+    try {
+        const url = new URL(location.href);
+        url.searchParams.set('section', section);
+        history.replaceState(null, '', url.toString());
+    } catch (e) { /* noop */ }
+}
+
+// Au load: lit ?section=X de l'URL et clique sur le lien correspondant.
+// Whitelist + verif visibilite (role-based hide).
+function activateSectionFromUrl() {
+    try {
+        const params = new URLSearchParams(location.search);
+        const target = params.get('section');
+        if (!target || ADMIN_SECTION_WHITELIST.indexOf(target) < 0) return;
+        const link = document.querySelector('.nav-link[data-section="' + target + '"]');
+        if (!link) return;
+        const li = link.closest('li.nav-item');
+        if (li && li.style.display === 'none') return;
+        setTimeout(function () { link.click(); }, 50);
+    } catch (e) { /* noop */ }
+}
+
 // Gestion des onglets
 function initNavigation() {
     document.querySelectorAll('.nav-link[data-section]').forEach(link => {
         link.addEventListener('click', function(e) {
             e.preventDefault();
             const section = this.dataset.section;
-            
+
             // Mettre à jour les classes actives
             document.querySelectorAll('.nav-link[data-section]').forEach(l => l.classList.remove('active'));
             this.classList.add('active');
-            
+
             // Afficher la section correspondante
             document.querySelectorAll('.admin-section').forEach(s => s.classList.remove('active'));
             const targetSection = document.getElementById(`${section}-section`);
             if (targetSection) {
                 targetSection.classList.add('active');
             }
+
+            // Persiste dans l'URL pour resister au F5
+            persistSectionInUrl(section);
         });
     });
+
+    // Au load: si ?section=X est dans l'URL, activer cette section.
+    activateSectionFromUrl();
 }
 
 // Charger les points de vente
@@ -5931,4 +5976,177 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initModalProduitUnifie);
 } else {
     initModalProduitUnifie();
-} 
+}
+
+// ============================================================
+// UI Settings (Apparence) — Mode Moderne
+//
+// Charge l'etat actuel et wire le bouton Enregistrer.
+// Activation PAR ROLE : on coche/decoche chaque role independamment.
+// ============================================================
+(function initUiSettings() {
+    function setStatus(msg, kind) {
+        var el = document.getElementById('ui-settings-status');
+        if (!el) return;
+        el.textContent = msg || '';
+        el.className = 'small ' + (
+            kind === 'success' ? 'text-success' :
+            kind === 'error'   ? 'text-danger'  :
+                                 'text-muted'
+        );
+    }
+
+    function getRoleCheckboxes() {
+        return Array.from(document.querySelectorAll('.ui-role-cb'));
+    }
+
+    function setCheckedRoles(roles) {
+        const set = new Set((roles || []).map(r => String(r).toLowerCase()));
+        getRoleCheckboxes().forEach(cb => {
+            cb.checked = set.has(String(cb.value).toLowerCase());
+        });
+    }
+
+    function getCheckedRoles() {
+        return getRoleCheckboxes().filter(cb => cb.checked).map(cb => cb.value);
+    }
+
+    async function load() {
+        // Garde-fou: tant que load() n'a pas valide la reponse du serveur,
+        // le bouton Save reste disable pour empecher de sauvegarder par-dessus
+        // une vraie config valide avec les valeurs par defaut/vides.
+        const saveBtn = document.getElementById('ui-settings-save-btn');
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+            const r = await fetch('/api/ui-settings', { credentials: 'same-origin' });
+            if (!r.ok) {
+                throw new Error('HTTP ' + r.status);
+            }
+            const data = await r.json();
+            // Le serveur retourne success:false avec fallback values en cas
+            // d'erreur DB (cf. catch GET /api/ui-settings cote serveur).
+            if (data && data.success === false) {
+                throw new Error(data.message || 'Reponse serveur en erreur (success:false)');
+            }
+
+            // Nouveau format : liste de roles. Fallback sur ancien format si absent.
+            let roles = Array.isArray(data.newUiRoles) ? data.newUiRoles : null;
+            if (!roles && typeof data.newUiEnabled === 'boolean') {
+                roles = data.newUiEnabled
+                    ? ['admin', 'superviseur', 'superutilisateur', 'user', 'lecteur', 'chef_livreur', 'matapay']
+                    : [];
+            }
+            setCheckedRoles(roles || []);
+
+            const posRight = document.getElementById('ui-sidebar-pos-right');
+            const posLeft = document.getElementById('ui-sidebar-pos-left');
+            if (data.sidebarPosition === 'left') {
+                if (posLeft) posLeft.checked = true;
+            } else {
+                if (posRight) posRight.checked = true;
+            }
+
+            // Theme : auto / light / dark. Default 'auto' si absent.
+            const theme = (['auto','light','dark'].indexOf(data.defaultTheme) >= 0) ? data.defaultTheme : 'auto';
+            const themeEl = document.getElementById('ui-theme-' + theme);
+            if (themeEl) themeEl.checked = true;
+
+            if (data.updatedBy && data.updatedAt) {
+                // Formate la date en timezone Europe/Paris (rendu stable
+                // independant du fuseau du navigateur).
+                const parsed = new Date(data.updatedAt);
+                let dateStr = data.updatedAt;
+                if (!isNaN(parsed.getTime())) {
+                    try {
+                        dateStr = new Intl.DateTimeFormat('fr-FR', {
+                            timeZone: 'Europe/Paris',
+                            year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit'
+                        }).format(parsed);
+                    } catch (e) {
+                        dateStr = parsed.toLocaleString('fr-FR');
+                    }
+                }
+                setStatus('Derniere modification : ' + data.updatedBy + ' (' + dateStr + ')', 'muted');
+            }
+            // Load reussi -> on enable le bouton Save
+            if (saveBtn) saveBtn.disabled = false;
+        } catch (e) {
+            setStatus('Impossible de charger les parametres : ' + (e && e.message) + ' (sauvegarde desactivee)', 'error');
+            // Save reste disable pour proteger la config existante
+        }
+    }
+
+    async function save() {
+        const btn = document.getElementById('ui-settings-save-btn');
+        if (!btn) return;
+        const posLeft = document.getElementById('ui-sidebar-pos-left');
+        const themeRadios = document.querySelectorAll('input[name="ui-theme"]');
+        let pickedTheme = 'auto';
+        themeRadios.forEach(r => { if (r.checked) pickedTheme = r.value; });
+
+        const payload = {
+            newUiRoles: getCheckedRoles(),
+            sidebarPosition: posLeft && posLeft.checked ? 'left' : 'right',
+            defaultTheme: pickedTheme
+        };
+
+        btn.disabled = true;
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Enregistrement...';
+        setStatus('', '');
+
+        try {
+            const r = await fetch('/api/ui-settings', {
+                method: 'PUT',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await r.json();
+            if (!r.ok || data.success === false) {
+                throw new Error(data && data.message ? data.message : ('HTTP ' + r.status));
+            }
+            // Le cache local depend de l'utilisateur courant — on l'invalide et
+            // on laisse modern-ui.js recalculer au prochain reload.
+            if (window.MatixUI && typeof window.MatixUI.invalidateCache === 'function') {
+                window.MatixUI.invalidateCache();
+            }
+            setStatus('Enregistre (' + (data.newUiRoles || []).length + ' role(s) actifs). Rechargement...', 'success');
+            setTimeout(function () { location.reload(); }, 1500);
+        } catch (e) {
+            setStatus('Erreur : ' + (e && e.message), 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    }
+
+    function wire() {
+        const btn = document.getElementById('ui-settings-save-btn');
+        if (btn) {
+            // Disable initial: load() le re-enable en cas de succes.
+            // Empeche un click sur Save avant que la vraie config ne soit
+            // chargee (eviterait de sauver les checkboxes par defaut).
+            btn.disabled = true;
+            btn.addEventListener('click', save);
+        }
+
+        const allBtn = document.getElementById('ui-roles-all-btn');
+        if (allBtn) allBtn.addEventListener('click', function () {
+            getRoleCheckboxes().forEach(cb => cb.checked = true);
+        });
+        const noneBtn = document.getElementById('ui-roles-none-btn');
+        if (noneBtn) noneBtn.addEventListener('click', function () {
+            getRoleCheckboxes().forEach(cb => cb.checked = false);
+        });
+
+        load();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wire);
+    } else {
+        wire();
+    }
+})(); 

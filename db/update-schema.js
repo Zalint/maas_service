@@ -1,6 +1,7 @@
 const { sequelize } = require('./index');
 const Reconciliation = require('./models/Reconciliation');
 const CashPayment = require('./models/CashPayment');
+const UISettings = require('./models/UISettings');
 
 /**
  * Met à jour le schéma de la base de données sans perdre les données existantes
@@ -86,6 +87,52 @@ async function updateSchema() {
                 ADD COLUMN IF NOT EXISTS default_screen VARCHAR(100) DEFAULT NULL
             `);
             console.log('Colonne default_screen vérifiée/ajoutée dans la table users');
+        }
+
+        // UISettings : sync + migration + seed default row.
+        // Idempotent : ne touche pas a la row si elle existe deja.
+        // - new_ui_roles : liste JSON des roles pour lesquels le mode moderne est actif
+        // - default_theme : auto | light | dark
+        // Si tenant.MATIX_TENANT est defini, utilise cette valeur. Sinon defaut 'MATA'.
+        const tenantKey = process.env.MATIX_TENANT || 'MATA';
+        try {
+            await UISettings.sync({ alter: false });
+            // Migration : ajoute new_ui_roles + default_theme si absents (idempotent).
+            await sequelize.query(`
+                ALTER TABLE ui_settings ADD COLUMN IF NOT EXISTS new_ui_roles TEXT DEFAULT NULL
+            `);
+            await sequelize.query(`
+                ALTER TABLE ui_settings ADD COLUMN IF NOT EXISTS default_theme VARCHAR(8) NOT NULL DEFAULT 'auto'
+            `);
+            // findOrCreate evite la race possible entre findOne+create si 2
+            // process boot en parallele (le 2e taperait l'unique constraint
+            // sur tenant). Idempotent. Postgres serialise via la contrainte.
+            const [row, created] = await UISettings.findOrCreate({
+                where: { tenant: tenantKey },
+                defaults: {
+                    tenant: tenantKey,
+                    new_ui_enabled: false,
+                    new_ui_roles: [],
+                    sidebar_position: 'right',
+                    default_theme: 'auto',
+                    updated_by: 'system-seed'
+                }
+            });
+            if (created) {
+                console.log(`UISettings : default row seeded for tenant ${tenantKey}`);
+            } else {
+                // Back-compat : si new_ui_roles est null mais new_ui_enabled=true,
+                // on remplit avec tous les roles (ancien comportement = global).
+                const roles = row.new_ui_roles;
+                if ((!roles || roles.length === 0) && row.new_ui_enabled === true) {
+                    row.new_ui_roles = ['admin', 'superviseur', 'superutilisateur', 'user', 'lecteur', 'chef_livreur', 'matapay'];
+                    await row.save();
+                    console.log('UISettings : migrated old global toggle -> all roles');
+                }
+                console.log(`UISettings : tenant ${tenantKey} row already exists`);
+            }
+        } catch (e) {
+            console.error('UISettings sync/seed error (non-fatal):', e.message);
         }
 
         // Ajouter les colonnes ventes (inventaire -> liste de produits vente)

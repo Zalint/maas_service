@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Administration - Gestion des Ventes</title>
     <script src="public/js/tenant-branding.js" defer></script>
+    <!-- Mode Moderne (inerte sans data-ui-mode="modern" sur <html>) -->
+    <link rel="stylesheet" href="css/modern.css">
+    <script src="js/modern-ui.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
@@ -359,6 +362,11 @@
                         <li class="nav-item" id="modules-nav">
                             <a class="nav-link" href="#" data-section="modules">
                                 <i class="bi bi-puzzle me-1"></i>Modules
+                            </a>
+                        </li>
+                        <li class="nav-item" id="ui-settings-nav">
+                            <a class="nav-link" href="#" data-section="ui-settings">
+                                <i class="bi bi-palette me-1"></i>Apparence
                             </a>
                         </li>
                     </ul>
@@ -973,6 +981,169 @@
                                     <!-- Les modules seront chargés dynamiquement -->
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section Apparence (UI Settings) — Mode Moderne -->
+            <div id="ui-settings-section" class="admin-section">
+                <h2><i class="bi bi-palette me-2"></i>Apparence de l'application</h2>
+                <p class="text-muted">Configuration globale du theme visuel pour tous les utilisateurs. POS reste sur son design tactile dedie quelle que soit la configuration.</p>
+
+                <div class="row">
+                    <div class="col-md-7">
+                        <div class="card mb-4">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="card-title mb-0"><i class="bi bi-stars me-2"></i>Mode Moderne (rouge boucherie)</h5>
+                            </div>
+                            <div class="card-body">
+                                <p class="mb-3">Active la nouvelle interface inspiree du design boucherie moderne : palette rouge + ivoire, KPI sobres, sidebar verticale, typographie Rubik/Nunito.</p>
+
+                                <h6 class="mb-2"><i class="bi bi-people me-2"></i>Roles pour lesquels le mode moderne est actif</h6>
+                                <p class="text-muted small mb-3">Coche les roles dont les utilisateurs verront le nouveau design. Les autres restent sur l'ancien.</p>
+
+                                <div class="d-flex gap-2 mb-3">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="ui-roles-all-btn">
+                                        <i class="bi bi-check2-all me-1"></i> Tous
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="ui-roles-none-btn">
+                                        <i class="bi bi-x-lg me-1"></i> Aucun
+                                    </button>
+                                </div>
+
+                                <div class="row g-2 mb-3" id="ui-roles-grid">
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="admin" id="ui-role-admin">
+                                            <label class="form-check-label" for="ui-role-admin">
+                                                <i class="bi bi-shield-fill-check me-1 text-danger"></i> admin <span class="text-muted small">(Administrateur)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="superviseur" id="ui-role-superviseur">
+                                            <label class="form-check-label" for="ui-role-superviseur">
+                                                <i class="bi bi-eye-fill me-1 text-warning"></i> superviseur
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="superutilisateur" id="ui-role-superutilisateur">
+                                            <label class="form-check-label" for="ui-role-superutilisateur">
+                                                <i class="bi bi-star-fill me-1 text-warning"></i> superutilisateur
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="user" id="ui-role-user">
+                                            <label class="form-check-label" for="ui-role-user">
+                                                <i class="bi bi-person-fill me-1 text-primary"></i> user <span class="text-muted small">(Utilisateur standard)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="lecteur" id="ui-role-lecteur">
+                                            <label class="form-check-label" for="ui-role-lecteur">
+                                                <i class="bi bi-book me-1 text-info"></i> lecteur
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="chef_livreur" id="ui-role-chef_livreur">
+                                            <label class="form-check-label" for="ui-role-chef_livreur">
+                                                <i class="bi bi-truck me-1 text-success"></i> chef_livreur
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input ui-role-cb" type="checkbox" value="matapay" id="ui-role-matapay">
+                                            <label class="form-check-label" for="ui-role-matapay">
+                                                <i class="bi bi-credit-card me-1 text-warning"></i> matapay
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <hr>
+
+                                <h6 class="mb-3"><i class="bi bi-layout-sidebar me-2"></i>Position de la sidebar</h6>
+                                <p class="text-muted small">Cote ou la sidebar de navigation s'affiche dans le mode moderne.</p>
+
+                                <div class="d-flex gap-3 mb-3">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="ui-sidebar-pos" id="ui-sidebar-pos-right" value="right" checked>
+                                        <label class="form-check-label" for="ui-sidebar-pos-right">
+                                            <i class="bi bi-layout-sidebar-inset-reverse me-1"></i> A droite (defaut)
+                                        </label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="ui-sidebar-pos" id="ui-sidebar-pos-left" value="left">
+                                        <label class="form-check-label" for="ui-sidebar-pos-left">
+                                            <i class="bi bi-layout-sidebar me-1"></i> A gauche
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <hr>
+
+                                <h6 class="mb-3"><i class="bi bi-palette2 me-2"></i>Theme par defaut</h6>
+                                <p class="text-muted small">Theme applique aux utilisateurs qui n'ont pas d'override personnel. Chacun peut changer via le bouton sun/moon de la topbar.</p>
+
+                                <div class="d-flex gap-3 mb-3 flex-wrap">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="ui-theme" id="ui-theme-auto" value="auto" checked>
+                                        <label class="form-check-label" for="ui-theme-auto">
+                                            <i class="bi bi-circle-half me-1"></i> Auto <span class="text-muted small">(suit l'OS)</span>
+                                        </label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="ui-theme" id="ui-theme-light" value="light">
+                                        <label class="form-check-label" for="ui-theme-light">
+                                            <i class="bi bi-sun-fill me-1 text-warning"></i> Clair
+                                        </label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="ui-theme" id="ui-theme-dark" value="dark">
+                                        <label class="form-check-label" for="ui-theme-dark">
+                                            <i class="bi bi-moon-stars-fill me-1 text-primary"></i> Sombre
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="mt-4 d-flex gap-2 align-items-center">
+                                    <button type="button" class="btn btn-primary" id="ui-settings-save-btn">
+                                        <i class="bi bi-check-circle me-1"></i> Enregistrer
+                                    </button>
+                                    <span id="ui-settings-status" class="text-muted small"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-5">
+                        <div class="card mb-4">
+                            <div class="card-header bg-info text-white">
+                                <h5 class="card-title mb-0"><i class="bi bi-info-circle me-2"></i>A propos</h5>
+                            </div>
+                            <div class="card-body">
+                                <ul class="small mb-2">
+                                    <li>Activation <b>par role</b> : seuls les roles coches verront le nouveau design.</li>
+                                    <li>POS (<code>pos.html</code>) reste sur son design dedie, indemne.</li>
+                                    <li>Topbar : le bouton <i class="bi bi-list"></i> hamburger replie la sidebar pour gagner de l'espace.</li>
+                                    <li>Topbar : le selecteur <i class="bi bi-grid-3x3-gap-fill"></i> Groupe permet de basculer entre Caisse / Gestion / Administration.</li>
+                                    <li>Les performances et toutes les API restent identiques.</li>
+                                </ul>
+                                <p class="small text-muted mb-0">
+                                    Apercu : <a href="/modern-mockups.html" target="_blank" rel="noopener">voir les maquettes du mode moderne</a>.
+                                </p>
+                            </div>
                         </div>
                     </div>
                 </div>
