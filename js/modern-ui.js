@@ -187,15 +187,10 @@
     };
 
     // Items "extras" ajoutes a la sidebar quand on est sur index.html.
-    // Liens vers pages standalone (anciennement boutons dans la card-header
-    // de Saisie). Visibilite optionnelle controlee par srcId (source button
-    // dans le DOM existant — utile pour role-based show/hide).
+    // Liens vers pages standalone. Maas App: Presence, Ranking, Enquete et
+    // Audit Client retires (pages absentes ou non utilisees pour ce tenant).
     var EXTRA_SIDEBAR_ITEMS = [
-        { key: 'matapay',        href: '/MataPay.html',        label: 'MataPay',      icon: 'bi-credit-card',    group: 'Paiement' },
-        { key: 'presence',       href: '/presence.html',       label: 'Presence',     icon: 'bi-calendar-check', group: 'RH' },
-        { key: 'ranking',        href: '/ranking.html',        label: 'Ranking',      icon: 'bi-trophy',         group: 'RH', srcId: 'ranking-btn' },
-        { key: 'enquete',        href: '/survey-results.html', label: 'Enquete',      icon: 'bi-star-half',      group: 'CRM' },
-        { key: 'audit-client',   href: '/auditClient.html',    label: 'Audit Client', icon: 'bi-person-check',   group: 'CRM' }
+        { key: 'matapay',        href: '/MataPay.html',        label: 'MataPay',      icon: 'bi-credit-card',    group: 'Paiement' }
     ];
 
     // Admin.html : nav items identifies par data-section.
@@ -222,16 +217,12 @@
 
     // Cross-page links speciaux : pages standalone qu'on veut quand meme voir
     // dans la sidebar (au lieu d'etre filtres comme "lien externe"). Map par
-    // href -> meta.
+    // href -> meta. Maas App: presence/ranking/enquete/audit-client retires.
     var CROSS_PAGE_LINKS = {
         'user-management.html':   { key: 'user-management', icon: 'bi-people-fill',     label: 'Utilisateurs',  group: 'Modules' },
         '/user-management.html':  { key: 'user-management', icon: 'bi-people-fill',     label: 'Utilisateurs',  group: 'Modules' },
         // Extras index.html (anciennement card-header buttons)
-        '/MataPay.html':          { key: 'matapay',         icon: 'bi-credit-card',     label: 'MataPay',       group: 'Paiement' },
-        '/presence.html':         { key: 'presence',        icon: 'bi-calendar-check',  label: 'Presence',      group: 'RH' },
-        '/ranking.html':          { key: 'ranking',         icon: 'bi-trophy',          label: 'Ranking',       group: 'RH' },
-        '/survey-results.html':   { key: 'enquete',         icon: 'bi-star-half',       label: 'Enquete',       group: 'CRM' },
-        '/auditClient.html':      { key: 'audit-client',    icon: 'bi-person-check',    label: 'Audit Client',  group: 'CRM' }
+        '/MataPay.html':          { key: 'matapay',         icon: 'bi-credit-card',     label: 'MataPay',       group: 'Paiement' }
     };
 
     // Resoud le meta d'un nav-link en testant TAB_META (id) puis ADMIN_TAB_META
