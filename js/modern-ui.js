@@ -213,11 +213,10 @@
     };
 
     // Items "extras" ajoutes a la sidebar quand on est sur index.html.
-    // Liens vers pages standalone. Maas App: Presence, Ranking, Enquete et
-    // Audit Client retires (pages absentes ou non utilisees pour ce tenant).
-    var EXTRA_SIDEBAR_ITEMS = [
-        { key: 'matapay',        href: '/MataPay.html',        label: 'MataPay',      icon: 'bi-credit-card',    group: 'Paiement' }
-    ];
+    // Liens vers pages standalone. Maas App: Presence, Ranking, Enquete,
+    // Audit Client et MataPay retires (pages absentes ou non utilisees pour
+    // ce tenant). Si une de ces pages est reintroduite, restaurer son entry.
+    var EXTRA_SIDEBAR_ITEMS = [];
 
     // Admin.html : nav items identifies par data-section.
     // Maas App : structure plus simple que DATA. Les anciennes sections
@@ -243,12 +242,11 @@
 
     // Cross-page links speciaux : pages standalone qu'on veut quand meme voir
     // dans la sidebar (au lieu d'etre filtres comme "lien externe"). Map par
-    // href -> meta. Maas App: presence/ranking/enquete/audit-client retires.
+    // href -> meta. Maas App: presence/ranking/enquete/audit-client/MataPay
+    // retires. Seule user-management.html est cross-page link.
     var CROSS_PAGE_LINKS = {
         'user-management.html':   { key: 'user-management', icon: 'bi-people-fill',     label: 'Utilisateurs',  group: 'Modules' },
-        '/user-management.html':  { key: 'user-management', icon: 'bi-people-fill',     label: 'Utilisateurs',  group: 'Modules' },
-        // Extras index.html (anciennement card-header buttons)
-        '/MataPay.html':          { key: 'matapay',         icon: 'bi-credit-card',     label: 'MataPay',       group: 'Paiement' }
+        '/user-management.html':  { key: 'user-management', icon: 'bi-people-fill',     label: 'Utilisateurs',  group: 'Modules' }
     };
 
     // Resoud le meta d'un nav-link en testant TAB_META (id) puis ADMIN_TAB_META
@@ -335,7 +333,10 @@
 
     function isIndexAdjacentPage() {
         var p = location.pathname.toLowerCase();
-        return /\/(matapay|presence|ranking|survey-results|auditclient)\.html$/i.test(p);
+        // Maas App : seul auditClient.html existe parmi les pages index-adjacent
+        // (matapay/presence/ranking/survey-results absents). Si une de ces
+        // pages est ajoutee plus tard, etendre la regex.
+        return /\/auditclient\.html$/i.test(p);
     }
 
     // Construction d'une sidebar pour les pages standalone (MataPay, Presence,
