@@ -156,25 +156,70 @@ function initDatePickers() {
     }
 }
 
+// Whitelist stricte des sections admin valides. Securite: evite que
+// l'attaquant puisse forcer un selector arbitraire via ?section=<script>...
+const ADMIN_SECTION_WHITELIST = [
+    'points-vente',
+    'prix',
+    'config-produits',
+    'stocks',
+    'corrections',
+    'abonnements',
+    'modules',
+    'ui-settings'
+];
+
+// Persiste la section courante dans l'URL (?section=X) au click. Utilise
+// replaceState pour ne pas polluer l'historique back/forward.
+function persistSectionInUrl(section) {
+    if (!section || ADMIN_SECTION_WHITELIST.indexOf(section) < 0) return;
+    try {
+        const url = new URL(location.href);
+        url.searchParams.set('section', section);
+        history.replaceState(null, '', url.toString());
+    } catch (e) { /* noop */ }
+}
+
+// Au load: lit ?section=X de l'URL et clique sur le lien correspondant.
+// Whitelist + verif visibilite (role-based hide).
+function activateSectionFromUrl() {
+    try {
+        const params = new URLSearchParams(location.search);
+        const target = params.get('section');
+        if (!target || ADMIN_SECTION_WHITELIST.indexOf(target) < 0) return;
+        const link = document.querySelector('.nav-link[data-section="' + target + '"]');
+        if (!link) return;
+        const li = link.closest('li.nav-item');
+        if (li && li.style.display === 'none') return;
+        setTimeout(function () { link.click(); }, 50);
+    } catch (e) { /* noop */ }
+}
+
 // Gestion des onglets
 function initNavigation() {
     document.querySelectorAll('.nav-link[data-section]').forEach(link => {
         link.addEventListener('click', function(e) {
             e.preventDefault();
             const section = this.dataset.section;
-            
+
             // Mettre à jour les classes actives
             document.querySelectorAll('.nav-link[data-section]').forEach(l => l.classList.remove('active'));
             this.classList.add('active');
-            
+
             // Afficher la section correspondante
             document.querySelectorAll('.admin-section').forEach(s => s.classList.remove('active'));
             const targetSection = document.getElementById(`${section}-section`);
             if (targetSection) {
                 targetSection.classList.add('active');
             }
+
+            // Persiste dans l'URL pour resister au F5
+            persistSectionInUrl(section);
         });
     });
+
+    // Au load: si ?section=X est dans l'URL, activer cette section.
+    activateSectionFromUrl();
 }
 
 // Charger les points de vente

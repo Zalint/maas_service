@@ -9125,9 +9125,75 @@ function initTabListeners() {
     });
 }
 
+// ============================================================
+// Persist onglet courant dans l'URL (?tab=X) pour resister au F5
+// ============================================================
+// Whitelist stricte des onglets valides — securite : evite que
+// l'attaquant puisse forcer un click sur un selector arbitraire
+// via ?tab=<script>... ou ?tab=#some-modal-trigger.
+var TAB_WHITELIST = [
+    'saisie-tab',
+    'visualisation-tab',
+    'import-tab',
+    'import-image-tab',
+    'stock-inventaire-tab',
+    'copier-stock-tab',
+    'reconciliation-tab',
+    'reconciliation-mois-tab',
+    'stock-alerte-tab',
+    'cash-payment-tab',
+    'finance-tab',
+    'suivi-achat-boeuf-tab',
+    'estimation-tab',
+    'precommande-tab',
+    'payment-links-tab'
+];
+
+// Click sur un tab -> persiste l'id dans l'URL (replaceState, pas pushState,
+// pour ne pas polluer l'historique back/forward).
+function persistTabInUrl(tabId) {
+    if (!tabId || TAB_WHITELIST.indexOf(tabId) < 0) return;
+    try {
+        var url = new URL(location.href);
+        url.searchParams.set('tab', tabId);
+        history.replaceState(null, '', url.toString());
+    } catch (e) { /* URL API indispo sur tres vieux browsers */ }
+}
+
+// Au chargement: lit ?tab=X de l'URL et active l'onglet (via click sur
+// le handler existant). Whitelist + verif visibilite (role-based hide).
+function activateTabFromUrl() {
+    try {
+        var params = new URLSearchParams(location.search);
+        var targetTab = params.get('tab');
+        if (!targetTab || TAB_WHITELIST.indexOf(targetTab) < 0) return;
+        var el = document.getElementById(targetTab);
+        if (!el) return;
+        // Si l'item est cache par role (display: none sur le <li> parent),
+        // ne pas tenter de l'activer.
+        var li = el.closest('li.nav-item');
+        if (li && li.style.display === 'none') return;
+        // setTimeout 0 pour laisser tous les handlers s'attacher d'abord
+        // (les handlers ligne 9135+ se bindent au script load, mais on
+        // veut etre 100% sur).
+        setTimeout(function () { el.click(); }, 50);
+    } catch (e) { /* noop */ }
+}
+
+// Bind: a chaque click sur un .nav-link de la navbar principale, persiste
+// son id dans l'URL. Delegation simple via document (idempotent meme si
+// d'autres handlers existent).
+document.addEventListener('click', function (e) {
+    var link = e.target.closest && e.target.closest('a.nav-link[id]');
+    if (link && TAB_WHITELIST.indexOf(link.id) >= 0) {
+        persistTabInUrl(link.id);
+    }
+});
+
 // Appeler l'initialisation des écouteurs d'onglets au chargement de la page
 document.addEventListener('DOMContentLoaded', function() {
     initTabListeners();
+    activateTabFromUrl();
     // ... autres initialisations existantes ...
 });
 
