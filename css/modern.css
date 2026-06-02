@@ -1,0 +1,1297 @@
+/* ============================================================
+   Matix Modern UI — design system rouge boucherie.
+
+   Tout est scope par [data-ui-mode="modern"] sur <html>.
+   Quand l'attribut est absent, ce fichier n'a aucun effet :
+   l'app reste sur son design classique (Bootstrap 5 bleu).
+
+   Sidebar position : controle par [data-sidebar-pos="left|right"]
+   sur <html>. Defaut = right si attribut absent.
+
+   POS (pos.html) n'ajoute jamais l'attribut data-ui-mode donc
+   garde son design tactile dedie.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&family=Nunito+Sans:wght@400;500;600;700&display=swap');
+
+/* ----- TOKENS LIGHT (default) ----- */
+[data-ui-mode="modern"] {
+    --mm-red-900: #7F1D1D;
+    --mm-red-700: #B91C1C;
+    --mm-red-600: #DC2626;
+    --mm-red-500: #EF4444;
+    --mm-red-100: #FEE2E2;
+    --mm-red-50:  #FEF2F2;
+    --mm-ivory:   #FAF7F2;
+    --mm-cream:   #FFFDF8;
+    --mm-slate-900: #0F172A;
+    --mm-slate-700: #334155;
+    --mm-slate-500: #64748B;
+    --mm-slate-300: #CBD5E1;
+    --mm-slate-200: #E2E8F0;
+    --mm-slate-100: #F1F5F9;
+    --mm-gold-500: #EAB308;
+    --mm-gold-600: #CA8A04;
+    --mm-green-600: #16A34A;
+    --mm-green-50:  #F0FDF4;
+    --mm-amber-500: #F59E0B;
+
+    /* Color-scheme aliases : inputs natifs (date pickers, etc.) suivent */
+    color-scheme: light;
+
+    --mm-radius-sm: 6px;
+    --mm-radius-md: 10px;
+    --mm-radius-lg: 16px;
+
+    --mm-shadow-sm: 0 1px 2px rgba(15,23,42,0.06);
+    --mm-shadow-md: 0 4px 12px rgba(15,23,42,0.08);
+    --mm-shadow-lg: 0 12px 32px rgba(15,23,42,0.12);
+    --mm-shadow-red: 0 4px 12px rgba(185,28,28,0.18);
+
+    --mm-sidebar-w: 248px;
+    --mm-topbar-h: 56px;
+}
+
+/* ----- TOKENS DARK ----- */
+/* Mode "dark" force + mode "auto" quand le systeme est en dark.
+   Toutes les paires fg/bg testees a 4.5:1+ (WCAG AA). */
+[data-ui-mode="modern"][data-ui-theme="dark"],
+[data-ui-mode="modern"][data-ui-theme="auto"] {
+    /* Fallback : si auto et systeme = light, on garde les tokens light. */
+}
+@media (prefers-color-scheme: dark) {
+    [data-ui-mode="modern"][data-ui-theme="auto"] {
+        --mm-ivory:   #0B1220;    /* page bg */
+        --mm-cream:   #1E293B;    /* card surface */
+        --mm-slate-900: #F1F5F9;  /* texte principal (INVERSE) */
+        --mm-slate-700: #CBD5E1;  /* texte secondaire */
+        --mm-slate-500: #94A3B8;  /* labels muted */
+        --mm-slate-300: #475569;  /* border inputs */
+        --mm-slate-200: #334155;  /* border cards / dividers */
+        --mm-slate-100: #1E293B;  /* hover row / muted bg */
+        --mm-red-700: #EF4444;    /* brand : plus lumineux pour contraste */
+        --mm-red-600: #F87171;    /* hover */
+        --mm-red-500: #FCA5A5;    /* danger subtle */
+        --mm-red-100: #7F1D1D;    /* active bg : red-900 inverse */
+        --mm-red-50:  #450A0A;    /* alert bg subtle */
+        --mm-red-900: #FECACA;    /* texte rouge sur fond clair (peu utilise) */
+        --mm-gold-500: #FACC15;
+        --mm-gold-600: #EAB308;
+        --mm-green-600: #22C55E;
+        --mm-green-50:  #052E16;
+        --mm-amber-500: #FBBF24;
+        --mm-shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+        --mm-shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+        --mm-shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
+        --mm-shadow-red: 0 4px 12px rgba(239,68,68,0.3);
+        color-scheme: dark;
+    }
+}
+[data-ui-mode="modern"][data-ui-theme="dark"] {
+    --mm-ivory:   #0B1220;
+    --mm-cream:   #1E293B;
+    --mm-slate-900: #F1F5F9;
+    --mm-slate-700: #CBD5E1;
+    --mm-slate-500: #94A3B8;
+    --mm-slate-300: #475569;
+    --mm-slate-200: #334155;
+    --mm-slate-100: #1E293B;
+    --mm-red-700: #EF4444;
+    --mm-red-600: #F87171;
+    --mm-red-500: #FCA5A5;
+    --mm-red-100: #7F1D1D;
+    --mm-red-50:  #450A0A;
+    --mm-red-900: #FECACA;
+    --mm-gold-500: #FACC15;
+    --mm-gold-600: #EAB308;
+    --mm-green-600: #22C55E;
+    --mm-green-50:  #052E16;
+    --mm-amber-500: #FBBF24;
+    --mm-shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+    --mm-shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+    --mm-shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
+    --mm-shadow-red: 0 4px 12px rgba(239,68,68,0.3);
+    color-scheme: dark;
+}
+
+/* ----- GLOBAL ----- */
+[data-ui-mode="modern"] body {
+    font-family: 'Nunito Sans', system-ui, sans-serif;
+    background: var(--mm-ivory);
+    color: var(--mm-slate-900);
+    font-size: 14px;
+    line-height: 1.5;
+    /* Marges pour laisser place au shell injecte */
+    padding-top: var(--mm-topbar-h);
+    margin: 0;
+}
+[data-ui-mode="modern"][data-sidebar-pos="right"] body { padding-right: var(--mm-sidebar-w); padding-left: 0; }
+[data-ui-mode="modern"][data-sidebar-pos="left"]  body { padding-left:  var(--mm-sidebar-w); padding-right: 0; }
+@media (max-width: 991.98px) {
+    [data-ui-mode="modern"] body { padding-right: 0 !important; padding-left: 0 !important; }
+}
+
+[data-ui-mode="modern"] h1,
+[data-ui-mode="modern"] h2,
+[data-ui-mode="modern"] h3,
+[data-ui-mode="modern"] h4,
+[data-ui-mode="modern"] h5,
+[data-ui-mode="modern"] h6,
+[data-ui-mode="modern"] .h1,
+[data-ui-mode="modern"] .h2,
+[data-ui-mode="modern"] .h3,
+[data-ui-mode="modern"] .card-title {
+    font-family: 'Rubik', system-ui, sans-serif;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    color: var(--mm-slate-900);
+}
+
+/* Cache la navbar classique : on la remplace par le shell injecte */
+[data-ui-mode="modern"] .navbar-container,
+[data-ui-mode="modern"] .navbar.bg-primary,
+[data-ui-mode="modern"] body > nav.navbar {
+    display: none !important;
+}
+
+/* ----- SHELL (topbar + sidebar) ----- */
+.mm-topbar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--mm-topbar-h, 56px);
+    background: var(--mm-cream, #FFFDF8);
+    border-bottom: 1px solid var(--mm-slate-200, #E2E8F0);
+    z-index: 1040;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px;
+    box-shadow: var(--mm-shadow-sm, 0 1px 2px rgba(15,23,42,0.06));
+}
+.mm-topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.mm-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+/* Hamburger button (gauche du brand) */
+.mm-hamburger {
+    width: 38px; height: 38px;
+    display: grid; place-items: center;
+    background: transparent;
+    border: 1px solid var(--mm-slate-200);
+    border-radius: var(--mm-radius-sm);
+    color: var(--mm-slate-700);
+    cursor: pointer;
+    transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.mm-hamburger:hover {
+    background: var(--mm-red-50);
+    border-color: var(--mm-red-100);
+    color: var(--mm-red-700);
+}
+.mm-hamburger:focus-visible {
+    outline: 2px solid var(--mm-red-700);
+    outline-offset: 2px;
+}
+.mm-hamburger i { font-size: 18px; }
+
+/* Theme toggle button (sun/moon) — icone change selon le theme actif.
+   Position : entre le refresh et le user-chip dans le topbar. */
+.mm-theme-toggle {
+    width: 38px; height: 38px;
+    display: grid; place-items: center;
+    background: transparent;
+    border: 1px solid var(--mm-slate-200, #E2E8F0);
+    border-radius: var(--mm-radius-sm, 6px);
+    color: var(--mm-slate-700, #334155);
+    cursor: pointer;
+    transition: background 150ms ease, color 150ms ease, border-color 150ms ease, transform 200ms ease;
+    position: relative;
+}
+.mm-theme-toggle:hover {
+    background: var(--mm-red-50, #FEF2F2);
+    border-color: var(--mm-red-100, #FEE2E2);
+    color: var(--mm-red-700, #B91C1C);
+}
+.mm-theme-toggle:focus-visible {
+    outline: 2px solid var(--mm-red-700, #B91C1C);
+    outline-offset: 2px;
+}
+.mm-theme-toggle i { font-size: 17px; transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1); }
+/* En mode light : montre le sun (sera click vers dark). Cache moon. */
+.mm-theme-toggle .bi-moon-stars-fill { display: none; }
+.mm-theme-toggle .bi-sun-fill { display: block; }
+/* En mode dark : montre le moon (sera click vers light). Cache sun. */
+[data-ui-theme="dark"] .mm-theme-toggle .bi-sun-fill { display: none; }
+[data-ui-theme="dark"] .mm-theme-toggle .bi-moon-stars-fill { display: block; }
+@media (prefers-color-scheme: dark) {
+    [data-ui-theme="auto"] .mm-theme-toggle .bi-sun-fill { display: none; }
+    [data-ui-theme="auto"] .mm-theme-toggle .bi-moon-stars-fill { display: block; }
+}
+.mm-logo {
+    width: 32px; height: 32px;
+    background: var(--mm-red-700, #B91C1C); color: white;
+    border-radius: 8px;
+    display: grid; place-items: center;
+    font-family: 'Rubik', system-ui, sans-serif;
+    font-weight: 700; font-size: 18px;
+    box-shadow: var(--mm-shadow-red, 0 4px 12px rgba(185,28,28,0.18));
+    flex-shrink: 0;
+}
+.mm-brand-name {
+    font-family: 'Rubik', system-ui, sans-serif;
+    font-weight: 600; font-size: 16px;
+    color: var(--mm-slate-900, #0F172A);
+    white-space: nowrap;
+}
+.mm-brand-sub {
+    font-size: 12px; color: var(--mm-slate-500, #64748B);
+    margin-left: 2px; font-weight: 400;
+}
+.mm-topbar-right { display: flex; align-items: center; gap: 10px; }
+.mm-tenant {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600;
+    color: var(--mm-red-700);
+    background: var(--mm-red-50);
+    border: 1px solid var(--mm-red-100);
+    padding: 5px 10px; border-radius: 999px;
+}
+.mm-user-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px 4px 4px;
+    background: var(--mm-slate-100); color: var(--mm-slate-900);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: 999px;
+    cursor: pointer; text-decoration: none;
+}
+.mm-user-chip:hover { background: var(--mm-slate-200); color: var(--mm-slate-900); }
+.mm-user-avatar {
+    width: 28px; height: 28px;
+    background: var(--mm-red-700); color: white;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-weight: 700; font-size: 12px;
+}
+.mm-user-name { font-size: 13px; font-weight: 600; line-height: 1.1; }
+.mm-user-role { font-size: 11px; color: var(--mm-slate-500); line-height: 1.1; }
+
+/* User menu dropdown (deconnexion) */
+.mm-user-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 200px;
+    background: var(--mm-cream);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: var(--mm-radius-md);
+    box-shadow: var(--mm-shadow-lg);
+    padding: 6px;
+    z-index: 1050;
+}
+.mm-user-menu-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    border-radius: var(--mm-radius-sm);
+    color: var(--mm-slate-900);
+    text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background 120ms ease, color 120ms ease;
+}
+.mm-user-menu-item:hover {
+    background: var(--mm-red-50);
+    color: var(--mm-red-700);
+}
+.mm-user-menu-item i { font-size: 16px; flex-shrink: 0; opacity: 0.8; }
+.mm-user-menu-item:hover i { opacity: 1; }
+#mm-logout-btn { color: var(--mm-red-700); }
+#mm-logout-btn:hover { background: var(--mm-red-50); }
+.mm-icon-btn {
+    width: 36px; height: 36px;
+    display: grid; place-items: center;
+    border-radius: var(--mm-radius-sm);
+    color: var(--mm-slate-700);
+    background: transparent; border: none; cursor: pointer;
+    transition: background 150ms ease, color 150ms ease;
+}
+.mm-icon-btn:hover { background: var(--mm-slate-100); color: var(--mm-slate-900); }
+
+/* Sidebar */
+.mm-sidebar {
+    position: fixed;
+    top: var(--mm-topbar-h, 56px);
+    bottom: 0;
+    width: var(--mm-sidebar-w, 248px);
+    background: var(--mm-cream);
+    z-index: 1030;
+    padding: 16px 12px;
+    overflow-y: auto;
+    display: flex; flex-direction: column;
+}
+[data-sidebar-pos="right"] .mm-sidebar { right: 0; border-left: 1px solid var(--mm-slate-200); }
+[data-sidebar-pos="left"]  .mm-sidebar { left:  0; border-right: 1px solid var(--mm-slate-200); }
+
+.mm-nav-group { margin-bottom: 16px; }
+.mm-nav-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--mm-slate-500);
+    padding: 0 10px 4px;
+}
+.mm-nav-link {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--mm-radius-sm);
+    color: var(--mm-slate-700);
+    text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    margin-bottom: 2px;
+    position: relative;
+    transition: background 120ms ease, color 120ms ease;
+    cursor: pointer;
+}
+.mm-nav-link:hover { background: var(--mm-slate-100); color: var(--mm-slate-900); }
+.mm-nav-link.active {
+    background: var(--mm-red-100);
+    color: var(--mm-red-700);
+    font-weight: 600;
+}
+.mm-nav-link.active::before {
+    content: "";
+    position: absolute;
+    top: 6px; bottom: 6px;
+    width: 3px;
+    background: var(--mm-red-700);
+    border-radius: 3px;
+}
+[data-sidebar-pos="right"] .mm-nav-link.active::before { left: 0; border-radius: 0 3px 3px 0; }
+[data-sidebar-pos="left"]  .mm-nav-link.active::before { left: 0; border-radius: 0 3px 3px 0; }
+.mm-nav-link i { font-size: 16px; flex-shrink: 0; opacity: 0.85; }
+.mm-nav-link.active i { opacity: 1; }
+.mm-nav-badge {
+    margin-left: auto;
+    background: var(--mm-red-700); color: white;
+    font-size: 10px; font-weight: 700;
+    padding: 1px 6px; border-radius: 999px;
+}
+
+.mm-sidebar-footer {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--mm-slate-200);
+    font-size: 11px; color: var(--mm-slate-500);
+}
+
+/* ============================================================
+   MOBILE : sidebar en drawer slide-in.
+   - Par defaut : hors ecran (translateX 100% droite ou -100% gauche)
+   - data-sidebar-open="true" sur <html> -> drawer visible
+   - Scrim semi-transparent derriere pour modal-feel
+   - Body padding-right/left = 0 (le drawer flotte en overlay)
+   ============================================================ */
+@media (max-width: 991.98px) {
+    .mm-topbar { padding: 0 12px; }
+    [data-ui-mode="modern"] body {
+        padding-right: 0 !important;
+        padding-left: 0 !important;
+    }
+    /* Sidebar mobile : drawer flottant au-dessus du contenu */
+    .mm-sidebar {
+        width: 280px;
+        max-width: 80vw;
+        z-index: 1050; /* au-dessus du topbar (1040) */
+        transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: var(--mm-shadow-lg);
+    }
+    [data-sidebar-pos="right"] .mm-sidebar { transform: translateX(100%); }
+    [data-sidebar-pos="left"]  .mm-sidebar { transform: translateX(-100%); }
+    /* Open state : drawer slide-in (override le collapsed desktop) */
+    [data-sidebar-open="true"] .mm-sidebar { transform: translateX(0) !important; }
+    /* Scrim backdrop derriere le drawer ouvert */
+    [data-ui-mode="modern"][data-sidebar-open="true"]::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1045;
+        animation: mm-fade-in 240ms ease;
+    }
+    @keyframes mm-fade-in {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+    }
+    /* Group switcher : labels caches deja gere ailleurs, on garde compact */
+    .mm-topbar-right { gap: 6px; }
+    .mm-user-chip > div:not(.mm-user-avatar) { display: none; } /* nom + role caches */
+    .mm-tenant { display: none; } /* badge tenant cache sur petit ecran */
+}
+/* Sur tres petit ecran (smartphone portrait), encore plus compact */
+@media (max-width: 575px) {
+    .mm-brand-name { font-size: 14px; }
+    .mm-brand-sub { display: none; }
+}
+
+/* ============================================================
+   RESTYLE des composants Bootstrap existants en mode moderne.
+   On cible les classes Bootstrap pour que TOUT l'HTML existant
+   herite du look sans avoir a modifier les structures.
+   ============================================================ */
+
+/* Cards */
+[data-ui-mode="modern"] .card {
+    background: var(--mm-cream);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: var(--mm-radius-md);
+    box-shadow: var(--mm-shadow-sm);
+    margin-bottom: 16px;
+}
+[data-ui-mode="modern"] .card-header {
+    background: var(--mm-cream);
+    border-bottom: 1px solid var(--mm-slate-200);
+    padding: 14px 18px;
+    font-weight: 600;
+}
+[data-ui-mode="modern"] .card-header.bg-primary,
+[data-ui-mode="modern"] .card-header.bg-info,
+[data-ui-mode="modern"] .card-header.bg-success {
+    background: var(--mm-red-700) !important;
+    color: white !important;
+}
+[data-ui-mode="modern"] .card-body { padding: 16px 18px; }
+
+/* ============================================================
+   FIX residuels "white" en dark mode :
+   - .produit-entry : styles.css le force a #fff. Override avec cream.
+   - .card-header.bg-white : Bootstrap class bg-white inconditionnelle.
+   - .table-bordered : borders Bootstrap par defaut #dee2e6 (clair) sont
+     visibles comme "lignes blanches" sur dark. Override avec slate-200.
+   ============================================================ */
+[data-ui-mode="modern"] .produit-entry {
+    background-color: var(--mm-cream) !important;
+    border-color: var(--mm-slate-200) !important;
+}
+[data-ui-mode="modern"] .card-header.bg-white {
+    background-color: var(--mm-cream) !important;
+    color: var(--mm-slate-900) !important;
+}
+/* Generique : toute classe .bg-white dans le mode moderne devient cream. */
+[data-ui-mode="modern"] .bg-white {
+    background-color: var(--mm-cream) !important;
+}
+/* Override Bootstrap card token (au cas ou des .card sans bg explicite
+   se referent a --bs-card-bg = #fff). */
+[data-ui-mode="modern"] {
+    --bs-card-bg: var(--mm-cream);
+    --bs-card-color: var(--mm-slate-900);
+    --bs-body-bg: var(--mm-ivory);
+    --bs-body-color: var(--mm-slate-900);
+    --bs-border-color: var(--mm-slate-200);
+}
+[data-ui-mode="modern"] .table-bordered,
+[data-ui-mode="modern"] .table-bordered > :not(caption) > * {
+    border-color: var(--mm-slate-200) !important;
+}
+[data-ui-mode="modern"] .table-bordered > :not(caption) > * > * {
+    border-color: var(--mm-slate-200) !important;
+}
+[data-ui-mode="modern"] .table {
+    --bs-table-bg: var(--mm-cream);
+    --bs-table-color: var(--mm-slate-900);
+    --bs-table-border-color: var(--mm-slate-200);
+    --bs-table-striped-bg: var(--mm-stripe-overlay);
+    --bs-table-hover-bg: var(--mm-hover-overlay);
+    --bs-table-striped-color: var(--mm-slate-900);
+    --bs-table-hover-color: var(--mm-slate-900);
+}
+/* Force le bg-type des lignes striped en mode moderne (Bootstrap 5.3
+   utilise --bs-table-bg-type via inset box-shadow). Tokens en rgba pour
+   creer un overlay qui marche pour les 2 themes :
+   - Light : subtle black overlay (slight darken)
+   - Dark  : subtle white overlay (slight lighten) */
+[data-ui-mode="modern"] {
+    --mm-stripe-overlay: rgba(0, 0, 0, 0.035);
+    --mm-hover-overlay: rgba(0, 0, 0, 0.06);
+}
+[data-ui-mode="modern"][data-ui-theme="dark"] {
+    --mm-stripe-overlay: rgba(255, 255, 255, 0.04);
+    --mm-hover-overlay: rgba(255, 255, 255, 0.07);
+}
+@media (prefers-color-scheme: dark) {
+    [data-ui-mode="modern"][data-ui-theme="auto"] {
+        --mm-stripe-overlay: rgba(255, 255, 255, 0.04);
+        --mm-hover-overlay: rgba(255, 255, 255, 0.07);
+    }
+}
+[data-ui-mode="modern"] .table-striped > tbody > tr:nth-of-type(odd) > * {
+    --bs-table-bg-type: var(--mm-stripe-overlay) !important;
+}
+[data-ui-mode="modern"] .table-hover > tbody > tr:hover > * {
+    --bs-table-bg-type: var(--mm-hover-overlay) !important;
+}
+
+/* Card-header pliable (data-bs-toggle="collapse") : ajoute un chevron
+   SVG inline via ::after. Pas de dependance Font Awesome ni Bootstrap
+   Icons. Pivote selon aria-expanded (geree par Bootstrap collapse).
+   La fa-chevron-down dans le HTML reste mais est invisible (FA pas
+   charge en index.html) — on la cache pour pas qu'elle prenne d'espace
+   au cas ou FA serait charge un jour. */
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"] {
+    position: relative;
+    padding-right: 48px;
+    cursor: pointer;
+    transition: background 150ms ease;
+    user-select: none;
+}
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"]:hover {
+    background: var(--mm-ivory);
+}
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"] > div > i.fas,
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"] > i.fas {
+    display: none;
+}
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"]::after {
+    content: '';
+    position: absolute;
+    right: 18px;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%2364748B' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 6 8 10 12 6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    transform: translateY(-50%) rotate(0deg);
+    transition: transform 220ms ease;
+}
+/* Replie (aria-expanded="false") : chevron pointe vers la gauche (=action
+   "deplier vers la droite/bas"). Quand on click et que la card s'ouvre,
+   Bootstrap met aria-expanded="true" -> chevron pointe vers le bas. */
+[data-ui-mode="modern"] .card-header[data-bs-toggle="collapse"][aria-expanded="false"]::after {
+    transform: translateY(-50%) rotate(-90deg);
+}
+/* Dark : chevron en slate-400 plus clair pour rester visible. */
+[data-ui-mode="modern"][data-ui-theme="dark"] .card-header[data-bs-toggle="collapse"]::after {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 6 8 10 12 6'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+    [data-ui-mode="modern"][data-ui-theme="auto"] .card-header[data-bs-toggle="collapse"]::after {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 6 8 10 12 6'/%3E%3C/svg%3E");
+    }
+}
+[data-ui-mode="modern"] .card-footer {
+    background: var(--mm-ivory);
+    border-top: 1px solid var(--mm-slate-200);
+    padding: 12px 18px;
+    border-bottom-left-radius: var(--mm-radius-md);
+    border-bottom-right-radius: var(--mm-radius-md);
+}
+
+/* Boutons : retire le bleu Bootstrap et applique rouge boucherie */
+[data-ui-mode="modern"] .btn-primary {
+    background: var(--mm-red-700);
+    border-color: var(--mm-red-700);
+    color: white;
+    font-weight: 600;
+    box-shadow: var(--mm-shadow-red);
+    transition: all 150ms ease;
+}
+[data-ui-mode="modern"] .btn-primary:hover,
+[data-ui-mode="modern"] .btn-primary:focus {
+    background: var(--mm-red-600);
+    border-color: var(--mm-red-600);
+    color: white;
+    box-shadow: var(--mm-shadow-red);
+}
+[data-ui-mode="modern"] .btn-primary:active,
+[data-ui-mode="modern"] .btn-primary.active {
+    background: var(--mm-red-900) !important;
+    border-color: var(--mm-red-900) !important;
+    color: white !important;
+}
+[data-ui-mode="modern"] .btn-success {
+    background: var(--mm-green-600);
+    border-color: var(--mm-green-600);
+    color: white;
+    font-weight: 600;
+}
+[data-ui-mode="modern"] .btn-success:hover {
+    background: #15803D;
+    border-color: #15803D;
+}
+[data-ui-mode="modern"] .btn-info {
+    background: var(--mm-slate-700);
+    border-color: var(--mm-slate-700);
+    color: white;
+    font-weight: 500;
+}
+[data-ui-mode="modern"] .btn-info:hover {
+    background: var(--mm-slate-900);
+    border-color: var(--mm-slate-900);
+    color: white;
+}
+[data-ui-mode="modern"] .btn-warning {
+    background: var(--mm-gold-500);
+    border-color: var(--mm-gold-500);
+    color: var(--mm-slate-900);
+    font-weight: 600;
+}
+[data-ui-mode="modern"] .btn-warning:hover {
+    background: var(--mm-gold-600);
+    border-color: var(--mm-gold-600);
+}
+[data-ui-mode="modern"] .btn-danger {
+    background: var(--mm-red-600);
+    border-color: var(--mm-red-600);
+}
+[data-ui-mode="modern"] .btn-secondary {
+    background: var(--mm-slate-500);
+    border-color: var(--mm-slate-500);
+    color: white;
+}
+[data-ui-mode="modern"] .btn-secondary:hover {
+    background: var(--mm-slate-700);
+    border-color: var(--mm-slate-700);
+}
+[data-ui-mode="modern"] .btn-outline-primary {
+    color: var(--mm-red-700);
+    border-color: var(--mm-red-700);
+}
+[data-ui-mode="modern"] .btn-outline-primary:hover {
+    background: var(--mm-red-700);
+    color: white;
+}
+
+/* text-primary, bg-primary, border-primary */
+[data-ui-mode="modern"] .text-primary { color: var(--mm-red-700) !important; }
+[data-ui-mode="modern"] .text-success { color: var(--mm-green-600) !important; }
+[data-ui-mode="modern"] .bg-primary  { background-color: var(--mm-red-700) !important; }
+[data-ui-mode="modern"] .border-primary { border-color: var(--mm-red-700) !important; }
+
+/* Forms */
+[data-ui-mode="modern"] .form-control,
+[data-ui-mode="modern"] .form-select {
+    border: 1px solid var(--mm-slate-300);
+    border-radius: var(--mm-radius-sm);
+    font-size: 13px;
+    font-family: 'Nunito Sans', system-ui, sans-serif;
+    color: var(--mm-slate-900);
+    background-color: var(--mm-cream);
+    transition: border 120ms ease, box-shadow 120ms ease;
+}
+[data-ui-mode="modern"] .form-control:focus,
+[data-ui-mode="modern"] .form-select:focus {
+    border-color: var(--mm-red-700);
+    box-shadow: 0 0 0 3px rgba(239,68,68,0.18);
+    outline: none;
+}
+[data-ui-mode="modern"] .form-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--mm-slate-700);
+    margin-bottom: 4px;
+}
+
+/* Tables */
+[data-ui-mode="modern"] .table {
+    background: var(--mm-cream);
+    border-radius: var(--mm-radius-md);
+    overflow: hidden;
+}
+[data-ui-mode="modern"] .table thead th {
+    background: var(--mm-slate-100);
+    color: var(--mm-slate-700);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--mm-slate-200);
+}
+[data-ui-mode="modern"] .table tbody tr {
+    transition: background 120ms ease;
+}
+[data-ui-mode="modern"] .table tbody tr:hover {
+    background: var(--mm-slate-100);
+}
+[data-ui-mode="modern"] .table tbody td {
+    border-bottom: 1px solid var(--mm-slate-100);
+    font-variant-numeric: tabular-nums;
+}
+[data-ui-mode="modern"] .table-striped > tbody > tr:nth-of-type(odd) > * {
+    background-color: rgba(248, 250, 252, 0.5);
+}
+
+/* KPI cards (Visualisation) — la structure existe deja, on l'embellit */
+[data-ui-mode="modern"] .kpi-card {
+    background: var(--mm-cream);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: var(--mm-radius-md);
+    box-shadow: var(--mm-shadow-sm);
+    transition: transform 120ms ease, box-shadow 120ms ease;
+    overflow: hidden;
+    position: relative;
+}
+[data-ui-mode="modern"] .kpi-card:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--mm-shadow-md);
+}
+[data-ui-mode="modern"] .kpi-card::before {
+    content: ""; position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 3px; background: var(--mm-red-700);
+}
+[data-ui-mode="modern"] .kpi-card .card-subtitle {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--mm-slate-500) !important;
+}
+[data-ui-mode="modern"] .kpi-card .text-primary,
+[data-ui-mode="modern"] .kpi-card .text-success {
+    font-family: 'Rubik', system-ui, sans-serif;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+[data-ui-mode="modern"] .kpi-icon {
+    width: 32px; height: 32px;
+    border-radius: var(--mm-radius-sm);
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--mm-red-100); color: var(--mm-red-700);
+    font-size: 16px;
+}
+[data-ui-mode="modern"] .kpi-icon-success { background: var(--mm-green-50); color: var(--mm-green-600); }
+[data-ui-mode="modern"] .kpi-icon-info    { background: var(--mm-slate-100); color: var(--mm-slate-700); }
+
+/* Alerts */
+[data-ui-mode="modern"] .alert {
+    border-radius: var(--mm-radius-sm);
+    border: 1px solid var(--mm-slate-200);
+    padding: 10px 14px;
+    font-size: 13px;
+}
+[data-ui-mode="modern"] .alert-success {
+    background: var(--mm-green-50);
+    border-color: #BBF7D0;
+    color: #166534;
+}
+[data-ui-mode="modern"] .alert-danger {
+    background: var(--mm-red-50);
+    border-color: var(--mm-red-100);
+    color: var(--mm-red-900);
+}
+[data-ui-mode="modern"] .alert-info {
+    background: #F1F5F9;
+    border-color: var(--mm-slate-200);
+    color: var(--mm-slate-900);
+}
+
+/* Badges */
+[data-ui-mode="modern"] .badge.bg-primary { background-color: var(--mm-red-700) !important; }
+[data-ui-mode="modern"] .badge.bg-success { background-color: var(--mm-green-600) !important; }
+[data-ui-mode="modern"] .badge.bg-warning {
+    background-color: var(--mm-gold-500) !important;
+    color: var(--mm-slate-900) !important;
+}
+
+/* Container : remove fluid bleed when sidebar is present */
+[data-ui-mode="modern"] .container-fluid {
+    padding-left: 20px;
+    padding-right: 20px;
+}
+
+/* Onglets Bootstrap (nav-tabs) — restylise pour suivre le ton */
+[data-ui-mode="modern"] .nav-tabs {
+    border-bottom: 1px solid var(--mm-slate-200);
+}
+[data-ui-mode="modern"] .nav-tabs .nav-link {
+    color: var(--mm-slate-500);
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 8px 14px;
+    font-weight: 500;
+    font-size: 13px;
+}
+[data-ui-mode="modern"] .nav-tabs .nav-link:hover {
+    color: var(--mm-slate-900);
+    border-color: transparent;
+}
+[data-ui-mode="modern"] .nav-tabs .nav-link.active {
+    color: var(--mm-red-700);
+    border-bottom-color: var(--mm-red-700);
+    background: transparent;
+    font-weight: 600;
+}
+
+/* Tabular nums utilities — on s'en sert dans les KPI */
+[data-ui-mode="modern"] .num,
+[data-ui-mode="modern"] .kpi-value,
+[data-ui-mode="modern"] [class*="montant"],
+[data-ui-mode="modern"] td input[type="number"] {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Suivi Achat Boeuf utilise Bootstrap 4 .form-group — alias pour BS5 */
+[data-ui-mode="modern"] .form-group {
+    margin-bottom: 12px;
+    display: flex; flex-direction: column;
+}
+[data-ui-mode="modern"] .form-group > label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--mm-slate-700);
+    margin-bottom: 4px;
+}
+
+/* Stack actions row (page header) */
+[data-ui-mode="modern"] .btn-group {
+    gap: 6px;
+}
+[data-ui-mode="modern"] .btn-group .btn {
+    border-radius: var(--mm-radius-sm);
+    border: 1px solid var(--mm-slate-200);
+}
+
+/* ============================================================
+   GROUP SWITCHER (Caisse / Gestion / Administration)
+   ============================================================ */
+.mm-group-switcher {
+    position: relative;
+}
+.mm-group-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px;
+    background: var(--mm-cream);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: 999px;
+    color: var(--mm-slate-900);
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+    transition: all 150ms ease;
+    line-height: 1;
+}
+.mm-group-btn:hover {
+    border-color: var(--mm-red-100);
+    background: var(--mm-red-50);
+    color: var(--mm-red-700);
+}
+.mm-group-btn i.bi-grid-3x3-gap-fill { color: var(--mm-red-700); font-size: 14px; }
+.mm-group-btn:focus-visible {
+    outline: 2px solid var(--mm-red-700);
+    outline-offset: 2px;
+}
+.mm-group-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 220px;
+    background: var(--mm-cream);
+    border: 1px solid var(--mm-slate-200);
+    border-radius: var(--mm-radius-md);
+    box-shadow: var(--mm-shadow-lg);
+    padding: 6px;
+    z-index: 1050;
+}
+.mm-group-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    border-radius: var(--mm-radius-sm);
+    color: var(--mm-slate-900);
+    text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background 120ms ease;
+}
+.mm-group-item:hover {
+    background: var(--mm-slate-100);
+    color: var(--mm-slate-900);
+}
+.mm-group-item.active {
+    background: var(--mm-red-50);
+    color: var(--mm-red-700);
+    font-weight: 600;
+}
+.mm-group-item i.bi { font-size: 16px; flex-shrink: 0; }
+
+/* ============================================================
+   SIDEBAR COLLAPSED STATE (hamburger toggle)
+   ============================================================ */
+[data-ui-mode="modern"][data-sidebar-collapsed="true"] body {
+    padding-right: 0 !important;
+    padding-left: 0 !important;
+}
+[data-sidebar-collapsed="true"] .mm-sidebar {
+    transform: translateX(100%);
+    transition: transform 220ms ease;
+}
+[data-sidebar-pos="left"][data-sidebar-collapsed="true"] .mm-sidebar {
+    transform: translateX(-100%);
+}
+.mm-sidebar { transition: transform 220ms ease; }
+
+/* ============================================================
+   ACTION BUTTONS RESTYLE (saisie-section btn-group + autres)
+   Harmonise les boutons d'action en haut de section : Admin,
+   Enquete, Audit Client, Presence, Ranking, MataPay. Au lieu
+   d'un bleu plein qui detonne, on les passe en pills slate
+   discrets avec hover red.
+   ============================================================ */
+[data-ui-mode="modern"] .card-header .btn-group .btn,
+[data-ui-mode="modern"] .mm-page-header .btn,
+[data-ui-mode="modern"] .card-header .btn[target="_blank"],
+[data-ui-mode="modern"] .card-header > a.btn {
+    background: var(--mm-cream) !important;
+    border: 1px solid var(--mm-slate-200) !important;
+    color: var(--mm-slate-700) !important;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--mm-radius-sm);
+    box-shadow: none !important;
+    transition: all 150ms ease;
+    text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px;
+}
+[data-ui-mode="modern"] .card-header .btn-group .btn:hover,
+[data-ui-mode="modern"] .card-header > a.btn:hover {
+    background: var(--mm-red-50) !important;
+    border-color: var(--mm-red-100) !important;
+    color: var(--mm-red-700) !important;
+}
+/* Le bouton MataPay garde un accent or pour le distinguer */
+[data-ui-mode="modern"] .card-header .btn-group a.btn-success[href*="MataPay"],
+[data-ui-mode="modern"] .card-header a.btn[href*="MataPay"] {
+    background: var(--mm-gold-500) !important;
+    border-color: var(--mm-gold-500) !important;
+    color: var(--mm-slate-900) !important;
+}
+[data-ui-mode="modern"] .card-header a.btn[href*="MataPay"]:hover {
+    background: var(--mm-gold-600) !important;
+    border-color: var(--mm-gold-600) !important;
+    color: var(--mm-slate-900) !important;
+}
+/* btn-group gap (au lieu de l'overlap Bootstrap) */
+[data-ui-mode="modern"] .card-header .btn-group {
+    gap: 6px;
+}
+[data-ui-mode="modern"] .card-header .btn-group > .btn {
+    border-radius: var(--mm-radius-sm) !important;
+}
+
+/* ============================================================
+   SAISIE : btn-group du card-header est cache en mode moderne.
+   Les items (Admin, Enquete, Audit Client, Presence, Ranking,
+   MataPay) sont desormais dans la sidebar — pas besoin de les
+   dupliquer en haut de la page Saisie.
+   On garde Realtime/Tableau de Bord visible (acces rapide chart).
+   ============================================================ */
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group #admin-nav-btn,
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group a[href$="/survey-results.html"],
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group a[href$="/auditClient.html"],
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group a[href$="/presence.html"],
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group a[href$="/ranking.html"],
+[data-ui-mode="modern"] #saisie-section > .card > .card-header .btn-group a[href$="/MataPay.html"] {
+    display: none !important;
+}
+
+/* Stock Inventaire : cache "Aller a la rec." en mode moderne. Le user
+   peut utiliser la sidebar pour aller a Reconciliation. */
+[data-ui-mode="modern"] #btn-aller-reconciliation {
+    display: none !important;
+}
+
+/* Boutons zoom mobile + indicateur "Zoom: 100%" caches en mode moderne.
+   Le user moderne a un layout dejà responsive — pas besoin du zoom maison. */
+[data-ui-mode="modern"] .zoom-controls,
+[data-ui-mode="modern"] .zoom-indicator,
+[data-ui-mode="modern"] #zoom-indicator {
+    display: none !important;
+}
+
+/* ============================================================
+   BOUTONS MODERNISES (polish supplementaire) — taille pill,
+   ombre douce sur les CTA primaires, hover lift.
+   ============================================================ */
+
+/* Container floating "Remplir Prix Moyen Pondere" — top right
+   au-dessus du tableau Stock Inv. On le force a un padding clean
+   et a remettre les boutons en pills. */
+[data-ui-mode="modern"] #btn-prix-pondere,
+[data-ui-mode="modern"] #btn-prix-pondere-config {
+    background: var(--mm-slate-700) !important;
+    border-color: var(--mm-slate-700) !important;
+    color: white !important;
+    border-radius: var(--mm-radius-sm) !important;
+    box-shadow: none !important;
+    font-weight: 500;
+    transition: background 150ms ease, transform 80ms ease;
+}
+[data-ui-mode="modern"] #btn-prix-pondere:hover,
+[data-ui-mode="modern"] #btn-prix-pondere-config:hover {
+    background: var(--mm-slate-900) !important;
+    border-color: var(--mm-slate-900) !important;
+}
+[data-ui-mode="modern"] #btn-prix-pondere-config {
+    width: 38px !important; height: 38px !important;
+    padding: 0 !important;
+    font-size: 16px !important;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* Export Excel : keep green (semantique Excel) mais avec radius cool */
+[data-ui-mode="modern"] #export-stock-excel,
+[data-ui-mode="modern"] #export-visualisation-excel {
+    border-radius: var(--mm-radius-sm) !important;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+
+/* CTA primaires : ombre subtile + lift au hover. Override la couleur
+   verte de btn-success pour les boutons "Sauvegarder" (qui sont des
+   actions principales) : on les met en rouge brand pour matcher le
+   nouveau look — le vert est conserve pour Export Excel (semantique). */
+[data-ui-mode="modern"] #save-stock,
+[data-ui-mode="modern"] #sauvegarderTransfert,
+[data-ui-mode="modern"] #ajouter-produit,
+[data-ui-mode="modern"] form#vente-form button[type="submit"] {
+    border-radius: var(--mm-radius-sm) !important;
+    font-weight: 600;
+    padding: 9px 18px;
+    transition: transform 80ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+[data-ui-mode="modern"] #save-stock,
+[data-ui-mode="modern"] #sauvegarderTransfert {
+    background: var(--mm-red-700) !important;
+    border-color: var(--mm-red-700) !important;
+    color: white !important;
+    box-shadow: var(--mm-shadow-red);
+}
+[data-ui-mode="modern"] #save-stock:hover,
+[data-ui-mode="modern"] #sauvegarderTransfert:hover {
+    background: var(--mm-red-600) !important;
+    border-color: var(--mm-red-600) !important;
+    transform: translateY(-1px);
+}
+[data-ui-mode="modern"] form#vente-form button[type="submit"] {
+    background: var(--mm-red-700) !important;
+    border-color: var(--mm-red-700) !important;
+    color: white !important;
+    box-shadow: var(--mm-shadow-red);
+}
+[data-ui-mode="modern"] form#vente-form button[type="submit"]:hover {
+    background: var(--mm-red-600) !important;
+    transform: translateY(-1px);
+}
+
+/* "Ajouter une ligne" / "Ajouter un produit" : pill secondaire (slate
+   discret) au lieu d'une couleur primaire pour ne pas competir avec
+   le CTA principal "Enregistrer / Sauvegarder". */
+[data-ui-mode="modern"] #add-stock-row,
+[data-ui-mode="modern"] #ajouterLigne,
+[data-ui-mode="modern"] #ajouter-produit {
+    background: var(--mm-cream) !important;
+    border: 1px solid var(--mm-slate-200) !important;
+    color: var(--mm-slate-700) !important;
+    box-shadow: none !important;
+}
+[data-ui-mode="modern"] #add-stock-row:hover,
+[data-ui-mode="modern"] #ajouterLigne:hover,
+[data-ui-mode="modern"] #ajouter-produit:hover {
+    background: var(--mm-red-50) !important;
+    border-color: var(--mm-red-100) !important;
+    color: var(--mm-red-700) !important;
+}
+
+/* Responsive : sur mobile/tablet, hamburger reste utile mais sidebar
+   en drawer dedie pas encore implementee. Pour V1 on cache juste. */
+@media (max-width: 991.98px) {
+    [data-ui-mode="modern"] .mm-group-btn .mm-group-label { display: none; }
+}
+
+/* ============================================================
+   ANTI-FLASH : placeholders CSS pour topbar + sidebar.
+   Affiches via ::before/::after sur le body pendant que JS construit
+   le shell DOM. z-index inferieur a la version reelle pour etre
+   recouvert des qu'elle mount. Reduit drastiquement le flash entre
+   navigations.
+   ============================================================ */
+[data-ui-mode="modern"] body::before {
+    content: 'Matix · Boucherie';
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--mm-topbar-h);
+    background: var(--mm-cream);
+    border-bottom: 1px solid var(--mm-slate-200);
+    padding: 0 64px;  /* laisse de la place pour le logo + hamburger */
+    display: flex;
+    align-items: center;
+    font-family: 'Rubik', system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 16px;
+    color: var(--mm-slate-900);
+    z-index: 1039;  /* sous .mm-topbar (1040) */
+    box-shadow: var(--mm-shadow-sm);
+    pointer-events: none;
+}
+[data-ui-mode="modern"] body::after {
+    content: '';
+    position: fixed;
+    top: var(--mm-topbar-h);
+    bottom: 0;
+    width: var(--mm-sidebar-w);
+    background: var(--mm-cream);
+    z-index: 1029;  /* sous .mm-sidebar (1030) */
+    pointer-events: none;
+    transition: transform 220ms ease;
+}
+[data-ui-mode="modern"][data-sidebar-pos="right"] body::after {
+    right: 0;
+    border-left: 1px solid var(--mm-slate-200);
+}
+[data-ui-mode="modern"][data-sidebar-pos="left"] body::after {
+    left: 0;
+    border-right: 1px solid var(--mm-slate-200);
+}
+[data-ui-mode="modern"][data-sidebar-collapsed="true"] body::after {
+    transform: translateX(100%);
+}
+[data-ui-mode="modern"][data-sidebar-pos="left"][data-sidebar-collapsed="true"] body::after {
+    transform: translateX(-100%);
+}
+@media (max-width: 991.98px) {
+    [data-ui-mode="modern"] body::after { display: none; }
+}
+
+/* ============================================================
+   RECONCILIATION MOIS : KPI cards harmonisees.
+   Avant : 4 backgrounds rouge/vert/cyan/jaune -> cacophonie.
+   Apres : 1 surface cream + 3px accent bar verticale couleur.
+   Beaucoup plus lisible et coherent avec le design system.
+   ============================================================ */
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-primary,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-success,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-info,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-warning {
+    background: var(--mm-cream) !important;
+    color: var(--mm-slate-900) !important;
+    border: 1px solid var(--mm-slate-200) !important;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--mm-shadow-sm);
+}
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-primary::before,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-success::before,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-info::before,
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-warning::before {
+    content: "";
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 3px;
+}
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-primary::before { background: var(--mm-red-700); }
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-success::before { background: var(--mm-green-600); }
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-info::before    { background: var(--mm-slate-500); }
+[data-ui-mode="modern"] #reconciliation-mois-section .card.bg-warning::before { background: var(--mm-gold-500); }
+
+[data-ui-mode="modern"] #reconciliation-mois-section .card .card-title {
+    font-size: 11px !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--mm-slate-500) !important;
+}
+[data-ui-mode="modern"] #reconciliation-mois-section .card-text.fs-4 {
+    font-family: 'Rubik', system-ui, sans-serif;
+    font-weight: 700;
+    color: var(--mm-slate-900) !important;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Recon Mois : Recalculer (btn-warning) -> slate-700 (plus discret).
+   Vider Cache (btn-outline-secondary) -> pill cream.
+   Export Excel garde le vert (Excel semantique). */
+[data-ui-mode="modern"] #recalculer-reconciliation-mois {
+    background: var(--mm-slate-700) !important;
+    border-color: var(--mm-slate-700) !important;
+    color: white !important;
+    border-radius: var(--mm-radius-sm) !important;
+    font-weight: 500;
+}
+[data-ui-mode="modern"] #recalculer-reconciliation-mois:hover {
+    background: var(--mm-slate-900) !important;
+    border-color: var(--mm-slate-900) !important;
+}
+[data-ui-mode="modern"] #vider-cache-reconciliation {
+    background: var(--mm-cream) !important;
+    border: 1px solid var(--mm-slate-200) !important;
+    color: var(--mm-slate-700) !important;
+    border-radius: var(--mm-radius-sm) !important;
+}
+[data-ui-mode="modern"] #vider-cache-reconciliation:hover {
+    background: var(--mm-red-50) !important;
+    border-color: var(--mm-red-100) !important;
+    color: var(--mm-red-700) !important;
+}
+
+/* ============================================================
+   RECONCILIATION (jour) : harmonise les 5 boutons d'action.
+   ============================================================ */
+[data-ui-mode="modern"] #calculer-reconciliation {
+    background: var(--mm-red-700) !important;
+    border-color: var(--mm-red-700) !important;
+    color: white !important;
+    box-shadow: var(--mm-shadow-red);
+    font-weight: 600;
+}
+[data-ui-mode="modern"] #calculer-reconciliation:hover {
+    background: var(--mm-red-600) !important;
+    border-color: var(--mm-red-600) !important;
+}
+/* Sauvegarder reconciliation : override le vert btn-success */
+[data-ui-mode="modern"] #sauvegarder-reconciliation {
+    background: var(--mm-red-700) !important;
+    border-color: var(--mm-red-700) !important;
+    color: white !important;
+    box-shadow: var(--mm-shadow-red);
+    font-weight: 600;
+}
+[data-ui-mode="modern"] #sauvegarder-reconciliation:hover {
+    background: var(--mm-red-600) !important;
+    border-color: var(--mm-red-600) !important;
+}
+[data-ui-mode="modern"] #sauvegarder-reconciliation:disabled {
+    opacity: 0.45;
+    box-shadow: none;
+}
+/* Charger commentaires : pill slate discret */
+[data-ui-mode="modern"] #charger-commentaires {
+    background: var(--mm-cream) !important;
+    border: 1px solid var(--mm-slate-200) !important;
+    color: var(--mm-slate-700) !important;
+    box-shadow: none !important;
+}
+[data-ui-mode="modern"] #charger-commentaires:hover {
+    background: var(--mm-slate-100) !important;
+    border-color: var(--mm-slate-300) !important;
+    color: var(--mm-slate-900) !important;
+}
+/* Reconciliation Inter-PV : outlined red brand */
+[data-ui-mode="modern"] #btn-rec-interpv {
+    background: var(--mm-cream) !important;
+    border: 1px solid var(--mm-red-700) !important;
+    color: var(--mm-red-700) !important;
+    border-radius: var(--mm-radius-sm) !important;
+    font-weight: 500;
+}
+[data-ui-mode="modern"] #btn-rec-interpv:hover {
+    background: var(--mm-red-50) !important;
+    border-color: var(--mm-red-600) !important;
+    color: var(--mm-red-700) !important;
+}
+
+/* Print-friendly : en print on revient au classic pour conserver les
+   factures et l'export PDF (puppeteer) inchanges. */
+@media print {
+    .mm-topbar, .mm-sidebar { display: none !important; }
+    [data-ui-mode="modern"] body::before,
+    [data-ui-mode="modern"] body::after { display: none !important; }
+    [data-ui-mode="modern"] body {
+        padding: 0 !important;
+        background: white !important;
+    }
+}
