@@ -104,24 +104,29 @@ async function updateSchema() {
             await sequelize.query(`
                 ALTER TABLE ui_settings ADD COLUMN IF NOT EXISTS default_theme VARCHAR(8) NOT NULL DEFAULT 'auto'
             `);
-            const existing = await UISettings.findOne({ where: { tenant: tenantKey } });
-            if (!existing) {
-                await UISettings.create({
+            // findOrCreate evite la race possible entre findOne+create si 2
+            // process boot en parallele (le 2e taperait l'unique constraint
+            // sur tenant). Idempotent. Postgres serialise via la contrainte.
+            const [row, created] = await UISettings.findOrCreate({
+                where: { tenant: tenantKey },
+                defaults: {
                     tenant: tenantKey,
                     new_ui_enabled: false,
                     new_ui_roles: [],
                     sidebar_position: 'right',
                     default_theme: 'auto',
                     updated_by: 'system-seed'
-                });
+                }
+            });
+            if (created) {
                 console.log(`UISettings : default row seeded for tenant ${tenantKey}`);
             } else {
                 // Back-compat : si new_ui_roles est null mais new_ui_enabled=true,
                 // on remplit avec tous les roles (ancien comportement = global).
-                const roles = existing.new_ui_roles;
-                if ((!roles || roles.length === 0) && existing.new_ui_enabled === true) {
-                    existing.new_ui_roles = ['admin', 'superviseur', 'superutilisateur', 'user', 'lecteur', 'chef_livreur', 'matapay'];
-                    await existing.save();
+                const roles = row.new_ui_roles;
+                if ((!roles || roles.length === 0) && row.new_ui_enabled === true) {
+                    row.new_ui_roles = ['admin', 'superviseur', 'superutilisateur', 'user', 'lecteur', 'chef_livreur', 'matapay'];
+                    await row.save();
                     console.log('UISettings : migrated old global toggle -> all roles');
                 }
                 console.log(`UISettings : tenant ${tenantKey} row already exists`);

@@ -9214,8 +9214,14 @@ app.get('/api/ui-settings', async (req, res) => {
         });
     } catch (e) {
         console.error('GET /api/ui-settings error:', e.message);
+        // success: false signale au client (admin.js load() valide ce champ)
+        // qu'il faut traiter cette reponse comme un echec — bouton Save reste
+        // disable, modern-ui.js reste sur le cache local. fallback: true et
+        // les DEFAULT_UI_SETTINGS sont quand meme retournes pour les consumers
+        // qui voudraient un best-effort safe (pas crasher la sidebar).
         res.json({
-            success: true,
+            success: false,
+            message: 'Erreur DB ui_settings (mode degrade)',
             ...DEFAULT_UI_SETTINGS,
             enabledForCurrentUser: false,
             newUiEnabled: false,

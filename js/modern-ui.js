@@ -158,6 +158,32 @@
     //  SHELL CONSTRUCTION
     // ============================================================
 
+    // Normalise un path (ajoute "/" leading, strip query/hash, lowercase).
+    function normalizePath(p) {
+        if (!p) return '';
+        var s = String(p).toLowerCase();
+        // Strip query + hash
+        var qIdx = s.indexOf('?');
+        if (qIdx >= 0) s = s.slice(0, qIdx);
+        var hIdx = s.indexOf('#');
+        if (hIdx >= 0) s = s.slice(0, hIdx);
+        // Ensure leading slash (sauf si vide)
+        if (s && s.charAt(0) !== '/') s = '/' + s;
+        return s;
+    }
+
+    // Compare 2 paths via endsWith normalise. Empeche les false positives
+    // type currentPath="/super-admin.html".indexOf("/admin.html") = 6 (truthy)
+    // alors qu'on ne devrait PAS matcher.
+    function pathEndsWith(currentPath, candidateHref) {
+        var a = normalizePath(currentPath);
+        var b = normalizePath(candidateHref);
+        if (!a || !b) return false;
+        // Match exact OU le path se termine par "/" + candidate (force la
+        // frontiere de path: /admin.html match /admin.html, /super-admin.html ne match PAS)
+        return a === b || a.endsWith(b);
+    }
+
     // Index.html : nav items identifies par leur ID DOM (xxx-tab).
     // Maas App : garde stock-alerte-tab (Audit) toujours utilise et ajoute
     // finance-tab + import-image-tab specifiques au tenant.
@@ -364,10 +390,12 @@
                 link.title = it.label;
                 link.innerHTML = '<i class="bi ' + it.icon + '"></i><span class="mm-nav-text">' + escapeHtml(it.label) + '</span>';
 
-                // Active si la page courante matche l'href (pour les liens
-                // standalone). Pour les liens index?tab=X on ne peut pas
+                // Active si la page courante matche EXACTEMENT l'href (pour les
+                // liens standalone). Pour les liens index?tab=X on ne peut pas
                 // matcher facilement, donc on ne marque pas actif.
-                if (it.href && !it.href.startsWith('/index.html') && currentPath.indexOf(it.href.toLowerCase()) >= 0) {
+                // endsWith (vs indexOf) evite les false positives type
+                // /super-admin.html qui contiendrait '/admin.html'.
+                if (it.href && !it.href.startsWith('/index.html') && pathEndsWith(currentPath, it.href)) {
                     link.classList.add('active');
                 }
 
@@ -439,8 +467,9 @@
                 link.title = it.label;
                 link.innerHTML = '<i class="bi ' + it.icon + '"></i><span class="mm-nav-text">' + escapeHtml(it.label) + '</span>';
 
-                // Active si on est sur la page cible
-                var isCurrent = it.href && currentPath.indexOf(it.href.toLowerCase()) >= 0;
+                // Active si on est EXACTEMENT sur la page cible (endsWith
+                // normalisee — evite /super-admin matching /admin etc.)
+                var isCurrent = it.href && pathEndsWith(currentPath, it.href);
                 if (isCurrent) link.classList.add('active');
 
                 groupDiv.appendChild(link);
@@ -739,12 +768,31 @@
             if (window.Chart.defaults.plugins && window.Chart.defaults.plugins.tooltip) {
                 window.Chart.defaults.plugins.tooltip.backgroundColor = isDark ? '#1E293B' : '#0F172A';
             }
-            // Re-render charts existants
-            var instances = window.Chart.instances || (window.Chart.registry && window.Chart.registry.getRegistered);
-            if (instances && typeof instances === 'object') {
-                Object.values(instances).forEach(function (c) {
-                    if (c && typeof c.update === 'function') c.update('none');
-                });
+            // Re-render charts existants (defensive vs versions Chart.js variees):
+            //  - v2/v3: window.Chart.instances est un objet {id:chart}
+            //  - v4: window.Chart.registry.getRegistered est une FONCTION
+            //  - certains builds: registry direct (rare)
+            var instances = window.Chart.instances;
+            if (!instances && window.Chart.registry) {
+                var reg = window.Chart.registry;
+                if (typeof reg.getRegistered === 'function') {
+                    instances = reg.getRegistered();
+                } else {
+                    instances = reg; // fallback
+                }
+            }
+            if (instances) {
+                var list = null;
+                if (Array.isArray(instances)) {
+                    list = instances;
+                } else if (typeof instances === 'object') {
+                    list = Object.values(instances);
+                }
+                if (list && list.forEach) {
+                    list.forEach(function (c) {
+                        if (c && typeof c.update === 'function') c.update('none');
+                    });
+                }
             }
         } catch (e) {
             console.warn('[modern-ui] applyChartTheme erreur :', e && e.message);

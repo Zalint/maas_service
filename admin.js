@@ -6012,9 +6012,22 @@ if (document.readyState === 'loading') {
     }
 
     async function load() {
+        // Garde-fou: tant que load() n'a pas valide la reponse du serveur,
+        // le bouton Save reste disable pour empecher de sauvegarder par-dessus
+        // une vraie config valide avec les valeurs par defaut/vides.
+        const saveBtn = document.getElementById('ui-settings-save-btn');
+        if (saveBtn) saveBtn.disabled = true;
         try {
             const r = await fetch('/api/ui-settings', { credentials: 'same-origin' });
+            if (!r.ok) {
+                throw new Error('HTTP ' + r.status);
+            }
             const data = await r.json();
+            // Le serveur retourne success:false avec fallback values en cas
+            // d'erreur DB (cf. catch GET /api/ui-settings cote serveur).
+            if (data && data.success === false) {
+                throw new Error(data.message || 'Reponse serveur en erreur (success:false)');
+            }
 
             // Nouveau format : liste de roles. Fallback sur ancien format si absent.
             let roles = Array.isArray(data.newUiRoles) ? data.newUiRoles : null;
@@ -6056,8 +6069,11 @@ if (document.readyState === 'loading') {
                 }
                 setStatus('Derniere modification : ' + data.updatedBy + ' (' + dateStr + ')', 'muted');
             }
+            // Load reussi -> on enable le bouton Save
+            if (saveBtn) saveBtn.disabled = false;
         } catch (e) {
-            setStatus('Impossible de charger les parametres : ' + (e && e.message), 'error');
+            setStatus('Impossible de charger les parametres : ' + (e && e.message) + ' (sauvegarde desactivee)', 'error');
+            // Save reste disable pour proteger la config existante
         }
     }
 
@@ -6108,7 +6124,13 @@ if (document.readyState === 'loading') {
 
     function wire() {
         const btn = document.getElementById('ui-settings-save-btn');
-        if (btn) btn.addEventListener('click', save);
+        if (btn) {
+            // Disable initial: load() le re-enable en cas de succes.
+            // Empeche un click sur Save avant que la vraie config ne soit
+            // chargee (eviterait de sauver les checkboxes par defaut).
+            btn.disabled = true;
+            btn.addEventListener('click', save);
+        }
 
         const allBtn = document.getElementById('ui-roles-all-btn');
         if (allBtn) allBtn.addEventListener('click', function () {

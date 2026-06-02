@@ -711,9 +711,8 @@
     border-bottom: 1px solid var(--mm-slate-100);
     font-variant-numeric: tabular-nums;
 }
-[data-ui-mode="modern"] .table-striped > tbody > tr:nth-of-type(odd) > * {
-    background-color: rgba(248, 250, 252, 0.5);
-}
+/* Stripe theme-aware deja defini ~ligne 521 via --mm-stripe-overlay (dark + light).
+   L'ancien override hardcoded ici (rgba 248,250,252) ecrasait le dark mode -> retire. */
 
 /* KPI cards (Visualisation) — la structure existe deja, on l'embellit */
 [data-ui-mode="modern"] .kpi-card {
