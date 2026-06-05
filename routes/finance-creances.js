@@ -252,6 +252,11 @@ async function computeCreances(opts = {}) {
 
     // 5. Calculer.
     const detail = new Map(); // produit -> agg global
+    // Detail par date: date -> { date, quantite (eligibles), dette }
+    // Meme semantique que `detail` mais agrege par date au lieu de produit.
+    // Utilise par l'UI "Calcul Maas > Detail par date" pour spot les pics
+    // de commission par jour.
+    const detailParDate = new Map();
     // Detail par centre: centre -> Map<produit, { quantite_cdc, recevable, prix_achat, prix_vente_pondere }>
     const detailParCentre = new Map();
     let totalDette = 0;        // ce que je dois (3% × prix fournisseur × qte)
@@ -304,6 +309,21 @@ async function computeCreances(opts = {}) {
         agg.dette += detteLigne;
         agg.recevable += recevableLigne;
         detail.set(key, agg);
+
+        // Agreger par date (vue temporelle) pour "Calcul Maas > Detail par date".
+        // Meme semantique que `detail` (produits eligibles uniquement) mais
+        // agrege par jour. v.date est en format DATEONLY ('YYYY-MM-DD').
+        const dateKey = v.date;
+        if (dateKey) {
+            const dAgg = detailParDate.get(dateKey) || {
+                date: dateKey,
+                quantite: 0,
+                dette: 0
+            };
+            dAgg.quantite += qte;
+            dAgg.dette += detteLigne;
+            detailParDate.set(dateKey, dAgg);
+        }
 
         // Agreger par (centre, produit) pour l'onglet "Centre de Decoupe".
         // On accumule aussi mon_prix * qte pour calculer le prix moyen
@@ -522,6 +542,16 @@ async function computeCreances(opts = {}) {
                 recevable: round2(d.recevable)
             }))
             .sort((a, b) => b.dette - a.dette),
+        // Detail par date (vue temporelle - utilise par "Calcul Maas > Detail par date").
+        // Quantite = somme qte des ventes eligibles uniquement (coherent avec
+        // `detail` ci-dessus). Trie par date desc (jours recents en haut).
+        detail_par_date: Array.from(detailParDate.values())
+            .map((d) => ({
+                date: d.date,
+                quantite: round2(d.quantite),
+                dette: round2(d.dette)
+            }))
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
         // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
         // Chaque entree: { centre, total_recevable, total_quantite,
         //                   detail: [{ produit, quantite_cdc, prix_achat,
