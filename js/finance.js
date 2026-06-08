@@ -282,7 +282,7 @@
         const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
             .replace('col-md-3', 'col-md-4');
         cards.innerHTML = [
-            card3('warning', 'percent',    `Je dois (${data.commission_pct}% sur ventes ${data.categories_eligibles.join('/')})`, fmtAmount(data.ce_que_je_dois)),
+            card3('warning', 'percent',    `Je dois (${data.commission_pct}% sur livraisons ${data.categories_eligibles.join('/')})`, fmtAmount(data.ce_que_je_dois)),
             card3('info',    'wallet2',    'Paiements locaux saisis',     fmtAmount(data.paiements_effectues)),
             card3('neutral', 'calculator', 'Solde commission (Je dois − Paiements)', fmtAmount(soldeCommission))
         ].join('');
@@ -295,7 +295,7 @@
                 <td class="text-end">${esc(d.quantite)}</td>
                 <td class="text-end">${esc(fmtMoney(d.dette))}</td>
             </tr>
-        `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune vente éligible sur la période</td></tr>';
+        `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
 
         // Detail par date : meme semantique (commission 3% sur ventes eligibles),
         // tri par date desc (jours recents en haut). Date format YYYY-MM-DD du
@@ -315,7 +315,7 @@
                     <td class="text-end">${esc(d.quantite)}</td>
                     <td class="text-end">${esc(fmtMoney(d.dette))}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune vente éligible sur la période</td></tr>';
+            `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
         }
 
         const pbody = document.querySelector('#fin-paiements-list tbody');

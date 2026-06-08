@@ -32,6 +32,7 @@
 const { Op } = require('sequelize');
 const {
     Vente,
+    Transfert,
     FinanceConfig,
     FournisseurPaiement,
     DecoupeOrderLog,
@@ -216,9 +217,34 @@ async function computeCreances(opts = {}) {
         return r.value ? r.value.prix_vente : null;
     };
 
-    // 3. Charger toutes les ventes de la periode.
-    // commandeId + numeroClient sont ajoutes au drill-down pour tracer
-    // la marge encaissable a la commande client qui l'a generee.
+    // 3a. Charger les TRANSFERTS ENTRANTS de la periode pour le calcul de
+    //     la commission 3%. MaaS facture sur ce qu'il LIVRE (transfert
+    //     entrant impact=1), pas sur ce que le tenant VEND. Si une partie
+    //     de la viande recue est perdue (perration, decoupe, vol), elle
+    //     reste a la charge du tenant — MaaS n'en perd pas la commission.
+    //
+    //     Format date en BDD: DD-MM-YYYY (legacy). dateList est en ISO
+    //     YYYY-MM-DD. On filtre les 2 formats par defense (OR clause).
+    const dateListDDMM = dateList.map((iso) => {
+        const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+    });
+    const transfertsEntrants = await Transfert.findAll({
+        where: {
+            impact: '1',
+            [Op.or]: [
+                { date: { [Op.in]: dateList } },
+                { date: { [Op.in]: dateListDDMM } }
+            ]
+        },
+        attributes: ['date', 'produit', 'pointVente', 'quantite', 'prixUnitaire']
+    });
+
+    // 3b. Charger les VENTES de la periode UNIQUEMENT pour calculer le
+    //     recevable CDC (marge × qte sur ventes passees par un centre de
+    //     decoupe). Le recevable se base sur ce qui est VENDU au client
+    //     CDC, pas sur ce qui est recu — donc on garde les ventes ici.
+    //     La dette commissions, elle, vient maintenant des transferts ci-dessus.
     const ventes = await Vente.findAll({
         where: {
             date: { [Op.in]: dateList },
@@ -251,39 +277,86 @@ async function computeCreances(opts = {}) {
     const isVenteCentreDecoupe = (v) => getVenteCentre(v) !== null;
 
     // 5. Calculer.
-    const detail = new Map(); // produit -> agg global
-    // Detail par date: date -> { date, quantite (eligibles), dette }
-    // Meme semantique que `detail` mais agrege par date au lieu de produit.
-    // Utilise par l'UI "Calcul Maas > Detail par date" pour spot les pics
-    // de commission par jour.
-    const detailParDate = new Map();
-    // Detail par centre: centre -> Map<produit, { quantite_cdc, recevable, prix_achat, prix_vente_pondere }>
+    // detail (par produit) et detailParDate (par jour) viennent maintenant
+    // des TRANSFERTS ENTRANTS (= viandes recues par le tenant). Voir 5a.
+    // detailParCentre (CDC) reste base sur les VENTES (= ce qui est vendu
+    // au client CDC). Voir 5b.
+    const detail = new Map();         // produit -> { produit, quantite, dette }
+    const detailParDate = new Map();  // date -> { date, quantite, dette }
     const detailParCentre = new Map();
-    let totalDette = 0;        // ce que je dois (3% × prix fournisseur × qte)
+    let totalDette = 0;        // ce que je dois (3% × prix fournisseur × qte recue)
     let totalRecevable = 0;    // ce qu'il me doit (margin × qte sur ventes Centre)
 
+    // Helper: normalise la date d'un transfert ('DD-MM-YYYY' legacy ou
+    // 'YYYY-MM-DD' ISO) en ISO. Defensive en cas de mix de formats en BDD.
+    const transfertDateToISO = (raw) => {
+        if (!raw) return null;
+        const s = String(raw);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // deja ISO
+        const m = s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+        if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+        return toISO(s) || s;
+    };
+
+    // 5a. Dette MaaS sur transferts entrants (3% × prix vente catalogue × qte).
+    //     Le filtre d'eligibilite "boucherie" est implicite: seuls les produits
+    //     presents dans le catalogue fournisseur (lookupPrix) generent de la
+    //     dette. Les autres produits inventaire (epicerie, etc.) sont skip.
+    for (const t of transfertsEntrants) {
+        const qte = parseFloat(t.quantite) || 0;
+        if (qte <= 0) continue;
+        const prix = lookupPrix(t.produit);
+        if (!prix) continue; // produit non present dans le catalogue fournisseur
+
+        const tDateISO = transfertDateToISO(t.date);
+        // Prix vente fournisseur effectif a la date du transfert (point-in-time).
+        // Fallback sur le prix courant catalogue si pas d'historique avant cette date.
+        const prixVenteEff = lookupPrixVenteAtDate(t.produit, tDateISO) ?? prix.prix_vente;
+        const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
+        totalDette += detteLigne;
+
+        // Agreger par produit (cle = nom inventaire, ex: 'Boeuf' pas 'Boeuf en detail')
+        const key = t.produit;
+        const pAgg = detail.get(key) || {
+            produit: key,
+            quantite: 0,
+            quantite_cdc: 0, // populated en 5b si CDC ventes de ce produit
+            prix_achat: prix.prix_achat,
+            dette: 0,
+            recevable: 0    // populated en 5b
+        };
+        pAgg.quantite += qte;
+        pAgg.dette += detteLigne;
+        detail.set(key, pAgg);
+
+        // Agreger par date
+        if (tDateISO) {
+            const dAgg = detailParDate.get(tDateISO) || {
+                date: tDateISO,
+                quantite: 0,
+                dette: 0
+            };
+            dAgg.quantite += qte;
+            dAgg.dette += detteLigne;
+            detailParDate.set(tDateISO, dAgg);
+        }
+    }
+
+    // 5b. Recevable CDC sur ventes (marge × qte sur ventes passees par centre).
+    //     Reste base sur les VENTES car le recevable c'est sur ce qui est
+    //     livre au client CDC, pas sur ce qui est recu. La boucle ne touche
+    //     PAS a detail.dette/detailParDate/totalDette (deja calcule en 5a).
     for (const v of ventes) {
         const qte = parseFloat(v.nombre) || 0;
         if (qte <= 0) continue;
         const prix = lookupPrix(v.produit);
-        if (!prix) continue; // produit non present dans le catalogue fournisseur
-        // Nom catalogue resolu (= cible des PUT /prix-* depuis l'UI CDC).
-        // Ex: vente "Boeuf en detail" -> catalogue "Boeuf".
+        if (!prix) continue;
         const produitCatalog = resolveProduit(v.produit, resolverMaps).resolved || v.produit;
 
-        // Point-in-time: prix_vente, prix_achat, prix_vente_cdc effectifs
-        // a la date de la vente. Changer un prix aujourd'hui n'impacte
-        // pas les ventes passees.
         const prixVenteEff = lookupPrixVenteAtDate(v.produit, v.date) ?? prix.prix_vente;
-        const prixAchatEff = lookupPrixAchatAtDate(v.produit, v.date); // null possible
+        const prixAchatEff = lookupPrixAchatAtDate(v.produit, v.date);
         const prixVenteCdc = lookupPrixCdcAtDate(v.produit, v.date) || 0;
 
-        // Commission 3% sur prix de vente catalogue (toutes ventes elligibles)
-        const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
-        totalDette += detteLigne;
-
-        // Recevable: uniquement si vente passee par le Centre de Decoupe
-        // ET si le fournisseur a un prix_achat connu a la date.
         const centre = getVenteCentre(v);
         let recevableLigne = 0;
         const monPrix = parseFloat(v.prixUnit) || 0;
@@ -292,43 +365,31 @@ async function computeCreances(opts = {}) {
             totalRecevable += recevableLigne;
         }
 
-        // Agreger par produit (vue globale) pour l'onglet "Creances".
-        const key = v.produit;
-        const agg = detail.get(key) || {
-            produit: key,
-            quantite: 0,
+        // Enrichir detail (par produit) avec quantite_cdc + recevable + prix_achat.
+        // Cle differente de 5a: ici c'est le nom vente (ex: 'Boeuf en detail')
+        // pas le nom inventaire (ex: 'Boeuf'). On agrege sous le nom vente sur
+        // une cle separee suffixee pour eviter de melanger avec 5a.
+        // Pour simplifier: on agrege sous le nom inventaire normalise.
+        const keyForCdc = produitCatalog;
+        const pAgg = detail.get(keyForCdc) || {
+            produit: keyForCdc,
+            quantite: 0,    // vient de 5a uniquement
             quantite_cdc: 0,
-            prix_achat: prix.prix_achat, // courant catalogue (info edition UI)
-            dette: 0,
+            prix_achat: prix.prix_achat,
+            dette: 0,       // vient de 5a uniquement
             recevable: 0
         };
-        agg.quantite += qte;
         if (centre && prixAchatEff != null) {
-            agg.quantite_cdc += qte;
+            pAgg.quantite_cdc += qte;
         }
-        agg.dette += detteLigne;
-        agg.recevable += recevableLigne;
-        detail.set(key, agg);
-
-        // Agreger par date (vue temporelle) pour "Calcul Maas > Detail par date".
-        // Meme semantique que `detail` (produits eligibles uniquement) mais
-        // agrege par jour. v.date est en format DATEONLY ('YYYY-MM-DD').
-        const dateKey = v.date;
-        if (dateKey) {
-            const dAgg = detailParDate.get(dateKey) || {
-                date: dateKey,
-                quantite: 0,
-                dette: 0
-            };
-            dAgg.quantite += qte;
-            dAgg.dette += detteLigne;
-            detailParDate.set(dateKey, dAgg);
-        }
+        pAgg.recevable += recevableLigne;
+        detail.set(keyForCdc, pAgg);
 
         // Agreger par (centre, produit) pour l'onglet "Centre de Decoupe".
         // On accumule aussi mon_prix * qte pour calculer le prix moyen
         // pondere par produit dans ce centre, et on conserve la liste
         // des ventes individuelles pour le drill-down "Details" cote UI.
+        const key = v.produit; // libelle vente original (ex: 'Boeuf en detail')
         if (centre && prixAchatEff != null) {
             if (!detailParCentre.has(centre)) {
                 detailParCentre.set(centre, new Map());
@@ -426,9 +487,11 @@ async function computeCreances(opts = {}) {
             const prixVenteEff = logDateISO ? (lookupPrixVenteAtDate(produitNom, logDateISO) ?? prix.prix_vente) : prix.prix_vente;
             const prixAchatEff = logDateISO ? lookupPrixAchatAtDate(produitNom, logDateISO) : prix.prix_achat;
 
-            // Commission 3% (dette envers le fournisseur), point-in-time.
-            const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
-            totalDette += detteLigne;
+            // PAS de calcul dette ici: la commission MaaS est facturee sur
+            // les transferts entrants (cf. 5a). Les commandes CDC ne sont
+            // qu'une vue "ce qu'on a livre au client CDC" pour calculer
+            // le recevable. Le double-counting de dette via decoupe-logs
+            // est explicitement evite.
 
             // Recevable: par definition les commandes decoupe SONT des
             // ventes CDC, donc on accumule directement.
@@ -439,7 +502,8 @@ async function computeCreances(opts = {}) {
                 totalRecevable += recevableLigne;
             }
 
-            // Agregat global par produit
+            // Agregat global par produit. NE MODIFIE PAS quantite/dette
+            // (ils viennent du loop 5a sur transferts entrants).
             const key = produitNom;
             const agg = detail.get(key) || {
                 produit: key,
@@ -449,9 +513,7 @@ async function computeCreances(opts = {}) {
                 dette: 0,
                 recevable: 0
             };
-            agg.quantite += qte;
             if (prixAchatEff != null) agg.quantite_cdc += qte;
-            agg.dette += detteLigne;
             agg.recevable += recevableLigne;
             detail.set(key, agg);
 
