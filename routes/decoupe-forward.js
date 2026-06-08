@@ -18,6 +18,7 @@
  */
 
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const tenant = require('../config/tenant');
 const { sequelize } = require('../db');
@@ -193,6 +194,20 @@ router.post('/send', async (req, res) => {
         if (notes) payload.notes = notes;
 
         const url = `${baseUrl.replace(/\/$/, '')}/api/commandes-decoupe/external`;
+
+        // Sécurité MaaS (cf. maas-auth.js côté Mata) :
+        //  - Identité explicite via X-Maas-Client = slug du tenant.
+        //  - Signature HMAC-SHA256 du corps + horodatage (anti-rejeu/falsification).
+        // On signe EXACTEMENT les octets envoyés (rawBody), pas une re-sérialisation,
+        // pour que la signature corresponde à req.rawBody reçu côté Mata.
+        const rawBody = JSON.stringify(payload);
+        const ts = String(Date.now());
+        const clientId = process.env.TENANT_SLUG || tenant.slug || '';
+        const signature = crypto
+            .createHmac('sha256', apiKey)
+            .update(`v1.${ts}.${rawBody}`, 'utf8')
+            .digest('hex');
+
         // Timeout dur sur l'appel Mata pour ne pas bloquer une requête POS si
         // l'API distante traîne. 10s est suffisant pour un upstream sain;
         // au-delà on renvoie 504 Gateway Timeout au client.
@@ -205,9 +220,14 @@ router.post('/send', async (req, res) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-api-key': apiKey
+                    // x-api-key conservé pour la phase de transition ; ignoré côté
+                    // Mata une fois MAAS_STRICT=true (la signature fait foi).
+                    'x-api-key': apiKey,
+                    'X-Maas-Client': clientId,
+                    'X-Maas-Timestamp': ts,
+                    'X-Maas-Signature': signature
                 },
-                body: JSON.stringify(payload),
+                body: rawBody,
                 signal: controller.signal
             });
         } catch (fetchErr) {
