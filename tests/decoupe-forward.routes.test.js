@@ -435,7 +435,12 @@ describe('GET /api/decoupe/mine', () => {
         mockDecoupeLogFindAll.mockResolvedValueOnce(rows);
         const res = await request(makeApp()).get('/api/decoupe/mine');
         expect(res.body.success).toBe(true);
-        expect(res.body.commandes).toEqual(rows);
+        // Sans MATA_DECOUPE_* (supprimé en beforeEach), le statut live n'est pas
+        // récupéré → enrichi à null, mais l'ordre et les données restent intacts.
+        expect(res.body.commandes).toEqual([
+            { id: 2, commande_ref: 'A', statut: null },
+            { id: 1, commande_ref: 'B', statut: null }
+        ]);
         expect(mockDecoupeLogFindAll.mock.calls[0][0].order).toEqual([['created_at', 'DESC']]);
     });
 
@@ -444,5 +449,28 @@ describe('GET /api/decoupe/mine', () => {
         const res = await request(makeApp()).get('/api/decoupe/mine');
         expect(res.status).toBe(500);
         expect(res.body.commandes).toEqual([]);
+    });
+
+    test('enrichit le statut live depuis Mata quand configuré', async () => {
+        process.env.MATA_DECOUPE_BASE_URL = 'https://mata.test';
+        process.env.MATA_DECOUPE_API_KEY = 'k';
+        mockDecoupeLogFindAll.mockResolvedValueOnce([{ id: 1, commande_ref: 'CDD-1' }]);
+        global.fetch = jest.fn().mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: true, commandes: [{ commandeRef: 'CDD-1', statut: 'annule' }] })
+        });
+        const res = await request(makeApp()).get('/api/decoupe/mine');
+        expect(res.status).toBe(200);
+        expect(res.body.commandes[0].statut).toBe('annule');
+    });
+
+    test('statut null si Mata injoignable (best-effort, pas de 500)', async () => {
+        process.env.MATA_DECOUPE_BASE_URL = 'https://mata.test';
+        process.env.MATA_DECOUPE_API_KEY = 'k';
+        mockDecoupeLogFindAll.mockResolvedValueOnce([{ id: 1, commande_ref: 'CDD-1' }]);
+        global.fetch = jest.fn().mockRejectedValueOnce(new Error('down'));
+        const res = await request(makeApp()).get('/api/decoupe/mine');
+        expect(res.status).toBe(200);
+        expect(res.body.commandes[0].statut).toBeNull();
     });
 });

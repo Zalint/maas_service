@@ -303,6 +303,49 @@ router.post('/send', async (req, res) => {
  * juste par tenant (la table est déjà scopée par schéma Postgres en multi-tenant).
  * Retourne les 100 dernières par défaut.
  */
+// Récupère le statut LIVE des commandes depuis Mata (source de vérité),
+// indexé par référence (commandeRef -> statut). Best-effort : renvoie {} si
+// l'intégration n'est pas configurée ou si Mata est indisponible — le panneau
+// retombe alors sur "—" plutôt que d'afficher un statut figé/faux.
+async function fetchMataStatuts() {
+    const baseUrl = process.env.MATA_DECOUPE_BASE_URL;
+    const apiKey = process.env.MATA_DECOUPE_API_KEY;
+    if (!baseUrl || !apiKey) return {};
+    const url = `${baseUrl.replace(/\/$/, '')}/api/commandes-decoupe/external`;
+    const ts = String(Date.now());
+    const clientId = process.env.TENANT_SLUG || tenant.slug || '';
+    // GET sans corps : on signe quand même (corps vide) pour rester cohérent.
+    const signature = crypto.createHmac('sha256', apiKey).update(`v1.${ts}.`, 'utf8').digest('hex');
+    const TIMEOUT_MS = Number(process.env.MATA_DECOUPE_TIMEOUT_MS) || 6000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+        const resp = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'x-api-key': apiKey,
+                'X-Maas-Client': clientId,
+                'X-Maas-Timestamp': ts,
+                'X-Maas-Signature': signature
+            },
+            signal: controller.signal
+        });
+        if (!resp.ok) return {};
+        const data = await resp.json().catch(() => ({}));
+        const map = {};
+        for (const c of (data && data.commandes) || []) {
+            const ref = c.commandeRef || c.commande_ref;
+            if (ref) map[ref] = c.statut;
+        }
+        return map;
+    } catch (e) {
+        console.warn('[decoupe-forward] statut live indisponible:', e.message);
+        return {};
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 router.get('/mine', async (req, res) => {
     try {
         const limit = clampLimit(req.query.limit);
@@ -310,7 +353,14 @@ router.get('/mine', async (req, res) => {
             order: [['created_at', 'DESC']],
             limit
         });
-        res.json({ success: true, commandes: rows });
+        // Enrichir chaque ligne avec le statut LIVE de Mata (source de vérité).
+        const statutByRef = rows.length ? await fetchMataStatuts() : {};
+        const commandes = rows.map(r => {
+            const o = (r && typeof r.toJSON === 'function') ? r.toJSON() : { ...r };
+            o.statut = (o.commande_ref && statutByRef[o.commande_ref]) || null;
+            return o;
+        });
+        res.json({ success: true, commandes });
     } catch (error) {
         console.error('[decoupe-forward] /mine error', error);
         res.status(500).json({ success: false, error: error.message, commandes: [] });

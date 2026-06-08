@@ -10522,6 +10522,26 @@ function toggleInterPVPanel() {
     }
 }
 
+// Badge de statut LIVE (statut renvoyé par /api/decoupe/mine, source de vérité Mata).
+// Si statut absent (Mata injoignable), affiche "—" plutôt qu'un statut faux.
+function statutBadgeDecoupe(statut) {
+    const s = String(statut || '').trim().toLowerCase();
+    const MAP = {
+        'reçu': ['Reçu', 'bg-secondary'],
+        'recu': ['Reçu', 'bg-secondary'],
+        'en_preparation': ['En préparation', 'bg-warning text-dark'],
+        'pret': ['Prêt', 'bg-info text-dark'],
+        'prêt': ['Prêt', 'bg-info text-dark'],
+        'en_livraison': ['En livraison', 'bg-primary'],
+        'livre': ['Livré', 'bg-success'],
+        'livré': ['Livré', 'bg-success'],
+        'annule': ['Annulé', 'bg-danger'],
+        'annulé': ['Annulé', 'bg-danger']
+    };
+    const entry = MAP[s] || (s ? [statut, 'bg-secondary'] : ['—', 'bg-light text-dark']);
+    return `<span class="badge ${entry[1]}">${escapeDecoupe(entry[0])}</span>`;
+}
+
 async function chargerInterPVPanel() {
     const tbody = document.getElementById('interPVTableBody');
     const totalSpan = document.getElementById('interPVTotal');
@@ -10590,7 +10610,7 @@ async function chargerInterPVPanel() {
                     <td>${escapeDecoupe(row.point_vente_executant || '—')}</td>
                     <td><small>${escapeDecoupe(produitsList)}</small></td>
                     <td class="text-end">${formatNumberDecoupe(montant)} F</td>
-                    <td><span class="badge bg-secondary">Reçu</span></td>
+                    <td>${statutBadgeDecoupe(row.statut)}</td>
                 </tr>
             `;
         }
