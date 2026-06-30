@@ -1795,6 +1795,7 @@
                                     data-bs-target="#acc-stock-body" aria-expanded="true" aria-controls="acc-stock-body">
                                 <i class="bi bi-box-seam me-2"></i>
                                 <span class="fw-semibold">Stock</span>
+                                <span id="acc-stock-total" class="badge bg-primary ms-auto me-2" title="Somme des lignes visibles (filtres appliques)"></span>
                             </button>
                         </h2>
                         <div id="acc-stock-body" class="accordion-collapse collapse show"
@@ -1835,6 +1836,7 @@
                                     data-bs-target="#acc-transfert-body" aria-expanded="false" aria-controls="acc-transfert-body">
                                 <i class="bi bi-arrow-left-right me-2"></i>
                                 <span class="fw-semibold">Transfert</span>
+                                <span id="acc-transfert-total" class="badge bg-primary ms-auto me-2" title="Somme des lignes visibles (filtres appliques)"></span>
                             </button>
                         </h2>
                         <div id="acc-transfert-body" class="accordion-collapse collapse"
@@ -3740,7 +3742,7 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js"></script>
+    <script src="script.js?v=20260701-accordion-total"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>

@@ -8814,6 +8814,104 @@ function filtrerStock() {
     });
 }
 
+// =====================================================================
+// Pill total dans les headers des accordeons Stock + Transfert.
+// Affiche la somme des colonnes "Total" des LIGNES VISIBLES (filtrees).
+// Live update via:
+//   1. MutationObserver: capte add/remove de lignes ET les changements
+//      de row.style.display (declenches par filtrerStock + TransfertManager).
+//   2. Event delegation 'input' sur .quantite-input / .prix-unitaire-input.
+//   3. Event delegation 'change' sur .impact-select (Transfert uniquement).
+// Ne touche AUCUNE fonction existante (zero risque de regression).
+// =====================================================================
+(function initAccordionTotalPills() {
+    'use strict';
+
+    // Garde-fou idempotence: si script.js est charge 2x (rare mais possible
+    // via cache-bust reload, hot reload, ou duplicate <script>), on evite
+    // d'attacher 2 MutationObservers au meme tbody.
+    if (window.__accordionTotalPillsInit) return;
+    window.__accordionTotalPillsInit = true;
+
+    const fmtFCFA = (n) => Math.round(n).toLocaleString('fr-FR') + ' FCFA';
+
+    function sumVisibleRows(tbodySelector, withImpact) {
+        const rows = document.querySelectorAll(tbodySelector + ' tr');
+        let total = 0;
+        rows.forEach((row) => {
+            // row.style.display === 'none' = ligne masquee par filtre
+            if (row.style.display === 'none') return;
+            const q = parseFloat(row.querySelector('.quantite-input')?.value) || 0;
+            const p = parseFloat(row.querySelector('.prix-unitaire-input')?.value) || 0;
+            let factor = 1;
+            if (withImpact) {
+                const sel = row.querySelector('.impact-select');
+                if (sel) factor = parseInt(sel.value, 10) || 1;
+            }
+            total += q * p * factor;
+        });
+        return total;
+    }
+
+    function recomputeStockTotalPill() {
+        const pill = document.getElementById('acc-stock-total');
+        if (!pill) return;
+        const total = sumVisibleRows('#stock-table tbody', false);
+        pill.textContent = total > 0 ? fmtFCFA(total) : '';
+    }
+
+    function recomputeTransfertTotalPill() {
+        const pill = document.getElementById('acc-transfert-total');
+        if (!pill) return;
+        const total = sumVisibleRows('#transfertTable tbody', true);
+        pill.textContent = total !== 0 ? fmtFCFA(total) : '';
+    }
+
+    // Expose pour appels manuels eventuels (ex: reset stock)
+    window.recomputeStockTotalPill = recomputeStockTotalPill;
+    window.recomputeTransfertTotalPill = recomputeTransfertTotalPill;
+
+    function attach(tbodySelector, recompute, withImpact) {
+        const tbody = document.querySelector(tbodySelector);
+        if (!tbody) return;
+        // MutationObserver: childList = add/remove ligne; attributes.style =
+        // toggle display par les filtres. PAS de characterData (eviterait
+        // un fire sur tdTotal.textContent qui declencherait deja via input).
+        new MutationObserver(recompute).observe(tbody, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style']
+        });
+        // Live update sur saisie quantite / prix
+        tbody.addEventListener('input', (e) => {
+            if (e.target.matches('.quantite-input, .prix-unitaire-input')) {
+                recompute();
+            }
+        });
+        if (withImpact) {
+            tbody.addEventListener('change', (e) => {
+                if (e.target.matches('.impact-select')) {
+                    recompute();
+                }
+            });
+        }
+        // Initial pass au cas ou des lignes sont deja presentes
+        recompute();
+    }
+
+    function init() {
+        attach('#stock-table tbody', recomputeStockTotalPill, false);
+        attach('#transfertTable tbody', recomputeTransfertTotalPill, true);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+
 // Fonction pour initialiser les filtres de stock
 function initFilterStock() {
     const filtrePointVente = document.getElementById('filtre-point-vente');
