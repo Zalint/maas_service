@@ -112,6 +112,11 @@ const checkPaymentLinksModule = requireModule('payment-links');
  */
 const checkAbonnementsModule = requireModule('abonnements');
 
+/**
+ * Middleware pour les routes de Centre de Decoupe (envoi commandes au CDC)
+ */
+const checkDecoupeModule = requireModule('decoupe');
+
 module.exports = {
     checkModuleActive,
     requireModule,
@@ -125,6 +130,7 @@ module.exports = {
     checkEstimationModule,
     checkPrecommandeModule,
     checkPaymentLinksModule,
-    checkAbonnementsModule
+    checkAbonnementsModule,
+    checkDecoupeModule
 };
 

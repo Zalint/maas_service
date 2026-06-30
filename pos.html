@@ -147,7 +147,11 @@
                         <i class="fas fa-box"></i>
                         <h2 style="margin: 0;">Produits</h2>
                     </div>
-                    <button type="button" id="btnOuvrirDecoupe" class="btn btn-danger btn-sm" onclick="ouvrirModalDecoupe()" title="Centre de découpe — envoyer le panier comme commande à préparer">
+                    <!-- display:none initial = anti-FOUC. modules-handler.js le
+                         repassera a '' au load si le module 'decoupe' est actif
+                         pour le tenant (cf UI_TO_MODULE_MAP). Si le module est
+                         OFF, le bouton reste masque. -->
+                    <button type="button" id="btnOuvrirDecoupe" class="btn btn-danger btn-sm" onclick="ouvrirModalDecoupe()" title="Centre de découpe — envoyer le panier comme commande à préparer" style="display: none;">
                         <i class="fas fa-cut"></i> Découpe
                     </button>
                 </div>
@@ -862,6 +866,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- Helpers UI partages (toast + modal de confirmation, override alert) -->
     <script src="js/ui-helpers.js"></script>
+    <!-- Modules toggle: gere la visibilite des elements conditionnes par
+         l'etat des modules (cf admin > Gestion des Modules). Notamment
+         le bouton #btnOuvrirDecoupe qui depend du module 'decoupe'. -->
+    <script src="js/modules-handler.js?v=20260701-decoupe-module"></script>
     <script src="js/inventaire.js?v=20260114a"></script>
     <script src="pos-modal-details.js?v=20260110bictorys"></script>
     <script src="pos.js?v=20260222statuts10"></script>

@@ -113,7 +113,10 @@ const UI_TO_MODULE_MAP = {
     'suivi-achat-boeuf-section': 'suivi-achat-boeuf',
     'estimation-section': 'estimation',
     'precommande-section': 'precommande',
-    'payment-links-section': 'payment-links'
+    'payment-links-section': 'payment-links',
+
+    // POS - Bouton "Decoupe" (envoi commande au Centre de Decoupe)
+    'btnOuvrirDecoupe': 'decoupe'
 };
 
 /**
@@ -166,9 +169,16 @@ function applyModuleVisibility() {
                 element.setAttribute('data-module-disabled', 'true');
                 console.log(`🔴 Élément "${elementId}" masqué (module "${moduleId}" désactivé)`);
             } else {
-                // Module actif - retirer le flag de désactivation
-                // (la visibilité finale dépend aussi des droits utilisateur)
+                // Module actif - retirer le flag de désactivation ET reset
+                // display pour qu'un element avec style="display:none" initial
+                // (anti-FOUC pour module decoupe sur pos.html) redevienne
+                // visible. Inline style:'' supprime le inline et laisse les
+                // regles CSS reprendre. La visibilite finale depend aussi
+                // des droits utilisateur.
                 element.removeAttribute('data-module-disabled');
+                if (element.style.display === 'none') {
+                    element.style.display = '';
+                }
             }
         }
     }

@@ -183,6 +183,19 @@ const DEFAULT_MODULES = {
             '/api/abonnements',
             '/api/clients-abonnes'
         ]
+    },
+    decoupe: {
+        id: 'decoupe',
+        name: 'Centre de Découpe',
+        description: 'Bouton "Découpe" dans le POS + envoi de commandes au Centre de Découpe',
+        active: false,
+        isCore: false,
+        tabs: [],
+        sections: [],
+        menuItems: [],
+        apiPrefixes: [
+            '/api/decoupe'
+        ]
     }
 };
 
