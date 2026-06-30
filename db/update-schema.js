@@ -590,12 +590,18 @@ async function updateSchema() {
         // Finance > Cash et Stock. Optionnel (NULL autorise) — pas de
         // back-fill, les cloture passees sans valeur seront "non renseigne".
         // Idempotent via ADD COLUMN IF NOT EXISTS.
-        await sequelize.query(`
-            ALTER TABLE clotures_caisse
-            ADD COLUMN IF NOT EXISTS montant_total_caisse NUMERIC(12, 2)
-                CHECK (montant_total_caisse IS NULL OR montant_total_caisse >= 0)
-        `);
-        console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
+        // Guarde par cloturesTableExists: sur tenant vierge, la table est
+        // creee par sequelize.sync() avec la colonne deja declaree dans le
+        // modele ClotureCaisse. L'ALTER ne sert que pour les tenants existants.
+        const cloturesTableExists = await checkTableExists('clotures_caisse');
+        if (cloturesTableExists) {
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS montant_total_caisse NUMERIC(12, 2)
+                    CHECK (montant_total_caisse IS NULL OR montant_total_caisse >= 0)
+            `);
+            console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
+        }
 
         // Index fonctionnel sur stocks.date pour PL / Cash et Stock.
         // ATTENTION: TO_DATE est STABLE (depend de lc_time), donc NON utilisable

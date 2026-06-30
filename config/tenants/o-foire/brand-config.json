@@ -1,0 +1,14 @@
+{
+  "O_FOIRE": {
+    "nom_complet": "O.Foire",
+    "slogan": "",
+    "site_web": "",
+    "telephones": [],
+    "adresse_siege": "",
+    "footer_facture": "Merci de votre confiance !",
+    "footer_whatsapp": "Merci de votre confiance !",
+    "afficher_tracabilite": true,
+    "feedback_url": "https://docs.google.com/forms/d/e/1FAIpQLSfmbmzHLkCwb735lOzvxKcoGtZ_27sx9CA58vSdkw5TSyeQrQ/viewform?usp=pp_url&entry.859845320={commande_id}&entry.1712117606=O.Foire",
+    "points_vente_codes": []
+  }
+}
