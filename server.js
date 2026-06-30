@@ -542,7 +542,8 @@ const {
     checkEstimationModule,
     checkPrecommandeModule,
     checkPaymentLinksModule,
-    checkAbonnementsModule
+    checkAbonnementsModule,
+    checkDecoupeModule
 } = require('./middlewares/modules');
 
 // Importer la configuration des modules
@@ -568,7 +569,10 @@ app.use('/api/admin/config', configAdminRouter);
 // Forwarder vers le centre de découpe Mata (commandes_decoupe).
 // Auth session requise — pas d'admin-only, n'importe quel utilisateur connecté
 // du POS peut envoyer une commande au centre.
-app.use('/api/decoupe', checkAuth, decoupeForwardRouter);
+// checkDecoupeModule: 403 si le module "decoupe" est desactive cote admin
+// (defense en profondeur — le bouton POS est deja masque cote UI via
+// modules-handler.js + UI_TO_MODULE_MAP['btnOuvrirDecoupe']='decoupe').
+app.use('/api/decoupe', checkAuth, checkDecoupeModule, decoupeForwardRouter);
 
 // Onglet Finance: ouvert aux utilisateurs authentifies (creances / cdc /
 // depenses). Les sous-routes sensibles (prix, alias, charges, config, pl,
@@ -3645,7 +3649,10 @@ app.delete('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
 // Maas) -- la commande reste active cote Mata (annulation Mata se fait
 // dans l'app Mata si besoin). Si tu veux aussi annuler cote Mata,
 // ajouter un appel HTTP a /api/commandes-decoupe/:id/annuler.
-app.delete('/api/decoupe-log/:id', checkAuth, async (req, res) => {
+// checkDecoupeModule: coherent avec /api/decoupe — si le module est OFF,
+// la suppression de log doit aussi etre bloquee (sinon admin peut nettoyer
+// des logs alors que la feature est censee etre desactivee tenant-wide).
+app.delete('/api/decoupe-log/:id', checkAuth, checkDecoupeModule, async (req, res) => {
     try {
         const userRole = req.session.user.role;
         if (userRole !== 'admin') {

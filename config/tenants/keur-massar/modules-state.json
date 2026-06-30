@@ -31,5 +31,8 @@
   },
   "abonnements": {
     "active": false
+  },
+  "decoupe": {
+    "active": false
   }
 }
