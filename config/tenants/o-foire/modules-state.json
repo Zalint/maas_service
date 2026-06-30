@@ -1,0 +1,35 @@
+{
+  "saisie": {
+    "active": true
+  },
+  "visualisation": {
+    "active": true
+  },
+  "stock": {
+    "active": true
+  },
+  "reconciliation": {
+    "active": true
+  },
+  "audit": {
+    "active": false
+  },
+  "cash-paiement": {
+    "active": true
+  },
+  "suivi-achat-boeuf": {
+    "active": false
+  },
+  "estimation": {
+    "active": false
+  },
+  "precommande": {
+    "active": false
+  },
+  "payment-links": {
+    "active": false
+  },
+  "abonnements": {
+    "active": false
+  }
+}
