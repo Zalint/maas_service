@@ -6971,10 +6971,52 @@ app.get('/api/categories', checkAuth, checkReadAccess, async (req, res) => {
         res.json({ success: true, categories: categoriesList });
     } catch (error) {
         console.error('Erreur lors de la récupération des catégories:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur lors de la récupération des catégories' 
+        res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la récupération des catégories'
         });
+    }
+});
+
+// ===== CONFIG POS : categories affichees sous "Boucherie" (chips + ordre) =====
+// Defaut = ancien hardcode de pos.js. Stocke en DB (pos_config) par tenant,
+// editable via admin > Categories POS.
+const DEFAULT_BOUCHERIE_CATEGORIES = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin'];
+
+// Lecture (POS + admin). Auth simple: n'importe quel utilisateur connecte.
+app.get('/api/pos/boucherie-categories', checkAuth, async (req, res) => {
+    try {
+        const { PosConfig } = require('./db/models');
+        const row = await PosConfig.findByPk('boucherie_categories');
+        const cats = (row && Array.isArray(row.value)) ? row.value : DEFAULT_BOUCHERIE_CATEGORIES.slice();
+        res.json({ success: true, categories: cats });
+    } catch (error) {
+        console.error('GET /api/pos/boucherie-categories:', error.message);
+        // Degrade proprement: le POS a un fallback local aussi.
+        res.status(500).json({ success: false, message: error.message, categories: DEFAULT_BOUCHERIE_CATEGORIES.slice() });
+    }
+});
+
+// Ecriture (admin only). Persiste la liste ordonnee (dedup, trim).
+app.post('/api/pos/boucherie-categories', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { categories } = req.body;
+        if (!Array.isArray(categories)) {
+            return res.status(400).json({ success: false, message: 'categories doit être un tableau' });
+        }
+        // Trim + drop vides + dedup en preservant l'ordre.
+        const seen = new Set();
+        const ordered = [];
+        for (const c of categories) {
+            const name = (c && typeof c === 'string') ? c.trim() : '';
+            if (name && !seen.has(name)) { seen.add(name); ordered.push(name); }
+        }
+        const { PosConfig } = require('./db/models');
+        await PosConfig.upsert({ key: 'boucherie_categories', value: ordered, updated_at: new Date() });
+        res.json({ success: true, categories: ordered });
+    } catch (error) {
+        console.error('POST /api/pos/boucherie-categories:', error.message);
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 

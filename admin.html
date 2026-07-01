@@ -374,6 +374,11 @@
                                 <i class="bi bi-truck me-1"></i>Livreurs
                             </a>
                         </li>
+                        <li class="nav-item" id="pos-categories-nav">
+                            <a class="nav-link" href="#" data-section="pos-categories">
+                                <i class="bi bi-grid-3x3-gap me-1"></i>Catégories POS
+                            </a>
+                        </li>
                     </ul>
                     <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
                         <!-- Tenant badge -->
@@ -1214,6 +1219,59 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Section Categories POS (Boucherie) -->
+            <div id="pos-categories-section" class="admin-section">
+                <h2><i class="bi bi-grid-3x3-gap me-2"></i>Catégories POS — Boucherie</h2>
+                <p class="text-muted">Choisis les catégories affichées sous <b>Boucherie</b> dans le POS (caisse) et leur ordre. Les catégories non listées tombent automatiquement sous <b>Epicerie</b>.</p>
+                <div class="row">
+                    <div class="col-md-7">
+                        <div class="card mb-4">
+                            <div class="card-header d-flex justify-content-between align-items-center bg-primary text-white">
+                                <h5 class="mb-0"><i class="fas fa-list-ol me-2"></i>Affichées sous Boucherie (<span id="posBoucherieCount">0</span>)</h5>
+                                <button class="btn btn-light btn-sm" onclick="chargerPosBoucherie()"><i class="fas fa-sync"></i> Rafraîchir</button>
+                            </div>
+                            <div class="card-body p-0">
+                                <table class="table table-hover mb-0 align-middle">
+                                    <thead>
+                                        <tr>
+                                            <th style="width:60px">#</th>
+                                            <th>Catégorie</th>
+                                            <th class="text-end" style="width:170px">Ordre / Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="posBoucherieTableBody">
+                                        <tr><td colspan="3" class="text-center text-muted py-3">Chargement...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div class="card-footer d-flex gap-2 align-items-center flex-wrap">
+                                <select class="form-select form-select-sm" id="posBoucherieAddSelect" style="max-width:280px">
+                                    <option value="">Ajouter une catégorie…</option>
+                                </select>
+                                <button class="btn btn-success btn-sm" onclick="ajouterPosBoucherie()"><i class="fas fa-plus"></i> Ajouter</button>
+                                <button class="btn btn-primary btn-sm ms-auto" onclick="sauvegarderPosBoucherie()"><i class="fas fa-save"></i> Enregistrer</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-5">
+                        <div class="card mb-4">
+                            <div class="card-header bg-info text-white">
+                                <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i>À propos</h5>
+                            </div>
+                            <div class="card-body">
+                                <ul class="small mb-0">
+                                    <li>Les flèches <b>↑ ↓</b> règlent l'ordre des chips dans le POS.</li>
+                                    <li>Retirer une catégorie la fait passer sous <b>Epicerie</b>.</li>
+                                    <li>Le POS recharge la liste à chaque ouverture — pas de redéploiement.</li>
+                                    <li>Réglage <b>par point de vente</b> (chaque tenant a sa propre liste).</li>
+                                    <li>Une catégorie n'apparaît que si elle contient des produits vendables.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1488,6 +1546,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260701-livreurs"></script>
+    <script src="admin.js?v=20260701-pos-cat"></script>
 </body>
 </html> 

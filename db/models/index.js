@@ -49,6 +49,7 @@ const PrixVenteHistory = require('./PrixVenteHistory');
 const FinanceCharge = require('./FinanceCharge');
 const FinanceChargeHistory = require('./FinanceChargeHistory');
 const LivreurConfig = require('./LivreurConfig');
+const PosConfig = require('./PosConfig');
 
 const { sequelize } = require('../index');
 
@@ -239,6 +240,9 @@ module.exports = {
 
   // Config livreurs (kanban SUIVI DES COMMANDES)
   LivreurConfig,
+
+  // Config POS (settings affichage, ex categories Boucherie)
+  PosConfig,
 
   // Fonctions utilitaires
   syncDatabase,
