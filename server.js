@@ -16490,8 +16490,13 @@ app.delete('/api/livreur/annuler', checkAuth, async (req, res) => {
 app.get('/api/livreur/check/:commandeId', checkAuth, async (req, res) => {
     try {
         const { commandeId } = req.params;
-        const vente = await Vente.findOne({ where: { commande_id: commandeId, livreur_assigne: { [Op.ne]: null } }, attributes: ['livreur_assigne'] });
-        if (vente && vente.livreur_assigne) res.json({ success: true, hasLivreur: true, livreur: vente.livreur_assigne });
+        // NOMS D'ATTRIBUTS Sequelize (camelCase), pas les colonnes DB. Le modele
+        // Vente expose commandeId (field commande_id) et livreurAssigne (field
+        // livreur_assigne). Lire vente.livreur_assigne renvoyait undefined ->
+        // hasLivreur:false meme quand la commande avait un livreur -> le POS ne
+        // pre-selectionnait jamais le livreur dans le dropdown au refresh.
+        const vente = await Vente.findOne({ where: { commandeId: commandeId, livreurAssigne: { [Op.ne]: null } }, attributes: ['livreurAssigne'] });
+        if (vente && vente.livreurAssigne) res.json({ success: true, hasLivreur: true, livreur: vente.livreurAssigne });
         else res.json({ success: true, hasLivreur: false, livreur: null });
     } catch (error) {
         console.error('Erreur vérification livreur:', error);
