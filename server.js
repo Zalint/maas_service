@@ -205,6 +205,17 @@ console.log('Estimation.create:', typeof Estimation.create === 'function' ? 'fun
     }
     
     console.log('Database schema updates completed successfully');
+
+    // Charger la config livreurs depuis la DB APRES que la table
+    // livreur_config a ete creee/seedee par updateSchema(). chargerConfigLivreurs
+    // est async (lit LivreurConfig via Sequelize) — le module entier est deja
+    // evalue a ce stade (l'IIFE a suspendu au 1er await plus haut), donc la
+    // fonction et livreursConfig sont definis.
+    try {
+        await chargerConfigLivreurs();
+    } catch (e) {
+        console.error('⚠️ Erreur chargement config livreurs au boot:', e.message);
+    }
   } catch (error) {
     console.error('Error during schema updates:', error);
   }
@@ -16300,23 +16311,29 @@ app.get('/api/tracabilite-viande', checkAuth, async (req, res) => {
 });
 
 // ===== LIVREURS =====
+// Config (api_url + liste des livreurs) stockee en DB (table livreur_config,
+// par schema tenant) et mise en cache memoire dans livreursConfig. Le chargement
+// initial se fait au boot APRES updateSchema() (cf IIFE en haut de ce fichier),
+// pas ici en top-level, car il faut que la table existe et que Sequelize soit pret.
 let livreursConfig = { api_url: null, livreurs_actifs: [] };
 
-function chargerConfigLivreurs() {
+async function chargerConfigLivreurs() {
     try {
-        const configPath = path.join(__dirname, 'livreurs_actifs.json');
-        const configData = fs.readFileSync(configPath, 'utf8');
-        livreursConfig = JSON.parse(configData);
-        if (Array.isArray(livreursConfig.livreurs_actifs)) {
-            livreursConfig.livreurs_actifs = livreursConfig.livreurs_actifs.map(n => (n && typeof n === 'string' ? n.trim() : n));
-        }
-        console.log('✅ Config livreurs chargée:', { api_url: livreursConfig.api_url, nombre_livreurs: livreursConfig.livreurs_actifs.length });
+        const { LivreurConfig } = require('./db/models');
+        const rows = await LivreurConfig.findAll();
+        const cfg = {};
+        for (const r of rows) cfg[r.key] = r.value; // value est JSONB -> deja parse
+        const apiUrl = (cfg.api_url === undefined || cfg.api_url === null) ? null : cfg.api_url;
+        const liste = Array.isArray(cfg.livreurs_actifs) ? cfg.livreurs_actifs : [];
+        livreursConfig = {
+            api_url: apiUrl,
+            livreurs_actifs: liste.map(n => (n && typeof n === 'string' ? n.trim() : n)).filter(Boolean)
+        };
+        console.log('✅ Config livreurs chargée (DB):', { api_url: livreursConfig.api_url, nombre_livreurs: livreursConfig.livreurs_actifs.length });
     } catch (error) {
         console.error('⚠️ Erreur chargement config livreurs:', error.message);
     }
 }
-
-chargerConfigLivreurs();
 
 app.get('/api/livreur/actifs', checkAuth, (req, res) => {
     try {
@@ -16326,12 +16343,46 @@ app.get('/api/livreur/actifs', checkAuth, (req, res) => {
     }
 });
 
-app.post('/api/livreur/reload-config', checkAuth, checkAdmin, (req, res) => {
+app.post('/api/livreur/reload-config', checkAuth, checkAdmin, async (req, res) => {
     try {
-        chargerConfigLivreurs();
+        await chargerConfigLivreurs();
         res.json({ success: true, message: 'Configuration livreurs rechargée', config: livreursConfig });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Erreur rechargement', error: error.message });
+    }
+});
+
+// Ecriture de la config livreurs (URL API + liste). Admin only. Persiste en
+// DB (livreur_config) puis recharge le cache memoire. Meme contrat JSON que
+// DATA: body { api_url: string, livreurs_actifs: string[] }.
+app.post('/api/livreur/save-config', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { api_url, livreurs_actifs } = req.body;
+        if (!Array.isArray(livreurs_actifs)) {
+            return res.status(400).json({ success: false, message: 'livreurs_actifs doit être un tableau' });
+        }
+        const cleanList = livreurs_actifs
+            .map(n => (n && typeof n === 'string' ? n.trim() : n))
+            .filter(Boolean);
+        // api_url: TOUJOURS une chaine (jamais null). La colonne value est JSONB
+        // NOT NULL et Sequelize convertit un JS null en SQL NULL (pas JSON null),
+        // ce qui violerait la contrainte -> 500. '' = "non configure" (falsy, capte
+        // par les guards). On enleve un eventuel slash final pour `${api_url}/api/...`.
+        let cleanUrl = (api_url && typeof api_url === 'string') ? api_url.trim() : '';
+        if (cleanUrl) cleanUrl = cleanUrl.replace(/\/+$/, '');
+        const { LivreurConfig } = require('./db/models');
+        const now = new Date();
+        // Transaction: eviter une sauvegarde partielle (URL enregistree sans la
+        // liste, ou l'inverse) si un des deux upserts echoue.
+        await sequelize.transaction(async (tx) => {
+            await LivreurConfig.upsert({ key: 'api_url', value: cleanUrl, updated_at: now }, { transaction: tx });
+            await LivreurConfig.upsert({ key: 'livreurs_actifs', value: cleanList, updated_at: now }, { transaction: tx });
+        });
+        await chargerConfigLivreurs();
+        res.json({ success: true, message: 'Configuration sauvegardée', config: livreursConfig });
+    } catch (error) {
+        console.error('Erreur sauvegarde config livreurs:', error.message);
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
@@ -16341,9 +16392,17 @@ app.post('/api/livreur/assigner', checkAuth, async (req, res) => {
         if (!commande_id || !livreur_nom || !client) {
             return res.status(400).json({ success: false, message: 'commande_id, livreur_nom et client sont requis' });
         }
+        if (!livreursConfig.api_url) {
+            return res.status(503).json({ success: false, message: 'URL API Livreur non configurée (admin > Gestion des Livreurs)' });
+        }
+        if (!process.env.LIVREUR_API_KEY) {
+            return res.status(503).json({ success: false, message: 'LIVREUR_API_KEY non configurée côté serveur (variable d\'environnement manquante)' });
+        }
         const payload = { commande_id, livreur_id: livreur_id || livreur_nom, livreur_nom, client, articles: articles || [], total: total || 0, point_vente: point_vente || '', date_commande: date_commande || new Date().toISOString(), statut: statut || 'en_livraison' };
         const apiUrl = `${livreursConfig.api_url}/api/external/commande-en-cours`;
-        const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.EXTERNAL_API_KEY }, timeout: 120000 });
+        // Cle dediee pour le backend livreur externe (matix-livreur-backend),
+        // distincte de EXTERNAL_API_KEY (cle ENTRANTE propre au tenant Maas).
+        const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.LIVREUR_API_KEY }, timeout: 120000 });
         try { await Vente.update({ livreur_assigne: livreur_nom }, { where: { commande_id } }); } catch (dbError) {}
         res.json({ success: true, message: `Commande ${commande_id} assignée à ${livreur_nom}`, data: response.data });
     } catch (error) {
@@ -16358,8 +16417,14 @@ app.delete('/api/livreur/annuler', checkAuth, async (req, res) => {
     try {
         const { commande_id } = req.body;
         if (!commande_id) return res.status(400).json({ success: false, message: 'commande_id est requis' });
+        if (!livreursConfig.api_url) {
+            return res.status(503).json({ success: false, message: 'URL API Livreur non configurée (admin > Gestion des Livreurs)' });
+        }
+        if (!process.env.LIVREUR_API_KEY) {
+            return res.status(503).json({ success: false, message: 'LIVREUR_API_KEY non configurée côté serveur (variable d\'environnement manquante)' });
+        }
         const apiUrl = `${livreursConfig.api_url}/api/external/commande-en-cours/annuler`;
-        const response = await axios.delete(apiUrl, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.EXTERNAL_API_KEY }, data: { commande_id }, timeout: 10000 });
+        const response = await axios.delete(apiUrl, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.LIVREUR_API_KEY }, data: { commande_id }, timeout: 10000 });
         res.json({ success: true, message: `Assignation annulée pour ${commande_id}`, data: response.data });
     } catch (error) {
         console.error('Erreur annulation livreur:', error.message);

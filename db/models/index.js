@@ -48,6 +48,7 @@ const PrixAchatHistory = require('./PrixAchatHistory');
 const PrixVenteHistory = require('./PrixVenteHistory');
 const FinanceCharge = require('./FinanceCharge');
 const FinanceChargeHistory = require('./FinanceChargeHistory');
+const LivreurConfig = require('./LivreurConfig');
 
 const { sequelize } = require('../index');
 
@@ -235,6 +236,9 @@ module.exports = {
   PrixVenteHistory,
   FinanceCharge,
   FinanceChargeHistory,
+
+  // Config livreurs (kanban SUIVI DES COMMANDES)
+  LivreurConfig,
 
   // Fonctions utilitaires
   syncDatabase,
