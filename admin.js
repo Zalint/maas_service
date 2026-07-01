@@ -167,7 +167,8 @@ const ADMIN_SECTION_WHITELIST = [
     'abonnements',
     'modules',
     'ui-settings',
-    'livreurs'
+    'livreurs',
+    'pos-categories'
 ];
 
 // Persiste la section courante dans l'URL (?section=X) au click. Utilise
@@ -4017,6 +4018,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Initialiser la section Gestion des Livreurs
             initLivreursSection();
+
+            // Initialiser la section Categories POS (Boucherie)
+            initPosCategoriesSection();
         }
     });
 });
@@ -4163,6 +4167,129 @@ async function envoyerConfigLivreurs(apiUrl, livreurs) {
         }
     } catch (e) {
         console.error('Erreur envoi config livreurs:', e);
+        alert('Erreur réseau');
+    }
+}
+
+// =================== CATEGORIES POS (BOUCHERIE) ===================
+// Setting par tenant: liste ordonnee des categories affichees sous "Boucherie"
+// dans le POS. GET/POST /api/pos/boucherie-categories. Les categories dispo
+// viennent de /api/produits (memes cles que le POS). Les modifs (ordre / ajout /
+// retrait) sont LOCALES jusqu'au clic "Enregistrer".
+
+let posBoucherieList = [];   // liste ordonnee courante (categories Boucherie)
+let posAllCategories = [];   // toutes les categories dispo (cles /api/produits)
+
+function initPosCategoriesSection() {
+    console.log('Initialisation de la section categories POS...');
+    chargerPosBoucherie();
+    document.querySelectorAll('[data-section="pos-categories"]').forEach(el => {
+        el.addEventListener('click', chargerPosBoucherie);
+    });
+}
+
+function escapeHtmlPos(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function chargerPosBoucherie() {
+    try {
+        const r1 = await fetch('/api/pos/boucherie-categories', { credentials: 'include' });
+        const d1 = await r1.json();
+        posBoucherieList = Array.isArray(d1.categories) ? d1.categories.slice() : [];
+        // Categories disponibles = cles du catalogue vente (memes que le POS).
+        try {
+            const r2 = await fetch('/api/produits', { credentials: 'include' });
+            const prod = await r2.json();
+            // Reponse OK = objet keye par categorie (SANS champ 'success').
+            // Reponse d'erreur = { success:false, message } -> on l'ignore
+            // (sinon le dropdown se peuplerait de 'success'/'message').
+            posAllCategories = (prod && typeof prod === 'object' && !Array.isArray(prod) && prod.success === undefined)
+                ? Object.keys(prod).filter(Boolean) : [];
+        } catch (e) { posAllCategories = []; }
+        renderPosBoucherie();
+    } catch (e) {
+        console.error('Erreur chargement categories POS:', e);
+    }
+}
+
+function renderPosBoucherie() {
+    const tbody = document.getElementById('posBoucherieTableBody');
+    const countEl = document.getElementById('posBoucherieCount');
+    if (countEl) countEl.textContent = posBoucherieList.length;
+    if (tbody) {
+        if (posBoucherieList.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-3">Aucune catégorie (tout sera sous Epicerie)</td></tr>';
+        } else {
+            tbody.innerHTML = posBoucherieList.map((cat, i) => `
+                <tr>
+                    <td>${i + 1}</td>
+                    <td><strong>${escapeHtmlPos(cat)}</strong></td>
+                    <td class="text-end">
+                        <button class="btn btn-outline-secondary btn-sm" title="Monter" ${i === 0 ? 'disabled' : ''} onclick="posBoucherieMove(${i}, -1)"><i class="fas fa-arrow-up"></i></button>
+                        <button class="btn btn-outline-secondary btn-sm" title="Descendre" ${i === posBoucherieList.length - 1 ? 'disabled' : ''} onclick="posBoucherieMove(${i}, 1)"><i class="fas fa-arrow-down"></i></button>
+                        <button class="btn btn-outline-danger btn-sm" title="Retirer" onclick="posBoucherieRemove(${i})"><i class="fas fa-trash"></i></button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+    }
+    // Select des categories dispo NON deja dans la liste.
+    const sel = document.getElementById('posBoucherieAddSelect');
+    if (sel) {
+        const inList = new Set(posBoucherieList);
+        const available = posAllCategories.filter(c => !inList.has(c)).sort((a, b) => a.localeCompare(b, 'fr'));
+        sel.innerHTML = '<option value="">Ajouter une catégorie…</option>' +
+            available.map(c => `<option value="${escapeHtmlPos(c)}">${escapeHtmlPos(c)}</option>`).join('');
+    }
+}
+
+function posBoucherieMove(i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= posBoucherieList.length) return;
+    const tmp = posBoucherieList[i];
+    posBoucherieList[i] = posBoucherieList[j];
+    posBoucherieList[j] = tmp;
+    renderPosBoucherie();
+}
+
+function posBoucherieRemove(i) {
+    if (i < 0 || i >= posBoucherieList.length) return;
+    posBoucherieList.splice(i, 1);
+    renderPosBoucherie();
+}
+
+function ajouterPosBoucherie() {
+    const sel = document.getElementById('posBoucherieAddSelect');
+    if (!sel) return;
+    const val = (sel.value || '').trim();
+    if (!val) return;
+    if (!posBoucherieList.includes(val)) posBoucherieList.push(val);
+    sel.value = '';
+    renderPosBoucherie();
+}
+
+async function sauvegarderPosBoucherie() {
+    try {
+        const resp = await fetch('/api/pos/boucherie-categories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ categories: posBoucherieList })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            posBoucherieList = Array.isArray(data.categories) ? data.categories.slice() : posBoucherieList;
+            renderPosBoucherie();
+            if (typeof afficherNotification === 'function') afficherNotification('Catégories POS enregistrées', 'success');
+            else alert('Catégories POS enregistrées !');
+        } else {
+            alert('Erreur: ' + (data.message || 'Erreur inconnue'));
+        }
+    } catch (e) {
+        console.error('Erreur sauvegarde categories POS:', e);
         alert('Erreur réseau');
     }
 }

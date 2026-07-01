@@ -639,6 +639,7 @@ async function chargerDonnees() {
         
         console.log('📋 Affichage des catégories et produits...');
         await chargerEpicerieCategories();
+        await chargerBoucherieCategories();
         await chargerFavoris();
         afficherCategories();
         // Utilise currentCategory (Boucherie par défaut) au lieu de 'all'
@@ -788,11 +789,35 @@ function demarrerHorloge() {
 }
 
 // ===== Display Categories =====
-// Boucherie = liste fermée des catégories viande ; tout le reste (Autres,
-// Conserve, Riz & Féculents, Superette, …) est regroupé sous Epicerie.
-const BOUCHERIE_CATEGORIES = new Set(['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin']);
+// Boucherie = liste des catégories viande affichées sous "Boucherie" dans le
+// POS ; tout le reste (Autres, Conserve, Riz & Féculents, Superette, …) est
+// regroupé sous Epicerie.
+// La liste est un SETTING par tenant, editable via admin > Categories POS et
+// charge au demarrage (chargerBoucherieCategories). Le defaut ci-dessous ne
+// sert que de fallback si l'API est indisponible. BOUCHERIE_ORDER preserve
+// l'ordre configure pour l'affichage des chips.
+let BOUCHERIE_ORDER = ['Bovin', 'Ovin', 'Volaille', 'Pack', 'Caprin'];
+let BOUCHERIE_CATEGORIES = new Set(BOUCHERIE_ORDER);
 function getCategoryGroup(catKey) {
     return BOUCHERIE_CATEGORIES.has(catKey) ? 'Boucherie' : 'Epicerie';
+}
+
+async function chargerBoucherieCategories() {
+    try {
+        const res = await fetch('/api/pos/boucherie-categories', { credentials: 'include', cache: 'no-cache' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        // Pas de garde .length: une liste VIDE est un choix admin valide
+        // ("tout sous Epicerie") et doit etre respectee. Seul un echec API
+        // (success=false / reseau) laisse le defaut local en place.
+        if (data && data.success && Array.isArray(data.categories)) {
+            BOUCHERIE_ORDER = data.categories.slice();
+            BOUCHERIE_CATEGORIES = new Set(BOUCHERIE_ORDER);
+            console.log(`✅ Boucherie : ${BOUCHERIE_ORDER.length} catégories chargées (setting)`);
+        }
+    } catch (e) {
+        console.warn('⚠️ boucherie-categories non chargé, fallback défaut:', e.message);
+    }
 }
 
 // Sous-catégories Epicerie — chargées depuis config/epicerie-categories.json
@@ -932,7 +957,9 @@ function selectionnerCategorie(categoryKey, btnElement) {
     const subContainer = document.getElementById('subCategoriesList');
     if (subContainer) {
         if (categoryKey === 'Boucherie') {
-            const boucherieSubCats = Object.keys(products).filter(k => BOUCHERIE_CATEGORIES.has(k));
+            // Ordre = celui configure (setting), filtre aux categories qui ont
+            // effectivement des produits charges. (Avant: ordre des produits.)
+            const boucherieSubCats = BOUCHERIE_ORDER.filter(k => products[k]);
             _peuplerSousCats(subContainer, boucherieSubCats);
         } else if (categoryKey === 'Epicerie') {
             _peuplerSousCats(subContainer, EPICERIE_SUBCATS_ORDER);

@@ -520,6 +520,26 @@ async function updateSchema() {
         `);
         console.log('Table livreur_config verifiee (seed livreurs_actifs=[])');
 
+        // Config POS (settings pilotant l'affichage du POS), par tenant.
+        // Table cle/valeur JSONB. Cle actuelle:
+        //   boucherie_categories -> array ordonne des categories affichees
+        //                           sous "Boucherie" dans le POS (chips + ordre)
+        // Le defaut reprend l'ancien hardcode de pos.js (BOUCHERIE_CATEGORIES).
+        // Modifiable via admin > Categories POS (POST /api/pos/boucherie-categories).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS pos_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`
+            INSERT INTO pos_config (key, value, updated_at) VALUES
+              ('boucherie_categories', '["Bovin","Ovin","Volaille","Pack","Caprin"]'::jsonb, NOW())
+            ON CONFLICT (key) DO NOTHING
+        `);
+        console.log('Table pos_config verifiee (seed boucherie_categories)');
+
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS fournisseur_paiements (
                 id SERIAL PRIMARY KEY,
