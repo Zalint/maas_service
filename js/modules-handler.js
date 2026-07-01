@@ -116,7 +116,9 @@ const UI_TO_MODULE_MAP = {
     'payment-links-section': 'payment-links',
 
     // POS - Bouton "Decoupe" (envoi commande au Centre de Decoupe)
-    'btnOuvrirDecoupe': 'decoupe'
+    'btnOuvrirDecoupe': 'decoupe',
+    // POS - Bouton "Commandes inter-PV" (voir les commandes envoyees au CDC)
+    'btnInterPV': 'decoupe'
 };
 
 /**
