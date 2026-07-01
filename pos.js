@@ -10511,6 +10511,15 @@ function afficherDetailsDecoupe(id) {
 
 let interPVPanelLoaded = false;
 
+// Guard: ne pas appeler /api/decoupe si le module "Decoupe" est desactive
+// (sinon 403 en boucle + panneau "erreur"). isModuleActive vient de
+// modules-handler.js (charge avant pos.js dans pos.html). Si le statut n'est
+// pas encore charge, isModuleActive renvoie true par defaut -> on laisse passer
+// (comportement historique, aucun blocage si l'API modules est lente/absente).
+function decoupeModuleActif() {
+    return typeof isModuleActive !== 'function' || isModuleActive('decoupe');
+}
+
 function toggleInterPVPanel() {
     const panel = document.getElementById('interPVPanel');
     if (!panel) return;
@@ -10527,6 +10536,7 @@ async function chargerInterPVPanel() {
     const totalSpan = document.getElementById('interPVTotal');
     const badge = document.getElementById('interPVBadge');
     if (!tbody) return;
+    if (!decoupeModuleActif()) { tbody.innerHTML = ''; return; }
     tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Chargement…</td></tr>';
     try {
         const dateInput = document.getElementById('summaryDate');
@@ -10607,6 +10617,7 @@ async function chargerInterPVPanel() {
 async function rafraichirBadgeInterPV() {
     const badge = document.getElementById('interPVBadge');
     if (!badge) return;
+    if (!decoupeModuleActif()) { badge.style.display = 'none'; return; }
     try {
         const dateInput = document.getElementById('summaryDate');
         const dateStr = dateInput ? dateInput.value : '';

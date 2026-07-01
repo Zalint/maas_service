@@ -302,7 +302,9 @@
                     <button class="btn-toggle-summary-cards" onclick="toggleSummaryCards()" title="Masquer/Afficher les statistiques" id="btnToggleSummaryCards">
                         <i class="fas fa-eye-slash" id="iconToggleSummaryCards"></i>
                     </button>
-                    <button class="btn-inter-pv" onclick="toggleInterPVPanel()" title="Commandes inter-PV (centre de découpe)" id="btnInterPV" style="position: relative;">
+                    <!-- display:none initial = anti-FOUC. modules-handler.js le
+                         repasse a '' au load si le module 'decoupe' est actif. -->
+                    <button class="btn-inter-pv" onclick="toggleInterPVPanel()" title="Commandes inter-PV (centre de découpe)" id="btnInterPV" style="position: relative; display: none;">
                         <i class="fas fa-industry"></i>
                         <span class="badge bg-danger" id="interPVBadge" style="position: absolute; top: -4px; right: -4px; display: none; padding: 2px 6px; border-radius: 10px; font-size: 0.7rem;">0</span>
                     </button>
@@ -869,10 +871,10 @@
     <!-- Modules toggle: gere la visibilite des elements conditionnes par
          l'etat des modules (cf admin > Gestion des Modules). Notamment
          le bouton #btnOuvrirDecoupe qui depend du module 'decoupe'. -->
-    <script src="js/modules-handler.js?v=20260701-decoupe-module"></script>
+    <script src="js/modules-handler.js?v=20260701-interpv"></script>
     <script src="js/inventaire.js?v=20260114a"></script>
     <script src="pos-modal-details.js?v=20260110bictorys"></script>
-    <script src="pos.js?v=20260222statuts10"></script>
+    <script src="pos.js?v=20260701-interpv"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
