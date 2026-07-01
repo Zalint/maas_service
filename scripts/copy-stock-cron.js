@@ -337,19 +337,105 @@ class StockCopyProcessor {
     }
 
     async loadSourceStock() {
+        // 1. Source primaire: filesystem JSON (data/by-date/...).
         const stockSoirPath = this.fileManager.getStockSoirPath(this.stats.sourceDate);
-        logger.debug(`Chargement: ${stockSoirPath}`);
+        logger.debug(`Chargement JSON: ${stockSoirPath}`);
 
         const exists = await this.fileManager.fileExists(stockSoirPath);
-        if (!exists) {
-            logger.warn(`Stock soir introuvable: ${stockSoirPath}`);
+        if (exists) {
+            const data = await this.fileManager.readJsonFile(stockSoirPath);
+            logger.info(`📊 Stock soir chargé depuis JSON: ${Object.keys(data || {}).length} éléments`);
+            return data;
+        }
+
+        // 2. Fallback BDD: sur Render le filesystem est éphémère, donc un
+        //    redeploiement entre la saisie du stock soir (J 18h) et le cron
+        //    (J+1 5h UTC) wipe data/by-date/. La BDD persiste — on la lit
+        //    pour reconstruire la meme structure dict {key: item} que le JSON.
+        logger.warn(`Stock soir introuvable en JSON: ${stockSoirPath}`);
+        logger.info('🔄 Fallback BDD: tentative de chargement depuis Postgres...');
+        return this.loadSourceStockFromDB();
+    }
+
+    async loadSourceStockFromDB() {
+        // Import paresseux pour eviter de charger Sequelize si pas necessaire
+        // et pour rester coherent avec saveTargetStockToDB (meme pattern).
+        let Stock, formatDate, parseDate;
+        try {
+            ({ Stock } = require('../db/models'));
+            ({ formatDate, parseDate } = require('../db/utils'));
+        } catch (e) {
+            logger.warn(`⚠️  Modeles BDD indisponibles, fallback impossible: ${e.message}`);
             return null;
         }
 
-        const data = await this.fileManager.readJsonFile(stockSoirPath);
-        logger.info(`📊 Stock soir chargé: ${Object.keys(data || {}).length} éléments`);
-        
-        return data;
+        try {
+            // Convertir les dates (JS Date) au format DB: DD-MM-YYYY
+            // (cf saveTargetStockToDB pour le meme roundtrip).
+            const sourceDateFormatted = DateUtils.formatDate(this.stats.sourceDate);
+            const sourceDateBdd = formatDate(parseDate(sourceDateFormatted));
+            const targetDateFormatted = DateUtils.formatDate(this.stats.targetDate);
+            const targetDateBdd = formatDate(parseDate(targetDateFormatted));
+
+            // GARDE-FOU CRITIQUE: si matin J+1 existe DEJA en BDD, on
+            // abandonne le fallback. Pourquoi:
+            //   1. Le saveTargetStockToDB en aval fait un destroy+bulkCreate
+            //      INCONDITIONNEL sur (date=J+1, typeStock=matin).
+            //   2. Si un user a saisi le matin J+1 manuellement entre 00h et
+            //      5h UTC et qu'un redeploy Render a wipe le JSON entretemps,
+            //      OVERRIDE_EXISTING (qui checke uniquement le JSON, ligne
+            //      ~423) ne detecte rien — pas de backup, pas de warning.
+            //   3. Le destroy effacerait silencieusement la saisie user.
+            // Cas legitime: si le cron est rejoue (rare), matin J+1 existe
+            // deja en BDD parce qu'on l'a deja copie -> on s'abstient aussi
+            // (pas besoin de recopier, et eviter un overwrite si le user a
+            // ajuste apres la 1ere copie).
+            const existingMatin = await Stock.count({
+                where: { date: targetDateBdd, typeStock: 'matin' }
+            });
+            if (existingMatin > 0) {
+                logger.warn(`Stock matin J+1 deja present en BDD (${existingMatin} lignes) pour date=${targetDateBdd}. Fallback BDD abandonne pour ne pas ecraser une saisie user / copie existante.`);
+                return null;
+            }
+
+            const rows = await Stock.findAll({
+                where: { date: sourceDateBdd, typeStock: 'soir' },
+                raw: true
+            });
+
+            if (!rows || rows.length === 0) {
+                logger.warn(`Stock soir introuvable en BDD pour date=${sourceDateBdd}`);
+                return null;
+            }
+
+            // Reconstruire la structure dict {key: item} attendue par
+            // StockTransformer.transformSoirToMatin. La cle inclut 'stock-soir'
+            // qui sera reecrit en 'stock-matin' par le transformer (cf l.222).
+            // Les noms de champs (Point de Vente, Produit, Nombre, PU, Montant)
+            // sont l'ancien format JSON; saveTargetStockToDB accepte les deux
+            // (e['Point de Vente'] || e.pointVente) donc ca passe en aval.
+            const dict = {};
+            rows.forEach((r, idx) => {
+                const safePv = String(r.pointVente || '').replace(/\s+/g, '_');
+                const safeProd = String(r.produit || '').replace(/\s+/g, '_');
+                const key = `${safePv}-${safeProd}-stock-soir-${idx}`;
+                dict[key] = {
+                    date: sourceDateFormatted,
+                    'Point de Vente': r.pointVente,
+                    Produit: r.produit,
+                    Nombre: r.quantite,
+                    PU: r.prixUnitaire,
+                    Montant: r.total,
+                    Commentaire: r.commentaire || ''
+                };
+            });
+
+            logger.info(`📊 Stock soir chargé depuis BDD: ${rows.length} éléments (fallback)`);
+            return dict;
+        } catch (dbError) {
+            logger.warn(`⚠️  Echec lecture BDD: ${dbError.message}`);
+            return null;
+        }
     }
 
     async saveTargetStock(stockMatinData) {
