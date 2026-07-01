@@ -181,7 +181,11 @@
             const json = await res.json();
             if (!json.success) throw new Error(json.error || 'Erreur');
             // Nouvelle structure: { local, cdb, cdb_error }
-            renderCdb(json.data.cdb, json.data.cdb_error);
+            // Defensif: passer la plage demandee a renderCdb pour pouvoir
+            // filtrer cote UI les operations renvoyees par MataBanq
+            // (l'endpoint /external/api/creance ignore actuellement
+            // dateDebut/dateFin pour la liste operations + summary.date_selected).
+            renderCdb(json.data.cdb, json.data.cdb_error, { dateDebut, dateFin });
             renderLocal(json.data.local);
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur creances: ' + e.message, 'danger');
@@ -189,7 +193,7 @@
     }
 
     // ===== Bloc 1: Créance officielle CDB (depuis MataBanq) =====
-    function renderCdb(cdb, cdbError) {
+    function renderCdb(cdb, cdbError, range) {
         const status = document.getElementById('fin-cdb-status');
         const cards = document.getElementById('fin-cdb-cards');
         const tbody = document.querySelector('#fin-cdb-operations tbody');
@@ -208,15 +212,44 @@
         // L'API MataBanq retourne details[0].status[0] pour le client matche.
         const detail = (cdb.details && cdb.details[0]) || null;
         const clientStatus = (detail && detail.status && detail.status[0]) || null;
-        const operations = (detail && detail.operations) || [];
+        const operationsRaw = (detail && detail.operations) || [];
         const summary = cdb.summary || null;
         const meta = cdb.metadata || {};
 
+        // Defensif: MataBanq /external/api/creance retourne actuellement des
+        // operations hors de la plage [dateDebut, dateFin] demandee (filtre
+        // pas applique cote serveur, summary.date_selected force a today).
+        // On re-filtre ici pour garantir un affichage coherent avec les
+        // selecteurs de date. Comparaison lexicographique sur YYYY-MM-DD =
+        // comparaison chronologique correcte. Ne touche PAS aux KPI (solde,
+        // avances, remb, diff) qui sont calcules par MataBanq sur sa propre
+        // fenetre — recomputer la somme des operations ici donnerait des
+        // chiffres faux (solde_final est cumule, pas peripheral).
+        const dd = range && range.dateDebut;
+        const df = range && range.dateFin;
+        const operations = (dd && df)
+            ? operationsRaw.filter((op) => {
+                const d = (op.date_operation || '').slice(0, 10);
+                return d && d >= dd && d <= df;
+              })
+            : operationsRaw;
+
         const label = meta.label || (clientStatus && clientStatus.client_name) || '?';
         const director = (detail && detail.assigned_director) || '—';
-        const dateSel = (summary && summary.date_selected) || '';
+        // Pill affiche la dateFin DEMANDEE (et non summary.date_selected
+        // renvoyee par MataBanq qui peut etre incorrecte — souvent "today").
+        // Si l'API renvoie un date_selected != dateFin demandee, on ajoute
+        // un petit badge "!" non bloquant pour visibilite operationnelle:
+        // les KPI peuvent refleter la mauvaise periode tant que le bug
+        // upstream MataBanq n'est pas corrige.
+        const requestedFin = df || (summary && summary.date_selected) || '';
+        const apiDateSel = (summary && summary.date_selected) || '';
+        const dateMismatch = df && apiDateSel && apiDateSel !== df;
+        const mismatchBadge = dateMismatch
+            ? ` <span class="badge bg-warning text-dark" title="L'API a renvoyé date_selected=${esc(apiDateSel)} pour dateFin demandée=${esc(df)}. Les KPI (solde, avances, remb) peuvent refléter la mauvaise période.">!</span>`
+            : '';
         status.className = 'fin-pill fin-pill--success ms-2';
-        status.textContent = `${label} • ${dateSel} • Resp: ${director}`;
+        status.innerHTML = `${esc(label)} • ${esc(requestedFin)}${mismatchBadge} • Resp: ${esc(director)}`;
 
         const solde = clientStatus ? clientStatus.solde_final : (summary ? summary.totals.current_balance : 0);
         const avances = clientStatus ? clientStatus.total_avances : 0;
