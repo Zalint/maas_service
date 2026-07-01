@@ -166,7 +166,8 @@ const ADMIN_SECTION_WHITELIST = [
     'corrections',
     'abonnements',
     'modules',
-    'ui-settings'
+    'ui-settings',
+    'livreurs'
 ];
 
 // Persiste la section courante dans l'URL (?section=X) au click. Utilise
@@ -4013,6 +4014,9 @@ document.addEventListener('DOMContentLoaded', function() {
             
             // Initialiser la section modules
             initModulesSection();
+
+            // Initialiser la section Gestion des Livreurs
+            initLivreursSection();
         }
     });
 });
@@ -4032,6 +4036,134 @@ function initModulesSection() {
     const refreshBtn = document.getElementById('refresh-modules-btn');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', chargerModules);
+    }
+}
+
+// =================== GESTION DES LIVREURS ===================
+// Config API livreur + liste (ecran SUIVI DES COMMANDES du POS). Persistee en
+// DB via POST /api/livreur/save-config (admin only). Chaque mutation renvoie
+// la liste COMPLETE (pas d'endpoint par item), comme la reference DATA.
+
+let livreursActifsAdmin = [];
+
+function initLivreursSection() {
+    console.log('Initialisation de la section livreurs...');
+    chargerConfigLivreursAdmin();
+    // Recharge aussi a chaque ouverture de l'onglet (en plus du switch generique).
+    document.querySelectorAll('[data-section="livreurs"]').forEach(el => {
+        el.addEventListener('click', chargerConfigLivreursAdmin);
+    });
+    // Entree dans le champ "nom" = ajouter.
+    const nomInput = document.getElementById('nouveauLivreurNom');
+    if (nomInput) {
+        nomInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); ajouterLivreur(); }
+        });
+    }
+}
+
+function escapeHtmlLivreur(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function chargerConfigLivreursAdmin() {
+    try {
+        const resp = await fetch('/api/livreur/actifs', { credentials: 'include' });
+        const data = await resp.json();
+        livreursActifsAdmin = Array.isArray(data.livreurs_actifs) ? data.livreurs_actifs.slice() : [];
+        const urlInput = document.getElementById('livreurApiUrl');
+        if (urlInput) urlInput.value = data.api_url || '';
+        const countEl = document.getElementById('livreurCount');
+        if (countEl) countEl.textContent = livreursActifsAdmin.length;
+        const tbody = document.getElementById('livreursTableBody');
+        if (!tbody) return;
+        if (livreursActifsAdmin.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted py-3">Aucun livreur</td></tr>';
+            return;
+        }
+        // Handlers par INDEX (pas par nom) pour eviter tout bug d'echappement
+        // de quotes dans les onclick/onchange inline.
+        tbody.innerHTML = livreursActifsAdmin.map((nom, i) => `
+            <tr>
+                <td>${i + 1}</td>
+                <td>
+                    <input type="text" class="form-control form-control-sm border-0 bg-transparent"
+                           value="${escapeHtmlLivreur(nom)}"
+                           onchange="renommerLivreurByIndex(${i}, this.value)" style="font-weight:500;">
+                </td>
+                <td class="text-end">
+                    <button class="btn btn-outline-danger btn-sm" onclick="supprimerLivreurByIndex(${i})">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        console.error('Erreur chargement livreurs:', e);
+    }
+}
+
+// Bouton "Sauvegarder" a cote de l'URL: persiste l'URL + tous les noms
+// eventuellement edites inline dans le tableau.
+async function sauvegarderConfigLivreurs() {
+    const apiUrl = (document.getElementById('livreurApiUrl').value || '').trim();
+    const rows = document.querySelectorAll('#livreursTableBody input[type="text"]');
+    const livreurs = Array.from(rows).map(input => input.value.trim()).filter(Boolean);
+    await envoyerConfigLivreurs(apiUrl, livreurs);
+}
+
+async function ajouterLivreur() {
+    const input = document.getElementById('nouveauLivreurNom');
+    const nom = (input.value || '').trim();
+    if (!nom) return;
+    if (livreursActifsAdmin.includes(nom)) { alert('Ce livreur existe déjà'); return; }
+    const apiUrl = (document.getElementById('livreurApiUrl').value || '').trim();
+    const livreurs = livreursActifsAdmin.concat([nom]).sort((a, b) => a.localeCompare(b, 'fr'));
+    await envoyerConfigLivreurs(apiUrl, livreurs);
+    input.value = '';
+}
+
+async function supprimerLivreurByIndex(i) {
+    const nom = livreursActifsAdmin[i];
+    if (nom === undefined) return;
+    if (!confirm(`Supprimer le livreur "${nom}" ?`)) return;
+    const apiUrl = (document.getElementById('livreurApiUrl').value || '').trim();
+    const livreurs = livreursActifsAdmin.filter((_, idx) => idx !== i);
+    await envoyerConfigLivreurs(apiUrl, livreurs);
+}
+
+async function renommerLivreurByIndex(i, nouveauNom) {
+    const val = (nouveauNom || '').trim();
+    // Nom vide = annuler l'edit (re-render depuis la source).
+    if (!val) { chargerConfigLivreursAdmin(); return; }
+    const apiUrl = (document.getElementById('livreurApiUrl').value || '').trim();
+    const livreurs = livreursActifsAdmin
+        .map((n, idx) => (idx === i ? val : n))
+        .sort((a, b) => a.localeCompare(b, 'fr'));
+    await envoyerConfigLivreurs(apiUrl, livreurs);
+}
+
+async function envoyerConfigLivreurs(apiUrl, livreurs) {
+    try {
+        const resp = await fetch('/api/livreur/save-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ api_url: apiUrl, livreurs_actifs: livreurs })
+        });
+        const data = await resp.json();
+        if (data.success) {
+            await chargerConfigLivreursAdmin();
+            if (typeof afficherNotification === 'function') afficherNotification('Configuration livreurs sauvegardée', 'success');
+            else alert('Configuration sauvegardée !');
+        } else {
+            alert('Erreur: ' + (data.message || 'Erreur inconnue'));
+        }
+    } catch (e) {
+        console.error('Erreur envoi config livreurs:', e);
+        alert('Erreur réseau');
     }
 }
 

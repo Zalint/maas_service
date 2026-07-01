@@ -369,6 +369,11 @@
                                 <i class="bi bi-palette me-1"></i>Apparence
                             </a>
                         </li>
+                        <li class="nav-item" id="livreurs-nav">
+                            <a class="nav-link" href="#" data-section="livreurs">
+                                <i class="bi bi-truck me-1"></i>Livreurs
+                            </a>
+                        </li>
                     </ul>
                     <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
                         <!-- Tenant badge -->
@@ -1148,6 +1153,67 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Section Livreurs — config API + liste (kanban SUIVI DES COMMANDES) -->
+            <div id="livreurs-section" class="admin-section">
+                <h2><i class="fas fa-truck me-2"></i>Gestion des Livreurs</h2>
+                <p class="text-muted">URL du backend de livraison + liste des livreurs assignables depuis l'ecran SUIVI DES COMMANDES du POS. Config persistee en base (par point de vente).</p>
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card mb-4">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0"><i class="fas fa-link me-2"></i>URL API Livreur</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="livreurApiUrl" placeholder="https://...">
+                                    <button class="btn btn-primary" onclick="sauvegarderConfigLivreurs()">
+                                        <i class="fas fa-save"></i> Sauvegarder
+                                    </button>
+                                </div>
+                                <small class="text-muted">Ex : https://matix-livreur-backend.onrender.com (sans slash final).</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card mb-4">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="mb-0"><i class="fas fa-plus me-2"></i>Ajouter un livreur</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="input-group">
+                                    <input type="text" class="form-control" id="nouveauLivreurNom" placeholder="Nom du livreur">
+                                    <button class="btn btn-success" onclick="ajouterLivreur()">
+                                        <i class="fas fa-plus"></i> Ajouter
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="fas fa-users me-2"></i>Livreurs actifs (<span id="livreurCount">0</span>)</h5>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="chargerConfigLivreursAdmin()">
+                            <i class="fas fa-sync"></i> Rafraichir
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Nom</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="livreursTableBody">
+                                <tr><td colspan="3" class="text-center text-muted py-3">Chargement...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1422,6 +1488,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260517-review5-mixed-a11y"></script>
+    <script src="admin.js?v=20260701-livreurs"></script>
 </body>
 </html> 

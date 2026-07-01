@@ -497,6 +497,29 @@ async function updateSchema() {
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');
 
+        // Config Livreurs (kanban SUIVI DES COMMANDES): URL de l'API de
+        // livraison externe (matix-livreur-backend) + liste des livreurs
+        // actifs. Stocke en DB (et non dans livreurs_actifs.json a la racine)
+        // pour survivre aux redeploiements Render (FS ephemere) et rester
+        // isole par tenant (schema courant). Table cle/valeur JSONB:
+        //   api_url          -> string | null (URL sans slash final)
+        //   livreurs_actifs  -> array de noms (strings)
+        // Modifiable via admin > Gestion des Livreurs (POST /api/livreur/save-config).
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS livreur_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`
+            INSERT INTO livreur_config (key, value, updated_at) VALUES
+              ('api_url', 'null'::jsonb, NOW()),
+              ('livreurs_actifs', '[]'::jsonb, NOW())
+            ON CONFLICT (key) DO NOTHING
+        `);
+        console.log('Table livreur_config verifiee (seed livreurs_actifs=[])');
+
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS fournisseur_paiements (
                 id SERIAL PRIMARY KEY,
