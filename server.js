@@ -16012,10 +16012,15 @@ app.put('/api/commandes/statut', checkAuth, checkStatutLivraisonAccess, async (r
                 return res.status(403).json({ success: false, message: "Vous n'avez pas accès à cette commande" });
             }
         }
-        const updateData = { statut_preparation: statut };
-        if (statut === 'pret') updateData.livreur_assigne = null;
-        await Vente.update(updateData, { where: { commande_id: commandeId } });
-        res.json({ success: true, message: 'Statut mis à jour', commandeId, statut });
+        // ATTENTION: utiliser les NOMS D'ATTRIBUTS Sequelize (camelCase), pas
+        // les noms de colonnes DB. Le modele Vente declare statutPreparation
+        // (field: statut_preparation) et livreurAssigne (field: livreur_assigne).
+        // Passer les cles snake_case a Vente.update() = cles inconnues ignorees
+        // silencieusement => UPDATE no-op mais success renvoye (bug historique).
+        const updateData = { statutPreparation: statut };
+        if (statut === 'pret') updateData.livreurAssigne = null;
+        const [affected] = await Vente.update(updateData, { where: { commande_id: commandeId } });
+        res.json({ success: true, message: 'Statut mis à jour', commandeId, statut, affected });
     } catch (error) {
         console.error('Erreur mise à jour statut:', error);
         res.status(500).json({ success: false, message: 'Erreur serveur', error: error.message });
@@ -16410,7 +16415,8 @@ app.post('/api/livreur/assigner', checkAuth, async (req, res) => {
         // Cle dediee pour le backend livreur externe (matix-livreur-backend),
         // distincte de EXTERNAL_API_KEY (cle ENTRANTE propre au tenant Maas).
         const response = await axios.post(apiUrl, payload, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.LIVREUR_API_KEY }, timeout: 120000 });
-        try { await Vente.update({ livreur_assigne: livreur_nom }, { where: { commande_id } }); } catch (dbError) {}
+        // Nom d'attribut Sequelize (livreurAssigne), pas la colonne DB (livreur_assigne).
+        try { await Vente.update({ livreurAssigne: livreur_nom }, { where: { commande_id } }); } catch (dbError) {}
         res.json({ success: true, message: `Commande ${commande_id} assignée à ${livreur_nom}`, data: response.data });
     } catch (error) {
         console.error('Erreur assignation livreur:', error.message);
