@@ -6326,11 +6326,16 @@ function creerCarteKanban(commande) {
         ${actionsHtml}
     `;
     
-    // Charger les livreurs si statut en_livraison
+    // Charger les livreurs si statut en_livraison.
+    // IMPORTANT: sequencer -> d'abord peupler les OPTIONS du dropdown
+    // (chargerListeLivreursKanban), PUIS pre-selectionner le livreur assigne
+    // (verifierLivreurAssigneKanban). Sinon course: la pre-selection peut
+    // faire select.value = "<livreur>" avant que l'option existe -> ignore
+    // par le navigateur -> le dropdown reste sur "Selectionner..." au load.
     if (currentStatus === 'en_livraison') {
-        setTimeout(() => {
-            chargerListeLivreursKanban(commande.commandeId);
-            verifierLivreurAssigneKanban(commande.commandeId);
+        setTimeout(async () => {
+            await chargerListeLivreursKanban(commande.commandeId);
+            await verifierLivreurAssigneKanban(commande.commandeId);
         }, 100);
     }
     
