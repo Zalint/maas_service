@@ -4858,6 +4858,15 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         inputPrixUnitaire._italicOnOverrideAttached = true;
     }
 
+    // === Prix de reference (regle de trois par le poids) ===
+    // On definit un prix pour un poids de reference (defaut 1.5 kg) ; chaque
+    // calibre est alors auto-rempli: prix = round(prixRef * poids / poidsRef).
+    // Un calibre modifie a la main est marque dataset.manual='true' + italique
+    // et n'est plus ecrase par la propagation (sauf clic "Reappliquer" = force).
+    const DEFAULT_POIDS_REF = 1.5;
+    let poidsRef = DEFAULT_POIDS_REF;
+    let prixRef = NaN;
+
     const editor = document.createElement('div');
     editor.className = 'calibres-editor';
 
@@ -4908,6 +4917,33 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         }
     };
 
+    // Auto-remplit le prix d'UNE ligne calibre par regle de trois sur le poids,
+    // sauf si l'utilisateur l'a modifie a la main (dataset.manual='true'), a
+    // moins de forcer (bouton Reappliquer). _isAutoFillingCalibre evite que le
+    // dispatch 'input' ne re-marque la ligne comme manuelle.
+    const autoFillPrixRow = (tr, force) => {
+        if (isNaN(prixRef) || !(poidsRef > 0)) return;
+        const inputPoids = tr.querySelector('.calibre-poids');
+        const inputPrix = tr.querySelector('.calibre-prix');
+        if (!inputPoids || !inputPrix) return;
+        const poids = parseFloat(inputPoids.value) || 0;
+        if (!(poids > 0)) return;
+        if (!force && inputPrix.dataset.manual === 'true') return;
+        const prix = Math.round(prixRef * poids / poidsRef);
+        inputPrix._isAutoFillingCalibre = true;
+        inputPrix.value = prix;
+        inputPrix.dataset.manual = 'false';
+        inputPrix.style.fontStyle = '';
+        inputPrix.dispatchEvent(new Event('input', { bubbles: true }));
+        inputPrix._isAutoFillingCalibre = false;
+    };
+
+    // Propage le prix de reference a tous les calibres puis recalcule le global.
+    const propagerReference = (force) => {
+        calibresBody.querySelectorAll('tr').forEach(tr => autoFillPrixRow(tr, force));
+        recalc();
+    };
+
     // Construit chaque ligne via les APIs DOM plutot que innerHTML pour
     // eviter d'injecter une valeur non echappee si calibresInit vient un
     // jour d'une source non validee.
@@ -4919,7 +4955,7 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
         input.value = value === '' || value === null || value === undefined ? '' : String(value);
         return input;
     };
-    const ajouterCalibre = (poids = '', qte = '', prix = '') => {
+    const ajouterCalibre = (poids = '', qte = '', prix = '', manual = false) => {
         const tr = document.createElement('tr');
 
         const tdPoids = document.createElement('td');
@@ -4932,6 +4968,10 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
 
         const tdPrix = document.createElement('td');
         const inputPrix = buildNumberInput('calibre-prix', prix, { min: '0', step: '1', placeholder: 'optionnel' });
+        // Prix pre-rempli explicitement (manuel) = override -> italique, non
+        // ecrase par la propagation tant que "Reappliquer" n'est pas clique.
+        inputPrix.dataset.manual = manual ? 'true' : 'false';
+        if (manual) inputPrix.style.fontStyle = 'italic';
         tdPrix.appendChild(inputPrix);
 
         const tdAction = document.createElement('td');
@@ -4944,17 +4984,64 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
 
         tr.append(tdPoids, tdQte, tdPrix, tdAction);
 
-        inputPoids.addEventListener('input', recalc);
+        // Changement de poids -> re-auto-remplir le prix de CETTE ligne par
+        // regle de trois (sauf si override manuel), puis recalculer le global.
+        inputPoids.addEventListener('input', () => {
+            autoFillPrixRow(tr, false);
+            recalc();
+        });
         inputQte.addEventListener('input', recalc);
-        inputPrix.addEventListener('input', recalc);
+        // Saisie clavier du prix = override -> marque manuel + italique.
+        inputPrix.addEventListener('input', () => {
+            if (!inputPrix._isAutoFillingCalibre) {
+                inputPrix.dataset.manual = 'true';
+                inputPrix.style.fontStyle = 'italic';
+            }
+            recalc();
+        });
         btnRemove.addEventListener('click', () => {
             tr.remove();
             recalc();
         });
 
         calibresBody.appendChild(tr);
+        // Nouvelle ligne sans prix: si une reference est deja definie et que le
+        // poids est renseigne, auto-remplir immediatement.
+        if (!manual && (prix === '' || prix === null || prix === undefined)) {
+            autoFillPrixRow(tr, false);
+        }
+        return tr;
     };
 
+    // Barre "Prix de reference" (regle de trois par le poids) au-dessus du tableau.
+    const refBar = document.createElement('div');
+    refBar.className = 'calibres-ref-bar';
+    refBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;font-size:0.78rem;';
+    const lblA = document.createElement('span'); lblA.textContent = 'Prix réf. pour';
+    const inputPoidsRef = buildNumberInput('calibre-poids-ref', poidsRef, { min: '0.01', step: '0.01' });
+    inputPoidsRef.style.width = '58px';
+    const lblB = document.createElement('span'); lblB.textContent = 'kg =';
+    const inputPrixRef = buildNumberInput('calibre-prix-ref', '', { min: '0', step: '1', placeholder: 'prix' });
+    inputPrixRef.style.width = '84px';
+    const lblC = document.createElement('span'); lblC.textContent = 'FCFA';
+    const btnReappliquer = document.createElement('button');
+    btnReappliquer.type = 'button';
+    btnReappliquer.className = 'btn btn-sm btn-outline-primary';
+    btnReappliquer.textContent = 'Réappliquer';
+    btnReappliquer.title = 'Recalculer TOUS les prix par règle de trois (écrase les modifications manuelles)';
+    refBar.append(lblA, inputPoidsRef, lblB, inputPrixRef, lblC, btnReappliquer);
+
+    const majRefState = () => {
+        poidsRef = parseFloat(inputPoidsRef.value) || DEFAULT_POIDS_REF;
+        prixRef = (inputPrixRef.value === '' ? NaN : parseFloat(inputPrixRef.value));
+    };
+    // Saisie de la reference -> propage en respectant les overrides manuels.
+    inputPoidsRef.addEventListener('input', () => { majRefState(); propagerReference(false); });
+    inputPrixRef.addEventListener('input', () => { majRefState(); propagerReference(false); });
+    // Reappliquer -> force (ecrase meme les overrides manuels, remet tout en auto).
+    btnReappliquer.addEventListener('click', () => { majRefState(); propagerReference(true); });
+
+    editor.appendChild(refBar);
     editor.appendChild(table);
 
     const btnAdd = document.createElement('button');
@@ -4968,13 +5055,15 @@ function configurerVentilationLigneTransfert(row, produit, calibresInit) {
 
     tdDetails.appendChild(editor);
 
-    // Pré-remplir si on a des calibres existants
+    // Pré-remplir si on a des calibres existants.
+    // Un prix DEJA persiste est traite comme "epingle" (manual=true, italique):
+    // saisir une reference ne l'ecrase pas (seul "Reappliquer" le fait). On
+    // protege ainsi les prix venant d'une source amont (ex. Centre de Decoupe).
     if (Array.isArray(calibresInit) && calibresInit.length > 0) {
-        calibresInit.forEach(c => ajouterCalibre(
-            c.poids_kg,
-            c.quantite,
-            (c.prix_unitaire !== undefined && c.prix_unitaire !== null) ? c.prix_unitaire : ''
-        ));
+        calibresInit.forEach(c => {
+            const prixVal = (c.prix_unitaire !== undefined && c.prix_unitaire !== null) ? c.prix_unitaire : '';
+            ajouterCalibre(c.poids_kg, c.quantite, prixVal, prixVal !== '');
+        });
         recalc();
     } else if (parseFloat(inputQuantite.value) > 0) {
         // Transfert existant sans ventilation persistée: on respecte la
