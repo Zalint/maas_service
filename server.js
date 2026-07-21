@@ -4066,6 +4066,98 @@ async function loadVentesWithIds() {
 // ROUTES POUR LES PRÉ-COMMANDES
 // ================================
 
+// Route pour créer une pré-commande depuis le POS (panier + infos client)
+app.post('/api/precommandes/pos', checkAuth, checkWriteAccess, async (req, res) => {
+    try {
+        console.log('=== CRÉATION PRÉ-COMMANDE DEPUIS POS ===');
+        const { cart, clientInfo, dateReception, label, commentaire, pointVente } = req.body;
+
+        // Validation des données
+        if (!cart || cart.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Le panier est vide'
+            });
+        }
+
+        if (!clientInfo || !clientInfo.nom || !clientInfo.telephone) {
+            return res.status(400).json({
+                success: false,
+                message: 'Les informations client sont requises (nom et téléphone)'
+            });
+        }
+
+        if (!dateReception) {
+            return res.status(400).json({
+                success: false,
+                message: 'La date de réception est requise'
+            });
+        }
+
+        if (!pointVente) {
+            return res.status(400).json({
+                success: false,
+                message: 'Le point de vente est requis'
+            });
+        }
+
+        // Standardiser la date de réception au format YYYY-MM-DD (format PostgreSQL)
+        const dateReceptionStandardisee = standardiserDateFormat(dateReception);
+        console.log('📅 [PRECOMMANDE] Date standardisée:', dateReceptionStandardisee);
+        const dateEnregistrementStandardisee = new Date().toISOString().split('T')[0];
+
+        // Créer les entrées de pré-commande pour chaque produit du panier
+        const precommandesToInsert = [];
+
+        for (const item of cart) {
+            // dateReceptionStandardisee est déjà au format YYYY-MM-DD ; ajouter T00:00:00
+            // pour forcer une interprétation à minuit local
+            const dateObj = new Date(dateReceptionStandardisee + 'T00:00:00');
+            const mois = `${String(dateObj.getMonth() + 1).padStart(2, '0')}/${dateObj.getFullYear()}`;
+            const semaine = `S${Math.ceil(dateObj.getDate() / 7)}`;
+
+            precommandesToInsert.push({
+                mois: mois,
+                dateEnregistrement: dateEnregistrementStandardisee,
+                dateReception: dateReceptionStandardisee,
+                semaine: semaine,
+                pointVente: pointVente,
+                preparation: item.category || item.categorie || 'Non spécifiée',
+                categorie: item.category || item.categorie || 'Non spécifiée',
+                produit: item.name || item.produit || item.nom,
+                prixUnit: parseFloat(item.price || item.prixUnit || item.prix || 0),
+                nombre: parseFloat(item.quantity || item.quantite || item.nombre || 0),
+                montant: parseFloat(item.montant || ((item.quantity || item.quantite || 0) * (item.price || item.prix || 0))),
+                nomClient: clientInfo.nom,
+                numeroClient: clientInfo.telephone,
+                adresseClient: clientInfo.adresse || null,
+                commentaire: commentaire || null,
+                label: label || null,
+                statut: 'ouvert'
+            });
+        }
+
+        // Insérer les pré-commandes dans la base
+        await Precommande.bulkCreate(precommandesToInsert);
+
+        console.log(`✅ ${precommandesToInsert.length} pré-commande(s) créée(s) pour ${clientInfo.nom}`);
+
+        res.json({
+            success: true,
+            message: `Pré-commande créée avec succès pour ${clientInfo.nom}`,
+            count: precommandesToInsert.length
+        });
+
+    } catch (error) {
+        console.error('❌ Erreur lors de la création de la pré-commande:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la création de la pré-commande',
+            error: error.message
+        });
+    }
+});
+
 // Route pour ajouter des pré-commandes
 app.post('/api/precommandes', checkAuth, checkWriteAccess, async (req, res) => {
     console.log('=== AJOUT PRÉ-COMMANDES ===');
