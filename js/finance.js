@@ -958,19 +958,44 @@
         inP.dataset.col = 'produit';
         tdP.appendChild(inP);
 
-        const tdV = document.createElement('td');
-        const inV = document.createElement('input');
-        inV.type = 'number'; inV.min = '0'; inV.step = '1'; inV.className = 'form-control form-control-sm';
-        inV.value = prixVente == null ? '' : prixVente;
-        inV.dataset.col = 'prix_vente';
-        tdV.appendChild(inV);
-
-        const tdA = document.createElement('td');
-        const inA = document.createElement('input');
-        inA.type = 'number'; inA.min = '0'; inA.step = '1'; inA.className = 'form-control form-control-sm';
-        inA.value = prixAchat == null ? '' : prixAchat;
-        inA.dataset.col = 'prix_achat';
-        tdA.appendChild(inA);
+        // Cellule prix = input + (si produit existant en BDD) bouton historique
+        // date. Reutilise showPrixHistoryModal + les endpoints /history existants
+        // (chaque sauvegarde ecrit une ligne datee dans prix_*_history).
+        const makePrixCell = (col, value, histEndpoint, histLabel, histField) => {
+            const td = document.createElement('td');
+            const input = document.createElement('input');
+            input.type = 'number'; input.min = '0'; input.step = '1';
+            input.className = 'form-control form-control-sm';
+            input.value = value == null ? '' : value;
+            input.dataset.col = col;
+            if (!produit) { td.appendChild(input); return td; }
+            const grp = document.createElement('div');
+            grp.className = 'input-group input-group-sm';
+            grp.appendChild(input);
+            const btnH = document.createElement('button');
+            btnH.type = 'button';
+            btnH.className = 'btn btn-outline-secondary';
+            btnH.title = 'Voir l\'historique daté de ce prix';
+            btnH.innerHTML = '<i class="bi bi-clock-history"></i>';
+            btnH.addEventListener('click', async () => {
+                try {
+                    const res = await fetch(
+                        '/api/finance/' + histEndpoint + '/' + encodeURIComponent(produit) + '/history',
+                        { credentials: 'include' }
+                    );
+                    const j = await res.json();
+                    if (!j.success) throw new Error(j.error || 'Erreur');
+                    showPrixHistoryModal(histLabel, produit, histField, j.data);
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Erreur historique: ' + e.message, 'danger');
+                }
+            });
+            grp.appendChild(btnH);
+            td.appendChild(grp);
+            return td;
+        };
+        const tdV = makePrixCell('prix_vente', prixVente, 'prix-vente-fournisseur', 'Prix vente fournisseur', 'prix_vente');
+        const tdA = makePrixCell('prix_achat', prixAchat, 'prix-achat', 'Prix achat fournisseur', 'prix_achat');
 
         // Bouton supprimer. Si la ligne vient de la BDD (produit existant),
         // on appelle DELETE /api/finance/prix/:produit. Sinon (ligne ajoutee
