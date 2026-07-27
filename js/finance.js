@@ -141,6 +141,13 @@
         const detailDateExport = document.getElementById('fin-detail-date-export');
         if (detailDateExport) detailDateExport.addEventListener('click', exportDetailParDateExcel);
 
+        // Bascule "Grouper par date" du tableau Detail par date (re-rend sans
+        // refaire d'appel reseau, a partir du dernier payload memorise).
+        const detailDateGroup = document.getElementById('fin-detail-date-group');
+        if (detailDateGroup) detailDateGroup.addEventListener('change', () => {
+            if (_lastLocalData) renderDetailParDate(_lastLocalData);
+        });
+
         // Boutons Mapping produits
         const mappingRefresh = document.getElementById('fin-mapping-refresh');
         if (mappingRefresh) mappingRefresh.addEventListener('click', loadMapping);
@@ -358,6 +365,99 @@
         if (typeof showToast === 'function') showToast('Export Excel réussi', 'success');
     }
 
+    // Rendu du tableau "Detail par date (commission 3%)".
+    // 2 modes selon la case "Grouper par date":
+    //  - plat: une ligne par (date, produit) (defaut).
+    //  - groupe: une ligne-resume repliable par date (total du jour) +
+    //    lignes produits masquees, depliees au clic. Simplifie la
+    //    reconciliation par date quand une date a plusieurs produits.
+    function renderDetailParDate(data) {
+        const tbodyDate = document.querySelector('#fin-creances-detail-date tbody');
+        if (!tbodyDate) return;
+        const fmtDateFr = (iso) => {
+            if (!iso || typeof iso !== 'string') return iso;
+            const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+        };
+        const r2 = (n) => Math.round((n || 0) * 100) / 100;
+        const tiret = '<span class="text-muted">—</span>';
+        const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
+        const grouped = !!(document.getElementById('fin-detail-date-group') || {}).checked;
+
+        const productRow = (d, cls) => `
+            <tr${cls ? ` class="${cls}" style="display:none"` : ''}>
+                <td>${grouped ? '' : esc(fmtDateFr(d.date))}</td>
+                <td${grouped ? ' class="ps-4"' : ''}>${esc(d.produit)}</td>
+                <td class="text-end">${esc(d.quantite)}</td>
+                <td class="text-end">${d.prix_achat == null ? tiret : esc(fmtMoney(d.prix_achat))}</td>
+                <td class="text-end">${d.montant_achat == null ? tiret : esc(fmtMoney(d.montant_achat))}</td>
+                <td class="text-end">${esc(fmtMoney(d.dette))}</td>
+            </tr>`;
+
+        if (!detailDate.length) {
+            tbodyDate.innerHTML = '<tr><td colspan="6" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
+        } else if (!grouped) {
+            tbodyDate.innerHTML = detailDate.map((d) => productRow(d)).join('');
+        } else {
+            // Regrouper par date en conservant l'ordre (date desc du backend).
+            const order = [];
+            const groups = new Map();
+            for (const d of detailDate) {
+                if (!groups.has(d.date)) { groups.set(d.date, []); order.push(d.date); }
+                groups.get(d.date).push(d);
+            }
+            let html = '';
+            order.forEach((date, i) => {
+                const items = groups.get(date);
+                const qte = r2(items.reduce((s, d) => s + (d.quantite || 0), 0));
+                const achat = items.reduce((s, d) => s + (d.montant_achat || 0), 0);
+                const dette = items.reduce((s, d) => s + (d.dette || 0), 0);
+                const gid = 'ddg-' + i;
+                html += `
+                    <tr class="table-light fw-medium dd-group-header" data-dd-group="${gid}" style="cursor:pointer">
+                        <td><i class="bi bi-chevron-right dd-chevron me-1"></i>${esc(fmtDateFr(date))}</td>
+                        <td><span class="badge bg-secondary rounded-pill">${items.length} produit${items.length > 1 ? 's' : ''}</span></td>
+                        <td class="text-end">${esc(qte)}</td>
+                        <td class="text-end">${tiret}</td>
+                        <td class="text-end">${esc(fmtMoney(achat))}</td>
+                        <td class="text-end">${esc(fmtMoney(dette))}</td>
+                    </tr>`;
+                html += items.map((d) => productRow(d, 'dd-child ' + gid)).join('');
+            });
+            tbodyDate.innerHTML = html;
+            // Clic sur une ligne-resume: plie/deplie les produits de la date.
+            tbodyDate.querySelectorAll('.dd-group-header').forEach((hdr) => {
+                hdr.addEventListener('click', () => {
+                    const gid = hdr.dataset.ddGroup;
+                    const open = hdr.classList.toggle('dd-open');
+                    const chev = hdr.querySelector('.dd-chevron');
+                    if (chev) chev.className = 'bi dd-chevron me-1 ' + (open ? 'bi-chevron-down' : 'bi-chevron-right');
+                    tbodyDate.querySelectorAll('.dd-child.' + gid).forEach((row) => {
+                        row.style.display = open ? '' : 'none';
+                    });
+                });
+            });
+        }
+
+        // Ligne de total (dates choisies): somme de "Qté × Prix achat" et
+        // "Je dois (3%)" sur les lignes affichees (identique dans les 2 modes).
+        // Le total "Je dois" egale le KPI ce_que_je_dois. Cache si aucune ligne.
+        const foot = document.getElementById('fin-creances-detail-date-foot');
+        if (foot) {
+            if (detailDate.length) {
+                const totAchat = detailDate.reduce((s, d) => s + (d.montant_achat || 0), 0);
+                const totDette = detailDate.reduce((s, d) => s + (d.dette || 0), 0);
+                const elA = document.getElementById('fin-cre-dd-total-achat');
+                const elD = document.getElementById('fin-cre-dd-total-dette');
+                if (elA) elA.textContent = fmtMoney(totAchat);
+                if (elD) elD.textContent = fmtMoney(totDette);
+                foot.style.display = '';
+            } else {
+                foot.style.display = 'none';
+            }
+        }
+    }
+
     function renderLocal(data) {
         _lastLocalData = data;
         const cards = document.getElementById('fin-creances-cards');
@@ -391,44 +491,7 @@
         // tri par date desc (jours recents en haut). Date format YYYY-MM-DD du
         // backend converti en DD/MM/YYYY pour lisibilite FR. Filtre dette>0
         // pour ne pas montrer les jours sans vente eligible.
-        const tbodyDate = document.querySelector('#fin-creances-detail-date tbody');
-        if (tbodyDate) {
-            const fmtDateFr = (iso) => {
-                if (!iso || typeof iso !== 'string') return iso;
-                const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-                return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-            };
-            const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
-            const tiret = '<span class="text-muted">—</span>';
-            tbodyDate.innerHTML = detailDate.map((d) => `
-                <tr>
-                    <td>${esc(fmtDateFr(d.date))}</td>
-                    <td>${esc(d.produit)}</td>
-                    <td class="text-end">${esc(d.quantite)}</td>
-                    <td class="text-end">${d.prix_achat == null ? tiret : esc(fmtMoney(d.prix_achat))}</td>
-                    <td class="text-end">${d.montant_achat == null ? tiret : esc(fmtMoney(d.montant_achat))}</td>
-                    <td class="text-end">${esc(fmtMoney(d.dette))}</td>
-                </tr>
-            `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
-
-            // Ligne de total (dates choisies): somme de "Qté × Prix achat" et
-            // "Je dois (3%)" sur les lignes affichees. Le total "Je dois" doit
-            // egaler le KPI ce_que_je_dois. Cache si aucune ligne.
-            const foot = document.getElementById('fin-creances-detail-date-foot');
-            if (foot) {
-                if (detailDate.length) {
-                    const totAchat = detailDate.reduce((s, d) => s + (d.montant_achat || 0), 0);
-                    const totDette = detailDate.reduce((s, d) => s + (d.dette || 0), 0);
-                    const elA = document.getElementById('fin-cre-dd-total-achat');
-                    const elD = document.getElementById('fin-cre-dd-total-dette');
-                    if (elA) elA.textContent = fmtMoney(totAchat);
-                    if (elD) elD.textContent = fmtMoney(totDette);
-                    foot.style.display = '';
-                } else {
-                    foot.style.display = 'none';
-                }
-            }
-        }
+        renderDetailParDate(data);
 
         const pbody = document.querySelector('#fin-paiements-list tbody');
         pbody.innerHTML = data.paiements.map((p) => `
