@@ -2857,6 +2857,18 @@
                                     <button class="btn btn-sm btn-primary" id="fin-config-save">Sauvegarder commission</button>
                                 </div>
                             </div>
+                            <div class="row g-2 mb-2 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Voir les prix à une date</label>
+                                    <input type="date" id="fin-prix-date" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-sm btn-outline-secondary" id="fin-prix-date-today" title="Revenir aux prix courants (mode édition)">Aujourd'hui (édition)</button>
+                                </div>
+                            </div>
+                            <div class="alert alert-info py-2 small mb-2" id="fin-prix-asof-banner" style="display:none">
+                                <i class="bi bi-clock-history me-1"></i><span id="fin-prix-asof-label"></span> — <strong>lecture seule</strong>. Prix effectif à cette date (à défaut, la dernière valeur enregistrée avant).
+                            </div>
                             <h6>Catalogue de prix par produit</h6>
                             <div class="table-responsive">
                                 <table class="table table-sm" id="fin-prix-table">
@@ -2866,7 +2878,7 @@
                                     <tbody></tbody>
                                 </table>
                             </div>
-                            <div class="d-flex gap-2 mt-2">
+                            <div class="d-flex gap-2 mt-2" id="fin-prix-actions">
                                 <button class="btn btn-sm btn-success" id="fin-prix-save">Sauvegarder prix</button>
                                 <button class="btn btn-sm btn-outline-secondary" id="fin-prix-add">+ Ajouter une ligne</button>
                             </div>
@@ -3778,7 +3790,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260728-prix-historique-date"></script>
+    <script src="js/finance.js?v=20260728-prix-asof-date"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

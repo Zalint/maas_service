@@ -134,6 +134,17 @@
         const prixAdd = document.getElementById('fin-prix-add');
         if (prixAdd) prixAdd.addEventListener('click', () => addPrixRow('', '', ''));
 
+        // Sélecteur de date "voir les prix au ..." : recharge le catalogue en
+        // mode as-of (lecture seule) quand une date est choisie, ou en mode
+        // édition (prix courants) quand la date est vidée / "Aujourd'hui".
+        const prixDate = document.getElementById('fin-prix-date');
+        if (prixDate) prixDate.addEventListener('change', loadPrix);
+        const prixDateToday = document.getElementById('fin-prix-date-today');
+        if (prixDateToday) prixDateToday.addEventListener('click', () => {
+            if (prixDate) prixDate.value = '';
+            loadPrix();
+        });
+
         const configSave = document.getElementById('fin-config-save');
         if (configSave) configSave.addEventListener('click', onConfigSave);
 
@@ -925,10 +936,18 @@
 
     async function loadPrix() {
         try {
+            // Date "voir les prix au ..." : si renseignee -> mode as-of (lecture
+            // seule, prix effectifs a cette date). Sinon -> edition (courant).
+            const dateInput = document.getElementById('fin-prix-date');
+            const asOf = dateInput && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.value)
+                ? dateInput.value
+                : '';
+            const prixUrl = '/api/finance/prix' + (asOf ? '?date=' + encodeURIComponent(asOf) : '');
+
             // Charger config (commission_pct) et prix en parallele
             const [cfgRes, prixRes] = await Promise.all([
                 fetch('/api/finance/config', { credentials: 'include' }),
-                fetch('/api/finance/prix', { credentials: 'include' })
+                fetch(prixUrl, { credentials: 'include' })
             ]);
             const cfgJson = await cfgRes.json();
             const prixJson = await prixRes.json();
@@ -938,17 +957,41 @@
             const commPct = document.getElementById('fin-commission-pct');
             if (commPct) commPct.value = cfgJson.data.commission_pct || '3.0';
 
+            // Bascule affichage: as-of (lecture seule) vs edition.
+            const readOnly = !!asOf;
+            const banner = document.getElementById('fin-prix-asof-banner');
+            const actions = document.getElementById('fin-prix-actions');
+            if (banner) {
+                banner.style.display = readOnly ? '' : 'none';
+                const lbl = document.getElementById('fin-prix-asof-label');
+                if (lbl && readOnly) {
+                    const m = asOf.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                    lbl.textContent = 'Prix en vigueur au ' + (m ? `${m[3]}/${m[2]}/${m[1]}` : asOf);
+                }
+            }
+            // NB: la barre a la classe .d-flex (display:flex !important), donc
+            // un style.display inline ne suffit pas — on bascule les classes.
+            if (actions) {
+                actions.classList.toggle('d-none', readOnly);
+                actions.classList.toggle('d-flex', !readOnly);
+            }
+
             const tbody = document.querySelector('#fin-prix-table tbody');
             tbody.innerHTML = '';
             for (const row of prixJson.data) {
-                addPrixRow(row.produit, row.prix_vente, row.prix_achat == null ? '' : row.prix_achat);
+                addPrixRow(
+                    row.produit,
+                    row.prix_vente == null ? '' : row.prix_vente,
+                    row.prix_achat == null ? '' : row.prix_achat,
+                    readOnly
+                );
             }
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur prix: ' + e.message, 'danger');
         }
     }
 
-    function addPrixRow(produit, prixVente, prixAchat) {
+    function addPrixRow(produit, prixVente, prixAchat, readOnly) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
 
@@ -956,6 +999,7 @@
         const inP = document.createElement('input');
         inP.type = 'text'; inP.className = 'form-control form-control-sm'; inP.value = produit || '';
         inP.dataset.col = 'produit';
+        if (readOnly) inP.disabled = true;
         tdP.appendChild(inP);
 
         // Cellule prix = input + (si produit existant en BDD) bouton historique
@@ -968,6 +1012,7 @@
             input.className = 'form-control form-control-sm';
             input.value = value == null ? '' : value;
             input.dataset.col = col;
+            if (readOnly) input.disabled = true;
             if (!produit) { td.appendChild(input); return td; }
             const grp = document.createElement('div');
             grp.className = 'input-group input-group-sm';
@@ -1001,6 +1046,7 @@
         // on appelle DELETE /api/finance/prix/:produit. Sinon (ligne ajoutee
         // localement via "+ Ajouter une ligne"), on retire juste du DOM.
         const tdDel = document.createElement('td');
+        if (!readOnly) {
         const btnDel = document.createElement('button');
         btnDel.type = 'button';
         btnDel.className = 'btn btn-sm btn-outline-danger';
@@ -1042,6 +1088,7 @@
             }
         });
         tdDel.appendChild(btnDel);
+        }
 
         tr.append(tdP, tdV, tdA, tdDel);
         tbody.appendChild(tr);
