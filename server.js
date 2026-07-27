@@ -16646,15 +16646,16 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         if (!date || !pointVente || montantEspeces === undefined || !commercial) {
             return res.status(400).json({ success: false, message: 'date, pointVente, montantEspeces et commercial sont requis' });
         }
-        // montant_total_caisse: optionnel. Si fourni, doit etre un nombre >= 0.
-        let montantTotalCaisseValide = null;
-        if (montantTotalCaisse !== undefined && montantTotalCaisse !== null && montantTotalCaisse !== '') {
-            const v = parseFloat(montantTotalCaisse);
-            if (!Number.isFinite(v) || v < 0) {
-                return res.status(400).json({ success: false, message: 'montantTotalCaisse doit etre un nombre >= 0' });
-            }
-            montantTotalCaisseValide = v;
+        // montant_total_caisse: OBLIGATOIRE (alimente Finance > Cash et Stock).
+        // Doit etre fourni et etre un nombre >= 0.
+        if (montantTotalCaisse === undefined || montantTotalCaisse === null || montantTotalCaisse === '') {
+            return res.status(400).json({ success: false, message: 'Le montant total en caisse est obligatoire' });
         }
+        const vTotalCaisse = parseFloat(montantTotalCaisse);
+        if (!Number.isFinite(vTotalCaisse) || vTotalCaisse < 0) {
+            return res.status(400).json({ success: false, message: 'montantTotalCaisse doit etre un nombre >= 0' });
+        }
+        const montantTotalCaisseValide = vTotalCaisse;
         let isoDate = date;
         if (date.match(/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/)) { const parts = date.split(/[\/\-]/); isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`; }
         const transaction = await sequelize.transaction();
