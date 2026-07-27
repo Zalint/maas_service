@@ -353,6 +353,24 @@
                     <td class="text-end">${esc(fmtMoney(d.dette))}</td>
                 </tr>
             `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
+
+            // Ligne de total (dates choisies): somme de "Qté × Prix achat" et
+            // "Je dois (3%)" sur les lignes affichees. Le total "Je dois" doit
+            // egaler le KPI ce_que_je_dois. Cache si aucune ligne.
+            const foot = document.getElementById('fin-creances-detail-date-foot');
+            if (foot) {
+                if (detailDate.length) {
+                    const totAchat = detailDate.reduce((s, d) => s + (d.montant_achat || 0), 0);
+                    const totDette = detailDate.reduce((s, d) => s + (d.dette || 0), 0);
+                    const elA = document.getElementById('fin-cre-dd-total-achat');
+                    const elD = document.getElementById('fin-cre-dd-total-dette');
+                    if (elA) elA.textContent = fmtMoney(totAchat);
+                    if (elD) elD.textContent = fmtMoney(totDette);
+                    foot.style.display = '';
+                } else {
+                    foot.style.display = 'none';
+                }
+            }
         }
 
         const pbody = document.querySelector('#fin-paiements-list tbody');
