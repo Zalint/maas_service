@@ -342,13 +342,17 @@
                 return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
             };
             const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
+            const tiret = '<span class="text-muted">—</span>';
             tbodyDate.innerHTML = detailDate.map((d) => `
                 <tr>
                     <td>${esc(fmtDateFr(d.date))}</td>
+                    <td>${esc(d.produit)}</td>
                     <td class="text-end">${esc(d.quantite)}</td>
+                    <td class="text-end">${d.prix_achat == null ? tiret : esc(fmtMoney(d.prix_achat))}</td>
+                    <td class="text-end">${d.montant_achat == null ? tiret : esc(fmtMoney(d.montant_achat))}</td>
                     <td class="text-end">${esc(fmtMoney(d.dette))}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
+            `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
         }
 
         const pbody = document.querySelector('#fin-paiements-list tbody');

@@ -282,7 +282,7 @@ async function computeCreances(opts = {}) {
     // detailParCentre (CDC) reste base sur les VENTES (= ce qui est vendu
     // au client CDC). Voir 5b.
     const detail = new Map();         // produit -> { produit, quantite, dette }
-    const detailParDate = new Map();  // date -> { date, quantite, dette }
+    const detailParDate = new Map();  // date|produit -> { date, produit, quantite, dette }
     const detailParCentre = new Map();
     let totalDette = 0;        // ce que je dois (3% × prix fournisseur × qte recue)
     let totalRecevable = 0;    // ce qu'il me doit (margin × qte sur ventes Centre)
@@ -329,16 +329,19 @@ async function computeCreances(opts = {}) {
         pAgg.dette += detteLigne;
         detail.set(key, pAgg);
 
-        // Agreger par date
+        // Agreger par (date, produit) pour la vue temporelle detaillee
+        // "Detail par date" (une ligne par produit livre ce jour-la).
         if (tDateISO) {
-            const dAgg = detailParDate.get(tDateISO) || {
+            const dKey = `${tDateISO}|${key}`;
+            const dAgg = detailParDate.get(dKey) || {
                 date: tDateISO,
+                produit: key,
                 quantite: 0,
                 dette: 0
             };
             dAgg.quantite += qte;
             dAgg.dette += detteLigne;
-            detailParDate.set(tDateISO, dAgg);
+            detailParDate.set(dKey, dAgg);
         }
     }
 
@@ -605,15 +608,37 @@ async function computeCreances(opts = {}) {
             }))
             .sort((a, b) => b.dette - a.dette),
         // Detail par date (vue temporelle - utilise par "Calcul Maas > Detail par date").
-        // Quantite = somme qte des ventes eligibles uniquement (coherent avec
-        // `detail` ci-dessus). Trie par date desc (jours recents en haut).
+        // Une ligne par (date, produit). Colonnes affichees: produit, quantite
+        // eligible, prix_achat fournisseur (point-in-time a la date), montant_achat
+        // (= quantite × prix_achat, info) et dette (Je dois 3%, inchange).
+        // Trie par date desc (jours recents en haut), puis dette desc a date egale.
         detail_par_date: Array.from(detailParDate.values())
-            .map((d) => ({
-                date: d.date,
-                quantite: round2(d.quantite),
-                dette: round2(d.dette)
-            }))
-            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+            .map((d) => {
+                const prixAchatEff = lookupPrixAchatAtDate(d.produit, d.date);
+                const prixAchatNum =
+                    prixAchatEff == null ? null : parseFloat(prixAchatEff);
+                // Quantite arrondie pour l'affichage: on calcule montant_achat
+                // a partir de cette meme valeur arrondie pour que, dans la vue
+                // d'audit, (Qte affichee) × (Prix affiche) = (Montant affiche).
+                const quantiteAff = round2(d.quantite);
+                return {
+                    date: d.date,
+                    produit: d.produit,
+                    quantite: quantiteAff,
+                    prix_achat:
+                        prixAchatNum == null || isNaN(prixAchatNum)
+                            ? null
+                            : round2(prixAchatNum),
+                    montant_achat:
+                        prixAchatNum == null || isNaN(prixAchatNum)
+                            ? null
+                            : round2(quantiteAff * prixAchatNum),
+                    dette: round2(d.dette)
+                };
+            })
+            .sort((a, b) =>
+                a.date < b.date ? 1 : a.date > b.date ? -1 : b.dette - a.dette
+            ),
         // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
         // Chaque entree: { centre, total_recevable, total_quantite,
         //                   detail: [{ produit, quantite_cdc, prix_achat,
