@@ -149,8 +149,55 @@ const upload = multer({
 
 router.get('/prix', async (req, res) => {
     try {
-        const rows = await FournisseurPrix.findAll({ order: [['produit', 'ASC']] });
-        res.json({ success: true, data: rows });
+        const rows = await FournisseurPrix.findAll({
+            order: [['produit', 'ASC']],
+            raw: true
+        });
+
+        const dateParam = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+        // Mode normal (edition): valeurs courantes du catalogue.
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+            return res.json({ success: true, data: rows });
+        }
+
+        // Mode "as-of": prix effectifs a la date choisie (point-in-time).
+        // Fallback = derniere valeur enregistree AVANT/A cette date (meme
+        // logique que le calcul de commission). On lit tout l'historique
+        // <= fin de journee, trie ASC, et la derniere ecriture par produit
+        // gagne (= la plus recente <= date).
+        const borne = new Date(dateParam + 'T23:59:59.999Z');
+        const [venteHist, achatHist] = await Promise.all([
+            PrixVenteHistory.findAll({
+                where: { created_at: { [Op.lte]: borne } },
+                order: [['created_at', 'ASC']],
+                raw: true
+            }),
+            PrixAchatHistory.findAll({
+                where: { created_at: { [Op.lte]: borne } },
+                order: [['created_at', 'ASC']],
+                raw: true
+            })
+        ]);
+        const lastVente = {};
+        const lastAchat = {};
+        for (const h of venteHist) lastVente[h.produit] = h.prix_vente;
+        for (const h of achatHist) lastAchat[h.produit] = h.prix_achat;
+
+        const data = rows.map((r) => {
+            const pv = lastVente[r.produit];
+            const pa = lastAchat[r.produit];
+            return {
+                produit: r.produit,
+                prix_vente: pv == null ? null : pv,
+                prix_achat: pa == null ? null : pa,
+                updated_at: r.updated_at,
+                as_of: dateParam,
+                // Aucune donnee historique <= date: produit pas encore au
+                // catalogue a cette date (rare grace au seed genese).
+                no_data: pv == null && pa == null
+            };
+        });
+        res.json({ success: true, data, as_of: dateParam });
     } catch (e) {
         console.error('GET /api/finance/prix:', e);
         res.status(500).json({ success: false, error: e.message });
