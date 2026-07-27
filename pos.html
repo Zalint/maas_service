@@ -874,7 +874,7 @@
     <script src="js/modules-handler.js?v=20260701-interpv"></script>
     <script src="js/inventaire.js?v=20260114a"></script>
     <script src="pos-modal-details.js?v=20260110bictorys"></script>
-    <script src="pos.js?v=20260701-livreur-preselect"></script>
+    <script src="pos.js?v=20260728-cloture-total-obligatoire"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
@@ -1463,14 +1463,14 @@
                                    placeholder="Ex: 10000" min="0" step="500" value="0">
                         </div>
 
-                        <!-- Montant total en caisse (optionnel, utilise par Finance > Cash et Stock) -->
+                        <!-- Montant total en caisse (OBLIGATOIRE, utilise par Finance > Cash et Stock) -->
                         <div class="mb-3">
                             <label class="form-label fw-semibold" for="clotureMontantTotalCaisse">
-                                Montant total en caisse (FCFA)
+                                Montant total en caisse (FCFA) <span class="text-danger">*</span>
                             </label>
                             <input type="number" class="form-control" id="clotureMontantTotalCaisse"
-                                   placeholder="Ex: 850000" min="0" step="500">
-                            <small class="text-muted">Total espèces physiquement présentes (incluant fond de caisse). Optionnel.</small>
+                                   placeholder="Ex: 850000" min="0" step="500" required>
+                            <small class="text-muted">Total espèces physiquement présentes (incluant fond de caisse). Obligatoire.</small>
                         </div>
 
                         <!-- Commercial -->
