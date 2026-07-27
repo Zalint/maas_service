@@ -137,6 +137,10 @@
         const configSave = document.getElementById('fin-config-save');
         if (configSave) configSave.addEventListener('click', onConfigSave);
 
+        // Export Excel du tableau "Detail par date (commission 3%)"
+        const detailDateExport = document.getElementById('fin-detail-date-export');
+        if (detailDateExport) detailDateExport.addEventListener('click', exportDetailParDateExcel);
+
         // Boutons Mapping produits
         const mappingRefresh = document.getElementById('fin-mapping-refresh');
         if (mappingRefresh) mappingRefresh.addEventListener('click', loadMapping);
@@ -302,7 +306,60 @@
     // ===== Bloc 2: Calcul Maas local (commission 3%) =====
     // Solde theorique recalcul cote UI sans la marge CDC pour matcher la
     // semantique du nouvel onglet separe (Solde = Je dois - Paiements).
+    // Dernier payload local (Calcul Maas) rendu — sert a l'export Excel du
+    // tableau "Detail par date" sans refaire d'appel reseau.
+    let _lastLocalData = null;
+
+    // Export Excel (.xlsx) du tableau "Detail par date (commission 3%)".
+    // Exporte exactement les lignes affichees (dette > 0) + une ligne TOTAL.
+    // Reutilise la lib SheetJS (XLSX) deja chargee globalement.
+    function exportDetailParDateExcel() {
+        if (typeof XLSX === 'undefined') {
+            if (typeof showToast === 'function') showToast('Librairie Excel indisponible', 'danger');
+            return;
+        }
+        const src = _lastLocalData && Array.isArray(_lastLocalData.detail_par_date)
+            ? _lastLocalData.detail_par_date.filter((d) => d.dette > 0)
+            : [];
+        if (!src.length) {
+            if (typeof showToast === 'function') showToast('Aucune donnée à exporter', 'warning');
+            return;
+        }
+        const fmtDateFr = (iso) => {
+            const m = typeof iso === 'string' && iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+        };
+        const rows = src.map((d) => ({
+            'Date': fmtDateFr(d.date),
+            'Produit': d.produit,
+            'Quantité éligible': d.quantite,
+            'Prix achat fournisseur (FCFA)': d.prix_achat == null ? '' : d.prix_achat,
+            'Qté × Prix achat': d.montant_achat == null ? '' : d.montant_achat,
+            'Je dois (3%)': d.dette
+        }));
+        // Ligne TOTAL (memes sommes que le pied de tableau a l'ecran).
+        const totAchat = src.reduce((s, d) => s + (d.montant_achat || 0), 0);
+        const totDette = src.reduce((s, d) => s + (d.dette || 0), 0);
+        rows.push({
+            'Date': 'TOTAL',
+            'Produit': '',
+            'Quantité éligible': '',
+            'Prix achat fournisseur (FCFA)': '',
+            'Qté × Prix achat': totAchat,
+            'Je dois (3%)': totDette
+        });
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Détail par date');
+        const debut = (document.getElementById('fin-creances-date-debut') || {}).value || '';
+        const fin = (document.getElementById('fin-creances-date-fin') || {}).value || '';
+        const suffix = debut && fin ? `${debut}_${fin}` : new Date().toISOString().split('T')[0];
+        XLSX.writeFile(wb, `detail_par_date_commission_${suffix}.xlsx`);
+        if (typeof showToast === 'function') showToast('Export Excel réussi', 'success');
+    }
+
     function renderLocal(data) {
+        _lastLocalData = data;
         const cards = document.getElementById('fin-creances-cards');
         const soldeCommission = (data.ce_que_je_dois || 0) - (data.paiements_effectues || 0);
 
