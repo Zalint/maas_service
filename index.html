@@ -2658,6 +2658,13 @@
                                                         <tr><th>Date</th><th>Produit</th><th class="text-end">Quantité éligible</th><th class="text-end">Prix achat fournisseur (FCFA)</th><th class="text-end">Qté × Prix achat</th><th class="text-end">Je dois (3%)</th></tr>
                                                     </thead>
                                                     <tbody></tbody>
+                                                    <tfoot id="fin-creances-detail-date-foot" style="display:none;">
+                                                        <tr class="fw-bold border-top">
+                                                            <td colspan="4" class="text-end">TOTAL (dates choisies)</td>
+                                                            <td class="text-end" id="fin-cre-dd-total-achat"></td>
+                                                            <td class="text-end" id="fin-cre-dd-total-dette"></td>
+                                                        </tr>
+                                                    </tfoot>
                                                 </table>
                                             </div>
                                         </div>
@@ -3771,7 +3778,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260727-detail-date-produit"></script>
+    <script src="js/finance.js?v=20260728-detail-date-total"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>
