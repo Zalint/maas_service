@@ -1406,7 +1406,11 @@ async function viderPanier() {
         document.getElementById('clientPhone').value = '';
         document.getElementById('clientAddress').value = '';
         document.getElementById('clientInstructions').value = '';
-        
+
+        // 🌐 Abandon d'une conversion de commande web: oublier la référence pour
+        // ne pas marquer convertie une commande web sur une vente ultérieure.
+        try { sessionStorage.removeItem('currentWebOrderId'); sessionStorage.removeItem('currentWebOrderCommandId'); } catch (e) {}
+
         showToast('Panier vidé', 'success');
     }
 }
@@ -1815,6 +1819,20 @@ async function confirmerPaiement(event) {
         
         // Success
         console.log('✅ Ventes enregistrées avec succès');
+
+        // 🌐 Commande web: si cette vente provient d'une commande web préremplie,
+        // la marquer convertie côté DATA (état central) maintenant que la vente
+        // est réellement enregistrée. Non bloquant.
+        try {
+            const _webOrderId = sessionStorage.getItem('currentWebOrderId');
+            if (_webOrderId) {
+                fetch('/api/commandes-web/' + encodeURIComponent(_webOrderId) + '/convert', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}'
+                }).catch(() => {});
+                sessionStorage.removeItem('currentWebOrderId');
+                sessionStorage.removeItem('currentWebOrderCommandId');
+            }
+        } catch (_wo) {}
 
         // 🆕 Appliquer le crédit client si demandé (synchrone avec attente)
         const useCreditCheckbox = document.getElementById('useCredit');
@@ -11114,66 +11132,49 @@ function convertirCommandeWeb(id) {
     document.getElementById('modalMappingCommandeWeb').style.display = 'flex';
 }
 
-async function confirmerConversionCommandeWeb() {
+function confirmerConversionCommandeWeb() {
     const ctx = _conversionCommandeWeb;
     if (!ctx) return;
     const rows = document.querySelectorAll('#mappingCommandeWebBody .cw-map-row');
-    const cart = [];
+    const items = [];
     for (const row of rows) {
         const sel = row.querySelector('select');
         const qte = Number(row.dataset.qte) || 1;
         if (!sel || sel.value === '__none__') { showToast('Chaque produit doit être mappé à un article du catalogue', 'warning'); return; }
         const p = ctx.flat[Number(sel.value)];
-        if (p) cart.push({ name: p.name, price: p.price, category: p.category, quantity: qte });
+        if (p) items.push({ product: { name: p.name, price: p.price, category: p.category }, quantity: qte });
     }
-    if (!cart.length) { showToast('Aucun produit à convertir', 'warning'); return; }
-    const pointVente = document.getElementById('pointVenteSelect') ? document.getElementById('pointVenteSelect').value : '';
-    const today = (document.getElementById('summaryDate') && document.getElementById('summaryDate').value) || new Date().toISOString().split('T')[0];
-    const parts = today.split('-');
-    const dateReceptionFR = (parts.length === 3) ? `${parts[2]}/${parts[1]}/${parts[0]}` : today;
-    const precommandeData = {
-        cart,
-        clientInfo: { nom: ctx.client.nom, telephone: ctx.client.telephone, adresse: ctx.client.adresse || null, instructions: '' },
-        dateReception: dateReceptionFR,
-        label: 'Web',
-        commentaire: 'Commande web N°' + (ctx.commandId || ''),
-        pointVente
-    };
-    const safeJson = async (r) => { try { return r.ok ? await r.json() : null; } catch (_) { return null; } };
-    try {
-        if (typeof showLoadingSpinner === 'function') showLoadingSpinner();
-        // 1) Réserver la conversion côté DATA D'ABORD (source de vérité, verrou
-        //    de ligne). Idempotent: si déjà convertie / prise par un autre tenant,
-        //    DATA rejette -> AUCUNE pré-commande créée -> aucun doublon possible
-        //    sur retry ou clics concurrents.
-        const cRes = await fetch('/api/commandes-web/' + ctx.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
-        const cData = await safeJson(cRes);
-        if (!cRes.ok || !cData || cData.success === false) {
-            showToast('❌ ' + ((cData && cData.message) || 'Conversion impossible (déjà prise ?)'), 'error');
-            fermerMappingCommandeWeb();
-            await chargerCommandesWeb();
-            return;
-        }
-        // 2) La commande est réservée: créer la pré-commande locale du tenant.
-        const res = await fetch('/api/precommandes/pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(precommandeData) });
-        const data = await safeJson(res);
-        if (!data || !data.success) {
-            // Rare: commande déjà réservée (pas de doublon), mais la pré-commande
-            // a échoué (session expirée / 502 / validation). On le signale.
-            showToast('⚠️ Commande marquée convertie, mais la pré-commande locale a échoué (' + ((data && data.message) || 'réessayez / créez-la manuellement') + ')', 'warning');
+    if (!items.length) { showToast('Aucun produit à convertir', 'warning'); return; }
+
+    // Comme dans DATA: on PRÉREMPLIT le POS (client + panier). On NE crée PAS
+    // de vente ni de pré-commande ici. Le caissier valide ensuite normalement
+    // -> ça devient une vraie commande. La commande web est marquée convertie
+    // (côté DATA, état central) APRÈS l'enregistrement de la vente (cf. le
+    // handler de validation qui lit sessionStorage.currentWebOrderId).
+    cart = [];
+    if (typeof afficherPanier === 'function') afficherPanier();
+    const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = (v == null ? '' : v); };
+    setVal('clientName', ctx.client.nom);
+    setVal('clientPhone', ctx.client.telephone);
+    setVal('clientAddress', ctx.client.adresse);
+    for (const it of items) {
+        if (typeof ajouterAuPanierAvecQuantite === 'function') {
+            ajouterAuPanierAvecQuantite(it.product, it.quantity);
         } else {
-            showToast('✅ Commande web convertie en pré-commande', 'success');
+            cart.push({ name: it.product.name, price: it.product.price, category: it.product.category, quantity: it.quantity });
         }
-        fermerMappingCommandeWeb();
-        await chargerCommandesWeb();
-        if (typeof loadPrecommandes === 'function') loadPrecommandes();
-    } catch (e) {
-        showToast('❌ Erreur lors de la conversion', 'error');
-        fermerMappingCommandeWeb();
-        await chargerCommandesWeb();
-    } finally {
-        if (typeof hideLoadingSpinner === 'function') hideLoadingSpinner();
     }
+    if (typeof afficherPanier === 'function') afficherPanier();
+
+    // Référence de la commande web -> sera marquée convertie après la vente.
+    try {
+        sessionStorage.setItem('currentWebOrderId', String(ctx.id));
+        sessionStorage.setItem('currentWebOrderCommandId', String(ctx.commandId || ''));
+    } catch (e) {}
+
+    fermerMappingCommandeWeb();
+    fermerModalCommandesWeb();
+    showToast('🌐 Commande web ' + (ctx.commandId || '') + ' chargée dans le panier — validez pour créer la commande', 'success');
 }
 
 // Badge léger au chargement + rafraîchissement périodique (90s).
