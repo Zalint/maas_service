@@ -228,6 +228,10 @@
                         <button class="btn-voir-precommandes" onclick="showPrecommandesModal()">
                             <i class="fas fa-eye"></i> Voir Pré-commandes
                         </button>
+                        <button class="btn-voir-precommandes" onclick="ouvrirModalCommandesWeb()" style="background:#667eea;">
+                            <i class="fas fa-globe"></i> Commandes Web
+                            <span id="commandesWebBadge" style="display:none; background:#dc3545; color:#fff; border-radius:10px; padding:0 7px; font-size:11px; margin-left:4px;">0</span>
+                        </button>
                     </div>
                     
                     <div class="cart-totals">
@@ -874,7 +878,67 @@
     <script src="js/modules-handler.js?v=20260701-interpv"></script>
     <script src="js/inventaire.js?v=20260114a"></script>
     <script src="pos-modal-details.js?v=20260110bictorys"></script>
-    <script src="pos.js?v=20260728-cloture-total-obligatoire"></script>
+    <!-- ============ Commandes Web du Jour (pool global partagé, source DATA) ============ -->
+    <style>
+        #modalCommandesWeb .cw-filter { border:1px solid #ced4da; background:#fff; color:#495057; border-radius:6px; padding:5px 12px; font-size:.85rem; cursor:pointer; font-weight:600; }
+        #modalCommandesWeb .cw-filter.active { background:#667eea; color:#fff; border-color:#667eea; }
+        #modalCommandesWeb table td, #modalCommandesWeb table th { vertical-align:middle; font-size:.85rem; }
+        .cw-badge-statut { padding:3px 9px; border-radius:10px; font-size:.75rem; font-weight:700; white-space:nowrap; }
+        .cw-badge-pending { background:#fff3cd; color:#856404; }
+        .cw-badge-assigned { background:#cfe2ff; color:#084298; }
+        .cw-badge-converted { background:#d1e7dd; color:#0f5132; }
+        #modalMappingCommandeWeb .cw-map-row { border:1px solid #e9ecef; border-radius:8px; padding:12px; margin-bottom:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    </style>
+    <div class="modal-overlay" id="modalCommandesWeb" style="display:none;" role="dialog" aria-modal="true">
+        <div style="background:#fff; width:92vw; max-width:1400px; height:88vh; margin:4vh auto; border-radius:10px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 40px rgba(0,0,0,.3);">
+            <div style="background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; padding:14px 22px; display:flex; align-items:center; justify-content:space-between;">
+                <h5 style="margin:0; font-size:1.3rem; font-weight:700; display:flex; align-items:center; gap:10px;">
+                    <i class="fas fa-globe"></i> Commandes Web du Jour
+                    <span id="cwModalCount" style="background:#fff; color:#333; border-radius:12px; padding:2px 12px; font-size:1rem;">0</span>
+                </h5>
+                <button onclick="fermerModalCommandesWeb()" style="background:transparent; border:none; color:#fff; font-size:1.6rem; cursor:pointer; line-height:1;">&times;</button>
+            </div>
+            <div style="padding:16px 20px; background:#f8f9fa; overflow:auto; flex:1;">
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:14px;">
+                    <button class="cw-filter active" data-cwfilter="all" onclick="filtrerCommandesWeb('all')">Toutes (<span id="cw-count-all">0</span>)</button>
+                    <button class="cw-filter" data-cwfilter="pending" onclick="filtrerCommandesWeb('pending')">En attente (<span id="cw-count-pending">0</span>)</button>
+                    <button class="cw-filter" data-cwfilter="assigned" onclick="filtrerCommandesWeb('assigned')">Assignées (<span id="cw-count-assigned">0</span>)</button>
+                    <button class="cw-filter" data-cwfilter="converted" onclick="filtrerCommandesWeb('converted')">Converties (<span id="cw-count-converted">0</span>)</button>
+                    <button class="btn btn-sm btn-primary" style="margin-left:auto;" onclick="rafraichirCommandesWeb()"><i class="fas fa-sync-alt"></i> Rafraîchir</button>
+                </div>
+                <div style="overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1);">
+                    <table class="table table-hover table-bordered mb-0" style="min-width:1100px;">
+                        <thead style="background:#212529; color:#fff; position:sticky; top:0; z-index:5;">
+                            <tr>
+                                <th>Date</th><th>N° Commande</th><th>Client</th><th>Téléphone</th><th>Adresse</th><th>Produits</th><th style="text-align:right;">Total</th><th>Statut</th><th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="commandesWebTableBody">
+                            <tr><td colspan="9" style="text-align:center; padding:30px; color:#6c757d;">Chargement…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="modalMappingCommandeWeb" style="display:none; z-index:100001;" role="dialog" aria-modal="true">
+        <div style="background:#fff; width:90vw; max-width:760px; max-height:86vh; margin:6vh auto; border-radius:10px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 10px 40px rgba(0,0,0,.3);">
+            <div style="background:linear-gradient(135deg,#ee9ca7,#dc3545); color:#fff; padding:14px 22px; display:flex; align-items:center; justify-content:space-between;">
+                <h5 style="margin:0; font-weight:700;"><i class="fas fa-exchange-alt"></i> Vérifier le mapping des produits</h5>
+                <button onclick="fermerMappingCommandeWeb()" style="background:transparent; border:none; color:#fff; font-size:1.6rem; cursor:pointer; line-height:1;">&times;</button>
+            </div>
+            <div style="padding:18px 22px; overflow:auto; flex:1;">
+                <div class="alert alert-info" style="font-size:.9rem;">Vérifiez que chaque produit de la commande web correspond bien à un produit de votre catalogue. La conversion créera une <strong>pré-commande</strong>.</div>
+                <div id="mappingCommandeWebBody"></div>
+            </div>
+            <div style="padding:14px 22px; border-top:1px solid #eee; display:flex; justify-content:flex-end; gap:10px;">
+                <button class="btn btn-secondary" onclick="fermerMappingCommandeWeb()"><i class="fas fa-times"></i> Annuler</button>
+                <button class="btn btn-success" onclick="confirmerConversionCommandeWeb()"><i class="fas fa-check"></i> Confirmer et convertir</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="pos.js?v=20260728-commandes-web"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
