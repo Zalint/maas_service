@@ -119,32 +119,50 @@ console.log('Estimation.create:', typeof Estimation.create === 'function' ? 'fun
     // Note: Abonnement schema updates are now handled by SQL queries in the startup sequence above
     // await updateVenteSchemaAbonnement(); // Ajouter les colonnes pour les abonnements
         
-    // Add commentaire column if it doesn't exist
+    // Ajouter la colonne commentaire a estimations si absente.
+    // Sur un tenant sans module estimation, la table n'existe pas: on sort
+    // avant l'ALTER plutot que de logguer a chaque boot une "Note:" trompeuse
+    // (elle annoncait une colonne deja presente alors que c'est la table qui
+    // manque).
     try {
-        console.log('Checking and adding commentaire column...');
-        await sequelize.query(`
-            ALTER TABLE estimations 
-            ADD COLUMN IF NOT EXISTS commentaire TEXT DEFAULT NULL;
+        const [estExists] = await sequelize.query(`
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'estimations'
         `);
-        console.log('Commentaire column ensured');
+        if (estExists.length) {
+            await sequelize.query(`
+                ALTER TABLE estimations
+                ADD COLUMN IF NOT EXISTS commentaire TEXT DEFAULT NULL;
+            `);
+            console.log('Colonne commentaire vérifiée sur estimations');
+        }
     } catch (error) {
-        console.log('Note: commentaire column may already exist:', error.message);
+        console.warn('⚠️  Colonne commentaire estimations:', error.message);
     }
     
-    // Ajouter les colonnes abonnement à payment_links si elles n'existent pas
+    // Ajouter les colonnes abonnement à payment_links si elles n'existent pas.
+    // Sur un tenant sans module payment-links, la table n'existe pas: on sort
+    // avant l'ALTER plutot que de logguer une "Note:" trompeuse a chaque boot
+    // (le message annoncait des colonnes deja presentes alors que la table
+    // elle-meme manquait).
     try {
-        console.log('🔧 Ajout des colonnes abonnement à payment_links...');
-        await sequelize.query(`
-            ALTER TABLE payment_links 
-            ADD COLUMN IF NOT EXISTS is_abonnement BOOLEAN DEFAULT FALSE;
+        const [plExists] = await sequelize.query(`
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_name = 'payment_links'
         `);
-        await sequelize.query(`
-            ALTER TABLE payment_links 
-            ADD COLUMN IF NOT EXISTS client_abonne_id INTEGER;
-        `);
-        console.log('✅ Colonnes abonnement ajoutées à payment_links');
+        if (plExists.length) {
+            await sequelize.query(`
+                ALTER TABLE payment_links
+                ADD COLUMN IF NOT EXISTS is_abonnement BOOLEAN DEFAULT FALSE;
+            `);
+            await sequelize.query(`
+                ALTER TABLE payment_links
+                ADD COLUMN IF NOT EXISTS client_abonne_id INTEGER;
+            `);
+            console.log('✅ Colonnes abonnement vérifiées sur payment_links');
+        }
     } catch (error) {
-        console.log('Note: Colonnes abonnement déjà présentes:', error.message);
+        console.warn('⚠️  Colonnes abonnement payment_links:', error.message);
     }
     
     // Create abonnements tables if they don't exist
@@ -7240,6 +7258,13 @@ app.get('/api/ventes-effectuees', checkAuth, async (req, res) => {
     }
 });
 
+// Garde de module pour TOUTES les routes /api/estimations*.
+// Meme raison que pour /api/payment-links: sur un tenant sans module
+// estimation, la table n'existe pas et chaque appel remontait une stack trace
+// complete ('relation "<schema>.estimations" does not exist') + un 500 client.
+// Le middleware repond 403 {moduleDisabled: true} sans toucher la base.
+app.use('/api/estimations', checkEstimationModule);
+
 // Route pour créer une estimation
 app.post('/api/estimations', checkAuth, checkWriteAccess, async (req, res) => {
     try {
@@ -8124,6 +8149,15 @@ const getPointVenteToRef = async () => {
     }
     return mapping;
 };
+
+// Garde de module pour TOUTES les routes /api/payment-links/*.
+// Sur un tenant ou le module est desactive, les tables payment_links
+// n'existent pas: sans ce garde, chaque appel partait jusqu'a Postgres et
+// remontait une stack trace complete ('relation "<schema>.payment_links" does
+// not exist') dans les logs, plus un 500 cote navigateur. Le middleware
+// repond 403 {moduleDisabled: true} sans toucher la base.
+// A monter AVANT les routes ci-dessous: Express applique dans l'ordre.
+app.use('/api/payment-links', checkPaymentLinksModule);
 
 // Route pour obtenir les points de vente accessibles par l'utilisateur
 app.get('/api/payment-links/points-vente', checkAuth, async (req, res) => {

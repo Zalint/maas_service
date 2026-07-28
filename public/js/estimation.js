@@ -1125,6 +1125,9 @@ async function chargerEstimations() {
         const response = await fetch('/api/estimations');
         const data = await response.json();
 
+        // Module desactive pour ce tenant: reponse attendue, pas une erreur.
+        if (data && data.moduleDisabled) return;
+
         if (data.success) {
             afficherEstimations(data.estimations);
             console.log('Estimations loaded successfully');
