@@ -393,6 +393,24 @@ async function updateSchema() {
         `);
         console.log('Table fournisseur_prix verifiee (seed 5 produits + prix_vente_cdc)');
 
+        // Colonne prix_achat_dynamique: quand TRUE, le prix achat du produit
+        // est lu depuis l'API DATA (/api/external/achats-boeuf) au lieu de la
+        // valeur saisie dans le catalogue (qui devient un simple repli).
+        // Seul le boeuf a une source API a ce jour -> active par defaut.
+        // NULL = jamais configure (= desactive): c'est ce qui rend le seed
+        // ci-dessous idempotent. Si l'utilisateur decoche le boeuf (FALSE),
+        // un redeploy ne le reactivera pas.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_prix
+            ADD COLUMN IF NOT EXISTS prix_achat_dynamique BOOLEAN
+        `);
+        await sequelize.query(`
+            UPDATE fournisseur_prix
+            SET prix_achat_dynamique = TRUE
+            WHERE prix_achat_dynamique IS NULL
+              AND LOWER(TRIM(produit)) = 'boeuf'
+        `);
+
         // Historique des modifications de prix_vente_cdc.
         // Chaque sauvegarde insere une ligne (point-in-time pricing).
         // Le calcul de marge utilise la valeur effective a la date de la
