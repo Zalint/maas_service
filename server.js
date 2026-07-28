@@ -12534,6 +12534,13 @@ Réponds UNIQUEMENT avec 2 phrases maximum, concises et informatives.`;
     }
 });
 
+// Meme garde de module pour les routes externes: sans lui, un appel x-api-key
+// sur un tenant sans module estimation repartait interroger une table
+// inexistante (meme stack trace 'relation "<schema>.estimations" does not
+// exist'). Les deux chemins sont distincts pour Express (segments differents),
+// d'ou le tableau.
+app.use(['/api/external/estimation', '/api/external/estimations'], checkEstimationModule);
+
 // External API for estimation analysis
 // External API endpoint for estimations (no session auth required)
 app.get('/api/external/estimations', validateApiKey, async (req, res) => {
@@ -16695,7 +16702,11 @@ app.get('/api/clotures-caisse/estimatif', checkAuth, async (req, res) => {
         const totalVentes = ventesArr.reduce((sum, v) => sum + (parseFloat(v.montant) || 0), 0);
         const commandeIds = ventesArr.map(v => v.commande_id).filter(Boolean);
         let montantBictorys = 0, paidLinks = [];
-        if (commandeIds.length > 0) {
+        // Sans le module payment-links, la table n'existe pas: cette route
+        // tombait alors en 500 des qu'une vente portait un commande_id, ce qui
+        // cassait l'estimatif de caisse. Module eteint = aucun paiement
+        // Bictorys possible, donc montantBictorys reste a 0.
+        if (commandeIds.length > 0 && modulesConfig.isModuleActive('payment-links')) {
             paidLinks = await PaymentLink.findAll({ where: { commande_id: { [Op.in]: commandeIds }, status: 'paid', is_commande_deleted: false } });
             montantBictorys = paidLinks.reduce((sum, pl) => sum + (parseFloat(pl.amount) || 0), 0);
         }
