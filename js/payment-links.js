@@ -11,11 +11,29 @@ const itemsPerPage = 30;
 let clientsAbonnes = [];
 let selectedClientAbonne = null;
 
+/**
+ * Le module peut etre desactive pour ce tenant (cf config/modules-config.js).
+ * Ce script est charge par index.html sur toutes les pages, y compris la, donc
+ * sans ce garde il initialisait le module et appelait 3 API pour rien: le
+ * navigateur affichait un 500 et le serveur remontait une stack trace (les
+ * tables payment_links n'existent pas sur ces tenants).
+ * En cas de doute (endpoint injoignable), on garde le comportement historique.
+ */
+async function isPaymentLinksModuleActive() {
+    try {
+        const res = await fetch('/api/modules/status', { credentials: 'include' });
+        const data = await res.json();
+        return !(data && data.status && data.status['payment-links'] === false);
+    } catch (e) {
+        return true;
+    }
+}
+
 // Initialisation au chargement de la page
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+    if (!(await isPaymentLinksModuleActive())) return;
+
     console.log('Initialisation du module de paiement');
-    console.log('🔍 Vérification du contexte:', window.location.href);
-    console.log('🔍 Element payment-links-tbody existe au chargement:', !!document.getElementById('payment-links-tbody'));
 
     // Vérifier l'authentification
     checkAuthentication();
@@ -1417,12 +1435,13 @@ async function loadExistingPaymentLinks() {
             method: 'GET',
             credentials: 'include'
         });
-        
-        console.log('Réponse de l\'API /api/payment-links/list:', response.status);
-        
+
         const result = await response.json();
-        console.log('Données reçues:', result);
-        
+
+        // Module desactive pour ce tenant: reponse attendue, pas une erreur.
+        // Filet de securite si le garde a l'initialisation n'a pas pu statuer.
+        if (result && result.moduleDisabled) return;
+
                 if (result.success && result.data) {
                     generatedPaymentLinks = result.data;
                     console.log('✅ Liens de paiement chargés:', generatedPaymentLinks.length);
