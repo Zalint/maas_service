@@ -11139,16 +11139,28 @@ async function confirmerConversionCommandeWeb() {
         commentaire: 'Commande web N°' + (ctx.commandId || ''),
         pointVente
     };
+    const safeJson = async (r) => { try { return r.ok ? await r.json() : null; } catch (_) { return null; } };
     try {
         if (typeof showLoadingSpinner === 'function') showLoadingSpinner();
-        const res = await fetch('/api/precommandes/pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(precommandeData) });
-        const data = await res.json();
-        if (!data.success) { showToast('❌ ' + (data.message || 'Erreur pré-commande'), 'error'); return; }
-        // Marquer convertie côté DATA (état central partagé).
+        // 1) Réserver la conversion côté DATA D'ABORD (source de vérité, verrou
+        //    de ligne). Idempotent: si déjà convertie / prise par un autre tenant,
+        //    DATA rejette -> AUCUNE pré-commande créée -> aucun doublon possible
+        //    sur retry ou clics concurrents.
         const cRes = await fetch('/api/commandes-web/' + ctx.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
-        const cData = await cRes.json().catch(() => ({}));
-        if (!cRes.ok || cData.success === false) {
-            showToast('⚠️ Pré-commande créée, mais commande web non marquée convertie: ' + (cData.message || ''), 'warning');
+        const cData = await safeJson(cRes);
+        if (!cRes.ok || !cData || cData.success === false) {
+            showToast('❌ ' + ((cData && cData.message) || 'Conversion impossible (déjà prise ?)'), 'error');
+            fermerMappingCommandeWeb();
+            await chargerCommandesWeb();
+            return;
+        }
+        // 2) La commande est réservée: créer la pré-commande locale du tenant.
+        const res = await fetch('/api/precommandes/pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(precommandeData) });
+        const data = await safeJson(res);
+        if (!data || !data.success) {
+            // Rare: commande déjà réservée (pas de doublon), mais la pré-commande
+            // a échoué (session expirée / 502 / validation). On le signale.
+            showToast('⚠️ Commande marquée convertie, mais la pré-commande locale a échoué (' + ((data && data.message) || 'réessayez / créez-la manuellement') + ')', 'warning');
         } else {
             showToast('✅ Commande web convertie en pré-commande', 'success');
         }
@@ -11157,6 +11169,8 @@ async function confirmerConversionCommandeWeb() {
         if (typeof loadPrecommandes === 'function') loadPrecommandes();
     } catch (e) {
         showToast('❌ Erreur lors de la conversion', 'error');
+        fermerMappingCommandeWeb();
+        await chargerCommandesWeb();
     } finally {
         if (typeof hideLoadingSpinner === 'function') hideLoadingSpinner();
     }
