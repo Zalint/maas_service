@@ -10999,13 +10999,19 @@ function trouverProduitCommandeWeb(nom) {
 
     const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const containsWord = (haystack, word) => new RegExp(`\\b${escRe(word)}\\b`).test(haystack);
-    // Choisit le meilleur candidat d'une famille: préfère "en détail",
-    // sinon le nom le plus court (le plus "de base", ex "Boeuf en gros"
-    // avant "Tete de Boeuf").
-    const pickBest = (cands) => cands.slice().sort((a, b) => {
-        const ad = /d[ée]tail/i.test(a.name) ? 0 : 1;
-        const bd = /d[ée]tail/i.test(b.name) ? 0 : 1;
+    // Meilleur candidat d'une famille: on privilégie le nom cible exact
+    // (`prefer`), puis le nom == mot-clé de base (ex "Mouton", "Agneau"), puis
+    // "en détail", on relègue "sur pied" (animal vivant), enfin le plus court.
+    const pickBest = (cands, kw, prefer) => cands.slice().sort((a, b) => {
+        const al = a.name.toLowerCase(), bl = b.name.toLowerCase();
+        const ap = (al === prefer) ? 0 : 1, bp = (bl === prefer) ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        const ak = (al === kw) ? 0 : 1, bk = (bl === kw) ? 0 : 1;
+        if (ak !== bk) return ak - bk;
+        const ad = /d[ée]tail/.test(al) ? 0 : 1, bd = /d[ée]tail/.test(bl) ? 0 : 1;
         if (ad !== bd) return ad - bd;
+        const asp = /sur pied/.test(al) ? 1 : 0, bsp = /sur pied/.test(bl) ? 1 : 0;
+        if (asp !== bsp) return asp - bsp;
         return a.name.length - b.name.length;
     })[0];
 
@@ -11013,22 +11019,28 @@ function trouverProduitCommandeWeb(nom) {
     let m = flat.find(p => p.name.toLowerCase() === n);
     if (m) return m;
 
-    // 2) Règles par famille: si le nom web contient le mot-clé (mot entier),
-    //    prendre le produit catalogue de cette famille.
+    // 2) Règles par famille avec cible explicite (comme DATA). `prefer` = nom
+    //    cible idéal; `family` = mots-clés pour retrouver la famille sinon.
+    //    Mouton -> "Mouton", Agneau -> "Agneau", mais Boeuf/Poulet/Veau ->
+    //    la variante "en détail".
     const rules = [
-        { kw: 'boeuf', targets: ['boeuf', 'bœuf'] },
-        { kw: 'bœuf', targets: ['boeuf', 'bœuf'] },
-        { kw: 'poulet', targets: ['poulet'] },
-        { kw: 'veau', targets: ['veau'] },
-        { kw: 'agneau', targets: ['agneau'] },
-        { kw: 'mouton', targets: ['mouton'] },
-        { kw: 'oeuf', targets: ['oeuf', 'œuf'] },
-        { kw: 'œuf', targets: ['oeuf', 'œuf'] }
+        { kw: 'boeuf', prefer: 'boeuf en détail', family: ['boeuf', 'bœuf'] },
+        { kw: 'bœuf', prefer: 'boeuf en détail', family: ['boeuf', 'bœuf'] },
+        { kw: 'poulet', prefer: 'poulet en détail', family: ['poulet'] },
+        { kw: 'veau', prefer: 'veau en détail', family: ['veau'] },
+        { kw: 'agneau', prefer: 'agneau', family: ['agneau'] },
+        { kw: 'mouton', prefer: 'mouton', family: ['mouton'] },
+        { kw: 'oeuf', prefer: 'oeuf', family: ['oeuf', 'œuf'] },
+        { kw: 'œuf', prefer: 'oeuf', family: ['oeuf', 'œuf'] }
     ];
     const rule = rules.find(r => containsWord(n, r.kw));
     if (rule) {
-        const cands = flat.filter(p => rule.targets.some(t => containsWord(p.name.toLowerCase(), t)));
-        if (cands.length) return pickBest(cands);
+        // a) cible exacte si elle existe au catalogue.
+        const exact = flat.find(p => p.name.toLowerCase() === rule.prefer);
+        if (exact) return exact;
+        // b) sinon meilleur produit de la famille (évite "sur pied" si possible).
+        const cands = flat.filter(p => rule.family.some(t => containsWord(p.name.toLowerCase(), t)));
+        if (cands.length) return pickBest(cands, rule.kw, rule.prefer);
     }
 
     // 3) Match partiel par MOT ENTIER (évite oeuf/boeuf), sinon inclusion du
