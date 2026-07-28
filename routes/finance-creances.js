@@ -191,9 +191,10 @@ async function computeCreances(opts = {}) {
     const prixVenteAtDate = buildTemporalResolver(pvHistory, 'prix_vente');
 
     // Prix bœuf « avec abats et frais » DYNAMIQUE depuis DATA
-    // (/api/external/achats-boeuf) = moyenne SIMPLE des prix_achat_kg du jour,
-    // soit exactement la valeur de la carte « Bœuf - Prix avec abats et frais »
-    // de l'écran DATA Suivi achat bœuf. Résolveur point-in-time (jour d'achat le
+    // (/api/external/achats-boeuf) = prix de revient du lot du jour, soit
+    // Σ(prix − abats + frais) / Σ(kg) (moyenne pondérée par les kg, pas la
+    // moyenne des prix/kg des bêtes), arrondi par excès au multiple de 5 F.
+    // Résolveur point-in-time (jour d'achat le
     // plus récent <= date). Dégradation gracieuse: atDate renvoie null si DATA
     // indisponible/non configuré -> on retombe sur l'historique/catalogue.
     // Override manuel: le prix API n'est consulte que si la case
