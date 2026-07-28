@@ -541,6 +541,53 @@ const {
     checkStatutLivraisonAccess
 } = require('./middlewares/auth');
 
+// =====================================================================
+// COMMANDES WEB (pool GLOBAL partagé — source unique: service DATA)
+// Proxy vers /api/external/weborders* de DATA. AUCUNE persistance locale
+// (schémas Postgres isolés par tenant). L'acteur transmis à DATA =
+// "<tenant>:<username>" pour que l'état central (assigné/converti) trace
+// quel tenant a pris la commande — "premier arrivé premier servi" partagé.
+// =====================================================================
+function _webOrderActor(req) {
+    const username = (req.session && req.session.user && req.session.user.username) || 'inconnu';
+    return `${tenant.slug}:${username}`;
+}
+
+async function _proxyWebOrderAction(req, res, action) {
+    try {
+        const { postCommandeWebAction } = require('./lib/commandes-web-client');
+        const body = { actor: _webOrderActor(req) };
+        if (action === 'convert' && Number.isInteger(req.body && req.body.posVenteId)) {
+            body.posVenteId = req.body.posVenteId;
+        }
+        const { status, data } = await postCommandeWebAction(req.params.id, action, body);
+        return res.status(status).json(data);
+    } catch (error) {
+        if (error.code === 'NOT_CONFIGURED') {
+            return res.status(503).json({ success: false, message: 'Commandes web non configurées (DATA)' });
+        }
+        console.error(`Erreur POST /api/commandes-web/:id/${action}:`, error);
+        return res.status(502).json({ success: false, message: 'Service commandes web indisponible' });
+    }
+}
+
+app.get('/api/commandes-web', checkAuth, async (req, res) => {
+    try {
+        const { listCommandesWeb } = require('./lib/commandes-web-client');
+        const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+        const orders = await listCommandesWeb({ date });
+        res.json({ success: true, count: orders.length, orders });
+    } catch (error) {
+        console.error('Erreur GET /api/commandes-web:', error);
+        res.json({ success: true, count: 0, orders: [] }); // non-bloquant
+    }
+});
+
+app.post('/api/commandes-web/:id/assign', checkAuth, checkWriteAccess, (req, res) => _proxyWebOrderAction(req, res, 'assign'));
+app.post('/api/commandes-web/:id/unassign', checkAuth, checkWriteAccess, (req, res) => _proxyWebOrderAction(req, res, 'unassign'));
+app.post('/api/commandes-web/:id/convert', checkAuth, checkWriteAccess, (req, res) => _proxyWebOrderAction(req, res, 'convert'));
+app.post('/api/commandes-web/:id/archive', checkAuth, checkWriteAccess, (req, res) => _proxyWebOrderAction(req, res, 'archive'));
+
 // Importer les middlewares de modules
 const {
     checkModuleActive,
