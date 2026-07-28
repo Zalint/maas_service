@@ -10988,16 +10988,54 @@ function catalogueCommandeWebFlat() {
     return out;
 }
 
+// Auto-mapping web -> catalogue, porté du POS DATA (trouverProduitProche).
+// Points clés: règles par famille (boeuf/poulet/veau/agneau/mouton/oeuf) et
+// match par MOT ENTIER (\b) pour éviter les faux positifs comme "oeuf" dans
+// "boeuf". Préfère la variante "en détail".
 function trouverProduitCommandeWeb(nom) {
     const flat = catalogueCommandeWebFlat();
     if (!flat.length || !nom) return null;
     const n = String(nom).toLowerCase().trim();
+
+    const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const containsWord = (haystack, word) => new RegExp(`\\b${escRe(word)}\\b`).test(haystack);
+    // Choisit le meilleur candidat d'une famille: préfère "en détail",
+    // sinon le nom le plus court (le plus "de base", ex "Boeuf en gros"
+    // avant "Tete de Boeuf").
+    const pickBest = (cands) => cands.slice().sort((a, b) => {
+        const ad = /d[ée]tail/i.test(a.name) ? 0 : 1;
+        const bd = /d[ée]tail/i.test(b.name) ? 0 : 1;
+        if (ad !== bd) return ad - bd;
+        return a.name.length - b.name.length;
+    })[0];
+
+    // 1) Correspondance exacte.
     let m = flat.find(p => p.name.toLowerCase() === n);
     if (m) return m;
-    m = flat.find(p => n.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(n));
+
+    // 2) Règles par famille: si le nom web contient le mot-clé (mot entier),
+    //    prendre le produit catalogue de cette famille.
+    const rules = [
+        { kw: 'boeuf', targets: ['boeuf', 'bœuf'] },
+        { kw: 'bœuf', targets: ['boeuf', 'bœuf'] },
+        { kw: 'poulet', targets: ['poulet'] },
+        { kw: 'veau', targets: ['veau'] },
+        { kw: 'agneau', targets: ['agneau'] },
+        { kw: 'mouton', targets: ['mouton'] },
+        { kw: 'oeuf', targets: ['oeuf', 'œuf'] },
+        { kw: 'œuf', targets: ['oeuf', 'œuf'] }
+    ];
+    const rule = rules.find(r => containsWord(n, r.kw));
+    if (rule) {
+        const cands = flat.filter(p => rule.targets.some(t => containsWord(p.name.toLowerCase(), t)));
+        if (cands.length) return pickBest(cands);
+    }
+
+    // 3) Match partiel par MOT ENTIER (évite oeuf/boeuf), sinon inclusion du
+    //    nom web complet dans un nom catalogue.
+    m = flat.find(p => containsWord(n, p.name.toLowerCase()));
     if (m) return m;
-    const tokens = n.split(/\s+/).filter(t => t.length > 2);
-    m = flat.find(p => tokens.some(t => p.name.toLowerCase().includes(t)));
+    m = flat.find(p => p.name.toLowerCase().includes(n));
     return m || null;
 }
 
