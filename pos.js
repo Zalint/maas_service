@@ -10938,6 +10938,7 @@ document.addEventListener('DOMContentLoaded', () => {
 let _commandesWeb = [];
 let _cwFilter = 'all';
 let _conversionCommandeWeb = null;
+let _cwActor = ''; // "<tenant>:<user>" du caller (renvoyé par le proxy)
 
 function cwEsc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -11056,6 +11057,7 @@ async function chargerCommandesWeb() {
         const res = await fetch('/api/commandes-web', { credentials: 'include' });
         const data = await res.json();
         _commandesWeb = (data && Array.isArray(data.orders)) ? data.orders : [];
+        if (data && typeof data.actor === 'string') _cwActor = data.actor;
     } catch (e) {
         _commandesWeb = [];
     }
@@ -11095,11 +11097,17 @@ function renderCommandesWeb() {
             statutBadge = '<span class="cw-badge-statut cw-badge-converted">Convertie</span>';
             action = `<span style="font-size:.8rem; color:#6c757d;">par ${cwEsc(o.convertedBy || '')}</span>`;
         } else if (st === 'assigned') {
+            const mine = _cwActor && o.assignedTo === _cwActor;
             statutBadge = `<span class="cw-badge-statut cw-badge-assigned">Assignée</span><div style="font-size:.72rem; color:#6c757d;">${cwEsc(o.assignedTo || '')}</div>`;
-            action = `<button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button> <button class="btn btn-sm btn-outline-secondary" onclick="desassignerCommandeWeb('${o.id}')">Libérer</button>`;
+            // Convertir uniquement si la commande M'est assignée (il faut
+            // d'abord se l'assigner). Sinon: réservée par un autre (lecture seule).
+            action = mine
+                ? `<button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button> <button class="btn btn-sm btn-outline-secondary" onclick="desassignerCommandeWeb('${o.id}')">Libérer</button>`
+                : `<span style="font-size:.8rem; color:#6c757d;"><i class="fas fa-lock"></i> réservée</span>`;
         } else {
+            // En attente: on doit d'abord S'ASSIGNER (pas de conversion directe).
             statutBadge = '<span class="cw-badge-statut cw-badge-pending">En attente</span>';
-            action = `<button class="btn btn-sm btn-info" onclick="assignerCommandeWeb('${o.id}')"><i class="fas fa-user-check"></i> S'assigner</button> <button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button>`;
+            action = `<button class="btn btn-sm btn-info" onclick="assignerCommandeWeb('${o.id}')"><i class="fas fa-user-check"></i> S'assigner</button>`;
         }
         return `<tr>
             <td>${dateFr}</td>
@@ -11204,7 +11212,10 @@ function confirmerConversionCommandeWeb() {
     cart = [];
     if (typeof afficherPanier === 'function') afficherPanier();
     const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = (v == null ? '' : v); };
-    setVal('clientName', ctx.client.nom);
+    // Marquer "(Internet)" dans le nom pour repérer facilement les commandes web.
+    const nomClient = (ctx.client.nom || 'Client web').trim();
+    const nomAvecTag = /\(internet\)/i.test(nomClient) ? nomClient : (nomClient + ' (Internet)');
+    setVal('clientName', nomAvecTag);
     setVal('clientPhone', ctx.client.telephone);
     setVal('clientAddress', ctx.client.adresse);
     for (const it of items) {
