@@ -10909,3 +10909,261 @@ document.addEventListener('DOMContentLoaded', () => {
     posInitColumnResizers();
     posExpertModeApply(posExpertModeIsOn());
 });
+
+// =====================================================================
+// COMMANDES WEB DU JOUR (pool global partagé — source: service DATA)
+// Lu via le proxy Maas /api/commandes-web. Assigner/convertir mutent l'état
+// central dans DATA (premier arrivé premier servi). La conversion crée une
+// PRÉ-COMMANDE locale (mapping produits → catalogue) puis marque la commande
+// convertie côté DATA.
+// =====================================================================
+let _commandesWeb = [];
+let _cwFilter = 'all';
+let _conversionCommandeWeb = null;
+
+function cwEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function statutCommandeWeb(o) {
+    if (o.convertedToPOS) return 'converted';
+    if (o.assignedTo) return 'assigned';
+    return 'pending';
+}
+
+function normalizeCommandeWeb(order) {
+    const jc = order.jsonContent || {};
+    let client = jc.client;
+    if (!client || !client.nom) {
+        const ba = jc.billingAddress || {};
+        const sa = jc.shippingAddress || {};
+        const adrObj = (sa.lines || sa.full) ? sa : ba;
+        const adresse = adrObj.lines
+            ? adrObj.lines.filter(Boolean).join(', ')
+            : (adrObj.full || jc.adresse || '');
+        client = {
+            nom: jc.customerName || ba.name || sa.name || order.nomClient || 'Client web',
+            telephone: jc.phone || ba.phone || sa.phone || order.numeroClient || '',
+            adresse: adresse || ''
+        };
+    }
+    let produits = jc.produits;
+    if (!Array.isArray(produits) || !produits.length) {
+        produits = (jc.items || []).map(it => {
+            const pu = (it.prix && typeof it.prix === 'object') ? (it.prix.amount || 0) : (it.prix || it.prix_unitaire || 0);
+            const q = Number(it.quantite || it.quantity || 0) || 0;
+            return { nom: it.produit || it.nom || it.name || '', quantite: q, prix_unitaire: pu, total: pu * q };
+        });
+    }
+    return { client, produits };
+}
+
+function catalogueCommandeWebFlat() {
+    const out = [];
+    if (typeof products !== 'object' || !products) return out;
+    for (const [cat, prods] of Object.entries(products)) {
+        for (const [name, data] of Object.entries(prods || {})) {
+            const price = (typeof data === 'object') ? (data.default || 0) : data;
+            out.push({ name, price, category: cat });
+        }
+    }
+    return out;
+}
+
+function trouverProduitCommandeWeb(nom) {
+    const flat = catalogueCommandeWebFlat();
+    if (!flat.length || !nom) return null;
+    const n = String(nom).toLowerCase().trim();
+    let m = flat.find(p => p.name.toLowerCase() === n);
+    if (m) return m;
+    m = flat.find(p => n.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(n));
+    if (m) return m;
+    const tokens = n.split(/\s+/).filter(t => t.length > 2);
+    m = flat.find(p => tokens.some(t => p.name.toLowerCase().includes(t)));
+    return m || null;
+}
+
+async function chargerCommandesWeb() {
+    try {
+        const res = await fetch('/api/commandes-web', { credentials: 'include' });
+        const data = await res.json();
+        _commandesWeb = (data && Array.isArray(data.orders)) ? data.orders : [];
+    } catch (e) {
+        _commandesWeb = [];
+    }
+    renderCommandesWeb();
+    updateCommandesWebCounts();
+}
+
+function updateCommandesWebCounts() {
+    const c = { all: _commandesWeb.length, pending: 0, assigned: 0, converted: 0 };
+    _commandesWeb.forEach(o => { c[statutCommandeWeb(o)]++; });
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('cw-count-all', c.all); set('cw-count-pending', c.pending);
+    set('cw-count-assigned', c.assigned); set('cw-count-converted', c.converted);
+    set('cwModalCount', c.all);
+    const badge = document.getElementById('commandesWebBadge');
+    if (badge) {
+        if (c.pending > 0) { badge.textContent = c.pending; badge.style.display = 'inline-block'; }
+        else { badge.style.display = 'none'; }
+    }
+}
+
+function renderCommandesWeb() {
+    const tbody = document.getElementById('commandesWebTableBody');
+    if (!tbody) return;
+    const list = _commandesWeb.filter(o => _cwFilter === 'all' || statutCommandeWeb(o) === _cwFilter);
+    if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:30px; color:#6c757d;">Aucune commande</td></tr>';
+        return;
+    }
+    tbody.innerHTML = list.map(o => {
+        const n = normalizeCommandeWeb(o);
+        const st = statutCommandeWeb(o);
+        const produitsHtml = n.produits.map(p => `${cwEsc(p.nom)} <span style="color:#6c757d;">×${cwEsc(p.quantite)}</span>`).join('<br>');
+        const dateFr = o.orderDate ? String(o.orderDate).split('T')[0].split('-').reverse().join('/') : '';
+        let statutBadge, action;
+        if (st === 'converted') {
+            statutBadge = '<span class="cw-badge-statut cw-badge-converted">Convertie</span>';
+            action = `<span style="font-size:.8rem; color:#6c757d;">par ${cwEsc(o.convertedBy || '')}</span>`;
+        } else if (st === 'assigned') {
+            statutBadge = `<span class="cw-badge-statut cw-badge-assigned">Assignée</span><div style="font-size:.72rem; color:#6c757d;">${cwEsc(o.assignedTo || '')}</div>`;
+            action = `<button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button> <button class="btn btn-sm btn-outline-secondary" onclick="desassignerCommandeWeb('${o.id}')">Libérer</button>`;
+        } else {
+            statutBadge = '<span class="cw-badge-statut cw-badge-pending">En attente</span>';
+            action = `<button class="btn btn-sm btn-info" onclick="assignerCommandeWeb('${o.id}')"><i class="fas fa-user-check"></i> S'assigner</button> <button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button>`;
+        }
+        return `<tr>
+            <td>${dateFr}</td>
+            <td><strong>${cwEsc(o.commandId || o.id)}</strong></td>
+            <td>${cwEsc(n.client.nom)}</td>
+            <td>${cwEsc(n.client.telephone)}</td>
+            <td>${cwEsc(n.client.adresse)}</td>
+            <td>${produitsHtml}</td>
+            <td style="text-align:right; font-weight:700;">${formatCurrency(o.totalAmount || 0)}</td>
+            <td>${statutBadge}</td>
+            <td>${action}</td>
+        </tr>`;
+    }).join('');
+}
+
+function filtrerCommandesWeb(f) {
+    _cwFilter = f;
+    document.querySelectorAll('#modalCommandesWeb .cw-filter').forEach(b => b.classList.toggle('active', b.dataset.cwfilter === f));
+    renderCommandesWeb();
+}
+
+function ouvrirModalCommandesWeb() {
+    const modal = document.getElementById('modalCommandesWeb');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    const tbody = document.getElementById('commandesWebTableBody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:30px; color:#6c757d;">Chargement…</td></tr>';
+    chargerCommandesWeb();
+}
+function fermerModalCommandesWeb() { const m = document.getElementById('modalCommandesWeb'); if (m) m.style.display = 'none'; }
+function rafraichirCommandesWeb() { chargerCommandesWeb(); }
+function fermerMappingCommandeWeb() { const m = document.getElementById('modalMappingCommandeWeb'); if (m) m.style.display = 'none'; _conversionCommandeWeb = null; }
+
+async function assignerCommandeWeb(id) {
+    try {
+        const res = await fetch('/api/commandes-web/' + id + '/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
+        const data = await res.json();
+        if (!res.ok || data.success === false) showToast('❌ ' + (data.message || 'Assignation impossible'), 'error');
+        else showToast('✅ Commande assignée', 'success');
+    } catch (e) { showToast('❌ Erreur assignation', 'error'); }
+    chargerCommandesWeb();
+}
+async function desassignerCommandeWeb(id) {
+    try {
+        const res = await fetch('/api/commandes-web/' + id + '/unassign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
+        const data = await res.json();
+        if (!res.ok || data.success === false) showToast('❌ ' + (data.message || 'Impossible de libérer'), 'error');
+    } catch (e) { showToast('❌ Erreur', 'error'); }
+    chargerCommandesWeb();
+}
+
+function convertirCommandeWeb(id) {
+    const order = _commandesWeb.find(o => String(o.id) === String(id));
+    if (!order) return;
+    const norm = normalizeCommandeWeb(order);
+    const flat = catalogueCommandeWebFlat();
+    if (!flat.length) { showToast('Catalogue produits non chargé', 'warning'); return; }
+    if (!norm.produits.length) { showToast('Aucun produit dans cette commande', 'warning'); return; }
+    _conversionCommandeWeb = { id: order.id, commandId: order.commandId, client: norm.client, flat };
+    const optionsHtml = '<option value="__none__">— Choisir un produit —</option>' +
+        flat.map((p, i) => `<option value="${i}">${cwEsc(p.name)} — ${formatCurrency(p.price)}</option>`).join('');
+    const body = document.getElementById('mappingCommandeWebBody');
+    body.innerHTML = norm.produits.map(prod => `
+        <div class="cw-map-row" data-qte="${Number(prod.quantite) || 1}">
+            <div style="flex:1; min-width:150px;">
+                <div style="font-weight:700;">${cwEsc(prod.nom)}</div>
+                <div style="font-size:.8rem; color:#6c757d;">Qté ${cwEsc(Number(prod.quantite) || 1)} · ${formatCurrency(prod.prix_unitaire || 0)}</div>
+            </div>
+            <div style="font-size:1.2rem; color:#adb5bd;">→</div>
+            <select class="form-select cw-map-select" style="flex:2; min-width:200px;">${optionsHtml}</select>
+        </div>`).join('');
+    const rows = body.querySelectorAll('.cw-map-row');
+    norm.produits.forEach((prod, idx) => {
+        const match = trouverProduitCommandeWeb(prod.nom);
+        if (match && rows[idx]) {
+            const mi = flat.findIndex(p => p.name === match.name && p.category === match.category);
+            if (mi >= 0) rows[idx].querySelector('select').value = String(mi);
+        }
+    });
+    document.getElementById('modalMappingCommandeWeb').style.display = 'flex';
+}
+
+async function confirmerConversionCommandeWeb() {
+    const ctx = _conversionCommandeWeb;
+    if (!ctx) return;
+    const rows = document.querySelectorAll('#mappingCommandeWebBody .cw-map-row');
+    const cart = [];
+    for (const row of rows) {
+        const sel = row.querySelector('select');
+        const qte = Number(row.dataset.qte) || 1;
+        if (!sel || sel.value === '__none__') { showToast('Chaque produit doit être mappé à un article du catalogue', 'warning'); return; }
+        const p = ctx.flat[Number(sel.value)];
+        if (p) cart.push({ name: p.name, price: p.price, category: p.category, quantity: qte });
+    }
+    if (!cart.length) { showToast('Aucun produit à convertir', 'warning'); return; }
+    const pointVente = document.getElementById('pointVenteSelect') ? document.getElementById('pointVenteSelect').value : '';
+    const today = (document.getElementById('summaryDate') && document.getElementById('summaryDate').value) || new Date().toISOString().split('T')[0];
+    const parts = today.split('-');
+    const dateReceptionFR = (parts.length === 3) ? `${parts[2]}/${parts[1]}/${parts[0]}` : today;
+    const precommandeData = {
+        cart,
+        clientInfo: { nom: ctx.client.nom, telephone: ctx.client.telephone, adresse: ctx.client.adresse || null, instructions: '' },
+        dateReception: dateReceptionFR,
+        label: 'Web',
+        commentaire: 'Commande web N°' + (ctx.commandId || ''),
+        pointVente
+    };
+    try {
+        if (typeof showLoadingSpinner === 'function') showLoadingSpinner();
+        const res = await fetch('/api/precommandes/pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(precommandeData) });
+        const data = await res.json();
+        if (!data.success) { showToast('❌ ' + (data.message || 'Erreur pré-commande'), 'error'); return; }
+        // Marquer convertie côté DATA (état central partagé).
+        const cRes = await fetch('/api/commandes-web/' + ctx.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
+        const cData = await cRes.json().catch(() => ({}));
+        if (!cRes.ok || cData.success === false) {
+            showToast('⚠️ Pré-commande créée, mais commande web non marquée convertie: ' + (cData.message || ''), 'warning');
+        } else {
+            showToast('✅ Commande web convertie en pré-commande', 'success');
+        }
+        fermerMappingCommandeWeb();
+        await chargerCommandesWeb();
+        if (typeof loadPrecommandes === 'function') loadPrecommandes();
+    } catch (e) {
+        showToast('❌ Erreur lors de la conversion', 'error');
+    } finally {
+        if (typeof hideLoadingSpinner === 'function') hideLoadingSpinner();
+    }
+}
+
+// Badge léger au chargement + rafraîchissement périodique (90s).
+document.addEventListener('DOMContentLoaded', () => {
+    try { chargerCommandesWeb(); } catch (e) {}
+    setInterval(() => { try { chargerCommandesWeb(); } catch (e) {} }, 90000);
+});
