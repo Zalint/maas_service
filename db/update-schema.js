@@ -646,6 +646,30 @@ async function updateSchema() {
             console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
         }
 
+        // adresse_client en TEXT (et non VARCHAR(255)).
+        // Les adresses issues des commandes web peuvent depasser 255 caracteres
+        // (le parsing e-mail y colle parfois du texte parasite): l'insert
+        // echouait alors en "value too long for type character varying(255)",
+        // remonte au POS en 500 au moment d'encaisser. db/update-vente-schema.js
+        // creait deja ces colonnes en TEXT, mais uniquement pour les bases ou
+        // elles n'existaient pas encore. On convertit donc explicitement.
+        // varchar -> text est une bascule de metadonnees en Postgres (pas de
+        // reecriture de table), et NULL/valeurs existantes sont conservees.
+        for (const t of ['ventes', 'precommandes']) {
+            if (!(await checkTableExists(t))) continue;
+            const [cols] = await sequelize.query(`
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = '${t}'
+                  AND column_name = 'adresse_client'
+                  AND data_type = 'character varying'
+            `);
+            if (cols.length) {
+                await sequelize.query(`ALTER TABLE ${t} ALTER COLUMN adresse_client TYPE TEXT`);
+                console.log(`Colonne ${t}.adresse_client convertie en TEXT`);
+            }
+        }
+
         // Index fonctionnel sur stocks.date pour PL / Cash et Stock.
         // ATTENTION: TO_DATE est STABLE (depend de lc_time), donc NON utilisable
         // dans une expression d'index (Postgres exige IMMUTABLE). On contourne

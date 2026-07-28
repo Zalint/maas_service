@@ -69,7 +69,9 @@ const Precommande = sequelize.define('Precommande', {
     field: 'numero_client'
   },
   adresseClient: {
-    type: DataTypes.STRING,
+    // TEXT et non STRING: meme raison que Vente.adresseClient (adresses des
+    // commandes web pouvant depasser 255 caracteres).
+    type: DataTypes.TEXT,
     allowNull: true,
     field: 'adresse_client'
   },
