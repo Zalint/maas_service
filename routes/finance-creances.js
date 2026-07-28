@@ -190,6 +190,18 @@ async function computeCreances(opts = {}) {
     const prixAchatAtDate = buildTemporalResolver(paHistory, 'prix_achat');
     const prixVenteAtDate = buildTemporalResolver(pvHistory, 'prix_vente');
 
+    // Prix bœuf « sans abats » DYNAMIQUE depuis DATA (/api/external/achats-boeuf).
+    // Résolveur point-in-time (prix de l'achat bœuf le plus récent <= date).
+    // Dégradation gracieuse: atDate renvoie null si DATA indisponible/non
+    // configuré -> on retombe sur l'historique/catalogue prix_achat.
+    let _boeufMarket = { atDate: () => null, count: 0 };
+    try {
+        const { getBoeufSansAbatsResolver } = require('../lib/achats-boeuf-client');
+        _boeufMarket = await getBoeufSansAbatsResolver();
+    } catch (e) {
+        console.warn('⚠️  achats-boeuf resolver indisponible:', e.message);
+    }
+
     /** Resout le prix_vente_cdc effectif pour (produit_vente, vente_date). */
     const lookupPrixCdcAtDate = (produitVenteNom, venteDateISO) => {
         const r = resolveProduit(produitVenteNom, resolverMaps);
@@ -200,10 +212,17 @@ async function computeCreances(opts = {}) {
             ? r.value.prix_vente_cdc
             : (r.value ? r.value.prix_vente : null);
     };
-    /** Resout le prix_achat effectif. */
+    /** Resout le prix_achat effectif. Bœuf: prix "sans abats" dynamique (DATA)
+     *  prioritaire; sinon historique/catalogue. */
     const lookupPrixAchatAtDate = (produitVenteNom, venteDateISO) => {
         const r = resolveProduit(produitVenteNom, resolverMaps);
         if (!r.resolved) return null;
+        // Bœuf: prix achat "sans abats" dynamique depuis DATA (point-in-time).
+        // Fallback sur historique/catalogue si indisponible pour cette date.
+        if (r.resolved.toLowerCase() === 'boeuf') {
+            const dyn = _boeufMarket.atDate(venteDateISO);
+            if (dyn != null) return dyn;
+        }
         const fromHistory = prixAchatAtDate(r.resolved.toLowerCase(), venteDateISO);
         if (fromHistory != null) return fromHistory;
         return r.value ? r.value.prix_achat : null;
