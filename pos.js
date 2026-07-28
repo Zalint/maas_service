@@ -1406,7 +1406,11 @@ async function viderPanier() {
         document.getElementById('clientPhone').value = '';
         document.getElementById('clientAddress').value = '';
         document.getElementById('clientInstructions').value = '';
-        
+
+        // 🌐 Abandon d'une conversion de commande web: oublier la référence pour
+        // ne pas marquer convertie une commande web sur une vente ultérieure.
+        try { sessionStorage.removeItem('currentWebOrderId'); sessionStorage.removeItem('currentWebOrderCommandId'); } catch (e) {}
+
         showToast('Panier vidé', 'success');
     }
 }
@@ -1815,6 +1819,20 @@ async function confirmerPaiement(event) {
         
         // Success
         console.log('✅ Ventes enregistrées avec succès');
+
+        // 🌐 Commande web: si cette vente provient d'une commande web préremplie,
+        // la marquer convertie côté DATA (état central) maintenant que la vente
+        // est réellement enregistrée. Non bloquant.
+        try {
+            const _webOrderId = sessionStorage.getItem('currentWebOrderId');
+            if (_webOrderId) {
+                fetch('/api/commandes-web/' + encodeURIComponent(_webOrderId) + '/convert', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}'
+                }).catch(() => {});
+                sessionStorage.removeItem('currentWebOrderId');
+                sessionStorage.removeItem('currentWebOrderCommandId');
+            }
+        } catch (_wo) {}
 
         // 🆕 Appliquer le crédit client si demandé (synchrone avec attente)
         const useCreditCheckbox = document.getElementById('useCredit');
@@ -10920,6 +10938,7 @@ document.addEventListener('DOMContentLoaded', () => {
 let _commandesWeb = [];
 let _cwFilter = 'all';
 let _conversionCommandeWeb = null;
+let _cwActor = ''; // "<tenant>:<user>" du caller (renvoyé par le proxy)
 
 function cwEsc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -10970,16 +10989,66 @@ function catalogueCommandeWebFlat() {
     return out;
 }
 
+// Auto-mapping web -> catalogue, porté du POS DATA (trouverProduitProche).
+// Points clés: règles par famille (boeuf/poulet/veau/agneau/mouton/oeuf) et
+// match par MOT ENTIER (\b) pour éviter les faux positifs comme "oeuf" dans
+// "boeuf". Préfère la variante "en détail".
 function trouverProduitCommandeWeb(nom) {
     const flat = catalogueCommandeWebFlat();
     if (!flat.length || !nom) return null;
     const n = String(nom).toLowerCase().trim();
+
+    const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const containsWord = (haystack, word) => new RegExp(`\\b${escRe(word)}\\b`).test(haystack);
+    // Meilleur candidat d'une famille: on privilégie le nom cible exact
+    // (`prefer`), puis le nom == mot-clé de base (ex "Mouton", "Agneau"), puis
+    // "en détail", on relègue "sur pied" (animal vivant), enfin le plus court.
+    const pickBest = (cands, kw, prefer) => cands.slice().sort((a, b) => {
+        const al = a.name.toLowerCase(), bl = b.name.toLowerCase();
+        const ap = (al === prefer) ? 0 : 1, bp = (bl === prefer) ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        const ak = (al === kw) ? 0 : 1, bk = (bl === kw) ? 0 : 1;
+        if (ak !== bk) return ak - bk;
+        const ad = /d[ée]tail/.test(al) ? 0 : 1, bd = /d[ée]tail/.test(bl) ? 0 : 1;
+        if (ad !== bd) return ad - bd;
+        const asp = /sur pied/.test(al) ? 1 : 0, bsp = /sur pied/.test(bl) ? 1 : 0;
+        if (asp !== bsp) return asp - bsp;
+        return a.name.length - b.name.length;
+    })[0];
+
+    // 1) Correspondance exacte.
     let m = flat.find(p => p.name.toLowerCase() === n);
     if (m) return m;
-    m = flat.find(p => n.includes(p.name.toLowerCase()) || p.name.toLowerCase().includes(n));
+
+    // 2) Règles par famille avec cible explicite (comme DATA). `prefer` = nom
+    //    cible idéal; `family` = mots-clés pour retrouver la famille sinon.
+    //    Mouton -> "Mouton", Agneau -> "Agneau", mais Boeuf/Poulet/Veau ->
+    //    la variante "en détail".
+    const rules = [
+        { kw: 'boeuf', prefer: 'boeuf en détail', family: ['boeuf', 'bœuf'] },
+        { kw: 'bœuf', prefer: 'boeuf en détail', family: ['boeuf', 'bœuf'] },
+        { kw: 'poulet', prefer: 'poulet en détail', family: ['poulet'] },
+        { kw: 'veau', prefer: 'veau en détail', family: ['veau'] },
+        { kw: 'agneau', prefer: 'agneau', family: ['agneau'] },
+        { kw: 'mouton', prefer: 'mouton', family: ['mouton'] },
+        { kw: 'oeuf', prefer: 'oeuf', family: ['oeuf', 'œuf'] },
+        { kw: 'œuf', prefer: 'oeuf', family: ['oeuf', 'œuf'] }
+    ];
+    const rule = rules.find(r => containsWord(n, r.kw));
+    if (rule) {
+        // a) cible exacte si elle existe au catalogue.
+        const exact = flat.find(p => p.name.toLowerCase() === rule.prefer);
+        if (exact) return exact;
+        // b) sinon meilleur produit de la famille (évite "sur pied" si possible).
+        const cands = flat.filter(p => rule.family.some(t => containsWord(p.name.toLowerCase(), t)));
+        if (cands.length) return pickBest(cands, rule.kw, rule.prefer);
+    }
+
+    // 3) Match partiel par MOT ENTIER (évite oeuf/boeuf), sinon inclusion du
+    //    nom web complet dans un nom catalogue.
+    m = flat.find(p => containsWord(n, p.name.toLowerCase()));
     if (m) return m;
-    const tokens = n.split(/\s+/).filter(t => t.length > 2);
-    m = flat.find(p => tokens.some(t => p.name.toLowerCase().includes(t)));
+    m = flat.find(p => p.name.toLowerCase().includes(n));
     return m || null;
 }
 
@@ -10988,6 +11057,7 @@ async function chargerCommandesWeb() {
         const res = await fetch('/api/commandes-web', { credentials: 'include' });
         const data = await res.json();
         _commandesWeb = (data && Array.isArray(data.orders)) ? data.orders : [];
+        if (data && typeof data.actor === 'string') _cwActor = data.actor;
     } catch (e) {
         _commandesWeb = [];
     }
@@ -11027,11 +11097,17 @@ function renderCommandesWeb() {
             statutBadge = '<span class="cw-badge-statut cw-badge-converted">Convertie</span>';
             action = `<span style="font-size:.8rem; color:#6c757d;">par ${cwEsc(o.convertedBy || '')}</span>`;
         } else if (st === 'assigned') {
+            const mine = _cwActor && o.assignedTo === _cwActor;
             statutBadge = `<span class="cw-badge-statut cw-badge-assigned">Assignée</span><div style="font-size:.72rem; color:#6c757d;">${cwEsc(o.assignedTo || '')}</div>`;
-            action = `<button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button> <button class="btn btn-sm btn-outline-secondary" onclick="desassignerCommandeWeb('${o.id}')">Libérer</button>`;
+            // Convertir uniquement si la commande M'est assignée (il faut
+            // d'abord se l'assigner). Sinon: réservée par un autre (lecture seule).
+            action = mine
+                ? `<button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button> <button class="btn btn-sm btn-outline-secondary" onclick="desassignerCommandeWeb('${o.id}')">Libérer</button>`
+                : `<span style="font-size:.8rem; color:#6c757d;"><i class="fas fa-lock"></i> réservée</span>`;
         } else {
+            // En attente: on doit d'abord S'ASSIGNER (pas de conversion directe).
             statutBadge = '<span class="cw-badge-statut cw-badge-pending">En attente</span>';
-            action = `<button class="btn btn-sm btn-info" onclick="assignerCommandeWeb('${o.id}')"><i class="fas fa-user-check"></i> S'assigner</button> <button class="btn btn-sm btn-success" onclick="convertirCommandeWeb('${o.id}')"><i class="fas fa-check"></i> Convertir</button>`;
+            action = `<button class="btn btn-sm btn-info" onclick="assignerCommandeWeb('${o.id}')"><i class="fas fa-user-check"></i> S'assigner</button>`;
         }
         return `<tr>
             <td>${dateFr}</td>
@@ -11114,52 +11190,52 @@ function convertirCommandeWeb(id) {
     document.getElementById('modalMappingCommandeWeb').style.display = 'flex';
 }
 
-async function confirmerConversionCommandeWeb() {
+function confirmerConversionCommandeWeb() {
     const ctx = _conversionCommandeWeb;
     if (!ctx) return;
     const rows = document.querySelectorAll('#mappingCommandeWebBody .cw-map-row');
-    const cart = [];
+    const items = [];
     for (const row of rows) {
         const sel = row.querySelector('select');
         const qte = Number(row.dataset.qte) || 1;
         if (!sel || sel.value === '__none__') { showToast('Chaque produit doit être mappé à un article du catalogue', 'warning'); return; }
         const p = ctx.flat[Number(sel.value)];
-        if (p) cart.push({ name: p.name, price: p.price, category: p.category, quantity: qte });
+        if (p) items.push({ product: { name: p.name, price: p.price, category: p.category }, quantity: qte });
     }
-    if (!cart.length) { showToast('Aucun produit à convertir', 'warning'); return; }
-    const pointVente = document.getElementById('pointVenteSelect') ? document.getElementById('pointVenteSelect').value : '';
-    const today = (document.getElementById('summaryDate') && document.getElementById('summaryDate').value) || new Date().toISOString().split('T')[0];
-    const parts = today.split('-');
-    const dateReceptionFR = (parts.length === 3) ? `${parts[2]}/${parts[1]}/${parts[0]}` : today;
-    const precommandeData = {
-        cart,
-        clientInfo: { nom: ctx.client.nom, telephone: ctx.client.telephone, adresse: ctx.client.adresse || null, instructions: '' },
-        dateReception: dateReceptionFR,
-        label: 'Web',
-        commentaire: 'Commande web N°' + (ctx.commandId || ''),
-        pointVente
-    };
-    try {
-        if (typeof showLoadingSpinner === 'function') showLoadingSpinner();
-        const res = await fetch('/api/precommandes/pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(precommandeData) });
-        const data = await res.json();
-        if (!data.success) { showToast('❌ ' + (data.message || 'Erreur pré-commande'), 'error'); return; }
-        // Marquer convertie côté DATA (état central partagé).
-        const cRes = await fetch('/api/commandes-web/' + ctx.id + '/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}' });
-        const cData = await cRes.json().catch(() => ({}));
-        if (!cRes.ok || cData.success === false) {
-            showToast('⚠️ Pré-commande créée, mais commande web non marquée convertie: ' + (cData.message || ''), 'warning');
+    if (!items.length) { showToast('Aucun produit à convertir', 'warning'); return; }
+
+    // Comme dans DATA: on PRÉREMPLIT le POS (client + panier). On NE crée PAS
+    // de vente ni de pré-commande ici. Le caissier valide ensuite normalement
+    // -> ça devient une vraie commande. La commande web est marquée convertie
+    // (côté DATA, état central) APRÈS l'enregistrement de la vente (cf. le
+    // handler de validation qui lit sessionStorage.currentWebOrderId).
+    cart = [];
+    if (typeof afficherPanier === 'function') afficherPanier();
+    const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = (v == null ? '' : v); };
+    // Marquer "(Internet)" dans le nom pour repérer facilement les commandes web.
+    const nomClient = (ctx.client.nom || 'Client web').trim();
+    const nomAvecTag = /\(internet\)/i.test(nomClient) ? nomClient : (nomClient + ' (Internet)');
+    setVal('clientName', nomAvecTag);
+    setVal('clientPhone', ctx.client.telephone);
+    setVal('clientAddress', ctx.client.adresse);
+    for (const it of items) {
+        if (typeof ajouterAuPanierAvecQuantite === 'function') {
+            ajouterAuPanierAvecQuantite(it.product, it.quantity);
         } else {
-            showToast('✅ Commande web convertie en pré-commande', 'success');
+            cart.push({ name: it.product.name, price: it.product.price, category: it.product.category, quantity: it.quantity });
         }
-        fermerMappingCommandeWeb();
-        await chargerCommandesWeb();
-        if (typeof loadPrecommandes === 'function') loadPrecommandes();
-    } catch (e) {
-        showToast('❌ Erreur lors de la conversion', 'error');
-    } finally {
-        if (typeof hideLoadingSpinner === 'function') hideLoadingSpinner();
     }
+    if (typeof afficherPanier === 'function') afficherPanier();
+
+    // Référence de la commande web -> sera marquée convertie après la vente.
+    try {
+        sessionStorage.setItem('currentWebOrderId', String(ctx.id));
+        sessionStorage.setItem('currentWebOrderCommandId', String(ctx.commandId || ''));
+    } catch (e) {}
+
+    fermerMappingCommandeWeb();
+    fermerModalCommandesWeb();
+    showToast('🌐 Commande web ' + (ctx.commandId || '') + ' chargée dans le panier — validez pour créer la commande', 'success');
 }
 
 // Badge léger au chargement + rafraîchissement périodique (90s).

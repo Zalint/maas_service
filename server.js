@@ -576,10 +576,11 @@ app.get('/api/commandes-web', checkAuth, async (req, res) => {
         const { listCommandesWeb } = require('./lib/commandes-web-client');
         const date = typeof req.query.date === 'string' ? req.query.date : undefined;
         const orders = await listCommandesWeb({ date });
-        res.json({ success: true, count: orders.length, orders });
+        // actor = "<tenant>:<user>" du caller -> le front distingue "assignée à moi".
+        res.json({ success: true, count: orders.length, orders, actor: _webOrderActor(req) });
     } catch (error) {
         console.error('Erreur GET /api/commandes-web:', error);
-        res.json({ success: true, count: 0, orders: [] }); // non-bloquant
+        res.json({ success: true, count: 0, orders: [], actor: _webOrderActor(req) }); // non-bloquant
     }
 });
 
