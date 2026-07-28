@@ -34,6 +34,16 @@ const FournisseurPrix = sequelize.define('FournisseurPrix', {
         allowNull: true,
         field: 'prix_vente_cdc'
     },
+    // TRUE = le prix_achat de ce produit est lu dynamiquement depuis l'API
+    // DATA (/api/external/achats-boeuf) au lieu de la valeur saisie
+    // ci-dessus, qui ne sert alors que de repli si DATA est indisponible.
+    // Seul le boeuf dispose d'une source API a ce jour. NULL = jamais
+    // configure (= desactive). Cf lib/achats-boeuf-client.js.
+    prix_achat_dynamique: {
+        type: DataTypes.BOOLEAN,
+        allowNull: true,
+        field: 'prix_achat_dynamique'
+    },
     updated_at: {
         type: DataTypes.DATE,
         allowNull: false,

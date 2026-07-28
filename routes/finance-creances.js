@@ -190,16 +190,27 @@ async function computeCreances(opts = {}) {
     const prixAchatAtDate = buildTemporalResolver(paHistory, 'prix_achat');
     const prixVenteAtDate = buildTemporalResolver(pvHistory, 'prix_vente');
 
-    // Prix bœuf « sans abats » DYNAMIQUE depuis DATA (/api/external/achats-boeuf).
-    // Résolveur point-in-time (prix de l'achat bœuf le plus récent <= date).
-    // Dégradation gracieuse: atDate renvoie null si DATA indisponible/non
-    // configuré -> on retombe sur l'historique/catalogue prix_achat.
+    // Prix bœuf « avec abats et frais » DYNAMIQUE depuis DATA
+    // (/api/external/achats-boeuf) = moyenne SIMPLE des prix_achat_kg du jour,
+    // soit exactement la valeur de la carte « Bœuf - Prix avec abats et frais »
+    // de l'écran DATA Suivi achat bœuf. Résolveur point-in-time (jour d'achat le
+    // plus récent <= date). Dégradation gracieuse: atDate renvoie null si DATA
+    // indisponible/non configuré -> on retombe sur l'historique/catalogue.
+    // Override manuel: le prix API n'est consulte que si la case
+    // « Prix API (DATA) » est cochee sur la ligne Boeuf du catalogue
+    // (Finance > Prix fournisseur). Decochee -> aucun appel HTTP, on garde
+    // le prix achat saisi.
+    const boeufDynEnabled = prixRows.some((p) =>
+        String(p.produit || '').trim().toLowerCase() === 'boeuf'
+        && p.prix_achat_dynamique === true);
     let _boeufMarket = { atDate: () => null, count: 0 };
-    try {
-        const { getBoeufSansAbatsResolver } = require('../lib/achats-boeuf-client');
-        _boeufMarket = await getBoeufSansAbatsResolver();
-    } catch (e) {
-        console.warn('⚠️  achats-boeuf resolver indisponible:', e.message);
+    if (boeufDynEnabled) {
+        try {
+            const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
+            _boeufMarket = await getBoeufPrixAchatResolver();
+        } catch (e) {
+            console.warn('⚠️  achats-boeuf resolver indisponible:', e.message);
+        }
     }
 
     /** Resout le prix_vente_cdc effectif pour (produit_vente, vente_date). */
@@ -212,13 +223,13 @@ async function computeCreances(opts = {}) {
             ? r.value.prix_vente_cdc
             : (r.value ? r.value.prix_vente : null);
     };
-    /** Resout le prix_achat effectif. Bœuf: prix "sans abats" dynamique (DATA)
-     *  prioritaire; sinon historique/catalogue. */
+    /** Resout le prix_achat effectif. Bœuf: prix "avec abats et frais"
+     *  dynamique (DATA) prioritaire; sinon historique/catalogue. */
     const lookupPrixAchatAtDate = (produitVenteNom, venteDateISO) => {
         const r = resolveProduit(produitVenteNom, resolverMaps);
         if (!r.resolved) return null;
-        // Bœuf: prix achat "sans abats" dynamique depuis DATA (point-in-time).
-        // Fallback sur historique/catalogue si indisponible pour cette date.
+        // Bœuf: prix achat "avec abats et frais" dynamique depuis DATA
+        // (point-in-time). Fallback catalogue si indisponible pour cette date.
         if (r.resolved.toLowerCase() === 'boeuf') {
             const dyn = _boeufMarket.atDate(venteDateISO);
             if (dyn != null) return dyn;

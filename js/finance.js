@@ -1054,6 +1054,11 @@
 
     // ===== Prix fournisseur =====
 
+    // Produits dont le prix achat peut etre lu depuis l'API DATA. Le toggle
+    // "Prix API (DATA)" n'est propose que pour ceux-la (cf. cote serveur
+    // lib/achats-boeuf-client.js, alimente par /api/external/achats-boeuf).
+    const PRODUITS_PRIX_API = new Set(['boeuf']);
+
     async function loadPrix() {
         try {
             // Date "voir les prix au ..." : si renseignee -> mode as-of (lecture
@@ -1103,7 +1108,8 @@
                     row.produit,
                     row.prix_vente == null ? '' : row.prix_vente,
                     row.prix_achat == null ? '' : row.prix_achat,
-                    readOnly
+                    readOnly,
+                    row.prix_achat_dynamique === true
                 );
             }
         } catch (e) {
@@ -1111,7 +1117,7 @@
         }
     }
 
-    function addPrixRow(produit, prixVente, prixAchat, readOnly) {
+    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
 
@@ -1162,6 +1168,45 @@
         const tdV = makePrixCell('prix_vente', prixVente, 'prix-vente-fournisseur', 'Prix vente fournisseur', 'prix_vente');
         const tdA = makePrixCell('prix_achat', prixAchat, 'prix-achat', 'Prix achat fournisseur', 'prix_achat');
 
+        // Colonne "Prix API (DATA)": bascule le prix achat de ce produit sur
+        // l'API DATA (moyenne des achats du jour) au lieu de la valeur saisie
+        // a gauche, qui ne sert alors que de repli si DATA est indisponible.
+        // Seul le boeuf a une source API -> tiret pour les autres produits.
+        const tdDyn = document.createElement('td');
+        tdDyn.className = 'text-center align-middle';
+        if (PRODUITS_PRIX_API.has(String(produit || '').trim().toLowerCase())) {
+            const chk = document.createElement('input');
+            chk.type = 'checkbox';
+            chk.className = 'form-check-input';
+            chk.dataset.col = 'prix_achat_dynamique';
+            chk.checked = prixAchatDyn === true;
+            if (readOnly) chk.disabled = true;
+            const inA = tdA.querySelector('input');
+            // Signale que le prix saisi n'est plus la valeur de reference quand
+            // l'API prend la main. On met en italique (et PAS en text-muted:
+            // sur le fond sombre des champs, le gris rend la valeur illisible)
+            // pour que le repli reste parfaitement lisible.
+            const syncAchat = () => {
+                chk.title = chk.checked
+                    ? 'Prix achat lu depuis DATA. Décochez pour utiliser la valeur saisie.'
+                    : 'Valeur saisie utilisée. Cochez pour lire le prix depuis DATA.';
+                if (!inA) return;
+                inA.classList.toggle('fst-italic', chk.checked);
+                inA.title = chk.checked
+                    ? 'Prix API actif — cette valeur ne sert que de repli si DATA est indisponible.'
+                    : 'Prix achat fournisseur utilisé pour le calcul.';
+            };
+            chk.addEventListener('change', syncAchat);
+            syncAchat();
+            tdDyn.appendChild(chk);
+        } else {
+            const dash = document.createElement('span');
+            dash.className = 'text-muted';
+            dash.textContent = '—';
+            dash.title = 'Aucune source API pour ce produit';
+            tdDyn.appendChild(dash);
+        }
+
         // Bouton supprimer. Si la ligne vient de la BDD (produit existant),
         // on appelle DELETE /api/finance/prix/:produit. Sinon (ligne ajoutee
         // localement via "+ Ajouter une ligne"), on retire juste du DOM.
@@ -1210,7 +1255,7 @@
         tdDel.appendChild(btnDel);
         }
 
-        tr.append(tdP, tdV, tdA, tdDel);
+        tr.append(tdP, tdV, tdA, tdDyn, tdDel);
         tbody.appendChild(tr);
     }
 
@@ -1220,7 +1265,11 @@
             document.querySelectorAll('#fin-prix-table tbody tr').forEach((tr) => {
                 const inputs = tr.querySelectorAll('input');
                 const obj = {};
-                inputs.forEach((inp) => { obj[inp.dataset.col] = inp.value; });
+                inputs.forEach((inp) => {
+                    // Le toggle "Prix API (DATA)" est une case a cocher: on
+                    // envoie un booleen, pas la value ("on") du DOM.
+                    obj[inp.dataset.col] = inp.type === 'checkbox' ? inp.checked : inp.value;
+                });
                 if (obj.produit && obj.produit.trim()) items.push(obj);
             });
             const res = await fetch('/api/finance/prix', {

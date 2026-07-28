@@ -190,6 +190,9 @@ router.get('/prix', async (req, res) => {
                 produit: r.produit,
                 prix_vente: pv == null ? null : pv,
                 prix_achat: pa == null ? null : pa,
+                // Reglage courant (non historise): c'est un interrupteur de
+                // config, pas un prix. Affiche en lecture seule en mode as-of.
+                prix_achat_dynamique: r.prix_achat_dynamique === true,
                 updated_at: r.updated_at,
                 as_of: dateParam,
                 // Aucune donnee historique <= date: produit pas encore au
@@ -238,6 +241,14 @@ router.put('/prix', async (req, res) => {
                     error: `prix_achat invalide pour ${produit}`
                 });
             }
+            // Toggle "Prix API (DATA)": quand TRUE, le calcul lit le prix
+            // achat depuis DATA (cf lib/achats-boeuf-client.js) et prix_achat
+            // ci-dessus ne sert plus que de repli. Non historise (interrupteur
+            // de config). Absent du body -> valeur existante inchangee.
+            const rawDyn = item.prix_achat_dynamique;
+            const prixAchatDynamique = (rawDyn === undefined || rawDyn === null)
+                ? undefined
+                : (rawDyn === true || rawDyn === 'true' || rawDyn === 'on' || rawDyn === '1');
 
             // Transaction atomique: lire l'ancien etat AVEC FOR UPDATE, puis
             // upsert + inserts history conditionnels. Le lock evite que deux
@@ -253,12 +264,16 @@ router.put('/prix', async (req, res) => {
                     ? parseFloat(existing.prix_achat)
                     : null;
 
-                await FournisseurPrix.upsert({
+                const payload = {
                     produit,
                     prix_vente: prixVente,
                     prix_achat: prixAchat,
                     updated_at: now
-                }, { transaction: t });
+                };
+                if (prixAchatDynamique !== undefined) {
+                    payload.prix_achat_dynamique = prixAchatDynamique;
+                }
+                await FournisseurPrix.upsert(payload, { transaction: t });
 
                 // History prix_vente: seulement si change (ou si nouveau produit).
                 if (oldPrixVente == null || Math.abs(oldPrixVente - prixVente) > 0.001) {
@@ -283,7 +298,12 @@ router.put('/prix', async (req, res) => {
                     }
                 }
             });
-            audit.log(req, 'prix.upsert', { produit, prix_vente: prixVente, prix_achat: prixAchat });
+            audit.log(req, 'prix.upsert', {
+                produit,
+                prix_vente: prixVente,
+                prix_achat: prixAchat,
+                prix_achat_dynamique: prixAchatDynamique
+            });
         }
         invalidateFinanceDerivedCaches();
         const rows = await FournisseurPrix.findAll({ order: [['produit', 'ASC']] });
