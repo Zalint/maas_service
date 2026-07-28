@@ -986,9 +986,9 @@ router.delete('/charges/:nom', async (req, res) => {
 //      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
 //      + variation_stock_nette
 //
-// total_avances: filtre sur la periode automatiquement (MataBanq
-// applique dateDebut/dateFin a sa requete et retourne le total des
-// operations type='avance' dans cette fenetre).
+// total_avances: somme des operations type='avance' de MataBanq filtrees
+// ICI sur [dateDebut, dateFin]. Ne PAS utiliser status[0].total_avances:
+// c'est un cumul annee, insensible aux dates envoyees a l'API.
 //
 // variation_stock_brute = stock_soir_fin - stock_matin_debut
 // variation_stock_nette = ((100 - stock_pertes_decoupe_pct) / 100) × variation_stock_brute
@@ -1099,15 +1099,27 @@ router.get('/pl', async (req, res) => {
         const commission = creances.ce_que_je_dois || 0;
         const margeCdc = creances.ce_qu_il_me_doit || 0;
 
-        // 3. Total avances depuis MataBanq (deja filtre par dateDebut/dateFin
-        //    cote API externe, donc = avances du mois choisi).
+        // 3. Total avances depuis MataBanq, SUR LA PERIODE.
+        //    ATTENTION: contrairement a ce qu'on a longtemps suppose, MataBanq
+        //    n'applique PAS dateDebut/dateFin a status[0].total_avances: ce
+        //    champ est un CUMUL ANNEE (metadata.year_filter). Mesure: demander
+        //    2 jours, 4 semaines ou l'annee entiere renvoie la meme valeur.
+        //    L'utiliser ici gonflait le PL de tout le cumul depuis janvier.
+        //    On somme donc les operations 'avance' filtrees sur la periode,
+        //    exactement comme le fait l'UI pour son tableau et ses tuiles.
         let totalAvances = 0;
         try {
             const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
             const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
-            if (cdb && Array.isArray(cdb.details) && cdb.details[0]
-                && Array.isArray(cdb.details[0].status) && cdb.details[0].status[0]) {
-                totalAvances = parseFloat(cdb.details[0].status[0].total_avances) || 0;
+            const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
+                && Array.isArray(cdb.details[0].operations))
+                ? cdb.details[0].operations : [];
+            for (const op of ops) {
+                if (String(op.type || '').toLowerCase() !== 'avance') continue;
+                // Comparaison lexicographique sur YYYY-MM-DD = chronologique.
+                const d = String(op.date_operation || '').slice(0, 10);
+                if (!d || d < dateDebut || d > dateFin) continue;
+                totalAvances += parseFloat(op.montant) || 0;
             }
         } catch (e) {
             console.warn('[PL] fetch CDB avances echoue:', e.message);
