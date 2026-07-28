@@ -278,6 +278,27 @@
         const remb = clientStatus ? clientStatus.total_remboursements : 0;
         const diff = summary ? (summary.totals.total_difference || 0) : 0;
 
+        // Totaux SUR LA PERIODE choisie, sommes depuis `operations` (deja
+        // filtree sur [dateDebut, dateFin] plus haut, comme le tableau).
+        // A ne pas confondre avec total_avances / total_remboursements de
+        // MataBanq juste au-dessus, qui sont des CUMULS ANNEE: verifie, le
+        // service renvoie les memes valeurs qu'on lui demande 2 jours ou
+        // l'annee entiere (metadata.year_filter). D'ou ces deux tuiles en
+        // plus, qui elles suivent bien les selecteurs de date.
+        const sumOpsPeriode = (match) => operations.reduce((s, op) => {
+            const t = String(op.type || '').toLowerCase();
+            return s + (match(t) ? (parseFloat(op.montant) || 0) : 0);
+        }, 0);
+        const avancesPeriode = sumOpsPeriode((t) => t === 'avance');
+        const rembPeriode = sumOpsPeriode((t) => t.startsWith('rembours'));
+        // Sous-titre des 2 tuiles: rappelle la plage pour lever l'ambiguite
+        // avec les cumuls (JJ/MM -> JJ/MM).
+        const jjmm = (iso) => {
+            const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+            return m ? `${m[3]}/${m[2]}` : '';
+        };
+        const periodeLabel = (dd && df) ? `${jjmm(dd)} → ${jjmm(df)}` : 'période choisie';
+
         // Badge total dans le header de l'accordeon (visible meme replie)
         if (totalBadge) totalBadge.textContent = 'Solde ' + fmtMoney(solde);
 
@@ -295,7 +316,11 @@
                 `<span class="${trendCls}"><i class="bi bi-${trendIcon} me-1"></i>${esc(trendLabel)}</span>`),
             kpiCard('danger',  'arrow-down-circle', 'Total avances',           fmtAmount(avances)),
             kpiCard('success', 'arrow-up-circle',   'Total remboursements',    fmtAmount(remb)),
-            kpiCard('info',    'graph-up',          'Δ vs veille',             `${diffSign}${fmtAmount(diff)}`)
+            kpiCard('info',    'graph-up',          'Δ vs veille',             `${diffSign}${fmtAmount(diff)}`),
+            kpiCard('danger',  'arrow-down-circle', 'Total avances (période)', fmtAmount(avancesPeriode),
+                `<span class="text-muted">${esc(periodeLabel)}</span>`),
+            kpiCard('success', 'arrow-up-circle',   'Total remboursements (période)', fmtAmount(rembPeriode),
+                `<span class="text-muted">${esc(periodeLabel)}</span>`)
         ].join('');
 
         // Operations: tri descendant (timestamp si dispo, sinon date)
