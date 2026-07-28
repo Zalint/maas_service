@@ -1822,15 +1822,38 @@ async function confirmerPaiement(event) {
 
         // 🌐 Commande web: si cette vente provient d'une commande web préremplie,
         // la marquer convertie côté DATA (état central) maintenant que la vente
-        // est réellement enregistrée. Non bloquant.
+        // est enregistrée. On ne retire la référence QUE sur succès. NB:
+        // posVenteId non transmis (une commande Maas = plusieurs lignes groupées
+        // par un commandeId texte, pas un id entier compatible avec la colonne
+        // posVenteId INT de DATA); convertedBy trace deja le tenant.
         try {
             const _webOrderId = sessionStorage.getItem('currentWebOrderId');
             if (_webOrderId) {
-                fetch('/api/commandes-web/' + encodeURIComponent(_webOrderId) + '/convert', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}'
-                }).catch(() => {});
-                sessionStorage.removeItem('currentWebOrderId');
-                sessionStorage.removeItem('currentWebOrderCommandId');
+                let _woOk = false;
+                try {
+                    const _woRes = await fetch('/api/commandes-web/' + encodeURIComponent(_webOrderId) + '/convert', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: '{}'
+                    });
+                    _woOk = _woRes.ok;
+                    try { const _j = await _woRes.json(); if (_j && _j.success === false) _woOk = false; } catch (_) {}
+                    if (!_woOk) console.warn('⚠️ [WEBORDER] Marquage convertie échoué (HTTP ' + _woRes.status + ') pour', _webOrderId);
+                } catch (netErr) {
+                    console.warn('⚠️ [WEBORDER] Erreur réseau au marquage convertie:', netErr && netErr.message);
+                }
+                if (_woOk) {
+                    sessionStorage.removeItem('currentWebOrderId');
+                    sessionStorage.removeItem('currentWebOrderCommandId');
+                    console.log('✅ [WEBORDER] Commande web', _webOrderId, 'marquée convertie');
+                } else {
+                    // Échec: on retire tout de même la référence pour ne pas risquer
+                    // de marquer cette commande web sur une VENTE ULTÉRIEURE sans
+                    // rapport (le panier est déjà vidé; viderPanier ne s'exécute
+                    // pas sur un panier vide). La commande reste "assignée à moi"
+                    // côté DATA et pourra être re-traitée depuis le modal.
+                    sessionStorage.removeItem('currentWebOrderId');
+                    sessionStorage.removeItem('currentWebOrderCommandId');
+                    showToast('⚠️ Vente enregistrée, mais la commande web n\'a pas pu être marquée convertie (DATA). Elle reste à traiter.', 'warning');
+                }
             }
         } catch (_wo) {}
 
@@ -11190,7 +11213,7 @@ function convertirCommandeWeb(id) {
     document.getElementById('modalMappingCommandeWeb').style.display = 'flex';
 }
 
-function confirmerConversionCommandeWeb() {
+async function confirmerConversionCommandeWeb() {
     const ctx = _conversionCommandeWeb;
     if (!ctx) return;
     const rows = document.querySelectorAll('#mappingCommandeWebBody .cw-map-row');
@@ -11204,12 +11227,37 @@ function confirmerConversionCommandeWeb() {
     }
     if (!items.length) { showToast('Aucun produit à convertir', 'warning'); return; }
 
+    // Ne pas écraser un panier en cours / une édition sans confirmation.
+    const _cartNonVide = (typeof cart !== 'undefined' && cart.length > 0);
+    const _enEdition = (typeof editingCommandeId !== 'undefined' && editingCommandeId);
+    if (_cartNonVide || _enEdition) {
+        const ok = (typeof showModernConfirm === 'function')
+            ? await showModernConfirm({
+                title: 'Charger la commande web',
+                message: _enEdition
+                    ? 'Une commande est en cours d\'édition. La charger remplacera le contenu actuel. Continuer ?'
+                    : `Le panier contient ${cart.length} article${cart.length > 1 ? 's' : ''}. Le remplacer par la commande web ?`,
+                type: 'warning',
+                confirmText: 'Remplacer',
+                cancelText: 'Annuler'
+            })
+            : confirm('Remplacer le panier actuel par la commande web ?');
+        if (!ok) return;
+    }
+
     // Comme dans DATA: on PRÉREMPLIT le POS (client + panier). On NE crée PAS
     // de vente ni de pré-commande ici. Le caissier valide ensuite normalement
     // -> ça devient une vraie commande. La commande web est marquée convertie
     // (côté DATA, état central) APRÈS l'enregistrement de la vente (cf. le
     // handler de validation qui lit sessionStorage.currentWebOrderId).
     cart = [];
+    // Sortir de tout mode édition (comme viderPanier / DATA) pour que la
+    // validation ne supprime pas une commande sans rapport (confirmerPaiement
+    // s'appuie sur editingCommandeId).
+    editingCommandeId = null;
+    savedCartBeforeEdit = null;
+    savedClientInfoBeforeEdit = null;
+    if (typeof updateCartButtons === 'function') updateCartButtons();
     if (typeof afficherPanier === 'function') afficherPanier();
     const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = (v == null ? '' : v); };
     // Marquer "(Internet)" dans le nom pour repérer facilement les commandes web.
