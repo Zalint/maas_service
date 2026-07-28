@@ -63,7 +63,9 @@ const Vente = sequelize.define('Vente', {
     field: 'numero_client'
   },
   adresseClient: {
-    type: DataTypes.STRING,
+    // TEXT et non STRING: les adresses des commandes web peuvent depasser
+    // 255 caracteres (cf db/update-schema.js, qui convertit la colonne).
+    type: DataTypes.TEXT,
     allowNull: true,
     field: 'adresse_client'
   },

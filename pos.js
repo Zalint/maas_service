@@ -10967,6 +10967,36 @@ function cwEsc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// L'e-mail de notification WooCommerce colle son pied de page dans l'adresse:
+// "Mermoz, Une nouvelle commande pour Mata. Appler le client pour confirmer
+// avec elle, ... Telechargez l'application, <https://woocommerce.com/mobile?...>,
+// Mata viande — Built with WooCommerce <https://woocommerce.com>".
+// Seul le tout premier segment est la vraie adresse. Non filtre, ce texte
+// s'affichait dans la liste des commandes web ET partait dans la vente, ou il
+// depassait la taille de adresse_client (erreur 500 a l'encaissement).
+const CW_ADRESSE_DEBUT_BRUIT = /une nouvelle commande pour/i;
+const CW_ADRESSE_BRUIT = [
+    /appler? le client pour confirmer/i,
+    /traitez vos commandes/i,
+    /t[ée]l[ée]chargez l['’]application/i,
+    /built with/i,
+    /woocommerce/i,
+    /https?:\/\//i
+];
+
+function cwCleanAdresse(valeur) {
+    let txt = String(valeur == null ? '' : valeur);
+    // Le boilerplate est toujours en queue: on coupe des son premier marqueur.
+    const debutBruit = txt.search(CW_ADRESSE_DEBUT_BRUIT);
+    if (debutBruit >= 0) txt = txt.slice(0, debutBruit);
+    return txt
+        .split(/\s*,\s*|\r?\n/)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .filter(s => !CW_ADRESSE_BRUIT.some(rx => rx.test(s)))
+        .join(', ');
+}
+
 function statutCommandeWeb(o) {
     if (o.convertedToPOS) return 'converted';
     if (o.assignedTo) return 'assigned';
@@ -10989,6 +11019,10 @@ function normalizeCommandeWeb(order) {
             adresse: adresse || ''
         };
     }
+    // Nettoyage quelle que soit la provenance de l'adresse (jc.client fourni
+    // tel quel par DATA, ou reconstruit ci-dessus): le bruit vient de l'e-mail
+    // source, donc des deux cotes.
+    client = Object.assign({}, client, { adresse: cwCleanAdresse(client.adresse) });
     let produits = jc.produits;
     if (!Array.isArray(produits) || !produits.length) {
         produits = (jc.items || []).map(it => {
