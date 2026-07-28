@@ -1667,6 +1667,22 @@ router.get('/creances', async (req, res) => {
         // atteint le handler.
         const periode = `${req.query.dateDebut || '?'}->${req.query.dateFin || '?'}`;
         console.log(`⏱️  creances START ${periode}`);
+
+        // La ligne FIN ci-dessous est emise AVANT res.json(): elle ne prouve
+        // donc pas que la reponse est partie. Ces deux ecouteurs le disent:
+        //   SENT    = reponse entierement ecrite sur la socket (+ sa taille)
+        //   ABANDON = la connexion est tombee avant la fin de l'envoi
+        //             (client qui annule/recharge, ou proxy qui coupe)
+        // Un FIN sain suivi d'un ABANDON = le calcul n'est pas en cause.
+        res.on('finish', () => {
+            console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || '?'}`);
+        });
+        res.on('close', () => {
+            if (!res.writableEnded) {
+                console.warn(`⚠️  creances ABANDON ${periode} — connexion coupée avant la fin de l'envoi`);
+            }
+        });
+
         const timings = {};
         const tDebut = Date.now();
         const tCdb = Date.now();
