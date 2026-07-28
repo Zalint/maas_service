@@ -157,8 +157,22 @@ async function computeCreances(opts = {}) {
     const dateFin = toISO(opts.dateFin) || defaultPeriode().dateFin;
     const dateList = generateDateRange(dateDebut, dateFin);
 
+    // Chronometrage optionnel: si l'appelant fournit opts.timings (objet), on y
+    // note la duree de chaque etape. Sert a localiser une lenteur en prod, ou
+    // ce calcul est parfois coupe sans laisser d'erreur (cf le log de
+    // GET /api/finance/creances). Sans opts.timings, mark() ne fait rien.
+    const _T = opts.timings || null;
+    let _tPrev = Date.now();
+    const mark = (etape) => {
+        if (!_T) return;
+        const now = Date.now();
+        _T[etape] = now - _tPrev;
+        _tPrev = now;
+    };
+
     // 1. Lire la config (commission_pct, categories_eligibles).
     const cfgRows = await FinanceConfig.findAll();
+    mark('cfg');
     const cfg = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
     const commissionPct = parseFloat(cfg.commission_pct) || 3.0;
     const categoriesEligibles = (cfg.categories_eligibles || 'Bovin,Ovin,Caprin,Volaille,Poisson')
@@ -169,6 +183,7 @@ async function computeCreances(opts = {}) {
     // 2. Lire catalogue + aliases depuis le cache memoire (TTL 60s).
     //    Invalidation automatique sur toute mutation cote routes/finance.js.
     const { catalog: prixRows, aliases: aliasRows } = await financeCache.getCatalogAndAliases();
+    mark('catalogue');
 
     // Helper partage avec routes/finance.js (UI Mapping) pour eviter la
     // divergence statut affiche / calcul. Cf lib/produit-resolver.js.
@@ -186,6 +201,7 @@ async function computeCreances(opts = {}) {
         PrixAchatHistory.findAll({ order: [['created_at', 'ASC']] }),
         PrixVenteHistory.findAll({ order: [['created_at', 'ASC']] })
     ]);
+    mark('history');
     const prixCdcAtDate = buildTemporalResolver(pvcHistory, 'prix_vente_cdc');
     const prixAchatAtDate = buildTemporalResolver(paHistory, 'prix_achat');
     const prixVenteAtDate = buildTemporalResolver(pvHistory, 'prix_vente');
@@ -213,6 +229,7 @@ async function computeCreances(opts = {}) {
             console.warn('⚠️  achats-boeuf resolver indisponible:', e.message);
         }
     }
+    mark('boeuf');
 
     /** Resout le prix_vente_cdc effectif pour (produit_vente, vente_date). */
     const lookupPrixCdcAtDate = (produitVenteNom, venteDateISO) => {
@@ -270,6 +287,7 @@ async function computeCreances(opts = {}) {
         },
         attributes: ['date', 'produit', 'pointVente', 'quantite', 'prixUnitaire']
     });
+    mark('transferts');
 
     // 3b. Charger les VENTES de la periode UNIQUEMENT pour calculer le
     //     recevable CDC (marge × qte sur ventes passees par un centre de
@@ -286,6 +304,7 @@ async function computeCreances(opts = {}) {
             'nomClient', 'numeroClient', 'commandeId', 'pointVente'
         ]
     });
+    mark('ventes');
 
     // 4. Filtrer les ventes "Centre de Decoupe" pour le calcul "ce qu'il me doit".
     // Map du nom de centre en minuscules -> nom original (preserve la casse
@@ -490,6 +509,7 @@ async function computeCreances(opts = {}) {
         }
     });
 
+    mark('decoupe');
     for (const log of decoupeLogs) {
         // Normaliser: trim + lowercase. Les valeurs peuvent avoir des
         // espaces de bord ("Centre de Découpe Banlieue ") qui rateraient
@@ -612,6 +632,7 @@ async function computeCreances(opts = {}) {
         order: [['date', 'ASC']]
     });
     const totalPaiements = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
+    mark('paiements');
 
     return {
         periode: { dateDebut, dateFin },

@@ -1659,16 +1659,34 @@ router.get('/creances', async (req, res) => {
         // Parallel: calcul local + fetch API externe.
         // L'API externe peut etre down ou pas configuree -> on degrade
         // gracieusement (cdb=null + warning) plutot que tout casser.
+        // Chronometrage: cette route est parfois coupee cote client
+        // (ERR_CONNECTION_CLOSED) sans laisser la moindre erreur serveur. La
+        // ligne START est donc aussi importante que la ligne finale: START
+        // sans ligne finale = la requete est bien entree et est morte en
+        // cours (temps ou memoire); pas de START du tout = elle n'a jamais
+        // atteint le handler.
+        const periode = `${req.query.dateDebut || '?'}->${req.query.dateFin || '?'}`;
+        console.log(`⏱️  creances START ${periode}`);
+        const timings = {};
+        const tDebut = Date.now();
+        const tCdb = Date.now();
+
         const [local, cdbResult] = await Promise.allSettled([
             computeCreances({
                 dateDebut: req.query.dateDebut,
-                dateFin: req.query.dateFin
+                dateFin: req.query.dateFin,
+                timings
             }),
             fetchCreanceCdb({
                 dateDebut: req.query.dateDebut,
                 dateFin: req.query.dateFin
-            })
+            }).finally(() => { timings.cdb = Date.now() - tCdb; })
         ]);
+
+        const total = Date.now() - tDebut;
+        const rss = Math.round(process.memoryUsage().rss / 1048576);
+        const detail = Object.entries(timings).map(([k, v]) => `${k}=${v}`).join(' ');
+        console.log(`⏱️  creances FIN ${periode} total=${total}ms rss=${rss}Mo | ${detail}`);
 
         if (local.status === 'rejected') {
             throw local.reason;
