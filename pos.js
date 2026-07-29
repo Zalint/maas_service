@@ -1773,6 +1773,9 @@ async function confirmerPaiement(event) {
             adresseClient: clientInfo.adresse,
             instructionsClient: clientInfo.instructions,
             creance: clientInfo.creance,
+            // Case "⭐ Gros client" du modal (cochee = vente gros client,
+            // meme si le caissier a ajuste les champs a la main).
+            gros_client: !!(document.getElementById('grosClientCheck') || {}).checked,
             paymentMethod: selectedPaymentMethod,
             commandeId: commandeId, // Add commande_id to group sales together
             montant_restant_du: montantRestantDu, // Use snake_case for consistency

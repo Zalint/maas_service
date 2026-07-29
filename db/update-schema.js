@@ -712,6 +712,17 @@ async function updateSchema() {
             console.log('Index fonctionnel idx_stocks_date_iso verifie');
         }
 
+        // Colonne ventes.gros_client: la vente porte le flag "gros client"
+        // (case cochee dans le modal de paiement du POS). Affiche dans le
+        // tableau de Visualisation.
+        if (await checkTableExists('ventes')) {
+            await sequelize.query(`
+                ALTER TABLE ventes
+                ADD COLUMN IF NOT EXISTS gros_client BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonne ventes.gros_client verifiee');
+        }
+
         // Gros clients (ADMIN > Gros clients, case "Gros client" du POS).
         // Seed initial PAR TENANT (listes fournies par le metier), applique
         // UNIQUEMENT si la table est vide: un client supprime/modifie dans

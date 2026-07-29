@@ -69,6 +69,15 @@ const Vente = sequelize.define('Vente', {
     allowNull: true,
     field: 'adresse_client'
   },
+  // Vente faite a un "gros client" (case cochee dans le modal de paiement du
+  // POS, liste geree dans ADMIN > Gros clients). Sert au reporting: colonne
+  // dediee dans le tableau de Visualisation.
+  grosClient: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'gros_client'
+  },
   creance: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

@@ -4221,6 +4221,7 @@ function afficherPageVentes(page) {
           
                 <td>${vente.adresseClient || ''}</td>
                 <td>${vente.creance ? 'Oui' : 'Non'}</td>
+                <td>${(vente.gros_client === true || vente.gros_client === 'true' || vente.grosClient === true) ? '⭐ Oui' : '—'}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -5460,6 +5461,14 @@ function formaterDonneesVentes(ventes) {
             PU: v.PU || v.prixUnit || '0',
             Nombre: v.Nombre || v.quantite || '0',
             Montant: v.Montant || v.total || '0',
+            // Champs client + flags: la normalisation les perdait, laissant
+            // les colonnes Nom/Numero/Adresse/Creance du tableau toujours
+            // vides. On les fait transiter tels quels.
+            nomClient: v.nomClient || '',
+            numeroClient: v.numeroClient || '',
+            adresseClient: v.adresseClient || '',
+            creance: v.creance === true || v.creance === 'true',
+            gros_client: v.gros_client === true || v.grosClient === true,
             // Marqueur source preserve (server append les commandes envoyees
             // au CDC en tant que virtual ventes avec _source: 'decoupe').
             // Indispensable pour eviter de double-compter la portion CDC

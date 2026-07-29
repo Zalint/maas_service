@@ -1815,7 +1815,10 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 nomClient: entry.nomClient || null,
                 numeroClient: entry.numeroClient || null,
                 adresseClient: entry.adresseClient || null,
-                creance: creanceValue
+                creance: creanceValue,
+                // Flag "gros client" (case du modal de paiement POS).
+                grosClient: entry.gros_client === true || entry.grosClient === true
+                    || entry.gros_client === 'true' || entry.grosClient === 'true'
             };
             
             // Ajouter les données d'abonnement si présentes
@@ -2164,7 +2167,8 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                 nomClient: vente.nomClient,
                 numeroClient: vente.numeroClient,
                 adresseClient: vente.adresseClient,
-                creance: vente.creance
+                creance: vente.creance,
+                gros_client: vente.grosClient === true
             }));
 
             console.log('Nombre de ventes filtrées:', formattedVentes.length);
@@ -3649,6 +3653,96 @@ app.post('/api/external/stock/copy', validateApiKey, async (req, res) => {
 });
 
 // External API health check endpoint
+// API externe: commandes "gros clients" sur une plage de dates.
+// GET /api/external/gros-clients/commandes?dateDebut=YYYYMMDD&dateFin=YYYYMMDD
+// (les formats YYYY-MM-DD sont aussi acceptes). Auth: x-api-key =
+// EXTERNAL_API_KEY (cle propre a Maas, meme middleware que les autres
+// routes /api/external/*).
+// Une "commande" = les ventes regroupees par commande_id (ou la ligne seule
+// si la vente n'a pas de commande_id), avec client, articles et total.
+app.get('/api/external/gros-clients/commandes', validateApiKey, async (req, res) => {
+    try {
+        // YYYYMMDD -> YYYY-MM-DD (format stocke dans ventes.date)
+        const parseDate = (s) => {
+            const v = String(s || '').trim();
+            let m = v.match(/^(\d{4})(\d{2})(\d{2})$/);
+            if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+            m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (m) return v;
+            return null;
+        };
+        const dateDebut = parseDate(req.query.dateDebut);
+        const dateFin = parseDate(req.query.dateFin);
+        if (!dateDebut || !dateFin) {
+            return res.status(400).json({
+                success: false,
+                message: 'dateDebut et dateFin requis au format YYYYMMDD (ex: 20260701)'
+            });
+        }
+        if (dateDebut > dateFin) {
+            return res.status(400).json({ success: false, message: 'dateDebut > dateFin' });
+        }
+
+        const { Op } = require('sequelize');
+        // ventes.date est stockee en texte YYYY-MM-DD: la comparaison
+        // lexicographique est chronologique.
+        const rows = await Vente.findAll({
+            where: {
+                grosClient: true,
+                date: { [Op.between]: [dateDebut, dateFin] }
+            },
+            order: [['date', 'ASC'], ['id', 'ASC']],
+            attributes: ['id', 'date', 'pointVente', 'produit', 'categorie',
+                'prixUnit', 'nombre', 'montant', 'nomClient', 'numeroClient',
+                'adresseClient', 'commandeId', 'creance']
+        });
+
+        // Regrouper par commande (commande_id partage). Une vente sans
+        // commande_id forme sa propre commande (cle synthetique par id).
+        const parCommande = new Map();
+        for (const v of rows) {
+            const key = v.commandeId || ('vente-' + v.id);
+            if (!parCommande.has(key)) {
+                parCommande.set(key, {
+                    commande_id: v.commandeId || null,
+                    date: v.date,
+                    point_vente: v.pointVente,
+                    client: {
+                        nom: v.nomClient || null,
+                        telephone: v.numeroClient || null,
+                        adresse: v.adresseClient || null
+                    },
+                    creance: v.creance === true,
+                    articles: [],
+                    total: 0
+                });
+            }
+            const c = parCommande.get(key);
+            const montant = parseFloat(v.montant) || 0;
+            c.articles.push({
+                produit: v.produit,
+                categorie: v.categorie,
+                prix_unitaire: parseFloat(v.prixUnit) || 0,
+                quantite: parseFloat(v.nombre) || 0,
+                montant: montant
+            });
+            c.total = Math.round((c.total + montant) * 100) / 100;
+        }
+
+        const commandes = Array.from(parCommande.values());
+        res.json({
+            success: true,
+            periode: { dateDebut, dateFin },
+            count: commandes.length,
+            total_global: Math.round(commandes.reduce((s, c) => s + c.total, 0) * 100) / 100,
+            commandes
+        });
+    } catch (e) {
+        console.error('GET /api/external/gros-clients/commandes:', e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 app.get('/api/external/health', validateApiKey, (req, res) => {
     res.json({
         success: true,
