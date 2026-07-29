@@ -1488,6 +1488,24 @@ router.put('/config', async (req, res) => {
 // DEPENSES
 // =====================================================
 
+// Categories de depenses ACTIVES, pour alimenter les <select> de l'onglet
+// Depenses. Configurables dans ADMIN > Categories depenses (CRUD cote
+// server.js). Tout utilisateur authentifie: c'est une liste de reference.
+router.get('/depense-categories', async (req, res) => {
+    try {
+        const { DepenseCategorie } = require('../db/models');
+        const rows = await DepenseCategorie.findAll({
+            where: { actif: true },
+            order: [['ordre', 'ASC'], ['libelle', 'ASC']],
+            attributes: ['nom', 'libelle']
+        });
+        res.json({ success: true, categories: rows });
+    } catch (e) {
+        console.error('GET /api/finance/depense-categories:', e.message);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 router.get('/depenses', async (req, res) => {
     try {
         const { Op } = require('sequelize');

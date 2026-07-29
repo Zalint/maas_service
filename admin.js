@@ -4024,6 +4024,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Initialiser la section Gros clients
             initGrosClientsSection();
+
+            // Initialiser la section Categories depenses
+            initDepenseCategoriesSection();
         }
     });
 });
@@ -6560,6 +6563,181 @@ async function supprimerGrosClient(id) {
         if (!data.success) throw new Error(data.message || 'Erreur');
         if (grosClientEnEdition === id) annulerEditionGrosClient();
         chargerGrosClientsAdmin();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+    }
+}
+
+// =================== CATEGORIES DEPENSES ===================
+// CRUD sur /api/admin/depense-categories. L'onglet Finance > Depenses lit
+// /api/finance/depense-categories (actives) pour ses deux <select>.
+// Meme pattern que les sections Livreurs / Gros clients.
+
+let depenseCategories = [];
+let dcEnEdition = null; // id en cours de modification, null = ajout
+
+function initDepenseCategoriesSection() {
+    if (!document.getElementById('depense-categories-section')) return;
+    chargerDepenseCategories();
+    document.querySelectorAll('[data-section="depense-categories"]').forEach(function (el) {
+        el.addEventListener('click', chargerDepenseCategories);
+    });
+    const libelle = document.getElementById('dcLibelle');
+    if (libelle) {
+        libelle.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); sauvegarderDepenseCategorie(); }
+        });
+        // Apercu du nom technique genere (meme normalisation que le serveur).
+        libelle.addEventListener('input', majApercuNomCategorie);
+    }
+    const ordre = document.getElementById('dcOrdre');
+    if (ordre) ordre.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); sauvegarderDepenseCategorie(); }
+    });
+}
+
+function normaliserNomDc(s) {
+    return String(s || '').trim().toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function majApercuNomCategorie() {
+    const el = document.getElementById('dcNomApercu');
+    if (!el) return;
+    if (dcEnEdition) {
+        el.innerHTML = 'Nom technique figé (non modifiable)';
+        return;
+    }
+    const nom = normaliserNomDc((document.getElementById('dcLibelle') || {}).value);
+    el.innerHTML = nom
+        ? 'Nom technique : <code>' + escapeHtmlDc(nom) + '</code>'
+        : 'Nom technique généré depuis le libellé';
+}
+
+function escapeHtmlDc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+async function chargerDepenseCategories() {
+    try {
+        const res = await fetch('/api/admin/depense-categories', { credentials: 'include' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        depenseCategories = data.categories || [];
+        renderDepenseCategories();
+    } catch (e) {
+        const tbody = document.getElementById('dcTableBody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Erreur: ' + escapeHtmlDc(e.message) + '</td></tr>';
+    }
+}
+
+function renderDepenseCategories() {
+    const tbody = document.getElementById('dcTableBody');
+    const count = document.getElementById('dcCount');
+    if (count) count.textContent = depenseCategories.length;
+    if (!tbody) return;
+    if (!depenseCategories.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Aucune catégorie. Ajoutez-en une ci-dessus.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = depenseCategories.map(function (c) {
+        return '<tr class="' + (c.actif ? '' : 'table-secondary text-muted') + '">'
+            + '<td>' + (c.ordre || 0) + '</td>'
+            + '<td>' + escapeHtmlDc(c.libelle) + '</td>'
+            + '<td><code>' + escapeHtmlDc(c.nom) + '</code></td>'
+            + '<td class="text-center">'
+            + '<div class="form-check form-switch d-inline-block" title="Décoché : retirée des listes de Finance > Dépenses, historique conservé">'
+            + '<input class="form-check-input" type="checkbox" ' + (c.actif ? 'checked' : '') + ' onchange="basculerActifDepenseCategorie(' + c.id + ', this.checked)">'
+            + '</div></td>'
+            + '<td class="text-end">'
+            + '<button class="btn btn-sm btn-outline-primary" onclick="editerDepenseCategorie(' + c.id + ')" title="Modifier"><i class="bi bi-pencil"></i></button> '
+            + '<button class="btn btn-sm btn-outline-danger" onclick="supprimerDepenseCategorie(' + c.id + ')" title="Supprimer"><i class="bi bi-trash"></i></button>'
+            + '</td></tr>';
+    }).join('');
+}
+
+async function sauvegarderDepenseCategorie() {
+    const libelle = (document.getElementById('dcLibelle').value || '').trim();
+    if (!libelle) { alert('Le libellé est obligatoire'); return; }
+    const body = {
+        libelle: libelle,
+        ordre: parseInt(document.getElementById('dcOrdre').value, 10) || 0
+    };
+    const url = dcEnEdition
+        ? '/api/admin/depense-categories/' + dcEnEdition
+        : '/api/admin/depense-categories';
+    try {
+        const res = await fetch(url, {
+            method: dcEnEdition ? 'PUT' : 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        annulerEditionDepenseCategorie();
+        chargerDepenseCategories();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+    }
+}
+
+function editerDepenseCategorie(id) {
+    const c = depenseCategories.find(function (x) { return x.id === id; });
+    if (!c) return;
+    dcEnEdition = id;
+    document.getElementById('dcLibelle').value = c.libelle || '';
+    document.getElementById('dcOrdre').value = c.ordre || 0;
+    document.getElementById('dcFormTitle').innerHTML = '<i class="bi bi-pencil me-2"></i>Modifier : ' + escapeHtmlDc(c.libelle);
+    document.getElementById('dcSaveBtn').innerHTML = '<i class="bi bi-save"></i> Mettre à jour';
+    document.getElementById('dcCancelBtn').style.display = '';
+    majApercuNomCategorie();
+    document.getElementById('dcLibelle').focus();
+}
+
+function annulerEditionDepenseCategorie() {
+    dcEnEdition = null;
+    document.getElementById('dcLibelle').value = '';
+    document.getElementById('dcOrdre').value = '';
+    document.getElementById('dcFormTitle').innerHTML = '<i class="bi bi-plus-circle me-2"></i>Ajouter une catégorie';
+    document.getElementById('dcSaveBtn').innerHTML = '<i class="bi bi-save"></i> Ajouter';
+    document.getElementById('dcCancelBtn').style.display = 'none';
+    majApercuNomCategorie();
+}
+
+async function basculerActifDepenseCategorie(id, actif) {
+    const c = depenseCategories.find(function (x) { return x.id === id; });
+    if (!c) return;
+    try {
+        const res = await fetch('/api/admin/depense-categories/' + id, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ libelle: c.libelle, ordre: c.ordre, actif: actif })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        c.actif = actif;
+        renderDepenseCategories();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+        chargerDepenseCategories();
+    }
+}
+
+async function supprimerDepenseCategorie(id) {
+    const c = depenseCategories.find(function (x) { return x.id === id; });
+    if (!c) return;
+    if (!confirm('Supprimer la catégorie « ' + c.libelle + ' » ?')) return;
+    try {
+        const res = await fetch('/api/admin/depense-categories/' + id, { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        if (dcEnEdition === id) annulerEditionDepenseCategorie();
+        chargerDepenseCategories();
     } catch (e) {
         alert('Erreur: ' + e.message);
     }

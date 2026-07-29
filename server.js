@@ -1367,6 +1367,94 @@ app.get('/api/gros-clients', checkAuth, async (req, res) => {
 });
 
 // CRUD ADMIN (admin uniquement). Liste complete, y compris inactifs.
+// =====================================================
+// Categories de depenses — CRUD ADMIN.
+// L'onglet Finance > Depenses lit /api/finance/depense-categories (actives)
+// pour alimenter ses deux <select>.
+// =====================================================
+// `nom` est la cle stockee dans depenses.categorie: on la normalise
+// (minuscules, sans accents, separateurs -> _) et on la FIGE a la creation.
+// La renommer orphelinerait les depenses deja saisies, d'ou un PUT qui ne
+// touche pas a ce champ.
+const normaliserNomCategorie = (s) => String(s || '').trim().toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+
+app.get('/api/admin/depense-categories', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { DepenseCategorie } = require('./db/models');
+        const rows = await DepenseCategorie.findAll({ order: [['ordre', 'ASC'], ['libelle', 'ASC']] });
+        res.json({ success: true, categories: rows });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.post('/api/admin/depense-categories', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { DepenseCategorie } = require('./db/models');
+        const libelle = String(req.body && req.body.libelle || '').trim();
+        if (!libelle) return res.status(400).json({ success: false, message: 'Libellé requis' });
+        const nom = normaliserNomCategorie(req.body.nom || libelle);
+        if (!nom) return res.status(400).json({ success: false, message: 'Nom technique invalide' });
+        if (await DepenseCategorie.findOne({ where: { nom } })) {
+            return res.status(400).json({ success: false, message: `La catégorie « ${nom} » existe déjà` });
+        }
+        const row = await DepenseCategorie.create({
+            nom,
+            libelle,
+            ordre: parseInt(req.body.ordre, 10) || 0,
+            actif: req.body.actif !== false
+        });
+        res.json({ success: true, categorie: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.put('/api/admin/depense-categories/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { DepenseCategorie } = require('./db/models');
+        const row = await DepenseCategorie.findByPk(req.params.id);
+        if (!row) return res.status(404).json({ success: false, message: 'Catégorie introuvable' });
+        const libelle = String(req.body && req.body.libelle || '').trim();
+        if (!libelle) return res.status(400).json({ success: false, message: 'Libellé requis' });
+        // `nom` volontairement non modifiable (cf commentaire ci-dessus).
+        await row.update({
+            libelle,
+            ordre: parseInt(req.body.ordre, 10) || 0,
+            actif: req.body.actif !== false,
+            updated_at: new Date()
+        });
+        res.json({ success: true, categorie: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// Suppression refusee si des depenses utilisent encore la categorie: elles se
+// retrouveraient avec une categorie orpheline, absente des filtres. Dans ce
+// cas l'admin doit decocher "Actif" — la categorie disparait des <select>
+// mais l'historique reste lisible.
+app.delete('/api/admin/depense-categories/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { DepenseCategorie, Depense } = require('./db/models');
+        const row = await DepenseCategorie.findByPk(req.params.id);
+        if (!row) return res.status(404).json({ success: false, message: 'Catégorie introuvable' });
+        const utilisee = await Depense.count({ where: { categorie: row.nom } });
+        if (utilisee > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `${utilisee} dépense(s) utilisent « ${row.libelle} ». Décochez « Actif » pour la retirer des listes sans casser l'historique.`
+            });
+        }
+        await row.destroy();
+        res.json({ success: true, deleted: 1 });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 app.get('/api/admin/gros-clients', checkAuth, checkAdmin, async (req, res) => {
     try {
         const { GrosClient } = require('./db/models');

@@ -40,6 +40,7 @@ const ClotureCaisse = require('./ClotureCaisse');
 
 // Modeles Finance (onglet Finance: depenses + creances fournisseur)
 const Depense = require('./Depense');
+const DepenseCategorie = require('./DepenseCategorie');
 const FournisseurPrix = require('./FournisseurPrix');
 const FinanceConfig = require('./FinanceConfig');
 const FournisseurPaiement = require('./FournisseurPaiement');
@@ -230,6 +231,7 @@ module.exports = {
 
   // Modeles Finance
   Depense,
+  DepenseCategorie,
   FournisseurPrix,
   FinanceConfig,
   FournisseurPaiement,
