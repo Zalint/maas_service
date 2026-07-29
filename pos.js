@@ -1452,10 +1452,14 @@ async function ouvrirModalPaiement() {
     
     const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     document.getElementById('paymentAmount').textContent = formatCurrency(total);
-    
+
     // Reset payment form
     document.getElementById('receivedAmount').value = total; // Pré-remplir avec le montant à payer
     document.getElementById('changeAmount').textContent = '0 FCFA';
+
+    // Reset "Gros client" a chaque ouverture (les champs client, eux, sont
+    // conserves plus bas pour le flux "modifier une commande").
+    resetGrosClientUI();
     
     
     // Ne réinitialiser les informations client que si elles sont vides
@@ -1769,6 +1773,9 @@ async function confirmerPaiement(event) {
             adresseClient: clientInfo.adresse,
             instructionsClient: clientInfo.instructions,
             creance: clientInfo.creance,
+            // Case "⭐ Gros client" du modal (cochee = vente gros client,
+            // meme si le caissier a ajuste les champs a la main).
+            gros_client: !!(document.getElementById('grosClientCheck') || {}).checked,
             paymentMethod: selectedPaymentMethod,
             commandeId: commandeId, // Add commande_id to group sales together
             montant_restant_du: montantRestantDu, // Use snake_case for consistency
@@ -11324,4 +11331,83 @@ async function confirmerConversionCommandeWeb() {
 document.addEventListener('DOMContentLoaded', () => {
     try { chargerCommandesWeb(); } catch (e) {}
     setInterval(() => { try { chargerCommandesWeb(); } catch (e) {} }, 90000);
+});
+
+// =====================================================================
+// GROS CLIENT (modal de paiement)
+// Case "⭐ Gros client" a cote de "Commande sur place": cochee, elle liste
+// les gros clients du point de vente (ADMIN > Gros clients, API
+// /api/gros-clients) et la selection preremplit nom/telephone/adresse.
+// =====================================================================
+let _grosClients = null;        // cache (charge au premier cochage)
+let _grosClientsPromise = null; // dedup si double clic pendant le fetch
+
+function resetGrosClientUI() {
+    const chk = document.getElementById('grosClientCheck');
+    const sel = document.getElementById('grosClientSelect');
+    if (chk) chk.checked = false;
+    if (sel) { sel.style.display = 'none'; sel.value = ''; }
+}
+
+async function chargerGrosClientsPOS() {
+    if (_grosClients) return _grosClients;
+    if (_grosClientsPromise) return _grosClientsPromise;
+    _grosClientsPromise = (async () => {
+        try {
+            const res = await fetch('/api/gros-clients', { credentials: 'include' });
+            const data = await res.json();
+            _grosClients = (data && data.success && Array.isArray(data.clients)) ? data.clients : [];
+        } catch (e) {
+            console.warn('Gros clients indisponibles:', e.message);
+            _grosClients = [];
+        } finally {
+            _grosClientsPromise = null;
+        }
+        return _grosClients;
+    })();
+    return _grosClientsPromise;
+}
+
+function remplirSelectGrosClients(clients) {
+    const sel = document.getElementById('grosClientSelect');
+    if (!sel) return;
+    const options = ['<option value="">— Choisir un gros client —</option>'];
+    for (const c of clients) {
+        const label = c.nom + (c.type ? ' · ' + c.type : '') + (c.adresse ? ' (' + c.adresse + ')' : '');
+        options.push('<option value="' + c.id + '">' + label.replace(/</g, '&lt;') + '</option>');
+    }
+    sel.innerHTML = options.join('');
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const chk = document.getElementById('grosClientCheck');
+    const sel = document.getElementById('grosClientSelect');
+    if (!chk || !sel) return;
+
+    chk.addEventListener('change', async function () {
+        if (chk.checked) {
+            sel.style.display = '';
+            const clients = await chargerGrosClientsPOS();
+            remplirSelectGrosClients(clients);
+            if (!clients.length) {
+                sel.innerHTML = '<option value="">Aucun gros client configuré (ADMIN > Gros clients)</option>';
+            }
+        } else {
+            sel.style.display = 'none';
+            sel.value = '';
+        }
+    });
+
+    sel.addEventListener('change', function () {
+        if (!sel.value || !_grosClients) return;
+        const c = _grosClients.find(x => String(x.id) === sel.value);
+        if (!c) return;
+        // Preremplit les champs client; le caissier reste libre de modifier.
+        const nameEl = document.getElementById('clientName');
+        const phoneEl = document.getElementById('clientPhone');
+        const addrEl = document.getElementById('clientAddress');
+        if (nameEl) nameEl.value = c.nom || '';
+        if (phoneEl) phoneEl.value = c.telephone || '';
+        if (addrEl) addrEl.value = c.adresse || '';
+    });
 });

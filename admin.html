@@ -379,6 +379,11 @@
                                 <i class="bi bi-grid-3x3-gap me-1"></i>Catégories POS
                             </a>
                         </li>
+                        <li class="nav-item" id="gros-clients-nav">
+                            <a class="nav-link" href="#" data-section="gros-clients">
+                                <i class="bi bi-star me-1"></i>Gros clients
+                            </a>
+                        </li>
                     </ul>
                     <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
                         <!-- Tenant badge -->
@@ -1220,6 +1225,57 @@
                 </div>
             </div>
 
+            <!-- Section Gros clients -->
+            <div id="gros-clients-section" class="admin-section">
+                <h2><i class="bi bi-star me-2"></i>Gros clients</h2>
+                <p class="text-muted">Clients importants du point de vente (restaurants, bouchers, traiteurs, ambassadrices...). Proposés dans le POS via la case <b>Gros client</b> du modal de paiement : la sélection préremplit nom, téléphone et adresse.</p>
+                <div class="card mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0" id="grosClientFormTitle"><i class="bi bi-plus-circle me-2"></i>Ajouter un gros client</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-md-3"><input type="text" class="form-control" id="gcNom" placeholder="Nom *"></div>
+                            <div class="col-md-2"><input type="text" class="form-control" id="gcTelephone" placeholder="Téléphone"></div>
+                            <div class="col-md-3"><input type="text" class="form-control" id="gcAdresse" placeholder="Adresse"></div>
+                            <div class="col-md-2">
+                                <input type="text" class="form-control" id="gcType" placeholder="Type" list="gcTypesList">
+                                <datalist id="gcTypesList">
+                                    <option value="Restaurant"></option>
+                                    <option value="Consommateur"></option>
+                                    <option value="Boucher"></option>
+                                    <option value="Traiteur"></option>
+                                    <option value="Ambassadrice"></option>
+                                    <option value="Maison et Restaurant"></option>
+                                </datalist>
+                            </div>
+                            <div class="col-md-2 d-flex gap-2">
+                                <button class="btn btn-primary flex-grow-1" id="gcSaveBtn" onclick="sauvegarderGrosClient()"><i class="bi bi-save"></i> Ajouter</button>
+                                <button class="btn btn-outline-secondary" id="gcCancelBtn" onclick="annulerEditionGrosClient()" style="display:none" title="Annuler la modification"><i class="bi bi-x-lg"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-people me-2"></i>Liste (<span id="grosClientCount">0</span>)</h5>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="chargerGrosClientsAdmin()"><i class="bi bi-arrow-clockwise"></i> Rafraîchir</button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr><th>Nom</th><th>Téléphone</th><th>Adresse</th><th>Type</th><th class="text-center">Actif</th><th class="text-end">Actions</th></tr>
+                                </thead>
+                                <tbody id="grosClientsTableBody">
+                                    <tr><td colspan="6" class="text-center text-muted py-3">Chargement...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Section Categories POS (Boucherie) -->
             <div id="pos-categories-section" class="admin-section">
                 <h2><i class="bi bi-grid-3x3-gap me-2"></i>Catégories POS — Boucherie</h2>
@@ -1546,6 +1602,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260701-pos-cat"></script>
+    <script src="admin.js?v=20260729-gros-clients"></script>
 </body>
 </html> 

@@ -643,6 +643,17 @@
                                 Cette commande ne sera pas affichée dans le suivi de livraison
                             </small>
                         </div>
+                        <!-- Gros client : liste configuree dans ADMIN > Gros clients.
+                             La selection preremplit nom/telephone/adresse ci-dessous. -->
+                        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e9ecef;">
+                            <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
+                                <input type="checkbox" id="grosClientCheck" style="margin-right: 10px; width: 18px; height: 18px; cursor: pointer;">
+                                <span>⭐ Gros client</span>
+                            </label>
+                            <select id="grosClientSelect" class="form-control" style="display: none; margin-top: 8px;">
+                                <option value="">— Choisir un gros client —</option>
+                            </select>
+                        </div>
                     </div>
 
                     <div class="row">
@@ -938,7 +949,7 @@
         </div>
     </div>
 
-    <script src="pos.js?v=20260728-commandes-web-8"></script>
+    <script src="pos.js?v=20260729-gros-clients"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     

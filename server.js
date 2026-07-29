@@ -1346,6 +1346,86 @@ function filterFunctions(obj) {
 }
 
 // Route pour lire la configuration des produits (depuis la BDD)
+// =====================================================
+// Gros clients — configures dans ADMIN, lus par le POS
+// (case "Gros client" du modal de paiement).
+// =====================================================
+// Lecture POS: actifs uniquement, tries par nom. Tout utilisateur authentifie.
+app.get('/api/gros-clients', checkAuth, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const rows = await GrosClient.findAll({
+            where: { actif: true },
+            order: [['nom', 'ASC']],
+            attributes: ['id', 'nom', 'telephone', 'adresse', 'type']
+        });
+        res.json({ success: true, clients: rows });
+    } catch (e) {
+        console.error('GET /api/gros-clients:', e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// CRUD ADMIN (admin uniquement). Liste complete, y compris inactifs.
+app.get('/api/admin/gros-clients', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const rows = await GrosClient.findAll({ order: [['nom', 'ASC']] });
+        res.json({ success: true, clients: rows });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.post('/api/admin/gros-clients', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const nom = String(req.body && req.body.nom || '').trim();
+        if (!nom) return res.status(400).json({ success: false, message: 'nom requis' });
+        const row = await GrosClient.create({
+            nom,
+            telephone: String(req.body.telephone || '').trim() || null,
+            adresse: String(req.body.adresse || '').trim() || null,
+            type: String(req.body.type || '').trim() || null,
+            actif: req.body.actif !== false
+        });
+        res.json({ success: true, client: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.put('/api/admin/gros-clients/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const row = await GrosClient.findByPk(req.params.id);
+        if (!row) return res.status(404).json({ success: false, message: 'introuvable' });
+        const nom = String(req.body && req.body.nom || '').trim();
+        if (!nom) return res.status(400).json({ success: false, message: 'nom requis' });
+        await row.update({
+            nom,
+            telephone: String(req.body.telephone || '').trim() || null,
+            adresse: String(req.body.adresse || '').trim() || null,
+            type: String(req.body.type || '').trim() || null,
+            actif: req.body.actif !== false,
+            updated_at: new Date()
+        });
+        res.json({ success: true, client: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.delete('/api/admin/gros-clients/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const n = await GrosClient.destroy({ where: { id: req.params.id } });
+        res.json({ success: true, deleted: n });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 app.get('/api/admin/config/produits', checkAuth, checkAdmin, async (req, res) => {
     try {
         console.log('📋 GET /api/admin/config/produits - Chargement depuis BDD...');
@@ -1735,7 +1815,10 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 nomClient: entry.nomClient || null,
                 numeroClient: entry.numeroClient || null,
                 adresseClient: entry.adresseClient || null,
-                creance: creanceValue
+                creance: creanceValue,
+                // Flag "gros client" (case du modal de paiement POS).
+                grosClient: entry.gros_client === true || entry.grosClient === true
+                    || entry.gros_client === 'true' || entry.grosClient === 'true'
             };
             
             // Ajouter les données d'abonnement si présentes
@@ -2084,7 +2167,8 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                 nomClient: vente.nomClient,
                 numeroClient: vente.numeroClient,
                 adresseClient: vente.adresseClient,
-                creance: vente.creance
+                creance: vente.creance,
+                gros_client: vente.grosClient === true
             }));
 
             console.log('Nombre de ventes filtrées:', formattedVentes.length);
@@ -3569,6 +3653,101 @@ app.post('/api/external/stock/copy', validateApiKey, async (req, res) => {
 });
 
 // External API health check endpoint
+// API externe: commandes "gros clients" sur une plage de dates.
+// GET /api/external/gros-clients/commandes?dateDebut=YYYYMMDD&dateFin=YYYYMMDD
+// (les formats YYYY-MM-DD sont aussi acceptes). Auth: x-api-key =
+// EXTERNAL_API_KEY (cle propre a Maas, meme middleware que les autres
+// routes /api/external/*).
+// Une "commande" = les ventes regroupees par commande_id (ou la ligne seule
+// si la vente n'a pas de commande_id), avec client, articles et total.
+app.get('/api/external/gros-clients/commandes', validateApiKey, async (req, res) => {
+    try {
+        // YYYYMMDD -> YYYY-MM-DD (format stocke dans ventes.date).
+        // On valide que la date EXISTE reellement: sans ca, '28072026'
+        // (JJMMAAAA saisi par erreur) matchait la regex et devenait
+        // '2807-20-26', et '20261345' passait aussi -> resultats vides
+        // silencieux au lieu d'un 400 explicite.
+        const parseDate = (s) => {
+            const v = String(s || '').trim();
+            const m = v.match(/^(\d{4})-?(\d{2})-?(\d{2})$/);
+            if (!m) return null;
+            const iso = `${m[1]}-${m[2]}-${m[3]}`;
+            const dt = new Date(iso + 'T00:00:00Z');
+            if (isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== iso) return null;
+            return iso;
+        };
+        const dateDebut = parseDate(req.query.dateDebut);
+        const dateFin = parseDate(req.query.dateFin);
+        if (!dateDebut || !dateFin) {
+            return res.status(400).json({
+                success: false,
+                message: 'dateDebut et dateFin requis au format YYYYMMDD (ex: 20260701)'
+            });
+        }
+        if (dateDebut > dateFin) {
+            return res.status(400).json({ success: false, message: 'dateDebut > dateFin' });
+        }
+
+        const { Op } = require('sequelize');
+        // ventes.date est stockee en texte YYYY-MM-DD: la comparaison
+        // lexicographique est chronologique.
+        const rows = await Vente.findAll({
+            where: {
+                grosClient: true,
+                date: { [Op.between]: [dateDebut, dateFin] }
+            },
+            order: [['date', 'ASC'], ['id', 'ASC']],
+            attributes: ['id', 'date', 'pointVente', 'produit', 'categorie',
+                'prixUnit', 'nombre', 'montant', 'nomClient', 'numeroClient',
+                'adresseClient', 'commandeId', 'creance']
+        });
+
+        // Regrouper par commande (commande_id partage). Une vente sans
+        // commande_id forme sa propre commande (cle synthetique par id).
+        const parCommande = new Map();
+        for (const v of rows) {
+            const key = v.commandeId || ('vente-' + v.id);
+            if (!parCommande.has(key)) {
+                parCommande.set(key, {
+                    commande_id: v.commandeId || null,
+                    date: v.date,
+                    point_vente: v.pointVente,
+                    client: {
+                        nom: v.nomClient || null,
+                        telephone: v.numeroClient || null,
+                        adresse: v.adresseClient || null
+                    },
+                    creance: v.creance === true,
+                    articles: [],
+                    total: 0
+                });
+            }
+            const c = parCommande.get(key);
+            const montant = parseFloat(v.montant) || 0;
+            c.articles.push({
+                produit: v.produit,
+                categorie: v.categorie,
+                prix_unitaire: parseFloat(v.prixUnit) || 0,
+                quantite: parseFloat(v.nombre) || 0,
+                montant: montant
+            });
+            c.total = Math.round((c.total + montant) * 100) / 100;
+        }
+
+        const commandes = Array.from(parCommande.values());
+        res.json({
+            success: true,
+            periode: { dateDebut, dateFin },
+            count: commandes.length,
+            total_global: Math.round(commandes.reduce((s, c) => s + c.total, 0) * 100) / 100,
+            commandes
+        });
+    } catch (e) {
+        console.error('GET /api/external/gros-clients/commandes:', e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 app.get('/api/external/health', validateApiKey, (req, res) => {
     res.json({
         success: true,

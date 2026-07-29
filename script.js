@@ -4221,6 +4221,7 @@ function afficherPageVentes(page) {
           
                 <td>${vente.adresseClient || ''}</td>
                 <td>${vente.creance ? 'Oui' : 'Non'}</td>
+                <td>${(vente.gros_client === true || vente.gros_client === 'true' || vente.grosClient === true) ? '⭐ Oui' : '—'}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -5411,16 +5412,25 @@ function formaterDonneesVentes(ventes) {
         if (dateStr.includes('/')) {
             [jour, mois, annee] = dateStr.split('/');
         } else if (dateStr.includes('-')) {
-            [jour, mois, annee] = dateStr.split('-');
+            // Deux formats possibles: ISO YYYY-MM-DD (API) ou DD-MM-YYYY.
+            // L'ancien code supposait toujours jour en tete, donc une date ISO
+            // '2026-07-29' devenait jour=2026/annee='29' -> mois affiche
+            // "janvier" dans le tableau de Visualisation.
+            const parts = dateStr.split('-');
+            if (parts[0].length === 4) {
+                [annee, mois, jour] = parts;
+            } else {
+                [jour, mois, annee] = parts;
+            }
         } else {
             return new Date(0);
         }
-        
+
         // Convertir l'année à 2 chiffres en 4 chiffres
         if (annee && annee.length === 2) {
             annee = '20' + annee;
         }
-        
+
         return new Date(parseInt(annee), parseInt(mois) - 1, parseInt(jour));
     };
     
@@ -5460,6 +5470,14 @@ function formaterDonneesVentes(ventes) {
             PU: v.PU || v.prixUnit || '0',
             Nombre: v.Nombre || v.quantite || '0',
             Montant: v.Montant || v.total || '0',
+            // Champs client + flags: la normalisation les perdait, laissant
+            // les colonnes Nom/Numero/Adresse/Creance du tableau toujours
+            // vides. On les fait transiter tels quels.
+            nomClient: v.nomClient || '',
+            numeroClient: v.numeroClient || '',
+            adresseClient: v.adresseClient || '',
+            creance: v.creance === true || v.creance === 'true',
+            gros_client: v.gros_client === true || v.grosClient === true,
             // Marqueur source preserve (server append les commandes envoyees
             // au CDC en tant que virtual ventes avec _source: 'decoupe').
             // Indispensable pour eviter de double-compter la portion CDC
