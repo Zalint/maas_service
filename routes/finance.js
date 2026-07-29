@@ -983,6 +983,7 @@ router.delete('/charges/:nom', async (req, res) => {
 //      - commission_maas (3% sur ventes elligibles)
 //      + marge_cdc (Il me doit)
 //      - charges_proratisees (charges_mensuelles × nb_jours_periode / 30)
+//      - depenses_periode (table depenses, saisies onglet Depenses, periode)
 //      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
 //      + variation_stock_nette
 //
@@ -1132,6 +1133,18 @@ router.get('/pl', async (req, res) => {
         });
         const totalPaiementsFournisseur = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
 
+        // 4bis. Depenses ponctuelles de la periode (onglet Finance > Depenses,
+        // table locale `depenses`: reparations, achats divers...). Distinctes
+        // des charges fixes proratisees (masse salariale, loyer) et des
+        // avances MataBanq (flux du partenaire CDB) — sans cette ligne elles
+        // n'etaient deduites nulle part dans le PL. Depense.date est un
+        // DATEONLY (YYYY-MM-DD), le BETWEEN sur les bornes ISO est correct.
+        const depensesRows = await Depense.findAll({
+            where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
+            attributes: ['montant', 'categorie']
+        });
+        const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
+
         // 5. Charges proratisees (30 jours conventionnels)
         const chargesRows = await FinanceCharge.findAll({ order: [['ordre', 'ASC']] });
         const ratio = nbDaysPeriod / 30;
@@ -1143,6 +1156,16 @@ router.get('/pl', async (req, res) => {
         }));
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
+
+        // Depenses et charges fixes sont TOUTES DEUX soustraites du PL: une
+        // depense saisie dans une categorie qui recouvre une charge fixe
+        // (loyer, salaire, electricite...) serait deduite deux fois. On la
+        // signale sans l'exclure — la categorie ne dit pas s'il s'agit du
+        // paiement de l'abonnement (double compte) ou d'un surcout ponctuel
+        // qui s'y ajoute legitimement (ex. "Courant d'urgence" en
+        // electricite). Cf lib/depenses-recurrentes.js.
+        const { detecterDoubleCompte } = require('../lib/depenses-recurrentes');
+        const alerteDoubleCompte = detecterDoubleCompte(depensesRows, chargesRows);
 
         // 6. Variation de stock = stock_soir(dateFin) - stock_matin(dateDebut).
         // Si pas de saisie pile aux dates: prendre la date la plus proche <=
@@ -1208,6 +1231,7 @@ router.get('/pl', async (req, res) => {
             - commission
             + margeCdc
             - chargesProratisees
+            - totalDepenses
             - totalPaiementsFournisseur
             + variationStockNette;
 
@@ -1219,6 +1243,10 @@ router.get('/pl', async (req, res) => {
                 total_avances: round2(totalAvances),
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
+                depenses_periode: round2(totalDepenses),
+                // Montant des depenses dont la categorie recouvre une charge
+                // fixe deja proratisee (risque de double compte, non exclu).
+                depenses_double_compte: alerteDoubleCompte,
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
