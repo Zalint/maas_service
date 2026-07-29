@@ -1909,6 +1909,10 @@
                             <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(ch.total_prorata))}</td>
                         </tr>
                         <tr>
+                            <td><i class="bi bi-cart-dash text-danger"></i> Dépenses (période)</td>
+                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.depenses_periode || 0))}</td>
+                        </tr>
+                        <tr>
                             <td><i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur</td>
                             <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.paiements_fournisseur))}</td>
                         </tr>

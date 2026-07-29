@@ -983,6 +983,7 @@ router.delete('/charges/:nom', async (req, res) => {
 //      - commission_maas (3% sur ventes elligibles)
 //      + marge_cdc (Il me doit)
 //      - charges_proratisees (charges_mensuelles × nb_jours_periode / 30)
+//      - depenses_periode (table depenses, saisies onglet Depenses, periode)
 //      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
 //      + variation_stock_nette
 //
@@ -1120,6 +1121,18 @@ router.get('/pl', async (req, res) => {
         });
         const totalPaiementsFournisseur = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
 
+        // 4bis. Depenses ponctuelles de la periode (onglet Finance > Depenses,
+        // table locale `depenses`: reparations, achats divers...). Distinctes
+        // des charges fixes proratisees (masse salariale, loyer) et des
+        // avances MataBanq (flux du partenaire CDB) — sans cette ligne elles
+        // n'etaient deduites nulle part dans le PL. Depense.date est un
+        // DATEONLY (YYYY-MM-DD), le BETWEEN sur les bornes ISO est correct.
+        const depensesRows = await Depense.findAll({
+            where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
+            attributes: ['montant']
+        });
+        const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
+
         // 5. Charges proratisees (30 jours conventionnels)
         const chargesRows = await FinanceCharge.findAll({ order: [['ordre', 'ASC']] });
         const ratio = nbDaysPeriod / 30;
@@ -1196,6 +1209,7 @@ router.get('/pl', async (req, res) => {
             - commission
             + margeCdc
             - chargesProratisees
+            - totalDepenses
             - totalPaiementsFournisseur
             + variationStockNette;
 
@@ -1207,6 +1221,7 @@ router.get('/pl', async (req, res) => {
                 total_avances: round2(totalAvances),
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
+                depenses_periode: round2(totalDepenses),
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
