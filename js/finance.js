@@ -1001,8 +1001,42 @@
 
     // ===== Dépenses =====
 
+    // Categories de depenses: configurables dans ADMIN > Categories depenses.
+    // On remplit les deux <select> (formulaire d'ajout + filtre) au premier
+    // chargement de l'onglet. Si l'appel echoue, on laisse les <option> du
+    // HTML en place plutot que de vider les listes.
+    let _depenseCategoriesChargees = false;
+    async function chargerCategoriesDepenses() {
+        if (_depenseCategoriesChargees) return;
+        try {
+            const res = await fetch('/api/finance/depense-categories', { credentials: 'include' });
+            const json = await res.json();
+            if (!json.success || !Array.isArray(json.categories)) return;
+            const options = json.categories
+                .map((c) => `<option value="${esc(c.nom)}">${esc(c.libelle)}</option>`)
+                .join('');
+            const selAjout = document.querySelector('#fin-depense-form select[name="categorie"]')
+                || document.querySelector('select[name="categorie"]');
+            if (selAjout) {
+                const courant = selAjout.value;
+                selAjout.innerHTML = '<option value="">—</option>' + options;
+                selAjout.value = courant;
+            }
+            const selFiltre = document.getElementById('fin-depense-categorie');
+            if (selFiltre) {
+                const courant = selFiltre.value;
+                selFiltre.innerHTML = '<option value="">Toutes</option>' + options;
+                selFiltre.value = courant;
+            }
+            _depenseCategoriesChargees = true;
+        } catch (e) {
+            console.warn('Categories de depenses non chargees:', e.message);
+        }
+    }
+
     async function loadDepenses() {
         try {
+            await chargerCategoriesDepenses();
             const params = new URLSearchParams();
             const dd = document.getElementById('fin-depense-date-debut').value;
             const df = document.getElementById('fin-depense-date-fin').value;

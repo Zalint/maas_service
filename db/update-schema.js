@@ -801,6 +801,39 @@ async function updateSchema() {
             console.warn('⚠️  Seed gros_clients:', e.message);
         }
 
+        // Categories de depenses (ADMIN > Categories depenses). Remplace la
+        // liste figee en dur dans le <select> de l'onglet Depenses. Seed des
+        // 8 categories historiques UNIQUEMENT si la table est vide: les
+        // depenses deja saisies gardent leur categorie, et un redeploy ne
+        // recree pas ce que l'admin a supprime.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS depense_categories (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(60) NOT NULL UNIQUE,
+                libelle VARCHAR(100) NOT NULL,
+                ordre INTEGER NOT NULL DEFAULT 0,
+                actif BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        const [dcCount] = await sequelize.query('SELECT COUNT(*)::int AS n FROM depense_categories');
+        if (dcCount[0].n === 0) {
+            await sequelize.query(`
+                INSERT INTO depense_categories (nom, libelle, ordre) VALUES
+                    ('loyer',             'Loyer',             1),
+                    ('electricite',       'Électricité',       2),
+                    ('eau',               'Eau',               3),
+                    ('salaire',           'Salaire',           4),
+                    ('achat_marchandise', 'Achat marchandise', 5),
+                    ('transport',         'Transport',         6),
+                    ('entretien',         'Entretien',         7),
+                    ('autre',             'Autre',             8)
+            `);
+            console.log('Table depense_categories seedee (8 categories)');
+        }
+        console.log('Table depense_categories verifiee');
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {

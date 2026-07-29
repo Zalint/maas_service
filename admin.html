@@ -384,6 +384,11 @@
                                 <i class="bi bi-star me-1"></i>Gros clients
                             </a>
                         </li>
+                        <li class="nav-item" id="depense-categories-nav">
+                            <a class="nav-link" href="#" data-section="depense-categories">
+                                <i class="bi bi-tags me-1"></i>Catégories dépenses
+                            </a>
+                        </li>
                     </ul>
                     <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
                         <!-- Tenant badge -->
@@ -1225,6 +1230,46 @@
                 </div>
             </div>
 
+            <!-- Section Categories depenses -->
+            <div id="depense-categories-section" class="admin-section">
+                <h2><i class="bi bi-tags me-2"></i>Catégories dépenses</h2>
+                <p class="text-muted">Catégories proposées dans <b>Finance &gt; Dépenses</b>. Le <b>nom technique</b> est figé à la création (il est stocké sur les dépenses) ; seul le libellé affiché et l'ordre sont modifiables. Décochez <b>Actif</b> pour retirer une catégorie des listes sans toucher à l'historique.</p>
+                <div class="card mb-4">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0" id="dcFormTitle"><i class="bi bi-plus-circle me-2"></i>Ajouter une catégorie</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-md-4"><input type="text" class="form-control" id="dcLibelle" placeholder="Libellé affiché *"></div>
+                            <div class="col-md-3"><input type="number" class="form-control" id="dcOrdre" placeholder="Ordre" min="0"></div>
+                            <div class="col-md-3"><small class="text-muted" id="dcNomApercu">Nom technique généré depuis le libellé</small></div>
+                            <div class="col-md-2 d-flex gap-2">
+                                <button class="btn btn-primary flex-grow-1" id="dcSaveBtn" onclick="sauvegarderDepenseCategorie()"><i class="bi bi-save"></i> Ajouter</button>
+                                <button class="btn btn-outline-secondary" id="dcCancelBtn" onclick="annulerEditionDepenseCategorie()" style="display:none" title="Annuler"><i class="bi bi-x-lg"></i></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-list-ul me-2"></i>Liste (<span id="dcCount">0</span>)</h5>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="chargerDepenseCategories()"><i class="bi bi-arrow-clockwise"></i> Rafraîchir</button>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr><th>Ordre</th><th>Libellé</th><th>Nom technique</th><th class="text-center">Actif</th><th class="text-end">Actions</th></tr>
+                                </thead>
+                                <tbody id="dcTableBody">
+                                    <tr><td colspan="5" class="text-center text-muted py-3">Chargement...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Section Gros clients -->
             <div id="gros-clients-section" class="admin-section">
                 <h2><i class="bi bi-star me-2"></i>Gros clients</h2>
@@ -1602,6 +1647,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260729-gros-clients"></script>
+    <script src="admin.js?v=20260729-depense-cat"></script>
 </body>
 </html> 
