@@ -752,6 +752,11 @@ async function updateSchema() {
                 ['Mme Diagne', '774212267', 'Rufisque', 'Consommateur'],
                 ['Mme Fall', '776661150', 'Petit Mbao', 'Consommateur']
             ],
+            'sacre-coeur': [
+                ['Mme Diouf', '774476005', 'Sacré cœur', 'Particulier'],
+                ['Mme Thioune', '773734562', 'Cité Keur Gorgui', 'Particulier'],
+                ['Mme Diagne', null, 'Almadies', 'Particulier']
+            ],
             'keur-massar': [
                 ['Ta Ndiaya Thiam', '775799982', 'Yeumbeul Comico', 'Traiteur'],
                 ['Mme Sène', '775667239', 'Jaxaay', 'Restaurant'],
