@@ -5412,16 +5412,25 @@ function formaterDonneesVentes(ventes) {
         if (dateStr.includes('/')) {
             [jour, mois, annee] = dateStr.split('/');
         } else if (dateStr.includes('-')) {
-            [jour, mois, annee] = dateStr.split('-');
+            // Deux formats possibles: ISO YYYY-MM-DD (API) ou DD-MM-YYYY.
+            // L'ancien code supposait toujours jour en tete, donc une date ISO
+            // '2026-07-29' devenait jour=2026/annee='29' -> mois affiche
+            // "janvier" dans le tableau de Visualisation.
+            const parts = dateStr.split('-');
+            if (parts[0].length === 4) {
+                [annee, mois, jour] = parts;
+            } else {
+                [jour, mois, annee] = parts;
+            }
         } else {
             return new Date(0);
         }
-        
+
         // Convertir l'année à 2 chiffres en 4 chiffres
         if (annee && annee.length === 2) {
             annee = '20' + annee;
         }
-        
+
         return new Date(parseInt(annee), parseInt(mois) - 1, parseInt(jour));
     };
     
