@@ -177,8 +177,16 @@ function applyModuleVisibility() {
                 // visible. Inline style:'' supprime le inline et laisse les
                 // regles CSS reprendre. La visibilite finale depend aussi
                 // des droits utilisateur.
+                //
+                // EXCEPTION cruciale: les *-section. Leur visibilite est geree
+                // par le systeme d'onglets (showSection/hideAllSections), qui
+                // n'en affiche qu'UNE a la fois; leur display:none initial est
+                // voulu. Retirer ce none ici re-affichait TOUTES les sections
+                // des modules actifs a chaque chargement (saisie + visualisation
+                // + stock + copier-stock + cash-payment empilees sur la page).
+                // Un module ne doit que MASQUER sa section, jamais l'afficher.
                 element.removeAttribute('data-module-disabled');
-                if (element.style.display === 'none') {
+                if (element.style.display === 'none' && !/-section$/.test(elementId)) {
                     element.style.display = '';
                 }
             }
