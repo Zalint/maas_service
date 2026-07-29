@@ -4021,6 +4021,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Initialiser la section Categories POS (Boucherie)
             initPosCategoriesSection();
+
+            // Initialiser la section Gros clients
+            initGrosClientsSection();
         }
     });
 });
@@ -6409,3 +6412,155 @@ if (document.readyState === 'loading') {
         wire();
     }
 })(); 
+// =================== GROS CLIENTS ===================
+// Clients importants du PV (restaurants, bouchers, traiteurs...). CRUD sur
+// /api/admin/gros-clients; le POS lit /api/gros-clients (actifs) pour la case
+// "Gros client" du modal de paiement. Meme pattern que la section Livreurs.
+
+let grosClientsAdmin = [];
+let grosClientEnEdition = null; // id en cours de modification, null = ajout
+
+function initGrosClientsSection() {
+    if (!document.getElementById('gros-clients-section')) return;
+    chargerGrosClientsAdmin();
+    // Recharge a chaque ouverture de l'onglet (en plus du switch generique).
+    document.querySelectorAll('[data-section="gros-clients"]').forEach(el => {
+        el.addEventListener('click', chargerGrosClientsAdmin);
+    });
+    ['gcNom', 'gcTelephone', 'gcAdresse', 'gcType'].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); sauvegarderGrosClient(); }
+        });
+    });
+}
+
+function escapeHtmlGc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+async function chargerGrosClientsAdmin() {
+    try {
+        const res = await fetch('/api/admin/gros-clients', { credentials: 'include' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        grosClientsAdmin = data.clients || [];
+        renderGrosClientsAdmin();
+    } catch (e) {
+        const tbody = document.getElementById('grosClientsTableBody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Erreur: ' + escapeHtmlGc(e.message) + '</td></tr>';
+    }
+}
+
+function renderGrosClientsAdmin() {
+    const tbody = document.getElementById('grosClientsTableBody');
+    const count = document.getElementById('grosClientCount');
+    if (count) count.textContent = grosClientsAdmin.length;
+    if (!tbody) return;
+    if (!grosClientsAdmin.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Aucun gros client. Ajoutez-en un ci-dessus.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = grosClientsAdmin.map(function (c) {
+        return '<tr class="' + (c.actif ? '' : 'table-secondary text-muted') + '">'
+            + '<td>' + escapeHtmlGc(c.nom) + '</td>'
+            + '<td>' + escapeHtmlGc(c.telephone || '—') + '</td>'
+            + '<td>' + escapeHtmlGc(c.adresse || '—') + '</td>'
+            + '<td>' + (c.type ? '<span class="badge bg-light text-dark border">' + escapeHtmlGc(c.type) + '</span>' : '—') + '</td>'
+            + '<td class="text-center">'
+            + '<div class="form-check form-switch d-inline-block" title="Décoché : masqué dans le POS, sans le supprimer">'
+            + '<input class="form-check-input" type="checkbox" ' + (c.actif ? 'checked' : '') + ' onchange="basculerActifGrosClient(' + c.id + ', this.checked)">'
+            + '</div></td>'
+            + '<td class="text-end">'
+            + '<button class="btn btn-sm btn-outline-primary" onclick="editerGrosClient(' + c.id + ')" title="Modifier"><i class="bi bi-pencil"></i></button> '
+            + '<button class="btn btn-sm btn-outline-danger" onclick="supprimerGrosClient(' + c.id + ')" title="Supprimer"><i class="bi bi-trash"></i></button>'
+            + '</td></tr>';
+    }).join('');
+}
+
+async function sauvegarderGrosClient() {
+    const nom = (document.getElementById('gcNom').value || '').trim();
+    if (!nom) { alert('Le nom est obligatoire'); return; }
+    const body = {
+        nom: nom,
+        telephone: (document.getElementById('gcTelephone').value || '').trim(),
+        adresse: (document.getElementById('gcAdresse').value || '').trim(),
+        type: (document.getElementById('gcType').value || '').trim()
+    };
+    const url = grosClientEnEdition
+        ? '/api/admin/gros-clients/' + grosClientEnEdition
+        : '/api/admin/gros-clients';
+    try {
+        const res = await fetch(url, {
+            method: grosClientEnEdition ? 'PUT' : 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        annulerEditionGrosClient();
+        chargerGrosClientsAdmin();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+    }
+}
+
+function editerGrosClient(id) {
+    const c = grosClientsAdmin.find(function (x) { return x.id === id; });
+    if (!c) return;
+    grosClientEnEdition = id;
+    document.getElementById('gcNom').value = c.nom || '';
+    document.getElementById('gcTelephone').value = c.telephone || '';
+    document.getElementById('gcAdresse').value = c.adresse || '';
+    document.getElementById('gcType').value = c.type || '';
+    document.getElementById('grosClientFormTitle').innerHTML = '<i class="bi bi-pencil me-2"></i>Modifier : ' + escapeHtmlGc(c.nom);
+    document.getElementById('gcSaveBtn').innerHTML = '<i class="bi bi-save"></i> Mettre à jour';
+    document.getElementById('gcCancelBtn').style.display = '';
+    document.getElementById('gcNom').focus();
+}
+
+function annulerEditionGrosClient() {
+    grosClientEnEdition = null;
+    ['gcNom', 'gcTelephone', 'gcAdresse', 'gcType'].forEach(function (id) { document.getElementById(id).value = ''; });
+    document.getElementById('grosClientFormTitle').innerHTML = '<i class="bi bi-plus-circle me-2"></i>Ajouter un gros client';
+    document.getElementById('gcSaveBtn').innerHTML = '<i class="bi bi-save"></i> Ajouter';
+    document.getElementById('gcCancelBtn').style.display = 'none';
+}
+
+async function basculerActifGrosClient(id, actif) {
+    const c = grosClientsAdmin.find(function (x) { return x.id === id; });
+    if (!c) return;
+    try {
+        const res = await fetch('/api/admin/gros-clients/' + id, {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nom: c.nom, telephone: c.telephone, adresse: c.adresse, type: c.type, actif: actif })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        c.actif = actif;
+        renderGrosClientsAdmin();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+        chargerGrosClientsAdmin();
+    }
+}
+
+async function supprimerGrosClient(id) {
+    const c = grosClientsAdmin.find(function (x) { return x.id === id; });
+    if (!c) return;
+    if (!confirm('Supprimer "' + c.nom + '" définitivement ?\n(Pour le masquer du POS sans le supprimer, décochez plutôt "Actif".)')) return;
+    try {
+        const res = await fetch('/api/admin/gros-clients/' + id, { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || 'Erreur');
+        if (grosClientEnEdition === id) annulerEditionGrosClient();
+        chargerGrosClientsAdmin();
+    } catch (e) {
+        alert('Erreur: ' + e.message);
+    }
+}

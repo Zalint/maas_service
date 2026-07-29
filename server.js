@@ -1346,6 +1346,86 @@ function filterFunctions(obj) {
 }
 
 // Route pour lire la configuration des produits (depuis la BDD)
+// =====================================================
+// Gros clients — configures dans ADMIN, lus par le POS
+// (case "Gros client" du modal de paiement).
+// =====================================================
+// Lecture POS: actifs uniquement, tries par nom. Tout utilisateur authentifie.
+app.get('/api/gros-clients', checkAuth, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const rows = await GrosClient.findAll({
+            where: { actif: true },
+            order: [['nom', 'ASC']],
+            attributes: ['id', 'nom', 'telephone', 'adresse', 'type']
+        });
+        res.json({ success: true, clients: rows });
+    } catch (e) {
+        console.error('GET /api/gros-clients:', e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// CRUD ADMIN (admin uniquement). Liste complete, y compris inactifs.
+app.get('/api/admin/gros-clients', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const rows = await GrosClient.findAll({ order: [['nom', 'ASC']] });
+        res.json({ success: true, clients: rows });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.post('/api/admin/gros-clients', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const nom = String(req.body && req.body.nom || '').trim();
+        if (!nom) return res.status(400).json({ success: false, message: 'nom requis' });
+        const row = await GrosClient.create({
+            nom,
+            telephone: String(req.body.telephone || '').trim() || null,
+            adresse: String(req.body.adresse || '').trim() || null,
+            type: String(req.body.type || '').trim() || null,
+            actif: req.body.actif !== false
+        });
+        res.json({ success: true, client: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.put('/api/admin/gros-clients/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const row = await GrosClient.findByPk(req.params.id);
+        if (!row) return res.status(404).json({ success: false, message: 'introuvable' });
+        const nom = String(req.body && req.body.nom || '').trim();
+        if (!nom) return res.status(400).json({ success: false, message: 'nom requis' });
+        await row.update({
+            nom,
+            telephone: String(req.body.telephone || '').trim() || null,
+            adresse: String(req.body.adresse || '').trim() || null,
+            type: String(req.body.type || '').trim() || null,
+            actif: req.body.actif !== false,
+            updated_at: new Date()
+        });
+        res.json({ success: true, client: row });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+app.delete('/api/admin/gros-clients/:id', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const { GrosClient } = require('./db/models');
+        const n = await GrosClient.destroy({ where: { id: req.params.id } });
+        res.json({ success: true, deleted: n });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
 app.get('/api/admin/config/produits', checkAuth, checkAdmin, async (req, res) => {
     try {
         console.log('📋 GET /api/admin/config/produits - Chargement depuis BDD...');

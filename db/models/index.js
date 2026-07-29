@@ -10,6 +10,7 @@ const ClientAbonne = require('./ClientAbonne');
 const PaiementAbonnement = require('./PaiementAbonnement');
 const PerformanceAchat = require('./PerformanceAchat');
 const AuditClientLog = require('./AuditClientLog');
+const GrosClient = require('./GrosClient');
 
 // Nouveaux modèles pour la gestion centralisée
 const User = require('./User');
@@ -202,7 +203,8 @@ module.exports = {
   PaiementAbonnement,
   PerformanceAchat,
   AuditClientLog,
-  
+  GrosClient,
+
   // Nouveaux modèles
   User,
   PointVente,

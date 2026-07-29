@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mata-pos-v26';
+const CACHE_NAME = 'mata-pos-v27';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',

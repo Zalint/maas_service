@@ -712,6 +712,79 @@ async function updateSchema() {
             console.log('Index fonctionnel idx_stocks_date_iso verifie');
         }
 
+        // Gros clients (ADMIN > Gros clients, case "Gros client" du POS).
+        // Seed initial PAR TENANT (listes fournies par le metier), applique
+        // UNIQUEMENT si la table est vide: un client supprime/modifie dans
+        // ADMIN n'est jamais recree par un redeploy.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS gros_clients (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(150) NOT NULL,
+                telephone VARCHAR(60),
+                adresse VARCHAR(255),
+                type VARCHAR(60),
+                actif BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        const GROS_CLIENTS_SEED = {
+            'o-foire': [
+                ['Ta Fat Sow', '774170184', 'Ouest Foire', 'Restaurant'],
+                ['Mme Diack', '776259654', 'Sacré cœur', 'Consommateur'],
+                ['Mr Ndoye', '774284536', 'Ouest Foire', 'Boucher'],
+                ['Sophie', '775362350', 'HLM', 'Ambassadrice'],
+                ['Ta Lemou', '776321434', 'Liberté 6', 'Consommateur'],
+                ['Mr Faye', '784434809', 'Ouest Foire', 'Boucher'],
+                ['Seyda', '775327733', 'VDN', 'Traiteur']
+            ],
+            'mbao': [
+                ['Fatou Ndiaye', '774523305', 'Mbao', 'Restaurant'],
+                ['Mme Ciss', '775417778', 'Mbao', 'Maison et Restaurant'],
+                ['Mme Ndoye', '772825741', 'Mbao', 'Consommateur'],
+                ['Mme Doucouré', '773923960', 'Mbao', 'Consommateur'],
+                ['Pape Fall', '763296948', 'Petit Mbao', 'Boucher'],
+                ['Mme Dieng', '776595508', 'Cité Adja Marème Mbao', 'Consommateur'],
+                ['Mme Diop', '776563883', 'Mbao', 'Consommateur'],
+                ['Mr et Mme Cissé', '775695986 / 775729327', 'Petit Mbao', 'Maison et Restaurant'],
+                ['Maimouna Diakhaté', '775386972', 'Petit Mbao', 'Consommateur'],
+                ['Seynabou Sow', '776448949', 'Cité Safco', 'Ambassadrice'],
+                ['Mme Diagne', '774212267', 'Rufisque', 'Consommateur'],
+                ['Mme Fall', '776661150', 'Petit Mbao', 'Consommateur']
+            ],
+            'keur-massar': [
+                ['Ta Ndiaya Thiam', '775799982', 'Yeumbeul Comico', 'Traiteur'],
+                ['Mme Sène', '775667239', 'Jaxaay', 'Restaurant'],
+                ['Mr Kane', '776388476', 'Yeumbeul', 'Consommateur'],
+                ['Mr Niang', '775362350', 'Tivaouane Peulh', 'Boucher'],
+                ['Mme Gueye', '775059793', 'Cité Gendarmerie', 'Consommateur'],
+                ['Mme Sylla', '771597035', 'Arrêt Sall', 'Consommateur'],
+                ['Siradio', '773102110', 'Station Keur Massar', 'Boucher'],
+                ['Mme Thiam', '779515258', 'Cité Safco', 'Consommateur'],
+                ['Mr Diagne', '775505681', 'Keur Massar', 'Consommateur'],
+                ['Mr Mboj', '774401818', 'Keur Massar', 'Consommateur']
+            ]
+        };
+        try {
+            const tenantSlug = require('../config/tenant').slug;
+            const seed = GROS_CLIENTS_SEED[tenantSlug] || [];
+            if (seed.length) {
+                const [gcCount] = await sequelize.query('SELECT COUNT(*)::int AS n FROM gros_clients');
+                if (gcCount[0].n === 0) {
+                    for (const [nom, tel, adr, type] of seed) {
+                        await sequelize.query(
+                            'INSERT INTO gros_clients (nom, telephone, adresse, type) VALUES (:nom, :tel, :adr, :type)',
+                            { replacements: { nom, tel, adr, type } }
+                        );
+                    }
+                    console.log(`Table gros_clients seedee (${seed.length} clients pour ${tenantSlug})`);
+                }
+            }
+            console.log('Table gros_clients verifiee');
+        } catch (e) {
+            console.warn('⚠️  Seed gros_clients:', e.message);
+        }
+
         console.log('Mise à jour du schéma terminée avec succès');
         return true;
     } catch (error) {
