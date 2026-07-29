@@ -1129,7 +1129,7 @@ router.get('/pl', async (req, res) => {
         // DATEONLY (YYYY-MM-DD), le BETWEEN sur les bornes ISO est correct.
         const depensesRows = await Depense.findAll({
             where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
-            attributes: ['montant']
+            attributes: ['montant', 'categorie']
         });
         const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
 
@@ -1144,6 +1144,16 @@ router.get('/pl', async (req, res) => {
         }));
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
+
+        // Depenses et charges fixes sont TOUTES DEUX soustraites du PL: une
+        // depense saisie dans une categorie qui recouvre une charge fixe
+        // (loyer, salaire, electricite...) serait deduite deux fois. On la
+        // signale sans l'exclure — la categorie ne dit pas s'il s'agit du
+        // paiement de l'abonnement (double compte) ou d'un surcout ponctuel
+        // qui s'y ajoute legitimement (ex. "Courant d'urgence" en
+        // electricite). Cf lib/depenses-recurrentes.js.
+        const { detecterDoubleCompte } = require('../lib/depenses-recurrentes');
+        const alerteDoubleCompte = detecterDoubleCompte(depensesRows, chargesRows);
 
         // 6. Variation de stock = stock_soir(dateFin) - stock_matin(dateDebut).
         // Si pas de saisie pile aux dates: prendre la date la plus proche <=
@@ -1222,6 +1232,9 @@ router.get('/pl', async (req, res) => {
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
                 depenses_periode: round2(totalDepenses),
+                // Montant des depenses dont la categorie recouvre une charge
+                // fixe deja proratisee (risque de double compte, non exclu).
+                depenses_double_compte: alerteDoubleCompte,
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
