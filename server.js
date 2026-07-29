@@ -3662,14 +3662,19 @@ app.post('/api/external/stock/copy', validateApiKey, async (req, res) => {
 // si la vente n'a pas de commande_id), avec client, articles et total.
 app.get('/api/external/gros-clients/commandes', validateApiKey, async (req, res) => {
     try {
-        // YYYYMMDD -> YYYY-MM-DD (format stocke dans ventes.date)
+        // YYYYMMDD -> YYYY-MM-DD (format stocke dans ventes.date).
+        // On valide que la date EXISTE reellement: sans ca, '28072026'
+        // (JJMMAAAA saisi par erreur) matchait la regex et devenait
+        // '2807-20-26', et '20261345' passait aussi -> resultats vides
+        // silencieux au lieu d'un 400 explicite.
         const parseDate = (s) => {
             const v = String(s || '').trim();
-            let m = v.match(/^(\d{4})(\d{2})(\d{2})$/);
-            if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-            m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-            if (m) return v;
-            return null;
+            const m = v.match(/^(\d{4})-?(\d{2})-?(\d{2})$/);
+            if (!m) return null;
+            const iso = `${m[1]}-${m[2]}-${m[3]}`;
+            const dt = new Date(iso + 'T00:00:00Z');
+            if (isNaN(dt.getTime()) || dt.toISOString().slice(0, 10) !== iso) return null;
+            return iso;
         };
         const dateDebut = parseDate(req.query.dateDebut);
         const dateFin = parseDate(req.query.dateFin);
