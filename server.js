@@ -4902,6 +4902,98 @@ app.post('/api/precommandes/:id/convert', checkAuth, checkWriteAccess, async (re
     }
 });
 
+// Conversion d'une pré-commande depuis le POS (pos.js).
+// Distincte de /convert ci-dessus, qui sert le flux desktop (script.js) et
+// exige dateVente + pointVenteDestination saisis par l'utilisateur. Ici on
+// convertit "sur place, maintenant": date du jour et point de vente de la
+// pré-commande elle-même, sans rien demander au caissier.
+// Portage de la route homonyme de DATA (C:\Mata\DATA server.js), qui couvre
+// ce flux depuis longtemps. Deux adaptations nécessaires pour Maas:
+//   - la date est stockée en ISO YYYY-MM-DD (DATA utilise DD-MM-YYYY);
+//   - le modèle Vente expose l'attribut `commandeId` (colonne commande_id).
+// pos.js appelait cette URL depuis le tout premier commit du module POS,
+// mais la route n'a jamais existé côté Maas -> 404 à chaque conversion.
+app.post('/api/precommandes/:id/convert-to-order', checkAuth, checkWriteAccess, async (req, res) => {
+    try {
+        const precommandeId = req.params.id;
+        // commandeId fourni par le POS pour regrouper plusieurs pré-commandes
+        // d'un même client sous un seul numéro de commande. Absent (conversion
+        // unitaire) -> on en génère un, même forme que le POS: <PREFIXE>_P_<ts>.
+        const { commandeId: existingCommandeId } = req.body || {};
+
+        const precommande = await Precommande.findByPk(precommandeId);
+        if (!precommande) {
+            return res.status(404).json({ success: false, message: 'Pré-commande non trouvée' });
+        }
+
+        if (precommande.statut !== 'ouvert') {
+            return res.status(400).json({
+                success: false,
+                message: 'Seules les pré-commandes ouvertes peuvent être converties'
+            });
+        }
+
+        if (!pointsVente[precommande.pointVente]?.active) {
+            return res.status(400).json({
+                success: false,
+                message: `Le point de vente ${precommande.pointVente} est désactivé`
+            });
+        }
+
+        // Date du jour au format des ventes Maas (ISO YYYY-MM-DD).
+        const dateVente = new Date().toISOString().slice(0, 10);
+
+        const commandeId = existingCommandeId
+            || `CMD_P_${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+
+        const nouvelleVente = {
+            mois: precommande.mois,
+            date: dateVente,
+            semaine: precommande.semaine,
+            pointVente: precommande.pointVente,
+            preparation: precommande.preparation,
+            categorie: precommande.categorie,
+            produit: precommande.produit,
+            prixUnit: precommande.prixUnit,
+            nombre: precommande.nombre,
+            montant: precommande.montant,
+            // Badge (Pré) dans le nom, comme DATA: permet de repérer d'un coup
+            // d'oeil les ventes issues d'une pré-commande dans le suivi.
+            nomClient: precommande.nomClient ? `(Pré) ${precommande.nomClient}` : '(Pré)',
+            numeroClient: precommande.numeroClient,
+            adresseClient: precommande.adresseClient
+                ? `${precommande.adresseClient} [Provenant de pré-commande]`
+                : '[Provenant de pré-commande]',
+            creance: false,
+            commandeId: commandeId
+        };
+
+        const venteCreee = await Vente.create(nouvelleVente);
+        invalidateFinanceCachesOnVenteMutation();
+
+        await precommande.update({
+            statut: 'convertie',
+            commentaireStatut: `Convertie en commande ${commandeId} le ${dateVente}`
+        });
+
+        console.log(`✅ Pré-commande ${precommandeId} convertie en vente ${venteCreee.id} (Commande: ${commandeId})`);
+
+        res.json({
+            success: true,
+            message: 'Pré-commande convertie en commande avec succès',
+            commandeId: commandeId,
+            venteId: venteCreee.id
+        });
+    } catch (error) {
+        console.error('❌ Erreur conversion pré-commande (POS):', error);
+        res.status(500).json({
+            success: false,
+            message: 'Erreur lors de la conversion de la pré-commande',
+            error: error.message
+        });
+    }
+});
+
 // Endpoint pour modifier une pré-commande (seulement si statut = 'ouvert')
 app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) => {
     try {
