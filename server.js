@@ -900,6 +900,28 @@ const validateApiKey = (req, res, next) => {
     next();
 };
 
+// Cle GENERIQUE dediee aux nouvelles routes /api/external/* (et non
+// EXTERNAL_API_KEY, reservee aux integrations existantes: achats-boeuf,
+// estimations, stock...). Sert d'abord a /api/external/gros-clients/commandes
+// (donnees clients: nom, telephone, adresse), mais nommee sans reference a
+// gros-clients pour rester reutilisable par de futures routes externes sans
+// devoir introduire une n-ieme variable d'env a chaque fois.
+// Pas de repli sur EXTERNAL_API_KEY: ces routes sont neuves et n'ont encore
+// aucun consommateur en prod, donc coupure nette plutot que double lecture a
+// maintenir.
+const validateMaasKeyApi = (req, res, next) => {
+    const apiKey = req.headers['x-api-key'];
+    const validApiKey = process.env.MAAS_KEY_API;
+    if (!validApiKey) {
+        return res.status(503).json({ success: false, message: 'MAAS_KEY_API non configurée côté serveur' });
+    }
+    if (!apiKey || apiKey !== validApiKey) {
+        return res.status(401).json({ success: false, message: 'API key invalide ou manquante' });
+    }
+    req.user = { username: 'api-client-maas-key', role: 'api', pointVente: 'tous' };
+    next();
+};
+
 // Accepte soit une session active (POS interne), soit une API key valide (clients externes)
 const validateApiKeyOrSession = (req, res, next) => {
     // Session active → autorisé directement
@@ -3743,12 +3765,12 @@ app.post('/api/external/stock/copy', validateApiKey, async (req, res) => {
 // External API health check endpoint
 // API externe: commandes "gros clients" sur une plage de dates.
 // GET /api/external/gros-clients/commandes?dateDebut=YYYYMMDD&dateFin=YYYYMMDD
-// (les formats YYYY-MM-DD sont aussi acceptes). Auth: x-api-key =
-// EXTERNAL_API_KEY (cle propre a Maas, meme middleware que les autres
-// routes /api/external/*).
+// (les formats YYYY-MM-DD sont aussi acceptes). Auth: x-api-key = MAAS_KEY_API
+// (cle generique dediee, distincte de EXTERNAL_API_KEY): cette route expose
+// des donnees clients (nom, telephone, adresse).
 // Une "commande" = les ventes regroupees par commande_id (ou la ligne seule
 // si la vente n'a pas de commande_id), avec client, articles et total.
-app.get('/api/external/gros-clients/commandes', validateApiKey, async (req, res) => {
+app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, res) => {
     try {
         // YYYYMMDD -> YYYY-MM-DD (format stocke dans ventes.date).
         // On valide que la date EXISTE reellement: sans ca, '28072026'
