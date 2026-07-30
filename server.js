@@ -3821,18 +3821,42 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
         const normTel = (s) => String(s || '').replace(/\D/g, '').slice(-9); // 9 derniers chiffres: ignore +221 / espaces
         const normNom = (s) => String(s || '').trim().toLowerCase()
             .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
+        // On conserve TOUS les candidats par cle (et non le dernier/premier
+        // vu): rien n'impose l'unicite du telephone ni du nom cote ADMIN, donc
+        // deux clients peuvent partager une cle. Ecraser silencieusement
+        // reviendrait a attribuer le type du mauvais client.
         const referentiel = await GrosClient.findAll({ attributes: ['nom', 'telephone', 'adresse', 'type'] });
         const parTel = new Map();
         const parNom = new Map();
+        const pousser = (map, cle, g) => {
+            if (!cle) return;
+            if (!map.has(cle)) map.set(cle, []);
+            map.get(cle).push(g);
+        };
         for (const g of referentiel) {
-            const t = normTel(g.telephone);
-            if (t) parTel.set(t, g);
-            const n = normNom(g.nom);
-            if (n && !parNom.has(n)) parNom.set(n, g);
+            pousser(parTel, normTel(g.telephone), g);
+            pousser(parNom, normNom(g.nom), g);
         }
+        // Resout une liste de candidats en un type, ou null si ambigu.
+        // Des doublons qui portent le MEME type restent exploitables: le
+        // resultat ne depend pas du candidat choisi.
+        const typeSiUnique = (candidats) => {
+            if (!candidats || !candidats.length) return null;
+            const types = new Set(candidats.map((g) => g.type || null));
+            return types.size === 1 ? candidats[0].type || null : null;
+        };
         const trouverType = (nomClient, numeroClient) => {
-            const g = parTel.get(normTel(numeroClient)) || parNom.get(normNom(nomClient));
-            return g ? (g.type || null) : null;
+            const parTelCand = parTel.get(normTel(numeroClient));
+            if (parTelCand && parTelCand.length) {
+                // Priorite au telephone. S'il est ambigu, on tente de
+                // departager par le nom AVANT d'abandonner.
+                const direct = typeSiUnique(parTelCand);
+                if (direct !== null) return direct;
+                const n = normNom(nomClient);
+                const affines = parTelCand.filter((g) => normNom(g.nom) === n);
+                return typeSiUnique(affines);
+            }
+            return typeSiUnique(parNom.get(normNom(nomClient)));
         };
 
         // Regrouper par commande (commande_id partage). Une vente sans
