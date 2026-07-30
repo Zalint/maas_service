@@ -3812,6 +3812,29 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
                 'adresseClient', 'commandeId', 'creance']
         });
 
+        // Le type de client (Restaurant, Boucher, Consommateur...) vit dans le
+        // referentiel gros_clients, pas sur la vente: on le rapproche ici.
+        // Cle de rapprochement = telephone (stable, saisi tel quel par le POS
+        // depuis le referentiel), avec repli sur le nom normalise si le
+        // telephone manque ou a ete edite a la main dans le modal.
+        const { GrosClient } = require('./db/models');
+        const normTel = (s) => String(s || '').replace(/\D/g, '').slice(-9); // 9 derniers chiffres: ignore +221 / espaces
+        const normNom = (s) => String(s || '').trim().toLowerCase()
+            .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
+        const referentiel = await GrosClient.findAll({ attributes: ['nom', 'telephone', 'adresse', 'type'] });
+        const parTel = new Map();
+        const parNom = new Map();
+        for (const g of referentiel) {
+            const t = normTel(g.telephone);
+            if (t) parTel.set(t, g);
+            const n = normNom(g.nom);
+            if (n && !parNom.has(n)) parNom.set(n, g);
+        }
+        const trouverType = (nomClient, numeroClient) => {
+            const g = parTel.get(normTel(numeroClient)) || parNom.get(normNom(nomClient));
+            return g ? (g.type || null) : null;
+        };
+
         // Regrouper par commande (commande_id partage). Une vente sans
         // commande_id forme sa propre commande (cle synthetique par id).
         const parCommande = new Map();
@@ -3825,7 +3848,10 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
                     client: {
                         nom: v.nomClient || null,
                         telephone: v.numeroClient || null,
-                        adresse: v.adresseClient || null
+                        adresse: v.adresseClient || null,
+                        // null si le client n'est plus (ou pas) dans le
+                        // referentiel: la vente reste exploitable.
+                        type: trouverType(v.nomClient, v.numeroClient)
                     },
                     creance: v.creance === true,
                     articles: [],
