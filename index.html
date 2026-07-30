@@ -924,6 +924,14 @@
                                             <label for="filter-dv-numero-client" class="form-label">Numéro Client</label>
                                             <input type="text" class="form-control form-control-sm" id="filter-dv-numero-client" placeholder="Rechercher...">
                                         </div>
+                                        <div class="col-md-2">
+                                            <label for="filter-dv-gros-client" class="form-label">Gros client</label>
+                                            <select class="form-select form-select-sm" id="filter-dv-gros-client">
+                                                <option value="">Tous</option>
+                                                <option value="oui">Oui</option>
+                                                <option value="non">Non</option>
+                                            </select>
+                                        </div>
                                     </div>
                                     <div class="row g-3">
                                         <div class="col-md-12 text-end">
@@ -953,6 +961,7 @@
                                             <th>Numéro Client</th>
                                             <th>Adresse Client</th>
                                             <th>Créance</th>
+                                            <th title="Vente faite à un gros client (case du POS)">Gros client</th>
                                             <th>Actions</th>
                                         </tr>
                                     </thead>
@@ -962,7 +971,7 @@
                                             <td colspan="8" class="text-end">Total filtré :</td>
                                             <td id="dv-tfoot-nombre">0</td>
                                             <td id="dv-tfoot-montant">0 FCFA</td>
-                                            <td colspan="5"></td>
+                                            <td colspan="6"></td>
                                         </tr>
                                     </tfoot>
                                 </table>
@@ -1568,6 +1577,14 @@
                                             <div class="col-md-2">
                                                 <label for="filter-ventes-numero-client" class="form-label">Numéro Client</label>
                                                 <input type="text" class="form-control form-control-sm" id="filter-ventes-numero-client" placeholder="Rechercher...">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label for="filter-ventes-gros-client" class="form-label">Gros client</label>
+                                                <select class="form-select form-select-sm" id="filter-ventes-gros-client">
+                                                    <option value="">Tous</option>
+                                                    <option value="oui">Oui</option>
+                                                    <option value="non">Non</option>
+                                                </select>
                                             </div>
                                         </div>
                                         <div class="row g-3">
@@ -3796,7 +3813,7 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260729-gros-clients-3"></script>
+    <script src="script.js?v=20260731-gros-client-colonne"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>

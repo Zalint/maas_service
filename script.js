@@ -2553,9 +2553,20 @@ function getPrixProduitGlobal(nomProduit) {
     return null;
 }
 
+// "Gros client" arrive sous plusieurs formes selon l'endpoint (gros_client
+// depuis l'API, grosClient cote modele, chaine 'true' apres un aller-retour
+// JSON). Une seule fonction pour les deux tableaux, le filtre et l'export:
+// evite qu'une variante soit traitee ici et oubliee ailleurs.
+function estGrosClient(vente) {
+    if (!vente) return false;
+    const v = vente.gros_client !== undefined ? vente.gros_client
+        : (vente.grosClient !== undefined ? vente.grosClient : vente['Gros client']);
+    return v === true || v === 'true' || v === 'Oui' || v === 1;
+}
+
 // Etat des filtres pour #dernieres-ventes (recherche client side, no fetch).
 let dvAll = [];
-let dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
+let dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '', grosClient: '' };
 
 // Normalise une date "DD/MM/YYYY" ou "YYYY-MM-DD" -> "YYYY-MM-DD" pour comparer.
 function dvNormalizeDate(s) {
@@ -2629,6 +2640,11 @@ function dvComputeFiltered() {
         const f = dvFilters.numeroClient.toLowerCase();
         v = v.filter(x => (x.numeroClient || '').toLowerCase().includes(f));
     }
+    // Gros client: 'oui' / 'non' / '' (tous)
+    if (dvFilters.grosClient) {
+        const veutGros = dvFilters.grosClient === 'oui';
+        v = v.filter(x => estGrosClient(x) === veutGros);
+    }
     return v;
 }
 
@@ -2681,7 +2697,8 @@ function dvWireOnce() {
         'filter-dv-categorie':     ['change', 'categorie'],
         'filter-dv-produit':       ['change', 'produit'],
         'filter-dv-nom-client':    ['input',  'nomClient'],
-        'filter-dv-numero-client': ['input',  'numeroClient']
+        'filter-dv-numero-client': ['input',  'numeroClient'],
+        'filter-dv-gros-client':   ['change', 'grosClient']
     };
     Object.entries(map).forEach(([id, [evt, key]]) => {
         const el = document.getElementById(id);
@@ -2690,8 +2707,8 @@ function dvWireOnce() {
     });
     const reset = document.getElementById('reset-filters-dv');
     if (reset) reset.addEventListener('click', () => {
-        dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
-        ['filter-dv-date','filter-dv-point-vente','filter-dv-categorie','filter-dv-produit','filter-dv-nom-client','filter-dv-numero-client']
+        dvFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '', grosClient: '' };
+        ['filter-dv-date','filter-dv-point-vente','filter-dv-categorie','filter-dv-produit','filter-dv-nom-client','filter-dv-numero-client','filter-dv-gros-client']
             .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
         if (dEl && dEl._flatpickr) dEl._flatpickr.clear();
         dvRender();
@@ -2739,6 +2756,8 @@ function dvRenderRows(ventes) {
         row.insertCell().textContent = vente.numeroClient || "";
         row.insertCell().textContent = vente.adresseClient || "";
         row.insertCell().textContent = (vente.creance === true || vente.creance === 'true' || vente.Creance === true || vente.Creance === 'true' || vente.Creance === 'Oui') ? 'Oui' : 'Non';
+        // Gros client: meme rendu que dans le tableau de Visualisation.
+        row.insertCell().textContent = estGrosClient(vente) ? '⭐ Oui' : 'Non';
 
         const actionsCell = row.insertCell();
         actionsCell.style.textAlign = 'center';
@@ -3969,7 +3988,7 @@ let currentPage = 1;
 const itemsPerPage = 30;
 let allVentes = [];
 let ventesFiltered = []; // ventes après application des filtres tableau-ventes
-let ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
+let ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '', grosClient: '' };
 
 // Variable pour annuler les requêtes précédentes
 let currentVentesRequest = null;
@@ -4221,7 +4240,7 @@ function afficherPageVentes(page) {
           
                 <td>${vente.adresseClient || ''}</td>
                 <td>${vente.creance ? 'Oui' : 'Non'}</td>
-                <td>${(vente.gros_client === true || vente.gros_client === 'true' || vente.grosClient === true) ? '⭐ Oui' : '—'}</td>
+                <td>${estGrosClient(vente) ? '⭐ Oui' : 'Non'}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -4348,6 +4367,11 @@ function filtrerVentes(resetPage = true) {
         const f = ventesFilters.numeroClient.toLowerCase();
         v = v.filter(x => (x.numeroClient || '').toLowerCase().includes(f));
     }
+    // Gros client: 'oui' / 'non' / '' (tous)
+    if (ventesFilters.grosClient) {
+        const veutGros = ventesFilters.grosClient === 'oui';
+        v = v.filter(x => estGrosClient(x) === veutGros);
+    }
     ventesFiltered = v;
     if (resetPage) currentPage = 1;
     afficherPageVentes(currentPage);
@@ -4374,7 +4398,8 @@ function filtrerVentes(resetPage = true) {
             'filter-ventes-categorie':     ['change', 'categorie'],
             'filter-ventes-produit':       ['change', 'produit'],
             'filter-ventes-nom-client':    ['input',  'nomClient'],
-            'filter-ventes-numero-client': ['input',  'numeroClient']
+            'filter-ventes-numero-client': ['input',  'numeroClient'],
+            'filter-ventes-gros-client':   ['change', 'grosClient']
         };
         Object.entries(map).forEach(([id, [evt, key]]) => {
             const el = document.getElementById(id);
@@ -4383,8 +4408,8 @@ function filtrerVentes(resetPage = true) {
         });
         const reset = document.getElementById('reset-filters-ventes');
         if (reset) reset.addEventListener('click', () => {
-            ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '' };
-            ['filter-ventes-date','filter-ventes-point-vente','filter-ventes-categorie','filter-ventes-produit','filter-ventes-nom-client','filter-ventes-numero-client']
+            ventesFilters = { date: '', pointVente: '', categorie: '', produit: '', nomClient: '', numeroClient: '', grosClient: '' };
+            ['filter-ventes-date','filter-ventes-point-vente','filter-ventes-categorie','filter-ventes-produit','filter-ventes-nom-client','filter-ventes-numero-client','filter-ventes-gros-client']
                 .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
             if (dEl && dEl._flatpickr) dEl._flatpickr.clear();
             ventesFiltered = [];
@@ -10681,7 +10706,8 @@ async function exportVisualisationToExcel() {
             'Nom Client': vente.nomClient || '',
             'Numéro Client': vente.numeroClient || '',
             'Adresse Client': vente.adresseClient || '',
-            'Créance': vente.creance ? 'Oui' : 'Non'
+            'Créance': vente.creance ? 'Oui' : 'Non',
+            'Gros client': estGrosClient(vente) ? 'Oui' : 'Non'
         }));
 
         if (exportData.length === 0) {
@@ -10741,6 +10767,7 @@ async function exportVisualisationToExcel() {
                 case 'Catégorie': return { wch: 12 };
                 case 'Prix Unitaire': case 'Montant': return { wch: 15 };
                 case 'Nom Client': case 'Adresse Client': return { wch: 20 };
+                case 'Gros client': return { wch: 12 };
                 case 'Numéro Client': return { wch: 15 };
                 default: return { wch: 10 };
             }
