@@ -1776,6 +1776,11 @@ async function confirmerPaiement(event) {
             // Case "⭐ Gros client" du modal (cochee = vente gros client,
             // meme si le caissier a ajuste les champs a la main).
             gros_client: !!(document.getElementById('grosClientCheck') || {}).checked,
+            // Identite du client choisi dans la liste (option value = son id).
+            // On la persiste au moment de la vente: c'est le seul instant ou
+            // elle est connue avec certitude. Vide si le caissier a coche la
+            // case sans selectionner personne.
+            gros_client_id: (document.getElementById('grosClientSelect') || {}).value || null,
             paymentMethod: selectedPaymentMethod,
             commandeId: commandeId, // Add commande_id to group sales together
             montant_restant_du: montantRestantDu, // Use snake_case for consistency

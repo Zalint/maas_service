@@ -801,6 +801,48 @@ async function updateSchema() {
             console.warn('⚠️  Seed gros_clients:', e.message);
         }
 
+        // ventes.gros_client_id: reference DIRECTE vers le gros client choisi
+        // dans le POS. Le booleen gros_client dit "c'est un gros client", pas
+        // LEQUEL — l'API devait donc redeviner le client par telephone/nom,
+        // avec l'ambiguite que ca implique (deux clients pouvant partager un
+        // numero, et un rapprochement casse des qu'un client est renomme).
+        // L'identite est connue avec certitude au moment de la selection: on
+        // la persiste. Doit venir APRES la creation de gros_clients (FK).
+        // ON DELETE SET NULL: supprimer un client du referentiel ne doit pas
+        // faire disparaitre ses ventes.
+        if (await checkTableExists('ventes') && await checkTableExists('gros_clients')) {
+            await sequelize.query(`
+                ALTER TABLE ventes
+                ADD COLUMN IF NOT EXISTS gros_client_id INTEGER
+                    REFERENCES gros_clients(id) ON DELETE SET NULL
+            `);
+            await sequelize.query(`
+                CREATE INDEX IF NOT EXISTS idx_ventes_gros_client_id
+                ON ventes (gros_client_id) WHERE gros_client_id IS NOT NULL
+            `);
+
+            // Reprise des ventes deja marquees gros_client (avant cette
+            // colonne). Rapprochement par telephone normalise sur les 9
+            // derniers chiffres, et UNIQUEMENT quand il designe un seul
+            // client: on ne devine pas. Idempotent (ne touche que les NULL).
+            const [maj] = await sequelize.query(`
+                UPDATE ventes v
+                SET gros_client_id = g.id
+                FROM (
+                    SELECT RIGHT(REGEXP_REPLACE(telephone, '\\D', '', 'g'), 9) AS tel, MIN(id) AS id
+                    FROM gros_clients
+                    WHERE telephone IS NOT NULL
+                    GROUP BY 1
+                    HAVING COUNT(*) = 1
+                ) g
+                WHERE v.gros_client = TRUE
+                  AND v.gros_client_id IS NULL
+                  AND RIGHT(REGEXP_REPLACE(COALESCE(v.numero_client, ''), '\\D', '', 'g'), 9) = g.tel
+                RETURNING v.id
+            `);
+            console.log(`Colonne ventes.gros_client_id verifiee (${maj.length} vente(s) rattachee(s))`);
+        }
+
         // Categories de depenses (ADMIN > Categories depenses). Remplace la
         // liste figee en dur dans le <select> de l'onglet Depenses. Seed des
         // 8 categories historiques UNIQUEMENT si la table est vide: les

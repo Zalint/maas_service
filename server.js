@@ -1928,7 +1928,10 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 creance: creanceValue,
                 // Flag "gros client" (case du modal de paiement POS).
                 grosClient: entry.gros_client === true || entry.grosClient === true
-                    || entry.gros_client === 'true' || entry.grosClient === 'true'
+                    || entry.gros_client === 'true' || entry.grosClient === 'true',
+                // Identite du client choisi dans la liste du POS. Persistee
+                // ici plutot que redevinee ensuite par telephone/nom.
+                grosClientId: parseInt(entry.gros_client_id ?? entry.grosClientId, 10) || null
             };
             
             // Ajouter les données d'abonnement si présentes
@@ -3809,55 +3812,26 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
             order: [['date', 'ASC'], ['id', 'ASC']],
             attributes: ['id', 'date', 'pointVente', 'produit', 'categorie',
                 'prixUnit', 'nombre', 'montant', 'nomClient', 'numeroClient',
-                'adresseClient', 'commandeId', 'creance']
+                'adresseClient', 'commandeId', 'creance', 'grosClientId']
         });
 
         // Le type de client (Restaurant, Boucher, Consommateur...) vit dans le
-        // referentiel gros_clients, pas sur la vente: on le rapproche ici.
-        // Cle de rapprochement = telephone (stable, saisi tel quel par le POS
-        // depuis le referentiel), avec repli sur le nom normalise si le
-        // telephone manque ou a ete edite a la main dans le modal.
+        // referentiel gros_clients. La vente porte son id (ventes.gros_client_id,
+        // renseigne par le POS au moment de la selection), donc une simple
+        // jointure suffit: pas de rapprochement par telephone/nom, donc pas
+        // d'ambiguite possible et resistance au renommage du client.
+        // id null (vente anterieure a la colonne, ou client hors referentiel)
+        // -> type null, la commande reste exploitable.
         const { GrosClient } = require('./db/models');
-        const normTel = (s) => String(s || '').replace(/\D/g, '').slice(-9); // 9 derniers chiffres: ignore +221 / espaces
-        const normNom = (s) => String(s || '').trim().toLowerCase()
-            .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
-        // On conserve TOUS les candidats par cle (et non le dernier/premier
-        // vu): rien n'impose l'unicite du telephone ni du nom cote ADMIN, donc
-        // deux clients peuvent partager une cle. Ecraser silencieusement
-        // reviendrait a attribuer le type du mauvais client.
-        const referentiel = await GrosClient.findAll({ attributes: ['nom', 'telephone', 'adresse', 'type'] });
-        const parTel = new Map();
-        const parNom = new Map();
-        const pousser = (map, cle, g) => {
-            if (!cle) return;
-            if (!map.has(cle)) map.set(cle, []);
-            map.get(cle).push(g);
-        };
-        for (const g of referentiel) {
-            pousser(parTel, normTel(g.telephone), g);
-            pousser(parNom, normNom(g.nom), g);
+        const idsClients = [...new Set(rows.map((v) => v.grosClientId).filter(Boolean))];
+        const typeParId = new Map();
+        if (idsClients.length) {
+            const referentiel = await GrosClient.findAll({
+                where: { id: { [Op.in]: idsClients } },
+                attributes: ['id', 'type']
+            });
+            for (const g of referentiel) typeParId.set(g.id, g.type || null);
         }
-        // Resout une liste de candidats en un type, ou null si ambigu.
-        // Des doublons qui portent le MEME type restent exploitables: le
-        // resultat ne depend pas du candidat choisi.
-        const typeSiUnique = (candidats) => {
-            if (!candidats || !candidats.length) return null;
-            const types = new Set(candidats.map((g) => g.type || null));
-            return types.size === 1 ? candidats[0].type || null : null;
-        };
-        const trouverType = (nomClient, numeroClient) => {
-            const parTelCand = parTel.get(normTel(numeroClient));
-            if (parTelCand && parTelCand.length) {
-                // Priorite au telephone. S'il est ambigu, on tente de
-                // departager par le nom AVANT d'abandonner.
-                const direct = typeSiUnique(parTelCand);
-                if (direct !== null) return direct;
-                const n = normNom(nomClient);
-                const affines = parTelCand.filter((g) => normNom(g.nom) === n);
-                return typeSiUnique(affines);
-            }
-            return typeSiUnique(parNom.get(normNom(nomClient)));
-        };
 
         // Regrouper par commande (commande_id partage). Une vente sans
         // commande_id forme sa propre commande (cle synthetique par id).
@@ -3875,7 +3849,7 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
                         adresse: v.adresseClient || null,
                         // null si le client n'est plus (ou pas) dans le
                         // referentiel: la vente reste exploitable.
-                        type: trouverType(v.nomClient, v.numeroClient)
+                        type: v.grosClientId ? (typeParId.get(v.grosClientId) || null) : null
                     },
                     creance: v.creance === true,
                     articles: [],
