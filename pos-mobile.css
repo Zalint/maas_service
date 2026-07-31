@@ -1592,6 +1592,19 @@ html, body {
     }
 }
 
+/* Repli pour les navigateurs sans :has() (Safari < 16.4): la reserve ne peut
+   pas suivre l'etat du panier, on la fixe au pire cas. Sans cela le panier
+   rempli (~300px, plancher de 240px impose par le bloc <= 400px) recouvre le
+   bas de page, qui redevient inatteignable. Les navigateurs qui supportent
+   :has() gardent les 220px quand le panier est vide. */
+@supports not (selector(:has(*))) {
+    @media (max-width: 767px) {
+        .pos-main {
+            padding-bottom: 360px !important;
+        }
+    }
+}
+
 /* Les sous-categories (visibles en Epicerie: Riz & Feculents, Conserves,
    Epices...) s'empilaient sur 3 lignes et mangeaient 132px. Meme traitement
    que la rangee de categories: une seule ligne defilante. */
