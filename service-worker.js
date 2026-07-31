@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mata-pos-v28';
+const CACHE_NAME = 'mata-pos-v29';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',
@@ -67,6 +67,31 @@ self.addEventListener('fetch', event => {
             { headers: { 'Content-Type': 'application/json' } }
           );
         })
+    );
+    return;
+  }
+
+  // Documents HTML: reseau d'abord, cache en secours hors ligne.
+  //
+  // La strategie ci-dessous (`cached || networked`) est un cache-first: elle
+  // sert la page en cache et ne rafraichit qu'en arriere-plan. Sur un
+  // telephone il n'existe pas de Ctrl+Shift+R: apres un deploiement il
+  // fallait donc ouvrir l'application DEUX fois pour voir la nouvelle
+  // version. Le document est petit et rarement hors ligne: on le prend au
+  // reseau en priorite, et on ne retombe sur le cache qu'en cas d'echec.
+  if (request.mode === 'navigate' || request.destination === 'document') {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME)
+              .then(cache => cache.put(request, clone))
+              .catch(() => {});
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then(cached => cached || caches.match('/pos.html')))
     );
     return;
   }

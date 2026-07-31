@@ -1619,3 +1619,134 @@ html, body {
         border-radius: 17px !important;
     }
 }
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - CATEGORIES NON TRONQUEES, PANIER, ZONE REPLIABLE
+   ============================================================================ */
+@media (max-width: 767px) {
+    /* --- Categories principales: elles sont peu nombreuses (Boucherie,
+       Epicerie, Tous, Favoris + edition). Les faire defiler coupait "Tous"
+       ou "Favoris" au bord de l'ecran. On les laisse passer a la ligne: rien
+       n'est tronque, et cela coute au plus une rangee de 38px.
+       Les SOUS-categories, elles, restent defilantes: elles peuvent etre
+       nombreuses (10 en Epicerie) et rempliraient l'ecran. */
+    .categories {
+        flex-wrap: wrap !important;
+        overflow-x: visible !important;
+        padding: 0.5rem 0.75rem !important;
+        row-gap: 0.4rem !important;
+    }
+
+    .category-btn {
+        padding: 0 0.75rem !important;
+        font-size: 0.8rem !important;
+    }
+
+    /* --- Sections repliables: Produits, Panier, Dernieres transactions ---
+       Taper sur le titre replie la section. Trois zones sur un ecran de
+       844px: pouvoir en fermer deux degage vraiment la troisieme. */
+    .pos-collapse-title {
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        display: flex !important;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .pos-collapse-icon {
+        font-size: 0.75rem;
+        opacity: 0.55;
+        margin-left: auto;
+        padding-left: 0.5rem;
+    }
+
+    .pos-products.products-collapsed .search-box,
+    .pos-products.products-collapsed .category-dropdown-container,
+    .pos-products.products-collapsed .categories,
+    .pos-products.products-collapsed .sub-categories,
+    .pos-products.products-collapsed .products-grid {
+        display: none !important;
+    }
+
+    /* Panier replie: on garde l'en-tete et ses 4 actions, on masque les
+       lignes et le pied (total + acces commandes). */
+    .mobile-cart-panel.cart-collapsed .mobile-cart-items,
+    .mobile-cart-panel.cart-collapsed .mobile-cart-footer {
+        display: none !important;
+    }
+
+    .recent-transactions.transactions-collapsed .payment-status-filters,
+    .recent-transactions.transactions-collapsed .transactions-list,
+    .recent-transactions.transactions-collapsed .transactions-search-box {
+        display: none !important;
+    }
+
+    /* --- Boutons du panier: centres, et non plus colles a gauche --- */
+    .mobile-cart-header {
+        flex-wrap: wrap !important;
+        row-gap: 0.45rem !important;
+    }
+
+    .mobile-cart-header > div:first-child {
+        flex: 1 1 100%;
+    }
+
+    .mobile-cart-header-actions {
+        flex: 1 1 100%;
+        justify-content: center !important;
+        gap: 0.6rem !important;
+    }
+
+    /* --- Acces aux pre-commandes / commandes web ---
+       Ces boutons vivent dans .pos-cart (masque sur telephone): ils
+       disparaissaient completement. Repris ici dans le pied du panier. */
+    .mobile-orders-actions {
+        display: flex !important;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+
+    .btn-mobile-orders {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 44px; /* cible tactile */
+        padding: 0.5rem 0.4rem;
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        background: var(--white);
+        color: var(--text-color, #333);
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.15;
+        /* "Commandes Web" ne tient pas sur une demi-largeur: on laisse passer
+           a la ligne plutot que de tronquer le libelle. */
+        white-space: normal;
+        cursor: pointer;
+    }
+
+    .btn-mobile-orders-web {
+        background: #667eea;
+        border-color: #667eea;
+        color: #fff;
+    }
+
+    /* L'indicateur de pre-commandes est un bloc de 20px concu pour le bouton
+       desktop: en flux normal il ecrasait le libelle. Pastille d'angle ici. */
+    .mobile-orders-actions .precommandes-indicator {
+        position: absolute !important;
+        top: 5px;
+        right: 5px;
+        width: 9px !important;
+        height: 9px !important;
+        border-radius: 50%;
+    }
+
+}
+
+/* Hors telephone, le pendant mobile des boutons de commandes n'existe pas. */
+.mobile-orders-actions {
+    display: none;
+}

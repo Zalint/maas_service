@@ -8246,6 +8246,50 @@ async function listerPeripheriquesBluetooth() {
 /**
  * Toggle POS header visibility
  */
+// Sections repliables du POS sur telephone: taper sur le titre replie la
+// section pour degager l'ecran. Telephone uniquement: au-dela de 767px ce
+// sont les trois colonnes du layout, les replier n'aurait pas de sens.
+const POS_SECTIONS = {
+    products:     { selector: '.pos-products',       cls: 'products-collapsed',     icon: 'productsCollapseIcon' },
+    cart:         { selector: '.mobile-cart-panel',  cls: 'cart-collapsed',         icon: 'cartCollapseIcon' },
+    transactions: { selector: '.recent-transactions', cls: 'transactions-collapsed', icon: 'transactionsCollapseIcon' }
+};
+
+function togglePosSection(key, forceState) {
+    if (!window.matchMedia('(max-width: 767px)').matches) return;
+
+    const def = POS_SECTIONS[key];
+    if (!def) return;
+
+    const panel = document.querySelector(def.selector);
+    if (!panel) return;
+
+    const collapsed = typeof forceState === 'boolean'
+        ? forceState
+        : !panel.classList.contains(def.cls);
+
+    panel.classList.toggle(def.cls, collapsed);
+
+    const icon = document.getElementById(def.icon);
+    if (icon) icon.className = 'fas fa-chevron-' + (collapsed ? 'down' : 'up') + ' pos-collapse-icon';
+
+    try { localStorage.setItem('pos_collapsed_' + key, collapsed ? '1' : '0'); } catch (e) {}
+}
+
+// Conserve pour l'appelant historique du bandeau "Produits".
+function togglePosProducts(forceState) {
+    togglePosSection('products', forceState);
+}
+
+// Restaure l'etat de chaque section au chargement (sur telephone seulement).
+document.addEventListener('DOMContentLoaded', () => {
+    Object.keys(POS_SECTIONS).forEach((key) => {
+        try {
+            if (localStorage.getItem('pos_collapsed_' + key) === '1') togglePosSection(key, true);
+        } catch (e) {}
+    });
+});
+
 function togglePosHeader() {
     const container = document.querySelector('.pos-container');
     const icon = document.getElementById('headerToggleIcon');
@@ -9395,15 +9439,13 @@ function updatePrecommandesTodayBadge() {
     console.log('🔔 [BADGE] Mise à jour badge - Count:', precommandesTodayCount);
     
     // Afficher/masquer l'indicateur clignotant
-    const indicator = document.getElementById('precommandesIndicator');
-    if (indicator) {
-        if (precommandesTodayCount > 0) {
-            indicator.style.display = 'block';
-            console.log('✅ [INDICATOR] Indicateur clignotant affiché');
-        } else {
-            indicator.style.display = 'none';
-            console.log('❌ [INDICATOR] Indicateur masqué');
-        }
+    // querySelectorAll et non getElementById: l'indicateur existe en deux
+    // exemplaires (pied du panier desktop + pied du panier mobile).
+    const indicators = document.querySelectorAll('.js-precommandes-indicator');
+    if (indicators.length) {
+        const visible = precommandesTodayCount > 0;
+        indicators.forEach((el) => { el.style.display = visible ? 'block' : 'none'; });
+        console.log(visible ? '✅ [INDICATOR] Indicateur clignotant affiché' : '❌ [INDICATOR] Indicateur masqué');
     }
     
     // Badge sur le bouton (ancien code)
@@ -11141,11 +11183,11 @@ function updateCommandesWebCounts() {
     set('cw-count-all', c.all); set('cw-count-pending', c.pending);
     set('cw-count-assigned', c.assigned); set('cw-count-converted', c.converted);
     set('cwModalCount', c.all);
-    const badge = document.getElementById('commandesWebBadge');
-    if (badge) {
+    // Deux exemplaires du badge: pied du panier desktop et pied du panier mobile.
+    document.querySelectorAll('.js-commandes-web-badge').forEach((badge) => {
         if (c.pending > 0) { badge.textContent = c.pending; badge.style.display = 'inline-block'; }
         else { badge.style.display = 'none'; }
-    }
+    });
 }
 
 function renderCommandesWeb() {
