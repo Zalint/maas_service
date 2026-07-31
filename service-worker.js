@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mata-pos-v27';
+const CACHE_NAME = 'mata-pos-v30';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',
@@ -67,6 +67,38 @@ self.addEventListener('fetch', event => {
             { headers: { 'Content-Type': 'application/json' } }
           );
         })
+    );
+    return;
+  }
+
+  // Documents HTML: reseau d'abord, cache en secours hors ligne.
+  //
+  // La strategie ci-dessous (`cached || networked`) est un cache-first: elle
+  // sert la page en cache et ne rafraichit qu'en arriere-plan. Sur un
+  // telephone il n'existe pas de Ctrl+Shift+R: apres un deploiement il
+  // fallait donc ouvrir l'application DEUX fois pour voir la nouvelle
+  // version. Le document est petit et rarement hors ligne: on le prend au
+  // reseau en priorite, et on ne retombe sur le cache qu'en cas d'echec.
+  if (request.mode === 'navigate' || request.destination === 'document') {
+    // Course contre une limite de temps: une connexion mobile qui traine sans
+    // echouer laisse fetch() en attente indefiniment, et le repli sur le cache
+    // n'arrive jamais - exactement au moment ou il servirait le plus.
+    const DELAI_RESEAU_MS = 3000;
+    event.respondWith(
+      Promise.race([
+        fetch(request),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('network-timeout')), DELAI_RESEAU_MS))
+      ])
+        .then(response => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME)
+              .then(cache => cache.put(request, clone))
+              .catch(() => {});
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then(cached => cached || caches.match('/pos.html')))
     );
     return;
   }

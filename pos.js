@@ -1236,8 +1236,14 @@ function afficherPanier() {
             mobileContainer.appendChild(mobileItemElement);
         }
     });
-    
+
     mettreAJourTotaux();
+
+    // Le panneau vient de changer de hauteur: la reserve sous le contenu doit
+    // suivre. Appel explicite plutot que de compter sur le ResizeObserver
+    // seul, qui ne se declenche pas quand les etapes de rendu sont suspendues
+    // (onglet en arriere-plan, page occultee).
+    if (typeof _majReservePanier === 'function') _majReservePanier();
 }
 
 function creerElementPanier(item, index) {
@@ -8246,6 +8252,151 @@ async function listerPeripheriquesBluetooth() {
 /**
  * Toggle POS header visibility
  */
+// Sections repliables du POS sur telephone: taper sur le titre replie la
+// section pour degager l'ecran. Telephone uniquement: au-dela de 767px ce
+// sont les trois colonnes du layout, les replier n'aurait pas de sens.
+const POS_SECTIONS = {
+    products:     { selector: '.pos-products',       cls: 'products-collapsed',     icon: 'productsCollapseIcon' },
+    cart:         { selector: '.mobile-cart-panel',  cls: 'cart-collapsed',         icon: 'cartCollapseIcon' },
+    transactions: { selector: '.recent-transactions', cls: 'transactions-collapsed', icon: 'transactionsCollapseIcon' }
+};
+
+function togglePosSection(key, forceState) {
+    if (!window.matchMedia('(max-width: 767px)').matches) return;
+
+    const def = POS_SECTIONS[key];
+    if (!def) return;
+
+    const panel = document.querySelector(def.selector);
+    if (!panel) return;
+
+    const collapsed = typeof forceState === 'boolean'
+        ? forceState
+        : !panel.classList.contains(def.cls);
+
+    panel.classList.toggle(def.cls, collapsed);
+
+    const icon = document.getElementById(def.icon);
+    if (icon) {
+        icon.className = 'fas fa-chevron-' + (collapsed ? 'down' : 'up') + ' pos-collapse-icon';
+        const titre = icon.closest('.pos-collapse-title');
+        if (titre) titre.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+
+    try { localStorage.setItem('pos_collapsed_' + key, collapsed ? '1' : '0'); } catch (e) {}
+
+    // Replier le panier change sa hauteur de ~350px: la reserve doit suivre.
+    if (key === 'cart' && typeof _majReservePanier === 'function') _majReservePanier();
+}
+
+// Ces titres sont des <div>/<h3> porteurs d'un onclick: sans role ni tabindex
+// ils sont hors d'atteinte au clavier et aucun lecteur d'ecran n'annonce
+// l'etat plie/deplie. On ne peut pas les envelopper dans un <button>: ils
+// contiennent des <h2>/<h3>, qu'un bouton n'a pas le droit de contenir.
+//
+// Les attributs ne sont poses que sur telephone: au-dela de 767px ces
+// sections ne sont pas repliables, en faire des boutons ajouterait des arrets
+// de tabulation qui ne feraient rien.
+function _majAccessibiliteSections() {
+    const telephone = window.matchMedia('(max-width: 767px)').matches;
+
+    Object.keys(POS_SECTIONS).forEach((key) => {
+        const def = POS_SECTIONS[key];
+        const icon = document.getElementById(def.icon);
+        const titre = icon && icon.closest('.pos-collapse-title');
+        if (!titre) return;
+
+        if (!telephone) {
+            titre.removeAttribute('role');
+            titre.removeAttribute('tabindex');
+            titre.removeAttribute('aria-expanded');
+            return;
+        }
+
+        const panel = document.querySelector(def.selector);
+        const collapsed = !!(panel && panel.classList.contains(def.cls));
+        titre.setAttribute('role', 'button');
+        titre.setAttribute('tabindex', '0');
+        titre.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+}
+
+// role="button" n'apporte pas l'activation par Entree/Espace: il faut la
+// cabler soi-meme, contrairement a un <button> natif.
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const titre = e.target && e.target.closest && e.target.closest('.pos-collapse-title');
+    if (!titre || titre.getAttribute('role') !== 'button') return;
+    e.preventDefault();
+    titre.click();
+});
+
+// Reference gardee volontairement: une MediaQueryList creee a la volee peut
+// etre ramassee par le GC, et son ecouteur cesse alors d'etre appele.
+const _mqTelephone = window.matchMedia('(max-width: 767px)');
+_mqTelephone.addEventListener('change', () => {
+    _majAccessibiliteSections();
+    _majReservePanier();
+});
+
+// Le panneau panier est en position fixed sur telephone: le bas de la page
+// doit lui reserver la place, sinon il passe dessous et devient inatteignable.
+//
+// Cette reserve a d'abord ete ecrite en constantes (220px, puis 360px pour un
+// panier rempli, 110px pour un panier replie). Chacune s'est revelee fausse
+// des que l'etat changeait: le panneau va de 92px (replie) a 55vh (rempli,
+// soit 447px sur un iPhone SE) en passant par 195 et 281. On mesure donc la
+// hauteur reelle plutot que de la deviner.
+let _roPanier = null;
+
+function _majReservePanier() {
+    const racine = document.documentElement;
+
+    if (!_mqTelephone.matches) {
+        racine.style.removeProperty('--reserve-panier');
+        return;
+    }
+
+    const panneau = document.querySelector('.mobile-cart-panel');
+    if (!panneau) return;
+
+    racine.style.setProperty('--reserve-panier', (panneau.offsetHeight + 16) + 'px');
+}
+
+// ResizeObserver plutot qu'un appel dans chaque fonction qui touche au panier
+// (ajout, retrait, repli, vidage, conversion de commande...): la hauteur est
+// la seule chose qui compte, et c'est exactement ce qu'il observe.
+document.addEventListener('DOMContentLoaded', () => {
+    const panneau = document.querySelector('.mobile-cart-panel');
+    if (!panneau) return;
+
+    _majReservePanier();
+
+    // Reference gardee: un ResizeObserver non reference peut etre ramasse par
+    // le GC. Il complete les appels explicites (afficherPanier,
+    // togglePosSection) pour les changements de hauteur qu'ils ne couvrent
+    // pas: rotation de l'ecran, clavier virtuel, retour de veille.
+    if (typeof ResizeObserver === 'function') {
+        _roPanier = new ResizeObserver(_majReservePanier);
+        _roPanier.observe(panneau);
+    }
+});
+
+// Conserve pour l'appelant historique du bandeau "Produits".
+function togglePosProducts(forceState) {
+    togglePosSection('products', forceState);
+}
+
+// Restaure l'etat de chaque section au chargement (sur telephone seulement).
+document.addEventListener('DOMContentLoaded', () => {
+    Object.keys(POS_SECTIONS).forEach((key) => {
+        try {
+            if (localStorage.getItem('pos_collapsed_' + key) === '1') togglePosSection(key, true);
+        } catch (e) {}
+    });
+    _majAccessibiliteSections();
+});
+
 function togglePosHeader() {
     const container = document.querySelector('.pos-container');
     const icon = document.getElementById('headerToggleIcon');
@@ -9395,15 +9546,13 @@ function updatePrecommandesTodayBadge() {
     console.log('🔔 [BADGE] Mise à jour badge - Count:', precommandesTodayCount);
     
     // Afficher/masquer l'indicateur clignotant
-    const indicator = document.getElementById('precommandesIndicator');
-    if (indicator) {
-        if (precommandesTodayCount > 0) {
-            indicator.style.display = 'block';
-            console.log('✅ [INDICATOR] Indicateur clignotant affiché');
-        } else {
-            indicator.style.display = 'none';
-            console.log('❌ [INDICATOR] Indicateur masqué');
-        }
+    // querySelectorAll et non getElementById: l'indicateur existe en deux
+    // exemplaires (pied du panier desktop + pied du panier mobile).
+    const indicators = document.querySelectorAll('.js-precommandes-indicator');
+    if (indicators.length) {
+        const visible = precommandesTodayCount > 0;
+        indicators.forEach((el) => { el.style.display = visible ? 'block' : 'none'; });
+        console.log(visible ? '✅ [INDICATOR] Indicateur clignotant affiché' : '❌ [INDICATOR] Indicateur masqué');
     }
     
     // Badge sur le bouton (ancien code)
@@ -11134,18 +11283,97 @@ async function chargerCommandesWeb() {
     updateCommandesWebCounts();
 }
 
+// ---------------------------------------------------------------------
+// Notification sonore a l'arrivee d'une commande web (equivalent DATA).
+// ---------------------------------------------------------------------
+
+// Un seul contexte audio pour toute la session: en creer un par notification
+// finit par atteindre la limite du navigateur et le son cesse de sortir.
+let _notifAudioCtx = null;
+
+function _getNotifAudioContext() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!_notifAudioCtx) _notifAudioCtx = new Ctx();
+    if (_notifAudioCtx.state === 'suspended' && _notifAudioCtx.resume) _notifAudioCtx.resume();
+    return _notifAudioCtx;
+}
+
+// iOS et Chrome n'autorisent le son qu'apres une interaction de l'utilisateur.
+// On debloque le contexte au premier geste, une seule fois: sans cela la
+// premiere notification de la session serait muette.
+(function () {
+    function debloquerAudio() {
+        _getNotifAudioContext();
+        document.removeEventListener('pointerdown', debloquerAudio);
+        document.removeEventListener('keydown', debloquerAudio);
+    }
+    document.addEventListener('pointerdown', debloquerAudio);
+    document.addEventListener('keydown', debloquerAudio);
+})();
+
+// Ding-dong en deux notes descendantes, genere sans fichier audio.
+async function playNotificationSound() {
+    try {
+        const ctx = _getNotifAudioContext();
+        if (!ctx) return;
+
+        // resume() est asynchrone: sans l'attendre, on programmait les notes
+        // sur un contexte encore suspendu et RIEN ne sortait, sans erreur.
+        if (ctx.state === 'suspended') {
+            try { await ctx.resume(); } catch (e) {}
+        }
+        if (ctx.state !== 'running') {
+            console.warn('🔇 [COMMANDES WEB] Le navigateur bloque l\'audio tant qu\'il n\'y a pas eu de clic dans la page.');
+            return;
+        }
+
+        [{ freq: 800, time: 0, duration: 0.15 },
+         { freq: 600, time: 0.2, duration: 0.2 }].forEach((note) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(note.freq, ctx.currentTime + note.time);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime + note.time);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + note.time + note.duration);
+            osc.start(ctx.currentTime + note.time);
+            osc.stop(ctx.currentTime + note.time + note.duration);
+        });
+    } catch (e) {
+        console.error('🔇 [COMMANDES WEB] Son de notification indisponible:', e);
+    }
+}
+
+// null et non 0: le premier releve fixe la reference SANS sonner. Sinon
+// l'application sonnerait a chaque ouverture de page tant qu'il resterait des
+// commandes en attente, alors qu'on veut signaler une ARRIVEE.
+let _cwLastPendingCount = null;
+
 function updateCommandesWebCounts() {
     const c = { all: _commandesWeb.length, pending: 0, assigned: 0, converted: 0 };
     _commandesWeb.forEach(o => { c[statutCommandeWeb(o)]++; });
+
+    if (_cwLastPendingCount !== null && c.pending > _cwLastPendingCount) {
+        const nouvelles = c.pending - _cwLastPendingCount;
+        console.log(`🔔 [COMMANDES WEB] ${nouvelles} nouvelle(s) commande(s) detectee(s)`);
+        playNotificationSound();
+        try {
+            showToast(`🔔 ${nouvelles} nouvelle${nouvelles > 1 ? 's' : ''} commande${nouvelles > 1 ? 's' : ''} web`, 'info');
+        } catch (e) {}
+    }
+    _cwLastPendingCount = c.pending;
+
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('cw-count-all', c.all); set('cw-count-pending', c.pending);
     set('cw-count-assigned', c.assigned); set('cw-count-converted', c.converted);
     set('cwModalCount', c.all);
-    const badge = document.getElementById('commandesWebBadge');
-    if (badge) {
+    // Deux exemplaires du badge: pied du panier desktop et pied du panier mobile.
+    document.querySelectorAll('.js-commandes-web-badge').forEach((badge) => {
         if (c.pending > 0) { badge.textContent = c.pending; badge.style.display = 'inline-block'; }
         else { badge.style.display = 'none'; }
-    }
+    });
 }
 
 function renderCommandesWeb() {
