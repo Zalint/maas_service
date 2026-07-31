@@ -2029,9 +2029,10 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
             nomClient: vente.nomClient,
             numeroClient: vente.numeroClient,
             adresseClient: vente.adresseClient,
-            creance: vente.creance
+            creance: vente.creance,
+            gros_client: vente.grosClient === true
         }));
-        
+
         res.json({ success: true, dernieresVentes: formattedVentes });
     } catch (error) {
         console.error('Erreur lors de l\'ajout des ventes:', error);
@@ -2421,6 +2422,7 @@ app.get('/api/dernieres-ventes', checkAuth, checkReadAccess, async (req, res) =>
             numeroClient: vente.numeroClient,
             adresseClient: vente.adresseClient,
             creance: vente.creance,
+            gros_client: vente.grosClient === true,
             extension: vente.extension
         }));
 
