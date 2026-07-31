@@ -1928,7 +1928,10 @@ app.post('/api/ventes', checkAuth, checkWriteAccess, async (req, res) => {
                 creance: creanceValue,
                 // Flag "gros client" (case du modal de paiement POS).
                 grosClient: entry.gros_client === true || entry.grosClient === true
-                    || entry.gros_client === 'true' || entry.grosClient === 'true'
+                    || entry.gros_client === 'true' || entry.grosClient === 'true',
+                // Identite du client choisi dans la liste du POS. Persistee
+                // ici plutot que redevinee ensuite par telephone/nom.
+                grosClientId: parseInt(entry.gros_client_id ?? entry.grosClientId, 10) || null
             };
             
             // Ajouter les données d'abonnement si présentes
@@ -3809,8 +3812,26 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
             order: [['date', 'ASC'], ['id', 'ASC']],
             attributes: ['id', 'date', 'pointVente', 'produit', 'categorie',
                 'prixUnit', 'nombre', 'montant', 'nomClient', 'numeroClient',
-                'adresseClient', 'commandeId', 'creance']
+                'adresseClient', 'commandeId', 'creance', 'grosClientId']
         });
+
+        // Le type de client (Restaurant, Boucher, Consommateur...) vit dans le
+        // referentiel gros_clients. La vente porte son id (ventes.gros_client_id,
+        // renseigne par le POS au moment de la selection), donc une simple
+        // jointure suffit: pas de rapprochement par telephone/nom, donc pas
+        // d'ambiguite possible et resistance au renommage du client.
+        // id null (vente anterieure a la colonne, ou client hors referentiel)
+        // -> type null, la commande reste exploitable.
+        const { GrosClient } = require('./db/models');
+        const idsClients = [...new Set(rows.map((v) => v.grosClientId).filter(Boolean))];
+        const typeParId = new Map();
+        if (idsClients.length) {
+            const referentiel = await GrosClient.findAll({
+                where: { id: { [Op.in]: idsClients } },
+                attributes: ['id', 'type']
+            });
+            for (const g of referentiel) typeParId.set(g.id, g.type || null);
+        }
 
         // Regrouper par commande (commande_id partage). Une vente sans
         // commande_id forme sa propre commande (cle synthetique par id).
@@ -3825,7 +3846,10 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
                     client: {
                         nom: v.nomClient || null,
                         telephone: v.numeroClient || null,
-                        adresse: v.adresseClient || null
+                        adresse: v.adresseClient || null,
+                        // null si le client n'est plus (ou pas) dans le
+                        // referentiel: la vente reste exploitable.
+                        type: v.grosClientId ? (typeParId.get(v.grosClientId) || null) : null
                     },
                     creance: v.creance === true,
                     articles: [],

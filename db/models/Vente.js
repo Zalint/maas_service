@@ -72,6 +72,15 @@ const Vente = sequelize.define('Vente', {
   // Vente faite a un "gros client" (case cochee dans le modal de paiement du
   // POS, liste geree dans ADMIN > Gros clients). Sert au reporting: colonne
   // dediee dans le tableau de Visualisation.
+  // Reference directe vers le gros client choisi dans le POS. Renseignee au
+  // moment de la vente, quand l'identite est connue avec certitude: evite de
+  // la redeviner ensuite par telephone/nom. NULL = vente non rattachee
+  // (client hors referentiel, ou vente anterieure a cette colonne).
+  grosClientId: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    field: 'gros_client_id'
+  },
   grosClient: {
     type: DataTypes.BOOLEAN,
     allowNull: false,
