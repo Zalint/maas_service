@@ -8271,10 +8271,61 @@ function togglePosSection(key, forceState) {
     panel.classList.toggle(def.cls, collapsed);
 
     const icon = document.getElementById(def.icon);
-    if (icon) icon.className = 'fas fa-chevron-' + (collapsed ? 'down' : 'up') + ' pos-collapse-icon';
+    if (icon) {
+        icon.className = 'fas fa-chevron-' + (collapsed ? 'down' : 'up') + ' pos-collapse-icon';
+        const titre = icon.closest('.pos-collapse-title');
+        if (titre) titre.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
 
     try { localStorage.setItem('pos_collapsed_' + key, collapsed ? '1' : '0'); } catch (e) {}
 }
+
+// Ces titres sont des <div>/<h3> porteurs d'un onclick: sans role ni tabindex
+// ils sont hors d'atteinte au clavier et aucun lecteur d'ecran n'annonce
+// l'etat plie/deplie. On ne peut pas les envelopper dans un <button>: ils
+// contiennent des <h2>/<h3>, qu'un bouton n'a pas le droit de contenir.
+//
+// Les attributs ne sont poses que sur telephone: au-dela de 767px ces
+// sections ne sont pas repliables, en faire des boutons ajouterait des arrets
+// de tabulation qui ne feraient rien.
+function _majAccessibiliteSections() {
+    const telephone = window.matchMedia('(max-width: 767px)').matches;
+
+    Object.keys(POS_SECTIONS).forEach((key) => {
+        const def = POS_SECTIONS[key];
+        const icon = document.getElementById(def.icon);
+        const titre = icon && icon.closest('.pos-collapse-title');
+        if (!titre) return;
+
+        if (!telephone) {
+            titre.removeAttribute('role');
+            titre.removeAttribute('tabindex');
+            titre.removeAttribute('aria-expanded');
+            return;
+        }
+
+        const panel = document.querySelector(def.selector);
+        const collapsed = !!(panel && panel.classList.contains(def.cls));
+        titre.setAttribute('role', 'button');
+        titre.setAttribute('tabindex', '0');
+        titre.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+}
+
+// role="button" n'apporte pas l'activation par Entree/Espace: il faut la
+// cabler soi-meme, contrairement a un <button> natif.
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const titre = e.target && e.target.closest && e.target.closest('.pos-collapse-title');
+    if (!titre || titre.getAttribute('role') !== 'button') return;
+    e.preventDefault();
+    titre.click();
+});
+
+// Reference gardee volontairement: une MediaQueryList creee a la volee peut
+// etre ramassee par le GC, et son ecouteur cesse alors d'etre appele.
+const _mqTelephone = window.matchMedia('(max-width: 767px)');
+_mqTelephone.addEventListener('change', _majAccessibiliteSections);
 
 // Conserve pour l'appelant historique du bandeau "Produits".
 function togglePosProducts(forceState) {
@@ -8288,6 +8339,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (localStorage.getItem('pos_collapsed_' + key) === '1') togglePosSection(key, true);
         } catch (e) {}
     });
+    _majAccessibiliteSections();
 });
 
 function togglePosHeader() {

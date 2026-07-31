@@ -1803,3 +1803,16 @@ html, body {
 .mobile-orders-actions {
     display: none;
 }
+
+/* Un panier replie ne contient que son en-tete et ses 4 actions, soit 92px.
+   Or le bloc <= 400px impose .mobile-cart-panel { min-height: 240px }, et
+   cette valeur n'etait neutralisee que pour .cart-empty: un panier replie
+   AVEC des lignes restait force a 240px sur un iPhone SE ou 13 mini. Le repli
+   ne liberait donc rien, et 130px de bas de page passaient sous le panneau. */
+@media (max-width: 767px) {
+    .mobile-cart-panel.cart-collapsed {
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+    }
+}

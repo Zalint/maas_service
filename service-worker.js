@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mata-pos-v29';
+const CACHE_NAME = 'mata-pos-v30';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',
@@ -80,8 +80,15 @@ self.addEventListener('fetch', event => {
   // version. Le document est petit et rarement hors ligne: on le prend au
   // reseau en priorite, et on ne retombe sur le cache qu'en cas d'echec.
   if (request.mode === 'navigate' || request.destination === 'document') {
+    // Course contre une limite de temps: une connexion mobile qui traine sans
+    // echouer laisse fetch() en attente indefiniment, et le repli sur le cache
+    // n'arrive jamais - exactement au moment ou il servirait le plus.
+    const DELAI_RESEAU_MS = 3000;
     event.respondWith(
-      fetch(request)
+      Promise.race([
+        fetch(request),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('network-timeout')), DELAI_RESEAU_MS))
+      ])
         .then(response => {
           if (response && response.status === 200) {
             const clone = response.clone();
