@@ -1236,8 +1236,14 @@ function afficherPanier() {
             mobileContainer.appendChild(mobileItemElement);
         }
     });
-    
+
     mettreAJourTotaux();
+
+    // Le panneau vient de changer de hauteur: la reserve sous le contenu doit
+    // suivre. Appel explicite plutot que de compter sur le ResizeObserver
+    // seul, qui ne se declenche pas quand les etapes de rendu sont suspendues
+    // (onglet en arriere-plan, page occultee).
+    if (typeof _majReservePanier === 'function') _majReservePanier();
 }
 
 function creerElementPanier(item, index) {
@@ -8278,6 +8284,9 @@ function togglePosSection(key, forceState) {
     }
 
     try { localStorage.setItem('pos_collapsed_' + key, collapsed ? '1' : '0'); } catch (e) {}
+
+    // Replier le panier change sa hauteur de ~350px: la reserve doit suivre.
+    if (key === 'cart' && typeof _majReservePanier === 'function') _majReservePanier();
 }
 
 // Ces titres sont des <div>/<h3> porteurs d'un onclick: sans role ni tabindex
@@ -8325,7 +8334,53 @@ document.addEventListener('keydown', (e) => {
 // Reference gardee volontairement: une MediaQueryList creee a la volee peut
 // etre ramassee par le GC, et son ecouteur cesse alors d'etre appele.
 const _mqTelephone = window.matchMedia('(max-width: 767px)');
-_mqTelephone.addEventListener('change', _majAccessibiliteSections);
+_mqTelephone.addEventListener('change', () => {
+    _majAccessibiliteSections();
+    _majReservePanier();
+});
+
+// Le panneau panier est en position fixed sur telephone: le bas de la page
+// doit lui reserver la place, sinon il passe dessous et devient inatteignable.
+//
+// Cette reserve a d'abord ete ecrite en constantes (220px, puis 360px pour un
+// panier rempli, 110px pour un panier replie). Chacune s'est revelee fausse
+// des que l'etat changeait: le panneau va de 92px (replie) a 55vh (rempli,
+// soit 447px sur un iPhone SE) en passant par 195 et 281. On mesure donc la
+// hauteur reelle plutot que de la deviner.
+let _roPanier = null;
+
+function _majReservePanier() {
+    const racine = document.documentElement;
+
+    if (!_mqTelephone.matches) {
+        racine.style.removeProperty('--reserve-panier');
+        return;
+    }
+
+    const panneau = document.querySelector('.mobile-cart-panel');
+    if (!panneau) return;
+
+    racine.style.setProperty('--reserve-panier', (panneau.offsetHeight + 16) + 'px');
+}
+
+// ResizeObserver plutot qu'un appel dans chaque fonction qui touche au panier
+// (ajout, retrait, repli, vidage, conversion de commande...): la hauteur est
+// la seule chose qui compte, et c'est exactement ce qu'il observe.
+document.addEventListener('DOMContentLoaded', () => {
+    const panneau = document.querySelector('.mobile-cart-panel');
+    if (!panneau) return;
+
+    _majReservePanier();
+
+    // Reference gardee: un ResizeObserver non reference peut etre ramasse par
+    // le GC. Il complete les appels explicites (afficherPanier,
+    // togglePosSection) pour les changements de hauteur qu'ils ne couvrent
+    // pas: rotation de l'ecran, clavier virtuel, retour de veille.
+    if (typeof ResizeObserver === 'function') {
+        _roPanier = new ResizeObserver(_majReservePanier);
+        _roPanier.observe(panneau);
+    }
+});
 
 // Conserve pour l'appelant historique du bandeau "Produits".
 function togglePosProducts(forceState) {

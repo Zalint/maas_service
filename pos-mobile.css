@@ -1225,8 +1225,12 @@ html, body {
     .pos-main {
         height: auto !important;
         overflow: visible !important;
-        /* Reserve la place du panier fixe compacte (~208px) */
-        padding-bottom: 220px !important;
+        /* Reserve la place du panneau panier, qui est en position fixed.
+           --reserve-panier est mesuree en JS (_majReservePanier) car la
+           hauteur du panneau va de 92px replie a 55vh rempli: toute constante
+           est fausse dans au moins un etat. 220px = valeur de repli si le JS
+           n'a pas encore tourne. */
+        padding-bottom: var(--reserve-panier, 220px) !important;
     }
 
     .pos-products {
@@ -1610,40 +1614,13 @@ html, body {
     }
 }
 
-/* Le panneau panier est fixe: sans reserve suffisante, le bas de la page
-   (bouton "Faire la caisse") passe dessous et devient inatteignable. La
-   reserve suit l'etat du panier (142px a vide, jusqu'a ~300px rempli).
-   :has() est une amelioration progressive: sans lui on retombe sur les 220px
-   du bloc precedent, c'est-a-dire le comportement d'avant. */
-@media (max-width: 767px) {
-    body:has(.mobile-cart-panel.cart-has-items) .pos-main {
-        padding-bottom: 360px !important;
-    }
-}
+/* La reserve sous le contenu est desormais mesuree (var(--reserve-panier),
+   cf _majReservePanier dans pos.js). Trois regles a constantes vivaient ici -
+   360px pour un panier rempli, un repli @supports pour Safari < 16.4, 110px
+   pour un panier replie - et chacune s'est revelee fausse dans au moins un
+   etat: avec 8 lignes le panneau atteint 441px pour 360px reserves. */
 
-/* Repli pour les navigateurs sans :has() (Safari < 16.4): la reserve ne peut
-   pas suivre l'etat du panier, on la fixe au pire cas. Sans cela le panier
-   rempli (~300px, plancher de 240px impose par le bloc <= 400px) recouvre le
-   bas de page, qui redevient inatteignable. Les navigateurs qui supportent
-   :has() gardent les 220px quand le panier est vide. */
-@supports not (selector(:has(*))) {
-    @media (max-width: 767px) {
-        .pos-main {
-            padding-bottom: 360px !important;
-        }
-    }
-}
 
-/* Panier replie: le panneau ne fait plus que ~92px (en-tete + 4 actions).
-   Garder la reserve du panneau deplie laisserait ~250px de vide en bas, ce
-   qui va a l'encontre du repli. Regle placee apres celle du panier rempli:
-   a specificite egale elle gagne, et c'est voulu (un panier replie mesure
-   92px qu'il contienne des lignes ou non). */
-@media (max-width: 767px) {
-    body:has(.mobile-cart-panel.cart-collapsed) .pos-main {
-        padding-bottom: 110px !important;
-    }
-}
 
 /* Les sous-categories (visibles en Epicerie: Riz & Feculents, Conserves,
    Epices...) s'empilaient sur 3 lignes et mangeaient 132px. Meme traitement
