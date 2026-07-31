@@ -11176,9 +11176,78 @@ async function chargerCommandesWeb() {
     updateCommandesWebCounts();
 }
 
+// ---------------------------------------------------------------------
+// Notification sonore a l'arrivee d'une commande web (equivalent DATA).
+// ---------------------------------------------------------------------
+
+// Un seul contexte audio pour toute la session: en creer un par notification
+// finit par atteindre la limite du navigateur et le son cesse de sortir.
+let _notifAudioCtx = null;
+
+function _getNotifAudioContext() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!_notifAudioCtx) _notifAudioCtx = new Ctx();
+    if (_notifAudioCtx.state === 'suspended' && _notifAudioCtx.resume) _notifAudioCtx.resume();
+    return _notifAudioCtx;
+}
+
+// iOS et Chrome n'autorisent le son qu'apres une interaction de l'utilisateur.
+// On debloque le contexte au premier geste, une seule fois: sans cela la
+// premiere notification de la session serait muette.
+(function () {
+    function debloquerAudio() {
+        _getNotifAudioContext();
+        document.removeEventListener('pointerdown', debloquerAudio);
+        document.removeEventListener('keydown', debloquerAudio);
+    }
+    document.addEventListener('pointerdown', debloquerAudio);
+    document.addEventListener('keydown', debloquerAudio);
+})();
+
+// Ding-dong en deux notes descendantes, genere sans fichier audio.
+function playNotificationSound() {
+    try {
+        const ctx = _getNotifAudioContext();
+        if (!ctx) return;
+
+        [{ freq: 800, time: 0, duration: 0.15 },
+         { freq: 600, time: 0.2, duration: 0.2 }].forEach((note) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(note.freq, ctx.currentTime + note.time);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime + note.time);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + note.time + note.duration);
+            osc.start(ctx.currentTime + note.time);
+            osc.stop(ctx.currentTime + note.time + note.duration);
+        });
+    } catch (e) {
+        console.error('🔇 [COMMANDES WEB] Son de notification indisponible:', e);
+    }
+}
+
+// null et non 0: le premier releve fixe la reference SANS sonner. Sinon
+// l'application sonnerait a chaque ouverture de page tant qu'il resterait des
+// commandes en attente, alors qu'on veut signaler une ARRIVEE.
+let _cwLastPendingCount = null;
+
 function updateCommandesWebCounts() {
     const c = { all: _commandesWeb.length, pending: 0, assigned: 0, converted: 0 };
     _commandesWeb.forEach(o => { c[statutCommandeWeb(o)]++; });
+
+    if (_cwLastPendingCount !== null && c.pending > _cwLastPendingCount) {
+        const nouvelles = c.pending - _cwLastPendingCount;
+        console.log(`🔔 [COMMANDES WEB] ${nouvelles} nouvelle(s) commande(s) detectee(s)`);
+        playNotificationSound();
+        try {
+            showToast(`🔔 ${nouvelles} nouvelle${nouvelles > 1 ? 's' : ''} commande${nouvelles > 1 ? 's' : ''} web`, 'info');
+        } catch (e) {}
+    }
+    _cwLastPendingCount = c.pending;
+
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('cw-count-all', c.all); set('cw-count-pending', c.pending);
     set('cw-count-assigned', c.assigned); set('cw-count-converted', c.converted);
