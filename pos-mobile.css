@@ -1551,3 +1551,32 @@ html, body {
         font-weight: 700;
     }
 }
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - RESUME DU JOUR / LISTE DES COMMANDES
+   ----------------------------------------------------------------------------
+   .pos-summary (Resume du jour, Dernieres transactions, Faire la caisse) etait
+   simplement masque sur telephone. Le mode "transactions-expanded" existe bien
+   et est deja style pour mobile, mais le bouton qui le declenche
+   (.btn-expand-transactions, pos.html) vit A L'INTERIEUR de .pos-summary: sur
+   telephone il etait donc impossible d'atteindre la liste des commandes.
+
+   La page defile desormais: on empile simplement le bloc sous les produits,
+   sans zone de scroll imbriquee (mauvaise pratique sur mobile).
+   ============================================================================ */
+@media (max-width: 767px) {
+    .pos-summary {
+        display: flex !important;
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        border-radius: 12px;
+        margin-top: 0.5rem;
+    }
+
+    .transactions-list {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+}
