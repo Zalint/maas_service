@@ -1605,6 +1605,17 @@ html, body {
     }
 }
 
+/* Panier replie: le panneau ne fait plus que ~92px (en-tete + 4 actions).
+   Garder la reserve du panneau deplie laisserait ~250px de vide en bas, ce
+   qui va a l'encontre du repli. Regle placee apres celle du panier rempli:
+   a specificite egale elle gagne, et c'est voulu (un panier replie mesure
+   92px qu'il contienne des lignes ou non). */
+@media (max-width: 767px) {
+    body:has(.mobile-cart-panel.cart-collapsed) .pos-main {
+        padding-bottom: 110px !important;
+    }
+}
+
 /* Les sous-categories (visibles en Epicerie: Riz & Feculents, Conserves,
    Epices...) s'empilaient sur 3 lignes et mangeaient 132px. Meme traitement
    que la rangee de categories: une seule ligne defilante. */
