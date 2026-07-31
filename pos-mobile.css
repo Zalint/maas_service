@@ -1580,3 +1580,42 @@ html, body {
         overflow: visible !important;
     }
 }
+
+/* Le panneau panier est fixe: sans reserve suffisante, le bas de la page
+   (bouton "Faire la caisse") passe dessous et devient inatteignable. La
+   reserve suit l'etat du panier (142px a vide, jusqu'a ~300px rempli).
+   :has() est une amelioration progressive: sans lui on retombe sur les 220px
+   du bloc precedent, c'est-a-dire le comportement d'avant. */
+@media (max-width: 767px) {
+    body:has(.mobile-cart-panel.cart-has-items) .pos-main {
+        padding-bottom: 360px !important;
+    }
+}
+
+/* Les sous-categories (visibles en Epicerie: Riz & Feculents, Conserves,
+   Epices...) s'empilaient sur 3 lignes et mangeaient 132px. Meme traitement
+   que la rangee de categories: une seule ligne defilante. */
+@media (max-width: 767px) {
+    .sub-categories {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 0.4rem !important;
+        padding: 0.4rem 1.5rem 0.4rem 0.75rem !important;
+        scrollbar-width: none;
+        min-width: 0 !important;
+    }
+
+    .sub-categories::-webkit-scrollbar {
+        display: none;
+    }
+
+    .subcategory-btn {
+        flex: 0 0 auto !important;
+        white-space: nowrap;
+        padding: 0 0.8rem !important;
+        height: 34px !important;
+        font-size: 0.8rem !important;
+        border-radius: 17px !important;
+    }
+}
