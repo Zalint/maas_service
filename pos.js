@@ -11239,17 +11239,6 @@ async function playNotificationSound() {
     }
 }
 
-// Verification manuelle depuis le menu Admin.
-async function testerSonNotification() {
-    await playNotificationSound();
-    const ctx = _notifAudioCtx;
-    if (ctx && ctx.state === 'running') {
-        try { showToast('🔔 Son de notification testé', 'info'); } catch (e) {}
-    } else {
-        try { showToast('🔇 Le navigateur bloque l\'audio de cette page', 'error'); } catch (e) {}
-    }
-}
-
 // null et non 0: le premier releve fixe la reference SANS sonner. Sinon
 // l'application sonnerait a chaque ouverture de page tant qu'il resterait des
 // commandes en attente, alors qu'on veut signaler une ARRIVEE.

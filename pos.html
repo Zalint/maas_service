@@ -122,12 +122,6 @@
                         <button class="admin-menu-item" onclick="window.openChangePasswordModal && window.openChangePasswordModal(); toggleAdminMenu();">
                             <i class="fas fa-key"></i> Changer mot de passe
                         </button>
-                        <!-- Un vrai clic vaut activation utilisateur: c'est le
-                             seul moyen fiable de verifier le son, la console
-                             ne debloque pas le contexte audio. -->
-                        <button class="admin-menu-item" onclick="testerSonNotification(); toggleAdminMenu();">
-                            <i class="fas fa-volume-up"></i> Tester le son
-                        </button>
                         <button class="admin-menu-item" onclick="posLayoutReset(); toggleAdminMenu();">
                             <i class="fas fa-columns"></i> Réinitialiser le layout
                         </button>
@@ -994,7 +988,7 @@
         </div>
     </div>
 
-    <script src="pos.js?v=20260731-son2"></script>
+    <script src="pos.js?v=20260731-son3"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
