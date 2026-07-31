@@ -55,7 +55,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="stylesheet" href="pos.css?v=20250107e">
-    <link rel="stylesheet" href="pos-mobile.css?v=20260731k">
+    <link rel="stylesheet" href="pos-mobile.css?v=20260731m">
     <link rel="stylesheet" href="css/payment-status.css?v=20260222">
 
 </head>
@@ -121,6 +121,12 @@
                         </button>
                         <button class="admin-menu-item" onclick="window.openChangePasswordModal && window.openChangePasswordModal(); toggleAdminMenu();">
                             <i class="fas fa-key"></i> Changer mot de passe
+                        </button>
+                        <!-- Un vrai clic vaut activation utilisateur: c'est le
+                             seul moyen fiable de verifier le son, la console
+                             ne debloque pas le contexte audio. -->
+                        <button class="admin-menu-item" onclick="testerSonNotification(); toggleAdminMenu();">
+                            <i class="fas fa-volume-up"></i> Tester le son
                         </button>
                         <button class="admin-menu-item" onclick="posLayoutReset(); toggleAdminMenu();">
                             <i class="fas fa-columns"></i> Réinitialiser le layout
@@ -988,7 +994,7 @@
         </div>
     </div>
 
-    <script src="pos.js?v=20260731-son-commandes"></script>
+    <script src="pos.js?v=20260731-son2"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     

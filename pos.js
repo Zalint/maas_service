@@ -11206,10 +11206,20 @@ function _getNotifAudioContext() {
 })();
 
 // Ding-dong en deux notes descendantes, genere sans fichier audio.
-function playNotificationSound() {
+async function playNotificationSound() {
     try {
         const ctx = _getNotifAudioContext();
         if (!ctx) return;
+
+        // resume() est asynchrone: sans l'attendre, on programmait les notes
+        // sur un contexte encore suspendu et RIEN ne sortait, sans erreur.
+        if (ctx.state === 'suspended') {
+            try { await ctx.resume(); } catch (e) {}
+        }
+        if (ctx.state !== 'running') {
+            console.warn('🔇 [COMMANDES WEB] Le navigateur bloque l\'audio tant qu\'il n\'y a pas eu de clic dans la page.');
+            return;
+        }
 
         [{ freq: 800, time: 0, duration: 0.15 },
          { freq: 600, time: 0.2, duration: 0.2 }].forEach((note) => {
@@ -11226,6 +11236,17 @@ function playNotificationSound() {
         });
     } catch (e) {
         console.error('🔇 [COMMANDES WEB] Son de notification indisponible:', e);
+    }
+}
+
+// Verification manuelle depuis le menu Admin.
+async function testerSonNotification() {
+    await playNotificationSound();
+    const ctx = _notifAudioCtx;
+    if (ctx && ctx.state === 'running') {
+        try { showToast('🔔 Son de notification testé', 'info'); } catch (e) {}
+    } else {
+        try { showToast('🔇 Le navigateur bloque l\'audio de cette page', 'error'); } catch (e) {}
     }
 }
 

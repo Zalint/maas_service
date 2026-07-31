@@ -1390,8 +1390,11 @@ html, body {
         font-size: 0.9rem !important;
     }
 
-    .pos-header .btn-icon,
-    .header-right button {
+    /* :not(.admin-menu-item) est indispensable: les entrees du menu Admin
+       sont elles aussi des <button> dans .header-right. Sans l'exclusion
+       elles devenaient des carres de 36px alignes en ligne. */
+    .pos-header .btn-icon:not(.admin-menu-item),
+    .header-right button:not(.admin-menu-item) {
         width: 36px !important;
         height: 36px !important;
         min-width: 36px !important;
@@ -1400,6 +1403,32 @@ html, body {
         align-items: center !important;
         justify-content: center !important;
         font-size: 0.8rem !important;
+    }
+
+    /* Le menu Admin est ancre a left:-164px pour le desktop: sur 390px il
+       sortait de l'ecran par la gauche. On l'aligne sur le bord droit. */
+    .admin-menu-dropdown {
+        /* Ancre a GAUCHE du conteneur et non a droite: le bouton du menu est
+           le 4e d'une rangee alignee a gauche (~132px), un menu de 210px
+           ancre a droite sortait de l'ecran par la gauche. */
+        left: 0 !important;
+        right: auto !important;
+        min-width: 210px !important;
+        max-width: calc(100vw - 1.2rem) !important;
+    }
+
+    .admin-menu-item {
+        display: flex !important;
+        align-items: center;
+        justify-content: flex-start !important;
+        gap: 0.6rem;
+        width: 100% !important;
+        min-width: 0 !important;
+        height: auto !important;
+        min-height: 40px;
+        padding: 0.5rem 0.8rem !important;
+        font-size: 0.85rem !important;
+        white-space: nowrap;
     }
 
     /* --- Bandeau produits + recherche --- */
