@@ -1283,12 +1283,14 @@ function round2(n) {
 // Formule:
 //   Valeur(D) = Stock_soir(D) × coeff
 //             + Σ cloture.montant_total_caisse where date=D, is_latest, NOT NULL
-//             − Σ commission_MaaS where date ≤ D (cumul depuis toujours)
+//             − Σ commission_MaaS where 1er du mois de D ≤ date ≤ D
 //
 // coeff = (100 - stock_pertes_decoupe_pct) / 100  (partage avec PL)
 // Stock soir: fallback au snapshot le plus proche <= D si pas pile a D.
-// Solde du fournisseur: cumul commission MaaS depuis 1970 jusqu'a D inclus
-// (vision bilan, pas vision flux).
+// Solde du fournisseur: commission MaaS du MOIS EN COURS, la facturation
+// fournisseur etant mensuelle. C'etait un cumul depuis 1970 jusqu'au
+// 2026-08-01, ce qui faisait porter a la Valeur du jour des dettes de mois
+// deja clos.
 
 // Memoization du cumul commission par date (key=dateD).
 // computeCreances('1970-01-01', dateD) est couteux (scan tous Ventes +
@@ -1416,18 +1418,25 @@ router.get('/cash-stock', async (req, res) => {
         );
         const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
 
-        // 4) Solde du fournisseur = cumul commission MaaS depuis 1970-01-01
-        //    jusqu'a D (vision bilan, pas vision flux). Memoize: pour dates
-        //    passees le resultat est stable, pour today on cache 60s. Evite
-        //    de scanner toutes les ventes a chaque ouverture du panneau.
+        // 4) Solde du fournisseur = commission MaaS du MOIS EN COURS
+        //    (du 1er du mois de D jusqu'a D inclus).
+        //
+        //    C'etait auparavant un cumul depuis 1970 ("vision bilan"). La
+        //    facturation fournisseur etant mensuelle, ce cumul faisait porter
+        //    a la Valeur du jour des dettes de mois deja clos.
+        //
+        //    Memoize par date: pour les dates passees le resultat est stable,
+        //    pour today on cache 60s. Evite de rescanner les ventes a chaque
+        //    ouverture du panneau.
+        const moisDebut = dateD.slice(0, 8) + '01';
         let soldeDuFournisseur = getCachedCumul(dateD, todayISO);
         if (soldeDuFournisseur === null) {
             const { computeCreances } = require('./finance-creances');
-            const creancesCumul = await computeCreances({
-                dateDebut: '1970-01-01',
+            const creancesMois = await computeCreances({
+                dateDebut: moisDebut,
                 dateFin: dateD
             });
-            soldeDuFournisseur = creancesCumul.ce_que_je_dois || 0;
+            soldeDuFournisseur = creancesMois.ce_que_je_dois || 0;
             setCachedCumul(dateD, soldeDuFournisseur);
         }
 
@@ -1453,6 +1462,9 @@ router.get('/cash-stock', async (req, res) => {
                     par_pv: cashParPv
                 },
                 solde_du_fournisseur: round2(soldeDuFournisseur),
+                // Periode reellement couverte par le solde ci-dessus: permet a
+                // l'interface de dire "du 01 au 31" plutot qu'un vague "cumul".
+                solde_periode: { debut: moisDebut, fin: dateD },
                 valeur: round2(valeur)
             }
         });

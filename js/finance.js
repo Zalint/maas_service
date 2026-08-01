@@ -2066,6 +2066,13 @@
         const valeur = d.valeur || 0;
         const valColor = valeur >= 0 ? 'success' : 'danger';
 
+        // Periode du solde fournisseur: le mois en cours, du 1er a la date
+        // demandee. Renvoyee par l'API pour eviter de la recalculer ici.
+        const sp = d.solde_periode;
+        const periodeSolde = sp && sp.debut && sp.fin
+            ? `du ${sp.debut.slice(8)} au ${sp.fin.slice(8)}/${sp.fin.slice(5, 7)}`
+            : 'du mois en cours';
+
         const stockSnapshotInfo = stock.soir_date_utilisee && stock.soir_date_utilisee !== d.date
             ? `<small class="text-warning"><i class="bi bi-exclamation-triangle"></i> Snapshot du ${esc(stock.soir_date_utilisee)} utilisé (pas de stock soir saisi le ${esc(d.date)})</small>`
             : '';
@@ -2119,7 +2126,7 @@
                                 <td class="text-end text-success">+ ${esc(fmtMoney(cash.total))}</td>
                             </tr>
                             <tr>
-                                <td>− Solde dû fournisseur <span class="text-muted">(cumul commission MaaS)</span></td>
+                                <td>− Solde dû fournisseur <span class="text-muted">(commission MaaS ${esc(periodeSolde)})</span></td>
                                 <td class="text-end text-danger">− ${esc(fmtMoney(solde))}</td>
                             </tr>
                             <tr style="background:#e7f5ff;border-top:2px solid #339af0">
