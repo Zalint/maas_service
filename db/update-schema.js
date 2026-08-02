@@ -657,6 +657,28 @@ async function updateSchema() {
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_charges_mois_nom ON finance_charges_mois(nom, mois DESC)`);
         console.log('Table finance_charges_mois verifiee');
 
+        // Valeurs datees des parametres de Finance (aujourd'hui: le % de
+        // pertes decoupe). finance_config garde la valeur courante, qui sert
+        // d'ancrage pour les mois anterieurs a toute saisie mensuelle.
+        //
+        // Sans cela, changer le taux recalculait TOUS les PL passes avec la
+        // nouvelle valeur, sans trace de l'ancienne: un PL imprime n'etait
+        // plus reproductible.
+        //
+        // Colonne `key` generique: ajouter un autre parametre date ne
+        // demandera pas une nouvelle table. Volontairement NON seedee.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_config_mois (
+                mois CHAR(7) NOT NULL CHECK (mois ~ '^\\d{4}-\\d{2}$'),
+                key VARCHAR(60) NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, key)
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_config_mois_key ON finance_config_mois(key, mois DESC)`);
+        console.log('Table finance_config_mois verifiee');
+
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias
         // explicite gere depuis l'UI Mapping produits.

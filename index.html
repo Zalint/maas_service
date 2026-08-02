@@ -2971,7 +2971,7 @@
                             <!-- Réglage pertes découpe (% appliqué sur la variation stock dans le PL) -->
                             <div class="row g-2 mb-3 align-items-end p-2" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
                                 <div class="col-md-4">
-                                    <label class="form-label small">Pertes découpe (%)</label>
+                                    <label class="form-label small">Pertes découpe (%) — mois choisi ci-dessus</label>
                                     <input type="number" id="fin-stock-pertes-pct"
                                            class="form-control form-control-sm"
                                            min="0" max="100" step="0.1"
@@ -2986,6 +2986,7 @@
                                     <small class="text-muted">
                                         Coefficient appliqué : <span id="fin-stock-coeff" class="fw-bold">95%</span>
                                         × (Stock soir − Stock matin)
+                                        <br><span id="fin-pertes-origine" class="fst-italic"></span>
                                     </small>
                                 </div>
                             </div>
@@ -3830,7 +3831,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260801-charges-mois2"></script>
+    <script src="js/finance.js?v=20260801-pertes-mois"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

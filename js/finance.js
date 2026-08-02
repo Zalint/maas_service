@@ -1632,6 +1632,16 @@
         }
     }
 
+    // Meme distinction que pour les charges: un taux affiche peut etre saisi
+    // pour ce mois ou reporte d'un mois anterieur.
+    function majPertesOrigine(saisiCeMois, mois) {
+        const el = document.getElementById('fin-pertes-origine');
+        if (!el || !mois) return;
+        el.textContent = saisiCeMois
+            ? 'Saisi pour ' + formatMoisFr(mois) + '.'
+            : 'Reporté — sauvegarder le fixera pour ' + formatMoisFr(mois) + '.';
+    }
+
     // Mois selectionne dans l'onglet Charges. Par defaut le mois courant.
     function getChargesMois() {
         const el = document.getElementById('fin-charges-mois');
@@ -1649,7 +1659,7 @@
             // Parallel: charges list + config (pour stock_pertes_decoupe_pct)
             const [resCharges, resCfg] = await Promise.all([
                 fetch('/api/finance/charges' + (mois ? '?mois=' + encodeURIComponent(mois) : ''), { credentials: 'include' }),
-                fetch('/api/finance/config', { credentials: 'include' })
+                fetch('/api/finance/config' + (mois ? '?mois=' + encodeURIComponent(mois) : ''), { credentials: 'include' })
             ]);
             const jCharges = await resCharges.json();
             const jCfg = await resCfg.json();
@@ -1662,6 +1672,7 @@
                 const input = document.getElementById('fin-stock-pertes-pct');
                 if (input) input.value = Number.isFinite(pct) ? pct : 5;
                 updateStockCoeffDisplay(Number.isFinite(pct) ? pct : 5);
+                majPertesOrigine(jCfg.pertes_saisi_ce_mois, mois);
             }
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur charges: ' + e.message, 'danger');
@@ -1686,12 +1697,15 @@
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ stock_pertes_decoupe_pct: pct })
+                body: JSON.stringify({ stock_pertes_decoupe_pct: pct, mois: getChargesMois() })
             });
             const j = await res.json();
             if (!j.success) throw new Error(j.error || 'Erreur');
             updateStockCoeffDisplay(pct);
-            if (typeof showToast === 'function') showToast(`Pertes découpe = ${pct}% sauvegardé`, 'success');
+            if (typeof showToast === 'function') {
+                showToast(`Pertes découpe = ${pct}% pour ${formatMoisFr(getChargesMois())}`, 'success');
+            }
+            loadCharges();
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }

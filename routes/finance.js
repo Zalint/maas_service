@@ -59,6 +59,7 @@ const {
     FinanceCharge,
     FinanceChargeHistory,
     FinanceChargeMois,
+    FinanceConfigMois,
     ClotureCaisse,
     Produit,
     Vente,
@@ -1314,7 +1315,15 @@ router.get('/pl', async (req, res) => {
         // de la variation brute.
         const cfgRows = await FinanceConfig.findAll();
         const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
-        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        // Taux du mois de la date de FIN. La variation stock est un seul
+        // nombre pour toute la periode (stock matin du debut -> stock soir de
+        // la fin): un seul coefficient s'y applique, il n'y a rien a
+        // decouper par mois. Pour un PL d'un seul mois - le cas courant -
+        // c'est exactement le taux de ce mois.
+        const moisFin = dateFin.slice(0, 7);
+        const pertesPct = parseFloat(await resolveConfigPourMois(
+            moisFin, 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+        ));
         const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
             ? pertesPct
             : 5;
@@ -1377,6 +1386,25 @@ router.get('/pl', async (req, res) => {
 
 function round2(n) {
     return Math.round(n * 100) / 100;
+}
+
+/**
+ * Valeur d'un parametre de Finance applicable a un mois.
+ *
+ * Meme mecanique que les charges: la ligne finance_config_mois la plus
+ * recente avec mois <= M, a defaut la valeur courante de finance_config.
+ *
+ * Sans cela, changer le taux de pertes decoupe recalculait tous les PL passes
+ * avec la nouvelle valeur: un PL deja imprime n'etait plus reproductible.
+ */
+async function resolveConfigPourMois(mois, key, valeurAncrage) {
+    const { Op } = require('sequelize');
+    const row = await FinanceConfigMois.findOne({
+        where: { key, mois: { [Op.lte]: mois } },
+        order: [['mois', 'DESC']],
+        raw: true
+    });
+    return row ? row.value : valeurAncrage;
 }
 
 /**
@@ -1536,7 +1564,10 @@ router.get('/cash-stock', async (req, res) => {
         // 2) Coefficient (partage avec PL via finance_config).
         const cfgRows = await FinanceConfig.findAll();
         const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
-        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        // Taux applicable au mois de la date demandee.
+        const pertesPct = parseFloat(await resolveConfigPourMois(
+            dateD.slice(0, 7), 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+        ));
         const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
             ? pertesPct
             : 5;
@@ -1623,11 +1654,28 @@ router.get('/cash-stock', async (req, res) => {
 // CONFIG
 // =====================================================
 
+// ?mois=YYYY-MM : stock_pertes_decoupe_pct est rendu pour ce mois (saisie du
+// mois, report du dernier mois saisi, ou valeur d'ancrage). Sans le
+// parametre, valeurs courantes - comportement d'origine.
 router.get('/config', async (req, res) => {
     try {
         const rows = await FinanceConfig.findAll();
         const config = {};
         for (const r of rows) config[r.key] = r.value;
+
+        const mois = req.query.mois;
+        if (mois) {
+            if (!/^\d{4}-\d{2}$/.test(mois)) {
+                return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+            }
+            config.stock_pertes_decoupe_pct = await resolveConfigPourMois(
+                mois, 'stock_pertes_decoupe_pct', config.stock_pertes_decoupe_pct
+            );
+            const propre = await FinanceConfigMois.findOne({
+                where: { mois, key: 'stock_pertes_decoupe_pct' }, raw: true
+            });
+            return res.json({ success: true, mois, data: config, pertes_saisi_ce_mois: !!propre });
+        }
         res.json({ success: true, data: config });
     } catch (e) {
         console.error('GET /api/finance/config:', e);
@@ -1639,6 +1687,12 @@ router.get('/config', async (req, res) => {
 router.put('/config', async (req, res) => {
     try {
         const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct'];
+        // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
+        // parametre date a ce jour.
+        const moisCible = req.body?.mois || null;
+        if (moisCible && !/^\d{4}-\d{2}$/.test(moisCible)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+        }
         const now = new Date();
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
@@ -1652,7 +1706,14 @@ router.put('/config', async (req, res) => {
                         error: `${key} doit etre entre 0 et 100`
                     });
                 }
-                await FinanceConfig.upsert({ key, value, updated_at: now });
+                // Avec un mois, le taux de pertes est DATE et l'ancrage
+                // n'est pas touche: sinon la nouvelle valeur deviendrait le
+                // repli des mois anterieurs et reecrirait le passe.
+                if (moisCible && key === 'stock_pertes_decoupe_pct') {
+                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now });
+                } else {
+                    await FinanceConfig.upsert({ key, value, updated_at: now });
+                }
             }
         }
         // commission_pct change -> les calculs derives (commission MaaS cumul
