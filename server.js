@@ -4308,7 +4308,13 @@ app.get('/api/ventes-date', checkAuth, async (req, res) => {
                 montantRestantDu: parseFloat(vente.montantRestantDu) || 0,
                 commande_id: vente.commandeId || null,
                 statut_preparation: vente.statutPreparation || 'en_preparation',
-                livreur_assigne: vente.livreurAssigne || null
+                livreur_assigne: vente.livreurAssigne || null,
+                // Composition d'un pack telle qu'enregistree a la vente.
+                // Sans ce champ, le modal de detail retombait sur la
+                // composition PAR DEFAUT: un pack dont on avait remplace le
+                // veau par du boeuf continuait d'afficher du veau, la
+                // modification restant invisible bien qu'enregistree.
+                extension: vente.extension || null
             };
         });
         

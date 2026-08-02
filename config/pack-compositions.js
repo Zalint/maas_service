@@ -1,45 +1,52 @@
 /**
  * Configuration des compositions par défaut pour les packs
  * Chaque pack contient une liste de produits avec leurs quantités
+ *
+ * Les noms de produits doivent correspondre EXACTEMENT au catalogue, car ils
+ * servent à retrouver la catégorie du produit (Bovin, Ovin...) lorsqu'un pack
+ * est décomposé. Cette copie référençait "Veau" et "Poulet", qui existent au
+ * catalogue mais SANS catégorie: les kilos d'un pack vendu sans composition
+ * personnalisée n'étaient donc rattachés à aucune catégorie. L'écran de
+ * mapping du POS, lui, propose bien "Veau en détail" et "Poulet en détail".
  */
 
 const PACK_COMPOSITIONS = {
   "Pack25000": [
-    { produit: "Veau", quantite: 4, unite: "kg" },
-    { produit: "Poulet", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 4, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack20000": [
-    { produit: "Veau", quantite: 3.5, unite: "kg" },
-    { produit: "Poulet", quantite: 1, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 3.5, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 1, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack50000": [
     { produit: "Agneau", quantite: 2.5, unite: "kg" },
-    { produit: "Veau", quantite: 6, unite: "kg" },
-    { produit: "Poulet", quantite: 4, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 6, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 4, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ],
   "Pack35000": [
-    { produit: "Veau", quantite: 4, unite: "kg" },
-    { produit: "Poulet", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 4, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack30000": [
-    { produit: "Veau", quantite: 2, unite: "kg" },
-    { produit: "Poulet", quantite: 6, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 2, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 6, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack75000": [
-    { produit: "Veau", quantite: 8, unite: "kg" },
+    { produit: "Veau en détail", quantite: 8, unite: "kg" },
     { produit: "Agneau", quantite: 5, unite: "kg" },
-    { produit: "Poulet", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ],
   "Pack100000": [
-    { produit: "Veau", quantite: 8, unite: "kg" },
+    { produit: "Veau en détail", quantite: 8, unite: "kg" },
     { produit: "Agneau", quantite: 1, unite: "kg" },
-    { produit: "Poulet", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ]
 };
