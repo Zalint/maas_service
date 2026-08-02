@@ -631,6 +631,32 @@ async function updateSchema() {
         `);
         console.log('Table finance_charges_history verifiee (genesis seedee)');
 
+        // Montants des charges fixes par mois.
+        //
+        // finance_charges porte le catalogue et le montant courant; cette
+        // table porte les montants DATES, saisis depuis Finance > Charges en
+        // choisissant un mois. Le PL resout, pour chaque mois qu'il couvre,
+        // la ligne la plus recente avec mois <= ce mois; a defaut il retombe
+        // sur finance_charges.montant_mensuel.
+        //
+        // Volontairement NON seedee: sans ligne, la resolution rend la valeur
+        // courante, donc un PL anterieur a toute saisie mensuelle donne
+        // exactement le meme resultat qu'avant cette table.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges_mois (
+                mois CHAR(7) NOT NULL CHECK (mois ~ '^\\d{4}-\\d{2}$'),
+                nom VARCHAR(100) NOT NULL
+                    REFERENCES finance_charges(nom) ON DELETE CASCADE,
+                montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, nom)
+            )
+        `);
+        // Resolution = "derniere ligne <= mois demande, par charge": l'index
+        // descendant sur (nom, mois) sert directement ce parcours.
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_charges_mois_nom ON finance_charges_mois(nom, mois DESC)`);
+        console.log('Table finance_charges_mois verifiee');
+
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias
         // explicite gere depuis l'UI Mapping produits.

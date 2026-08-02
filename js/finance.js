@@ -94,6 +94,9 @@
         if (chargesSave) chargesSave.addEventListener('click', onChargesSave);
         const chargesAdd = document.getElementById('fin-charges-add');
         if (chargesAdd) chargesAdd.addEventListener('click', () => addChargeRow('', '', 0, 99));
+        // Changer de mois recharge les montants applicables a ce mois.
+        const chargesMois = document.getElementById('fin-charges-mois');
+        if (chargesMois) chargesMois.addEventListener('change', loadCharges);
         const plRefresh = document.getElementById('fin-pl-refresh');
         if (plRefresh) plRefresh.addEventListener('click', loadPl);
         const cashStockRefresh = document.getElementById('fin-cashstock-refresh');
@@ -1577,17 +1580,82 @@
 
     // ===== Charges mensuelles (pour calcul PL) =====
 
+    // "420 000 x 1.03" n'avait plus de sens une fois le prorata calcule mois
+    // par mois: un mois complet vaut exactement son montant, et une periode a
+    // cheval melange deux montants. On dit donc ce qui est couvert.
+    function libelleProrataCharges(ch) {
+        const mois = Array.isArray(ch.mois_couverts) ? ch.mois_couverts : [];
+        if (!mois.length) return '';
+        const complet = (m) => m.joursCouverts === m.joursDuMois;
+
+        if (mois.length === 1) {
+            return complet(mois[0])
+                ? '(' + formatMoisFr(mois[0].mois) + ' complet)'
+                : '(' + mois[0].joursCouverts + '/' + mois[0].joursDuMois + ' jours de '
+                    + formatMoisFr(mois[0].mois) + ')';
+        }
+        if (mois.every(complet)) {
+            return '(' + mois.length + ' mois complets)';
+        }
+        return '(' + mois.map((m) => m.joursCouverts + '/' + m.joursDuMois).join(' + ') + ' jours)';
+    }
+
+    const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+        'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+    function formatMoisFr(mois) {
+        if (!mois) return '';
+        const [y, m] = mois.split('-');
+        return (MOIS_FR[parseInt(m, 10) - 1] || mois) + ' ' + y;
+    }
+
+    // Distingue un montant saisi pour ce mois d'un montant reporte d'un mois
+    // anterieur: sans cela l'utilisateur croit avoir saisi ce qu'il n'a
+    // qu'herite, et ne comprend pas pourquoi une modification "disparait".
+    function majChargesMoisInfo(rows, mois) {
+        const el = document.getElementById('fin-charges-mois-info');
+        if (!el) return;
+        const total = (rows || []).reduce((s, r) => s + (parseFloat(r.montant_mensuel) || 0), 0);
+        const nbSaisis = (rows || []).filter((r) => r.saisi_ce_mois).length;
+        const libelle = formatMoisFr(mois);
+
+        if (!rows || !rows.length) { el.textContent = ''; return; }
+        if (nbSaisis === rows.length) {
+            el.innerHTML = 'Montants saisis pour <strong>' + libelle + '</strong> — total '
+                + total.toLocaleString('fr-FR') + ' FCFA.';
+        } else if (nbSaisis === 0) {
+            el.innerHTML = 'Aucune saisie pour <strong>' + libelle
+                + '</strong> : montants reportés. Sauvegarder les fixera pour ce mois.';
+        } else {
+            el.innerHTML = nbSaisis + ' charge(s) sur ' + rows.length + ' saisie(s) pour <strong>'
+                + libelle + '</strong>, le reste est reporté.';
+        }
+    }
+
+    // Mois selectionne dans l'onglet Charges. Par defaut le mois courant.
+    function getChargesMois() {
+        const el = document.getElementById('fin-charges-mois');
+        if (!el) return null;
+        if (!el.value) {
+            const d = new Date();
+            el.value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        }
+        return el.value;
+    }
+
     async function loadCharges() {
         try {
+            const mois = getChargesMois();
             // Parallel: charges list + config (pour stock_pertes_decoupe_pct)
             const [resCharges, resCfg] = await Promise.all([
-                fetch('/api/finance/charges', { credentials: 'include' }),
+                fetch('/api/finance/charges' + (mois ? '?mois=' + encodeURIComponent(mois) : ''), { credentials: 'include' }),
                 fetch('/api/finance/config', { credentials: 'include' })
             ]);
             const jCharges = await resCharges.json();
             const jCfg = await resCfg.json();
             if (!jCharges.success) throw new Error(jCharges.error || 'Erreur charges');
             renderCharges(jCharges.data);
+            majChargesMoisInfo(jCharges.data, mois);
             // Hydrater le champ pertes %
             if (jCfg.success) {
                 const pct = parseFloat(jCfg.data.stock_pertes_decoupe_pct);
@@ -1847,11 +1915,13 @@
                 method: 'PUT',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items })
+                body: JSON.stringify({ items, mois: getChargesMois() })
             });
             const j = await res.json();
             if (!j.success) throw new Error(j.error || 'Erreur');
-            if (typeof showToast === 'function') showToast('Charges sauvegardées', 'success');
+            if (typeof showToast === 'function') {
+                showToast('Charges sauvegardées pour ' + formatMoisFr(getChargesMois()), 'success');
+            }
             loadCharges();
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
@@ -1939,7 +2009,7 @@
                             <td class="text-end fw-medium text-success">+ ${esc(fmtMoney(d.marge_cdc))}</td>
                         </tr>
                         <tr>
-                            <td><i class="bi bi-receipt text-info"></i> Charges proratisées (${esc(ch.total_mensuel)} × ${esc(ch.ratio_jours)})</td>
+                            <td><i class="bi bi-receipt text-info"></i> Charges proratisées ${esc(libelleProrataCharges(ch))}</td>
                             <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(ch.total_prorata))}</td>
                         </tr>
                         <tr>

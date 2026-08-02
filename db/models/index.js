@@ -50,6 +50,7 @@ const PrixAchatHistory = require('./PrixAchatHistory');
 const PrixVenteHistory = require('./PrixVenteHistory');
 const FinanceCharge = require('./FinanceCharge');
 const FinanceChargeHistory = require('./FinanceChargeHistory');
+const FinanceChargeMois = require('./FinanceChargeMois');
 const LivreurConfig = require('./LivreurConfig');
 const PosConfig = require('./PosConfig');
 
@@ -241,6 +242,7 @@ module.exports = {
   PrixVenteHistory,
   FinanceCharge,
   FinanceChargeHistory,
+  FinanceChargeMois,
 
   // Config livreurs (kanban SUIVI DES COMMANDES)
   LivreurConfig,

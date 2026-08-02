@@ -2951,8 +2951,21 @@
                         <div data-fin-pane="charges" style="display:none">
                             <div class="alert alert-light border small mb-3">
                                 <i class="bi bi-info-circle"></i>
-                                Charges mensuelles fixes. Utilisées par le PL au prorata des jours linéaires
-                                (30 jours conventionnels = 1 mois).
+                                Charges mensuelles fixes, saisies par mois. Le PL les prorate sur les jours
+                                réels de chaque mois : un mois complet vaut exactement son montant.
+                                Un montant saisi vaut aussi pour les mois suivants, jusqu'à la prochaine saisie.
+                            </div>
+
+                            <!-- Mois de saisie: les montants sont datés (finance_charges_mois). -->
+                            <div class="row g-2 mb-3 align-items-end p-2" style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px">
+                                <div class="col-md-4">
+                                    <label class="form-label small">Mois des charges</label>
+                                    <input type="month" id="fin-charges-mois" class="form-control form-control-sm"
+                                           title="Les montants ci-dessous s'appliquent à ce mois et aux suivants.">
+                                </div>
+                                <div class="col-md-8">
+                                    <small class="text-muted" id="fin-charges-mois-info"></small>
+                                </div>
                             </div>
 
                             <!-- Réglage pertes découpe (% appliqué sur la variation stock dans le PL) -->
@@ -3817,7 +3830,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260801-solde-mois"></script>
+    <script src="js/finance.js?v=20260801-charges-mois2"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

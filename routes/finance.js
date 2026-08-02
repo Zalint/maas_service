@@ -45,6 +45,7 @@
 const express = require('express');
 const multer = require('multer');
 const { Op } = require('sequelize');
+const { decouperEnMois } = require('../lib/charges-prorata');
 
 const {
     Depense,
@@ -57,6 +58,7 @@ const {
     PrixVenteHistory,
     FinanceCharge,
     FinanceChargeHistory,
+    FinanceChargeMois,
     ClotureCaisse,
     Produit,
     Vente,
@@ -793,12 +795,44 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
 // CHARGES MENSUELLES FIXES (pour le calcul PL)
 // =====================================================
 
+// ?mois=YYYY-MM : rend les montants applicables a ce mois (saisie du mois, ou
+// report du dernier mois saisi, ou valeur courante). Sans le parametre, rend
+// les valeurs courantes - comportement d'origine, conserve pour les appelants
+// qui ne connaissent pas la dimension mensuelle.
 router.get('/charges', async (req, res) => {
     try {
         const rows = await FinanceCharge.findAll({
             order: [['ordre', 'ASC'], ['nom', 'ASC']]
         });
-        res.json({ success: true, data: rows });
+
+        const mois = req.query.mois;
+        if (!mois) {
+            return res.json({ success: true, data: rows });
+        }
+        if (!/^\d{4}-\d{2}$/.test(mois)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+        }
+
+        const montants = (await resolveChargesPourMois([mois], rows))[mois];
+        // saisi_ce_mois distingue une valeur propre au mois d'une valeur
+        // heritee: l'interface peut ainsi signaler "report" plutot que de
+        // laisser croire a une saisie.
+        const saisis = new Set(
+            (await FinanceChargeMois.findAll({ where: { mois }, raw: true }))
+                .map((r) => r.nom)
+        );
+
+        res.json({
+            success: true,
+            mois,
+            data: rows.map((r) => ({
+                nom: r.nom,
+                libelle: r.libelle,
+                ordre: r.ordre,
+                montant_mensuel: montants[r.nom],
+                saisi_ce_mois: saisis.has(r.nom)
+            }))
+        });
     } catch (e) {
         console.error('GET /api/finance/charges:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -819,6 +853,13 @@ router.put('/charges', async (req, res) => {
         const items = Array.isArray(req.body?.items) ? req.body.items : null;
         if (!items) {
             return res.status(400).json({ success: false, error: 'items: array requis' });
+        }
+        // Mois optionnel: sans lui, seule la valeur courante est mise a jour
+        // (comportement d'origine). Avec lui, le montant est aussi date et
+        // s'applique a ce mois et aux suivants.
+        const moisCible = req.body?.mois || null;
+        if (moisCible && !/^\d{4}-\d{2}$/.test(moisCible)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
         }
         const now = new Date();
         const rawUsername = req.session && req.session.user
@@ -896,19 +937,33 @@ router.put('/charges', async (req, res) => {
                 const ordreChanged = oldOrdre !== v.ordre;
                 const anyChange = montantChanged || libelleChanged || ordreChanged;
 
+                // Quand un mois est vise, finance_charges.montant_mensuel ne
+                // doit PAS bouger: cette valeur sert de repli aux mois
+                // anterieurs a toute saisie mensuelle. L'ecraser ferait
+                // remonter la nouvelle valeur dans le passe - saisir juillet
+                // changeait retroactivement juin, mai, etc.
+                // Une charge creee a cette occasion n'a pas de passe: son
+                // montant sert alors d'ancrage.
+                const montantCatalogue = (moisCible && existing)
+                    ? oldMontant
+                    : v.montant;
+                const catalogueChange = libelleChanged || ordreChanged
+                    || (montantCatalogue !== oldMontant);
+
                 // updated_at ne bouge QUE si quelque chose a change.
-                if (!existing || anyChange) {
+                if (!existing || catalogueChange) {
                     await FinanceCharge.upsert({
                         nom: v.nom,
                         libelle: v.libelle,
-                        montant_mensuel: v.montant,
+                        montant_mensuel: montantCatalogue,
                         ordre: v.ordre,
-                        updated_at: anyChange ? now : (existing ? existing.updated_at : now)
+                        updated_at: catalogueChange ? now : (existing ? existing.updated_at : now)
                     }, { transaction: t });
                 }
 
-                // History: seulement si le montant a change (ou nouvelle charge).
-                if (montantChanged) {
+                // History: trace les changements de la valeur d'ancrage. Les
+                // montants mensuels sont eux traces par finance_charges_mois.
+                if (montantChanged && !moisCible) {
                     await FinanceChargeHistory.create({
                         nom: v.nom,
                         libelle: v.libelle,
@@ -919,6 +974,18 @@ router.put('/charges', async (req, res) => {
 
                 if (anyChange || !existing) {
                     auditEntries.push({ nom: v.nom, montant_mensuel: v.montant });
+                }
+
+                // Montant date: enregistre pour le mois demande. Le PL de ce
+                // mois et des suivants s'en servira, sans toucher aux mois
+                // anterieurs deja calcules.
+                if (moisCible) {
+                    await FinanceChargeMois.upsert({
+                        mois: moisCible,
+                        nom: v.nom,
+                        montant_mensuel: v.montant,
+                        updated_at: now
+                    }, { transaction: t });
                 }
             }
         });
@@ -1145,15 +1212,44 @@ router.get('/pl', async (req, res) => {
         });
         const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
 
-        // 5. Charges proratisees (30 jours conventionnels)
+        // 5. Charges proratisees, mois par mois.
+        //
+        // C'etait auparavant montant_mensuel x nbJoursPeriode / 30. Ce mois
+        // conventionnel de 30 jours facturait juillet 31/30e: 420 000 devenait
+        // 434 000 pour un mois pourtant complet. On prorate desormais sur les
+        // jours REELS de chaque mois, si bien qu'un mois entier vaut
+        // exactement son montant (31/31, 28/28...).
+        //
+        // Le decoupage par mois sert aussi les montants dates: une periode a
+        // cheval prend le montant propre a chaque mois traverse.
         const chargesRows = await FinanceCharge.findAll({ order: [['ordre', 'ASC']] });
-        const ratio = nbDaysPeriod / 30;
-        const chargesDetail = chargesRows.map((c) => ({
-            nom: c.nom,
-            libelle: c.libelle,
-            montant_mensuel: parseFloat(c.montant_mensuel) || 0,
-            prorata: round2((parseFloat(c.montant_mensuel) || 0) * ratio)
-        }));
+        const moisCouverts = decouperEnMois(dateDebut, dateFin);
+        const montantsParMois = await resolveChargesPourMois(
+            moisCouverts.map((m) => m.mois),
+            chargesRows
+        );
+
+        const chargesDetail = chargesRows.map((c) => {
+            const parMois = moisCouverts.map((m) => {
+                const montant = montantsParMois[m.mois][c.nom];
+                return {
+                    mois: m.mois,
+                    montant_mensuel: montant,
+                    jours_couverts: m.joursCouverts,
+                    jours_du_mois: m.joursDuMois,
+                    prorata: round2(montant * m.joursCouverts / m.joursDuMois)
+                };
+            });
+            return {
+                nom: c.nom,
+                libelle: c.libelle,
+                // Montant du dernier mois de la periode: c'est celui qui a un
+                // sens a afficher en regard d'une periode d'un seul mois.
+                montant_mensuel: parMois[parMois.length - 1].montant_mensuel,
+                prorata: round2(parMois.reduce((s, p) => s + p.prorata, 0)),
+                par_mois: parMois
+            };
+        });
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
 
@@ -1250,7 +1346,13 @@ router.get('/pl', async (req, res) => {
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
-                    ratio_jours: round2(ratio),
+                    // Rapport global periode/mois. N'est plus un simple
+                    // nbJours/30: chaque mois compte sur ses propres jours,
+                    // donc un mois complet donne exactement 1.
+                    ratio_jours: chargesTotalMensuel > 0
+                        ? round2(chargesProratisees / chargesTotalMensuel)
+                        : 0,
+                    mois_couverts: moisCouverts,
                     total_prorata: round2(chargesProratisees),
                     detail: chargesDetail
                 },
@@ -1275,6 +1377,49 @@ router.get('/pl', async (req, res) => {
 
 function round2(n) {
     return Math.round(n * 100) / 100;
+}
+
+/**
+ * Montant de chaque charge pour chacun des mois demandes.
+ *
+ * Pour un mois M et une charge C: la ligne finance_charges_mois la plus
+ * recente avec mois <= M; a defaut finance_charges.montant_mensuel.
+ *
+ * Le report en avant est voulu - une saisie pour 2026-07 vaut aussi pour les
+ * mois suivants jusqu'a la prochaine - et le repli sur la valeur courante
+ * garantit qu'un PL anterieur a toute saisie mensuelle rend le meme resultat
+ * qu'avant l'introduction de cette table.
+ *
+ * Rend { [mois]: { [nom]: montant } }.
+ */
+async function resolveChargesPourMois(listeMois, chargesRows) {
+    const defauts = Object.fromEntries(
+        chargesRows.map((c) => [c.nom, parseFloat(c.montant_mensuel) || 0])
+    );
+    const resultat = Object.fromEntries(
+        listeMois.map((m) => [m, { ...defauts }])
+    );
+    if (!listeMois.length || !chargesRows.length) return resultat;
+
+    // Une seule requete: toutes les lignes <= au plus grand mois demande.
+    // Le volume est celui du nombre de saisies, pas des mois traverses.
+    const moisMax = listeMois.reduce((a, b) => (a > b ? a : b));
+    const { Op: SeqOp } = require('sequelize');
+    const rows = await FinanceChargeMois.findAll({
+        where: { mois: { [SeqOp.lte]: moisMax } },
+        order: [['nom', 'ASC'], ['mois', 'ASC']],
+        raw: true
+    });
+
+    for (const mois of listeMois) {
+        for (const row of rows) {
+            // rows triees par mois croissant: la derniere <= mois gagne.
+            if (row.mois <= mois) {
+                resultat[mois][row.nom] = parseFloat(row.montant_mensuel) || 0;
+            }
+        }
+    }
+    return resultat;
 }
 
 // =====================================================
