@@ -5416,7 +5416,11 @@ app.post('/api/cash-payments/import', checkAuth, checkWriteAccess, async (req, r
         }
         
         // Charger le mapping des références de paiement via la fonction utilitaire
-        const paymentRefToPointDeVente = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, la variable contient
+        // une Promise et mapping[ref] rend undefined, si bien que TOUTES les
+        // lignes importees tombaient sur 'Non specifie' - donc hors des
+        // points de vente physiques, donc invisibles dans la reconciliation.
+        const paymentRefToPointDeVente = await getPaymentRefMapping();
         
         // Convertir les dates du format "1 avr. 2025, 16:18" en format standard
         const processedData = data.map(item => {
@@ -5947,9 +5951,11 @@ app.post('/api/cash-payments/manual', checkAuth, checkAdminOnly, async (req, res
 });
 
 // Route pour récupérer le mapping des références de paiement
-app.get('/api/payment-ref-mapping', checkAuth, (req, res) => {
+app.get('/api/payment-ref-mapping', checkAuth, async (req, res) => {
     try {
-        const paymentRefMapping = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, on serialisait une
+        // Promise, et la reponse contenait un objet vide.
+        const paymentRefMapping = await getPaymentRefMapping();
         res.json({
             success: true,
             data: paymentRefMapping
@@ -6042,7 +6048,11 @@ app.post('/api/external/cash-payment/import', validateApiKey, async (req, res) =
         }
         
         // Charger le mapping des références de paiement via la fonction utilitaire
-        const paymentRefToPointDeVente = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, la variable contient
+        // une Promise et mapping[ref] rend undefined, si bien que TOUTES les
+        // lignes importees tombaient sur 'Non specifie' - donc hors des
+        // points de vente physiques, donc invisibles dans la reconciliation.
+        const paymentRefToPointDeVente = await getPaymentRefMapping();
         
         // Vérifier les doublons par tr_id (ID externe)
         const externalIds = data.map(item => item.id).filter(Boolean);
@@ -11723,8 +11733,17 @@ app.get('/api/external/reconciliation', validateApiKey, async (req, res) => {
                         detailsByPDV[pdv][category].transfertsNombre = 0;
                     }
                     const quantite = parseFloat(transfert.quantite) || 0;
-                    // Apply the same sign logic as montant for transfertsNombre
-                    const quantiteAvecSigne = montant >= 0 ? quantite : -quantite;
+                    // Le signe vient d'impact, pas du signe du montant.
+                    //
+                    // En base, transferts.quantite est TOUJOURS positive tandis que
+                    // total porte deja le signe. Deduire le signe du montant donnait
+                    // donc le bon resultat par ricochet - sauf sur un transfert a
+                    // montant nul (prix unitaire a 0): "montant >= 0" le comptait
+                    // alors en positif meme avec impact = -1, soit un transfert
+                    // sortant compte comme entrant. impact est le champ qui porte
+                    // l'intention, on le lit directement, comme le fait db/utils.js.
+                    const impact = parseInt(transfert.impact, 10);
+                    const quantiteAvecSigne = (Number.isFinite(impact) ? impact : 1) * quantite;
                     detailsByPDV[pdv][category].transfertsNombre += quantiteAvecSigne;
                 }
             });
