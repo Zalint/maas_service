@@ -17111,10 +17111,10 @@ app.get('/api/livreur/check/:commandeId', checkAuth, async (req, res) => {
 });
 
 // ===== CLOTURES DE CAISSE =====
-function generateCashReference(pointVente) {
-    const posMapping = { 'Dahra': 'CASH_DHR', 'Linguere': 'CASH_LGR', 'Mbao': 'CASH_MBA', 'Keur Massar': 'CASH_KM', 'O.Foire': 'CASH_OSF', 'Sacre Coeur': 'CASH_SAC', 'Abattage': 'CASH_ABATS', 'Dépôt central': 'CASH_ABATS', 'Touba': 'CASH_TB' };
-    return posMapping[pointVente] || null;
-}
+// La table de correspondance vit dans config/cash-references.js: la migration
+// s'en sert aussi pour renseigner points_vente.payment_ref, qui doit rester
+// coherent avec ce qui est ecrit ici.
+const { generateCashReference } = require('./config/cash-references');
 
 app.get('/api/clotures-caisse/estimatif', checkAuth, async (req, res) => {
     try {

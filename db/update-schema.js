@@ -679,6 +679,34 @@ async function updateSchema() {
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_config_mois_key ON finance_config_mois(key, mois DESC)`);
         console.log('Table finance_config_mois verifiee');
 
+        // Reference de caisse des points de vente.
+        //
+        // points_vente.payment_ref etait NULL partout, alors que les clotures
+        // ecrivent bien une reference (CASH_MBA, CASH_KM...) dans
+        // cash_payments.payment_reference. getPaymentRefMapping, qui construit
+        // reference -> point de vente a partir de cette colonne, rendait donc
+        // un mapping VIDE: a l'import, chaque paiement tombait sur
+        // 'Non specifie' et disparaissait de la reconciliation.
+        //
+        // Renseigne uniquement les lignes encore NULL: une reference saisie a
+        // la main n'est jamais ecrasee. Idempotent.
+        try {
+            const { CASH_REFERENCES } = require('../config/cash-references');
+            let renseignes = 0;
+            for (const [nom, ref] of Object.entries(CASH_REFERENCES)) {
+                const [, meta] = await sequelize.query(
+                    `UPDATE points_vente SET payment_ref = :ref
+                     WHERE nom = :nom AND payment_ref IS NULL`,
+                    { replacements: { nom, ref } }
+                );
+                renseignes += (meta && meta.rowCount) || 0;
+            }
+            console.log(`points_vente.payment_ref: ${renseignes} reference(s) renseignee(s)`);
+        } catch (e) {
+            // Table absente sur un tenant vierge (avant sequelize.sync): non bloquant.
+            console.warn('points_vente.payment_ref non renseigne:', e.message);
+        }
+
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias
         // explicite gere depuis l'UI Mapping produits.
