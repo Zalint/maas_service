@@ -5343,6 +5343,28 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 //
 // Deux colonnes seulement, bovin et ovin: boeuf et veau sont interchangeables
 // et tombent tous deux dans bovin.
+// Produits Bovin et Ovin, pour l'ecran ADMIN des exclusions du parage.
+// Renvoie aussi les exclusions courantes, pour eviter un second appel.
+app.get('/api/parage/produits', checkAuth, async (req, res) => {
+    try {
+        const { FinanceConfig } = require('./db/models');
+        const produits = await sequelize.query(
+            `SELECT DISTINCT p.nom, LOWER(c.nom) AS categorie
+             FROM produits p JOIN categories c ON c.id = p.categorie_id
+             WHERE LOWER(c.nom) IN ('bovin', 'ovin')
+             ORDER BY LOWER(c.nom), p.nom`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
+        const exclusions = String((cfg && cfg.value) || '')
+            .split(',').map((x) => x.trim()).filter(Boolean);
+        res.json({ success: true, produits, exclusions });
+    } catch (error) {
+        console.error('GET /api/parage/produits:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const dateBrute = req.query.date;

@@ -384,6 +384,11 @@
                                 <i class="bi bi-star me-1"></i>Gros clients
                             </a>
                         </li>
+                        <li class="nav-item" id="parage-exclusions-nav">
+                            <a class="nav-link" href="#" data-section="parage-exclusions">
+                                <i class="bi bi-funnel me-1"></i>Exclusions parage
+                            </a>
+                        </li>
                         <li class="nav-item" id="depense-categories-nav">
                             <a class="nav-link" href="#" data-section="depense-categories">
                                 <i class="bi bi-tags me-1"></i>Catégories dépenses
@@ -1231,6 +1236,34 @@
             </div>
 
             <!-- Section Categories depenses -->
+            <div id="parage-exclusions-section" class="admin-section">
+                <h2><i class="bi bi-funnel me-2"></i>Exclusions du parage</h2>
+                <p class="text-muted">
+                    Le parage (perte de découpe) rapporte la quantité vendue au stock théorique,
+                    par catégorie <b>Bovin</b> et <b>Ovin</b>. Les produits cochés ici sont retirés
+                    <b>des deux côtés</b> du rapport : du stock théorique comme des ventes, packs
+                    compris. Sans cela on comparerait deux périmètres différents.
+                    <br>
+                    À exclure typiquement : ce qui ne se pèse pas au kilo (bêtes sur pied, têtes,
+                    pattes), car additionner des pièces et des kilos rend le pourcentage
+                    ininterprétable.
+                </p>
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-list-check me-2"></i>Produits Bovin et Ovin (<span id="pxCount">0</span> exclus)</h5>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="chargerParageExclusions()"><i class="bi bi-arrow-clockwise"></i> Rafraîchir</button>
+                            <button class="btn btn-primary btn-sm" onclick="sauvegarderParageExclusions()"><i class="bi bi-save"></i> Enregistrer</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row" id="pxListe">
+                            <div class="col-12 text-center text-muted py-3">Chargement...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div id="depense-categories-section" class="admin-section">
                 <h2><i class="bi bi-tags me-2"></i>Catégories dépenses</h2>
                 <p class="text-muted">Catégories proposées dans <b>Finance &gt; Dépenses</b>. Le <b>nom technique</b> est figé à la création (il est stocké sur les dépenses) ; seul le libellé affiché et l'ordre sont modifiables. Décochez <b>Actif</b> pour retirer une catégorie des listes sans toucher à l'historique.</p>
@@ -1647,6 +1680,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260729-depense-cat"></script>
+    <script src="admin.js?v=20260804-parage-exclusions"></script>
 </body>
 </html> 

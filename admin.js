@@ -4027,6 +4027,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // Initialiser la section Categories depenses
             initDepenseCategoriesSection();
+            initParageExclusionsSection();
         }
     });
 });
@@ -6619,6 +6620,111 @@ function escapeHtmlDc(s) {
     return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+// ============================================================
+// EXCLUSIONS DU PARAGE
+// ============================================================
+// Les produits coches sont retires des DEUX cotes du rapport de parage:
+// du stock theorique comme des ventes, packs compris. Retirer un produit
+// d'un seul cote comparerait deux perimetres differents.
+//
+// Stocke en CSV dans finance_config.parage_exclusions, comme
+// categories_eligibles: pas de table dediee pour une simple liste de noms.
+
+function initParageExclusionsSection() {
+    if (!document.getElementById('parage-exclusions-section')) return;
+    chargerParageExclusions();
+    document.querySelectorAll('[data-section="parage-exclusions"]').forEach(function (el) {
+        el.addEventListener('click', chargerParageExclusions);
+    });
+}
+
+// Exclusions portant sur des produits ABSENTS de la liste affichee (une autre
+// categorie, ou un produit retire du catalogue). L'ecran ne montre que Bovin et
+// Ovin: sans cette memoire, enregistrer effacerait ces entrees sans le dire.
+let pxExclusionsHorsListe = [];
+
+async function chargerParageExclusions() {
+    const conteneur = document.getElementById('pxListe');
+    if (!conteneur) return;
+    conteneur.innerHTML = '<div class="col-12 text-center text-muted py-3">Chargement...</div>';
+    try {
+        const res = await fetch('/api/parage/produits', { credentials: 'include' });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.message || 'Erreur');
+
+        const exclus = new Set(j.exclusions || []);
+        const parCategorie = { bovin: [], ovin: [] };
+        (j.produits || []).forEach((p) => {
+            if (parCategorie[p.categorie]) parCategorie[p.categorie].push(p.nom);
+        });
+
+        const colonne = (titre, produits) => {
+            const cases = produits.map((nom) => {
+                const id = 'px_' + nom.replace(/[^a-zA-Z0-9]/g, '_');
+                const coche = exclus.has(nom) ? ' checked' : '';
+                return '<div class="form-check">'
+                    + '<input class="form-check-input px-item" type="checkbox" id="' + id + '"'
+                    + ' data-nom="' + nom.replace(/"/g, '&quot;') + '"' + coche + '>'
+                    + '<label class="form-check-label" for="' + id + '">' + nom + '</label>'
+                    + '</div>';
+            }).join('');
+            return '<div class="col-md-6">'
+                + '<h6 class="text-uppercase text-muted small mb-2">' + titre
+                + ' <span class="badge bg-secondary">' + produits.length + '</span></h6>'
+                + (cases || '<div class="text-muted small">Aucun produit</div>')
+                + '</div>';
+        };
+
+        // Ce qui est exclu sans figurer dans la liste: on le conserve et on le dit.
+        const affiches = new Set((j.produits || []).map((p) => p.nom));
+        pxExclusionsHorsListe = [...exclus].filter((nom) => !affiches.has(nom));
+
+        let note = '';
+        if (pxExclusionsHorsListe.length) {
+            note = '<div class="col-12 mt-3"><div class="alert alert-secondary py-2 mb-0 small">'
+                + '<i class="bi bi-info-circle me-1"></i>Également exclus, hors catégories Bovin et Ovin : <b>'
+                + pxExclusionsHorsListe.join(', ') + "</b>. Ces entrées sont conservées à l'enregistrement."
+                + '</div></div>';
+        }
+
+        conteneur.innerHTML = colonne('Bovin', parCategorie.bovin) + colonne('Ovin', parCategorie.ovin) + note;
+        conteneur.querySelectorAll('.px-item').forEach((c) => {
+            c.addEventListener('change', majCompteurParageExclusions);
+        });
+        majCompteurParageExclusions();
+    } catch (e) {
+        conteneur.innerHTML = '<div class="col-12 text-danger py-3">Erreur: ' + e.message + '</div>';
+    }
+}
+
+function majCompteurParageExclusions() {
+    const n = document.querySelectorAll('.px-item:checked').length;
+    const el = document.getElementById('pxCount');
+    if (el) el.textContent = n;
+}
+
+async function sauvegarderParageExclusions() {
+    // Les exclusions hors liste sont reportees telles quelles: l'ecran ne peut
+    // pas les decocher, il ne doit donc pas les supprimer.
+    const noms = Array.from(document.querySelectorAll('.px-item:checked'))
+        .map((c) => c.dataset.nom)
+        .concat(pxExclusionsHorsListe);
+    try {
+        const res = await fetch('/api/finance/config', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parage_exclusions: noms.join(',') })
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Erreur');
+        showToast(noms.length + ' produit(s) exclu(s) du parage', 'success');
+        chargerParageExclusions();
+    } catch (e) {
+        showToast('Erreur: ' + e.message, 'danger');
+    }
 }
 
 async function chargerDepenseCategories() {
