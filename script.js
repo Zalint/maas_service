@@ -9864,7 +9864,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             console.warn("Aucun mois valide sélectionné. Arrêt du chargement.");
             const row = document.createElement('tr');
             const cell = document.createElement('td');
-            cell.colSpan = 12; // Adjust colspan if needed
+            cell.colSpan = 15; // Date, PV, 10 valeurs, 2 parage, commentaire
             cell.textContent = 'Aucun mois sélectionné ou aucune donnée pour cette année.';
             cell.className = 'text-center';
             row.appendChild(cell);
@@ -9882,6 +9882,31 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         const anneeNum = parseInt(annee);
         const moisNum = parseInt(mois); // Mois est 1-basé ici
         const totalDaysInMonth = new Date(anneeNum, moisNum, 0).getDate();
+
+        // Agregat de Cash Paiement, charge UNE fois pour le mois entier et
+        // indexe en { 'DD/MM/YYYY': { 'Mbao': montant } }. L'endpoint rend les
+        // dates en YYYY-MM-DD; le tableau les manipule en DD/MM/YYYY.
+        // Le point de vente est repris tel quel: cash_payments.point_de_vente
+        // porte deja le nom d'affichage, la reference est resolue a l'ecriture.
+        const cashParDate = {};
+        try {
+            const cashResp = await fetch('/api/cash-payments/aggregated', { credentials: 'include' });
+            const cashJson = cashResp.ok ? await cashResp.json() : null;
+            if (cashJson && cashJson.success && Array.isArray(cashJson.data)) {
+                cashJson.data.forEach(entry => {
+                    const parts = String(entry.date || '').split('-');
+                    if (parts.length !== 3) return;
+                    if (parseInt(parts[1]) !== moisNum || parseInt(parts[0]) !== anneeNum) return;
+                    const cle = `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+                    cashParDate[cle] = {};
+                    (entry.points || []).forEach(pt => {
+                        cashParDate[cle][pt.point] = parseFloat(pt.total) || 0;
+                    });
+                });
+            }
+        } catch (e) {
+            console.warn('Cash Paiement indisponible, colonne cash a 0:', e.message);
+        }
         let hasAnyData = false; // Flag to check if any data was found for the month
 
         for (let jour = 1; jour <= totalDaysInMonth; jour++) {
@@ -9889,13 +9914,19 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             console.log(`Traitement du jour ${dateStr}...`);
 
             // 1. Fetch base data components
-            let stockMatin, stockSoir, transferts, ventesData;
+            let stockMatin, stockSoir, transferts, ventesData, parageData;
             try {
-                [stockMatin, stockSoir, transferts, ventesData] = await Promise.all([
+                [stockMatin, stockSoir, transferts, ventesData, parageData] = await Promise.all([
                     getStockForDate(dateStr, 'matin'),
                     getStockForDate(dateStr, 'soir'),
                     getTransfersForDate(dateStr),
-                    fetch(`/api/ventes-date?date=${dateStr}`, { method: 'GET', credentials: 'include' }).then(res => res.ok ? res.json() : { success: false })
+                    fetch(`/api/ventes-date?date=${dateStr}`, { method: 'GET', credentials: 'include' }).then(res => res.ok ? res.json() : { success: false }),
+                    // Parage: perte de decoupe par categorie, calculee en QUANTITE
+                    // (kg) alors que le reste du tableau est en valeur. Cf
+                    // lib/parage.js cote serveur.
+                    fetch(`/api/reconciliation/parage?date=${dateStr}`, { method: 'GET', credentials: 'include' })
+                        .then(res => res.ok ? res.json() : { success: false })
+                        .catch(() => ({ success: false }))
                 ]);
                 console.log(`Données brutes pour ${dateStr}:`, { stockMatin: Object.keys(stockMatin).length, stockSoir: Object.keys(stockSoir).length, transferts: transferts.length, ventes: ventesData.success ? ventesData.totaux : {} });
             } catch (fetchError) {
@@ -9985,6 +10016,40 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 });
             }
 
+            // --- Montant Total Cash: la source de verite est l'agregat de
+            // Cash Paiement, pas la reconciliation sauvegardee.
+            //
+            // savedData[pv].cashPayment est initialise en dur a 0 et n'est
+            // jamais renseigne avant sauvegarde (le cash part dans un champ
+            // separe, cashPaymentData). Une valeur sauvegardee est donc
+            // presque toujours un 0 parasite qui ecrasait la vraie donnee:
+            // d'ou une colonne a 0 sur tout le mois alors que Cash Paiement
+            // totalisait des millions.
+            if (cashParDate && cashParDate[dateStr]) {
+                Object.keys(dailyReconciliation).forEach(pointVente => {
+                    const montant = cashParDate[dateStr][pointVente];
+                    if (montant === undefined) return;
+                    dailyReconciliation[pointVente].cashPayment = montant;
+                    dailyReconciliation[pointVente].ecartCash =
+                        montant - (dailyReconciliation[pointVente].ventesSaisies || 0);
+                });
+            }
+
+            // --- Parage par categorie, calcule en quantite cote serveur.
+            if (parageData && parageData.success && parageData.data) {
+                Object.keys(dailyReconciliation).forEach(pointVente => {
+                    const p = parageData.data[pointVente];
+                    // undefined et non 0: aucune donnee n'est PAS une perte nulle.
+                    dailyReconciliation[pointVente].parageBovin = p && p.bovin ? p.bovin.perte : null;
+                    dailyReconciliation[pointVente].parageOvin = p && p.ovin ? p.ovin.perte : null;
+                });
+            } else {
+                Object.keys(dailyReconciliation).forEach(pointVente => {
+                    dailyReconciliation[pointVente].parageBovin = null;
+                    dailyReconciliation[pointVente].parageOvin = null;
+                });
+            }
+
              // --- Accumuler les totaux pour ce jour ---
              Object.values(dailyReconciliation).forEach(data => {
                  totalVentesTheoriquesMois += parseFloat(data.ventes) || 0;
@@ -10022,7 +10087,12 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                      { key: 'difference', format: 'currency' }, // Ecart
                      { key: 'cashPayment', format: 'currency' },
                      { key: 'pourcentageEcart', format: 'percentage' }, // Ecart %
-                     { key: 'ecartCash', format: 'currency' }
+                     { key: 'ecartCash', format: 'currency' },
+                     // Parage: null quand le stock theorique est nul ou negatif.
+                     // On affiche alors un tiret, jamais 0% qui se lirait
+                     // "aucune perte".
+                     { key: 'parageBovin', format: 'parage' },
+                     { key: 'parageOvin', format: 'parage' }
                  ];
 
                  columns.forEach(columnInfo => {
@@ -10031,7 +10101,24 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
                      const value = data ? data[columnInfo.key] : 0;
 
-                     if (columnInfo.format === 'percentage') {
+                     if (columnInfo.format === 'parage') {
+                         if (value === null || value === undefined) {
+                             cell.textContent = '—';
+                             cell.classList.add('text-muted');
+                         } else {
+                             const pct = parseFloat(value) * 100;
+                             cell.textContent = `${pct.toFixed(1)}%`;
+                             // Un parage negatif signifie qu'on a vendu plus que
+                             // ce que le stock permettait: anomalie de saisie.
+                             if (pct < 0 || pct > 15) {
+                                 cell.classList.add('text-danger', 'fw-bold');
+                             } else if (pct > 8) {
+                                 cell.classList.add('text-warning', 'fw-bold');
+                             } else {
+                                 cell.classList.add('text-success');
+                             }
+                         }
+                     } else if (columnInfo.format === 'percentage') {
                          const percentageValue = parseFloat(value) || 0;
                          cell.textContent = `${percentageValue.toFixed(2)}%`;
 
@@ -10110,7 +10197,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (!hasAnyData) {
              const row = document.createElement('tr');
              const cell = document.createElement('td');
-             cell.colSpan = 12; // Adjust colspan to match the number of columns
+             cell.colSpan = 15; // Date, PV, 10 valeurs, 2 parage, commentaire
              cell.textContent = 'Aucune donnée trouvée pour ce mois.';
              cell.className = 'text-center';
              row.appendChild(cell);
@@ -10177,7 +10264,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         console.error('Erreur majeure lors du chargement des données mensuelles:', error);
         tableBody.innerHTML = `
             <tr>
-                <td colspan="12" class="text-center text-danger">
+                <td colspan="15" class="text-center text-danger">
                     Une erreur majeure est survenue: ${error.message}
                 </td>
             </tr>
@@ -10225,7 +10312,7 @@ function afficherDonneesReconciliationMensuelle(reconciliationData) {
     if (!reconciliationData || reconciliationData.length === 0) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
-        cell.colSpan = 12;
+        cell.colSpan = 15;
         cell.textContent = 'Aucune donnée disponible pour cette période.';
         cell.className = 'text-center';
         row.appendChild(cell);

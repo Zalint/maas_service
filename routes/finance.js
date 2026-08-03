@@ -1686,7 +1686,7 @@ router.get('/config', async (req, res) => {
 // Body: { commission_pct?, categories_eligibles?, stock_pertes_decoupe_pct? }
 router.put('/config', async (req, res) => {
     try {
-        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct'];
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions'];
         // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
         // parametre date a ce jour.
         const moisCible = req.body?.mois || null;

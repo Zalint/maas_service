@@ -510,7 +510,8 @@ async function updateSchema() {
             INSERT INTO finance_config (key, value, updated_at) VALUES
               ('commission_pct', '3.0', NOW()),
               ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW()),
-              ('stock_pertes_decoupe_pct', '5', NOW())
+              ('stock_pertes_decoupe_pct', '5', NOW()),
+              ('parage_exclusions', 'Boeuf sur pied,Veau sur pied,Mouton sur pied,Chevre sur pied', NOW())
             ON CONFLICT (key) DO NOTHING
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');

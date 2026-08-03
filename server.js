@@ -5334,6 +5334,109 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
     }
 });
 
+// Parage (perte de decoupe) par categorie, pour une date.
+//
+//   parage = ventesNombreAjustePack / ventesTheoriquesNombre
+//
+// Le calcul lui-meme est dans lib/parage.js (teste sans base). Cet endpoint ne
+// fait que rassembler les donnees du jour et resoudre produit -> bovin/ovin.
+//
+// Deux colonnes seulement, bovin et ovin: boeuf et veau sont interchangeables
+// et tombent tous deux dans bovin.
+app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, res) => {
+    try {
+        const dateBrute = req.query.date;
+        if (!dateBrute) {
+            return res.status(400).json({ success: false, message: 'date requise' });
+        }
+        // stocks et transferts sont en DD-MM-YYYY, ventes en YYYY-MM-DD.
+        // Le front envoie DD/MM/YYYY ou DD-MM-YYYY.
+        const p = String(dateBrute).split(/[\/\-]/);
+        if (p.length !== 3) {
+            return res.status(400).json({ success: false, message: 'date invalide' });
+        }
+        const dateFr = p[0].length === 4
+            ? `${p[2]}-${p[1]}-${p[0]}`   // recu en ISO
+            : `${p[0]}-${p[1]}-${p[2]}`;
+        const dateIso = p[0].length === 4
+            ? `${p[0]}-${p[1]}-${p[2]}`
+            : `${p[2]}-${p[1]}-${p[0]}`;
+
+        const { calculerParage } = require('./lib/parage');
+        const { PACK_COMPOSITIONS } = require('./config/pack-compositions');
+        const { FinanceConfig } = require('./db/models');
+
+        // Produit -> bovin | ovin.
+        //
+        // La comparaison ignore la casse et les accents: l'inventaire contient
+        // 'Patte de mouton' la ou le catalogue dit 'Patte de Mouton', et une
+        // comparaison stricte perdait la ligne.
+        const normaliser = (n) => String(n || '')
+            .normalize('NFD').replace(/[̀-ͯ]/g, '')
+            .trim().toLowerCase();
+
+        const produitsCat = await sequelize.query(
+            `SELECT p.nom, LOWER(c.nom) AS categorie
+             FROM produits p JOIN categories c ON c.id = p.categorie_id
+             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const parProduit = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
+
+        // Puis les alias de config, pour les noms d'inventaire que le catalogue
+        // ne categorise pas ('Boeuf', 'Veau'). Sans eux, le stock de viande
+        // n'etait rattache a rien: denominateur nul alors que des dizaines de
+        // kilos etaient vendus. Le catalogue reste prioritaire.
+        try {
+            const alias = require('./config/parage-categories.json').aliases || {};
+            for (const [nom, cat] of Object.entries(alias)) {
+                const cle = normaliser(nom);
+                if (!parProduit.has(cle)) parProduit.set(cle, cat);
+            }
+        } catch (e) {
+            console.warn('parage: alias de categories non charges:', e.message);
+        }
+
+        const categorieDe = (produit) => parProduit.get(normaliser(produit)) || null;
+
+        // Exclusions: liste de produits retires des DEUX cotes du rapport.
+        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
+        const exclusions = new Set(
+            String((cfg && cfg.value) || '')
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+        );
+
+        const [stocksMatin, stocksSoir, transferts, ventes] = await Promise.all([
+            Stock.findAll({ where: { date: dateFr, typeStock: 'matin' }, raw: true }),
+            Stock.findAll({ where: { date: dateFr, typeStock: 'soir' }, raw: true }),
+            Transfert.findAll({ where: { date: dateFr }, raw: true }),
+            Vente.findAll({ where: { date: dateIso }, raw: true })
+        ]);
+
+        const parPv = calculerParage({
+            stocksMatin: stocksMatin.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+            stocksSoir: stocksSoir.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+            transferts: transferts.map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+            ventes: ventes.map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
+            categorieDe,
+            exclusions,
+            packs: PACK_COMPOSITIONS
+        });
+
+        res.json({
+            success: true,
+            date: dateFr,
+            exclusions: [...exclusions],
+            data: parPv
+        });
+    } catch (error) {
+        console.error('GET /api/reconciliation/parage:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/api/reconciliation/load', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date } = req.query;
