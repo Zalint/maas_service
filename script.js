@@ -7582,7 +7582,12 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
                         produit: vente.Produit,
                         pu: vente.PU,
                         nombre: vente.Nombre,
-                        montant: vente.Montant
+                        montant: vente.Montant,
+                        // Sans extension, la Reconciliation decomposait les packs
+                        // avec la composition PAR DEFAUT: une composition
+                        // personnalisee a la vente (veau remplace par du boeuf)
+                        // restait invisible.
+                        extension: vente.extension || null
                     });
                     
                     // Calculer les créances par point de vente

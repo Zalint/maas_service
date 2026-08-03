@@ -1540,6 +1540,56 @@ const ReconciliationManager = (function() {
     }
     
     // Créer un tableau de détails pour stock, transferts ou ventes
+    // Composition d'une vente de pack: celle enregistree avec la vente en
+    // priorite, sinon celle par defaut du catalogue.
+    function compositionDeLaVente(item) {
+        const ext = item && item.extension;
+        if (ext && Array.isArray(ext.composition) && ext.composition.length) return ext.composition;
+        const table = (window.PackComposition && window.PackComposition.PACK_COMPOSITIONS) || {};
+        const parDefaut = table[item && item.produit];
+        return Array.isArray(parDefaut) && parDefaut.length ? parDefaut : null;
+    }
+
+    /**
+     * Developpe les ventes de packs en lignes par produit contenu.
+     *
+     * Un Pack100000 apparaissait comme une seule ligne a 100 000 FCFA: le
+     * boeuf et l'agneau qu'il contient etaient invisibles, et absents des
+     * sous-totaux par produit alors qu'ils sont bel et bien sortis du stock.
+     *
+     * Les lignes ajoutees portent la QUANTITE mais AUCUN montant: le prix est
+     * celui du pack, deja compte sur sa propre ligne. Leur additionner une
+     * valeur ferait un double compte. Le sous-total en nombre integre donc le
+     * contenu des packs, celui en montant non - c'est voulu.
+     */
+    function developperPacks(ventes) {
+        const out = [];
+        (ventes || []).forEach(item => {
+            out.push(item);
+            const composition = compositionDeLaVente(item);
+            if (!composition) return;
+
+            const nbPacks = parseFloat(item.nombre) || 1;
+            composition.forEach(c => {
+                const q = (parseFloat(c.quantite) || 0) * nbPacks;
+                if (q <= 0) return;
+                const unite = String(c.unite || '').toLowerCase();
+                out.push({
+                    produit: c.produit,
+                    // L'origine est portee par le libelle, pas par une colonne
+                    // dediee: le tableau n'en a que quatre.
+                    _origine: item.produit,
+                    _unite: unite,
+                    pu: null,
+                    nombre: q,
+                    montant: 0,
+                    _issuDunPack: true
+                });
+            });
+        });
+        return out;
+    }
+
     // Famille d'un produit: "Boeuf en detail" et "Boeuf en gros" partagent la
     // famille "Boeuf". Rend null si le produit n'est pas une declinaison, pour
     // ne pas inventer des familles a un seul membre.
@@ -1589,7 +1639,13 @@ const ReconciliationManager = (function() {
                 const td = document.createElement('td');
                 if (i === idx.produit) td.textContent = libelle;
                 else if (i === idx.nombre) { td.textContent = nb(agg.nombre); td.className = 'text-end'; }
-                else if (i === idx.montant) { td.textContent = formatMonetaire(agg.montant); td.className = 'text-end'; }
+                else if (i === idx.montant) {
+                    // Un sous-total a 0 FCFA n'est pas un montant nul: c'est un
+                    // produit qui n'existe que via des packs, dont le prix est
+                    // porte par la ligne du pack. On ecrit un tiret.
+                    td.textContent = agg.montant === 0 ? '—' : formatMonetaire(agg.montant);
+                    td.className = agg.montant === 0 ? 'text-end text-muted' : 'text-end';
+                }
                 else if (c.className) td.className = c.className;
                 tr.appendChild(td);
             });
@@ -1601,7 +1657,7 @@ const ReconciliationManager = (function() {
         const lignes = Array.from(tbody.children);
         const dernierePar = new Map();
         lignes.forEach((tr, i) => {
-            const nom = tr.children[idx.produit] ? tr.children[idx.produit].textContent.trim() : '';
+            const nom = tr.dataset ? (tr.dataset.produit || '') : '';
             if (nom) dernierePar.set(nom, i);
         });
 
@@ -1653,7 +1709,11 @@ const ReconciliationManager = (function() {
         }
         
         // Trier les données selon l'ordre spécifié
-        const donneesTri = trierProduits([...donnees]);
+        // Les ventes de packs sont developpees en lignes par produit contenu,
+        // pour que le boeuf d'un Pack100000 apparaisse et compte dans les
+        // sous-totaux en quantite.
+        const donneesSource = estVente ? developperPacks(donnees) : [...donnees];
+        const donneesTri = trierProduits(donneesSource);
         
         // Créer le tableau
         const table = document.createElement('table');
@@ -1706,6 +1766,9 @@ const ReconciliationManager = (function() {
         
         donneesTri.forEach(item => {
             const row = document.createElement('tr');
+            // Le libelle affiche peut etre decore ("↳ Agneau (Pack75000)");
+            // les sous-totaux ont besoin du nom brut.
+            row.dataset.produit = item.produit || '';
             
             colonnes.forEach(colonne => {
                 const td = document.createElement('td');
@@ -1715,14 +1778,28 @@ const ReconciliationManager = (function() {
                 }
                 
                 if (colonne.id === 'produit') {
-                    td.textContent = item.produit || '';
+                    if (item._issuDunPack) {
+                        const unite = item._unite && item._unite !== 'kg' ? ` ${item._unite}` : '';
+                        td.textContent = `↳ ${item.produit || ''}${unite} (${item._origine})`;
+                        td.classList.add('text-muted', 'fst-italic');
+                        td.title = `Contenu du ${item._origine}. Le montant est porte par la ligne du pack, pas ici.`;
+                    } else {
+                        td.textContent = item.produit || '';
+                    }
                 } else if (colonne.id === 'impact') {
                     td.textContent = item.impact || '';
                     td.className = 'text-center';
                 } else if (colonne.id === 'montant') {
-                    const montant = estTransfert ? item.montant : (item.montant || item.valeur);
-                    td.textContent = formatMonetaire(montant || 0);
-                    td.className = 'text-end';
+                    // Une ligne issue d'un pack n'a pas de montant propre: le
+                    // prix est celui du pack, deja compte sur sa ligne.
+                    if (item._issuDunPack) {
+                        td.textContent = '—';
+                        td.className = 'text-end text-muted';
+                    } else {
+                        const montant = estTransfert ? item.montant : (item.montant || item.valeur);
+                        td.textContent = formatMonetaire(montant || 0);
+                        td.className = 'text-end';
+                    }
                 } else if (colonne.id === 'valeur') {
                     td.textContent = formatMonetaire(item.valeur || 0);
                     td.className = 'text-end';
@@ -1732,8 +1809,8 @@ const ReconciliationManager = (function() {
                         td.classList.add('text-danger');
                     }
                 } else if (colonne.id === 'pu') {
-                    td.textContent = formatMonetaire(item.pu || 0);
-                    td.className = 'text-end';
+                    td.textContent = item._issuDunPack ? '—' : formatMonetaire(item.pu || 0);
+                    td.className = item._issuDunPack ? 'text-end text-muted' : 'text-end';
                 } else if (colonne.id === 'nombre') {
                     td.textContent = item.nombre || '';
                     td.className = 'text-end';
@@ -2168,41 +2245,31 @@ const ReconciliationManager = (function() {
         tdTotal.textContent = 'TOTAL';
         totalRow.appendChild(tdTotal);
         
-        // Totaux de quantite, sommes sur les lignes affichees.
-        //
-        // Attention a la lecture: additionner des quantites de produits
-        // differents melange des unites (kilos de boeuf et pieces de Dechet
-        // 400). Le total en valeur reste la grandeur homogene; celui en
-        // quantite n'a de sens que si les produits partagent leur unite.
-        const totauxQte = produitsTries.reduce((acc, d) => {
-            acc.stockMatin += d.stockMatinQte || 0;
-            acc.stockSoir += d.stockSoirQte || 0;
-            acc.transferts += d.transfertsQte || 0;
-            acc.venteTheorique += d.venteTheoriqueQte || 0;
-            return acc;
-        }, { stockMatin: 0, stockSoir: 0, transferts: 0, venteTheorique: 0 });
+        // Pas de total en QUANTITE: additionner des kilos de boeuf et des
+        // pieces de poulet ne veut rien dire. Seule la valeur est homogene,
+        // c'est donc la seule chose que totalise cette ligne.
 
         // Total Stock Matin
         const tdTotalStockMatin = document.createElement('td');
-        tdTotalStockMatin.textContent = avecQte(details.totalStockMatin, totauxQte.stockMatin);
+        tdTotalStockMatin.textContent = formatMonetaire(details.totalStockMatin);
         tdTotalStockMatin.className = 'text-end';
         totalRow.appendChild(tdTotalStockMatin);
         
         // Total Stock Soir
         const tdTotalStockSoir = document.createElement('td');
-        tdTotalStockSoir.textContent = avecQte(details.totalStockSoir, totauxQte.stockSoir);
+        tdTotalStockSoir.textContent = formatMonetaire(details.totalStockSoir);
         tdTotalStockSoir.className = 'text-end';
         totalRow.appendChild(tdTotalStockSoir);
         
         // Total Transferts
         const tdTotalTransferts = document.createElement('td');
-        tdTotalTransferts.textContent = avecQte(details.totalTransferts, totauxQte.transferts);
+        tdTotalTransferts.textContent = formatMonetaire(details.totalTransferts);
         tdTotalTransferts.className = 'text-end';
         totalRow.appendChild(tdTotalTransferts);
         
         // Total Ventes Théoriques
         const tdTotalVenteTheorique = document.createElement('td');
-        tdTotalVenteTheorique.textContent = avecQte(details.venteTheoriques, totauxQte.venteTheorique);
+        tdTotalVenteTheorique.textContent = formatMonetaire(details.venteTheoriques);
         tdTotalVenteTheorique.className = 'text-end';
         totalRow.appendChild(tdTotalVenteTheorique);
         

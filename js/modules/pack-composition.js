@@ -487,6 +487,9 @@ function clearAllPackCompositions() {
 
 // Export des fonctions
 window.PackComposition = {
+  // Expose la table pour les ecrans qui doivent decomposer un pack DEJA vendu
+  // (Reconciliation), quand la vente ne porte pas de composition personnalisee.
+  PACK_COMPOSITIONS,
   init: initPackCompositionModule,
   checkIfPackAndShowButton,
   getPackComposition,
