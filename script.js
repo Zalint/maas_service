@@ -10042,11 +10042,17 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     // undefined et non 0: aucune donnee n'est PAS une perte nulle.
                     dailyReconciliation[pointVente].parageBovin = p && p.bovin ? p.bovin.perte : null;
                     dailyReconciliation[pointVente].parageOvin = p && p.ovin ? p.ovin.perte : null;
+                    // Numerateur et denominateur conserves pour l'infobulle:
+                    // un pourcentage seul ne permet pas de verifier d'ou il sort.
+                    dailyReconciliation[pointVente].parageBovinDetail = p ? p.bovin : null;
+                    dailyReconciliation[pointVente].parageOvinDetail = p ? p.ovin : null;
                 });
             } else {
                 Object.keys(dailyReconciliation).forEach(pointVente => {
                     dailyReconciliation[pointVente].parageBovin = null;
                     dailyReconciliation[pointVente].parageOvin = null;
+                    dailyReconciliation[pointVente].parageBovinDetail = null;
+                    dailyReconciliation[pointVente].parageOvinDetail = null;
                 });
             }
 
@@ -10091,8 +10097,8 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                      // Parage: null quand le stock theorique est nul ou negatif.
                      // On affiche alors un tiret, jamais 0% qui se lirait
                      // "aucune perte".
-                     { key: 'parageBovin', format: 'parage' },
-                     { key: 'parageOvin', format: 'parage' }
+                     { key: 'parageBovin', format: 'parage', detail: 'parageBovinDetail', libelle: 'Bovin' },
+                     { key: 'parageOvin', format: 'parage', detail: 'parageOvinDetail', libelle: 'Ovin' }
                  ];
 
                  columns.forEach(columnInfo => {
@@ -10102,6 +10108,30 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                      const value = data ? data[columnInfo.key] : 0;
 
                      if (columnInfo.format === 'parage') {
+                         // Infobulle: le detail du calcul. Un pourcentage seul
+                         // ne permet pas de savoir d'ou il sort ni de reperer
+                         // une saisie de stock manquante.
+                         const det = data ? data[columnInfo.detail] : null;
+                         const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
+                         if (det) {
+                             cell.title = det.theorique > 0
+                                 ? `${columnInfo.libelle}
+`
+                                     + `Vendu (packs inclus) : ${kg(det.vendu)}
+`
+                                     + `Stock théorique (matin + transferts − soir) : ${kg(det.theorique)}
+`
+                                     + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
+`
+                                     + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                                 : `${columnInfo.libelle}
+`
+                                     + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
+`
+                                     + `Vendu (packs inclus) : ${kg(det.vendu)}`;
+                             cell.style.cursor = 'help';
+                         }
+
                          if (value === null || value === undefined) {
                              cell.textContent = '—';
                              cell.classList.add('text-muted');
