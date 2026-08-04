@@ -251,12 +251,11 @@ describe('ratio', () => {
         expect(r.Mbao.ovin.perte).toBeNull();
     });
 
-    // Cas constate en production le 03/08/2026: 18,8 kg de stock theorique et
-    // AUCUNE vente. Le rapport valait 0, donc un parage de 100% affiche en
-    // rouge - alors que cette valeur ne dit rien de la decoupe. Elle signale du
-    // stock parti sans vente enregistree, ce que la colonne Ecart montre deja
-    // en francs. Ces 100% noyaient les vrais taux, qui tournent autour de 5%.
-    test('aucune vente: pas de ratio, meme avec du stock theorique', () => {
+    // Du stock sorti SANS aucune vente: 100% de perte, et il FAUT que ca se
+    // voie. Des kilos ont quitte le stock sans qu'aucune vente ne soit
+    // enregistree - c'est le signal d'un vol ou d'une saisie manquante.
+    // Masquer cette ligne reviendrait a masquer exactement ce qu'on cherche.
+    test('stock sorti sans vente: 100% de perte, et ca doit rester visible', () => {
         const r = calculerParage(base({
             stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 18.8 }],
             stocksSoir: [],
@@ -264,10 +263,35 @@ describe('ratio', () => {
         }));
         expect(r.Mbao.bovin.theorique).toBeCloseTo(18.8, 6);
         expect(r.Mbao.bovin.vendu).toBe(0);
+        expect(r.Mbao.bovin.ratio).toBe(0);
+        expect(r.Mbao.bovin.perte).toBe(1);
+        // Surtout pas null: un tiret ici effacerait l'alerte.
+        expect(r.Mbao.bovin.perte).not.toBeNull();
+    });
+
+    // Le seul cas a ignorer: rien en stock, rien vendu. 0/0 n'est pas une
+    // perte de 100%, c'est une journee sans matiere.
+    test('0/0: aucune matiere, aucune vente -> pas de ratio', () => {
+        const r = calculerParage(base({
+            stocksMatin: [],
+            stocksSoir: [],
+            ventes: []
+        }));
+        const bovin = r.Mbao ? r.Mbao.bovin : { ratio: null, perte: null };
+        expect(bovin.ratio).toBeNull();
+        expect(bovin.perte).toBeNull();
+    });
+
+    test('0/0 avec des lignes de stock a zero des deux cotes', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 12 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 12 }],
+            ventes: []
+        }));
+        expect(r.Mbao.bovin.theorique).toBe(0);
+        expect(r.Mbao.bovin.vendu).toBe(0);
         expect(r.Mbao.bovin.ratio).toBeNull();
         expect(r.Mbao.bovin.perte).toBeNull();
-        // Surtout pas 1: c'est ce 100% qui s'affichait.
-        expect(r.Mbao.bovin.perte).not.toBe(1);
     });
 
     test('une seule vente suffit a rendre le parage mesurable', () => {

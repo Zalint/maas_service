@@ -10078,11 +10078,15 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     // gonfler ni diluer le taux du mois.
                     ['bovin', 'ovin'].forEach((cat) => {
                         const d = p && p[cat];
-                        // Une journee non mesurable (ratio null: pas de vente,
-                        // ou pas de stock theorique) n'entre NI au numerateur
-                        // NI au denominateur. La compter gonflerait le taux du
-                        // mois avec du stock qui n'a jamais ete rapporte a une
-                        // vente - le meme 100% trompeur, cumule.
+                        // Seules les journees SANS matiere sont ignorees
+                        // (ratio null: theorique nul ou negatif). Elles
+                        // n'apporteraient rien au numerateur comme au
+                        // denominateur, et un theorique negatif fausserait la
+                        // somme.
+                        //
+                        // Une journee ou du stock est sorti SANS vente compte,
+                        // elle: ses kilos ont bel et bien disparu, et le cumul
+                        // du mois doit les porter.
                         if (!d || d.ratio === null || d.ratio === undefined) return;
                         parageMois[cat].vendu += parseFloat(d.vendu) || 0;
                         parageMois[cat].theorique += parseFloat(d.theorique) || 0;
