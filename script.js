@@ -9841,7 +9841,14 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 
                 // Afficher les données en cache
                 afficherDonneesReconciliationMensuelle(cachedData.data);
-                
+
+                // Puis reappliquer le filtre par point de vente, comme le fait
+                // le chemin calcule apres son rendu. Cette branche sort en
+                // `return` avant d'y arriver: sans cet appel, revenir sur
+                // l'ecran avec un filtre actif reaffichait TOUS les points de
+                // vente, le menu deroulant continuant d'en annoncer un seul.
+                filtrerTableauReconciliationMensuelle();
+
                 // Mettre à jour les totaux
                 if (cachedData.totaux) {
                     const totalVentesTheoriquesEl = document.getElementById('total-ventes-theoriques-mois');
@@ -10197,6 +10204,10 @@ function filtrerTableauReconciliationMensuelle() {
     const rows = document.querySelectorAll('#reconciliation-mois-table tbody tr');
     
     rows.forEach(row => {
+        // La ligne "Aucune donnée disponible" n'a qu'UNE cellule (colSpan=15):
+        // lire cells[1] y leverait, et l'erreur remonterait au chargement
+        // entier de l'ecran pour une table simplement vide.
+        if (!row.cells || row.cells.length < 2) return;
         const pointVente = row.cells[1].textContent;
         if (filtre === '' || pointVente === filtre) {
             row.style.display = '';
