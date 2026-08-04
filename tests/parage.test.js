@@ -323,7 +323,39 @@ describe('ratio', () => {
         expect(r.Mbao.bovin.perte).not.toBeNull();
     });
 
-    // Le seul cas a ignorer: rien en stock, rien vendu. 0/0 n'est pas une
+    // Constate en production le 02/08/2026: le tableau affichait 100% en rouge
+    // et l'infobulle annoncait "0 kg / 0 kg". Les deux etaient vrais - a
+    // l'affichage. Dans la machine, theorique valait 5.55e-17: le stock du
+    // matin saisi en plusieurs lignes et celui du soir en une seule ne
+    // s'annulent pas exactement en virgule flottante. Le residu etant > 0, le
+    // ratio valait 0 et le parage 100%, sur une journee ou rien n'avait bouge.
+    test('residu de virgule flottante: pas de parage a 100% sur une journee immobile', () => {
+        const r = calculerParage(base({
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 0.1 },
+                { pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 0.2 }
+            ],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 0.3 }],
+            ventes: []
+        }));
+        // Le residu existe bel et bien: le test n'a de sens que s'il est > 0.
+        expect(r.Mbao.bovin.theorique).toBeGreaterThan(0);
+        expect(r.Mbao.bovin.theorique).toBeLessThan(0.001);
+        expect(r.Mbao.bovin.ratio).toBeNull();
+        expect(r.Mbao.bovin.perte).toBeNull();
+        expect(r.Mbao.bovin.perte).not.toBe(1);
+    });
+
+    test('un gramme reel reste sous le seuil, dix grammes comptent', () => {
+        const avec = (q) => calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: q }],
+            stocksSoir: [], ventes: []
+        })).Mbao.bovin;
+        expect(avec(0.0005).perte).toBeNull();
+        expect(avec(0.01).perte).toBe(1);
+    });
+
+    // Le seul autre cas a ignorer: rien en stock, rien vendu. 0/0 n'est pas une
     // perte de 100%, c'est une journee sans matiere.
     test('0/0: aucune matiere, aucune vente -> pas de ratio', () => {
         const r = calculerParage(base({
