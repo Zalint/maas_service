@@ -754,7 +754,10 @@ async function updateSchema() {
                     console.log(`Table pack_compositions amorcee: ${lignes.length} ligne(s)`);
                 }
             } catch (e) {
-                await tx.rollback();
+                // commit() marque la transaction "finished" dans son finally,
+                // meme quand il echoue: rollback() levait alors sa propre
+                // erreur, qui remplacait la vraie et sautait le throw ci-dessous.
+                try { await tx.rollback(); } catch (_) { /* deja terminee */ }
                 throw e;
             }
         }

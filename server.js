@@ -5444,46 +5444,18 @@ app.get('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) 
 // d'avoir a suivre les identifiants de lignes cote client, et la transaction
 // garantit qu'on ne laisse jamais un pack a moitie enregistre.
 app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
-    const { UNITES_CONNUES } = require('./lib/parage');
     try {
+        // Validation dans lib/composition-pack.js: les regles qu'elle applique
+        // arretent des defauts muets (unite inconnue, piece sans poids, pack
+        // efface par une composition vide), donc elles sont tenues par des
+        // tests plutot que par la relecture.
+        const { validerCompositionPack } = require('./lib/composition-pack');
         const pack = String(req.body && req.body.pack || '').trim();
-        const lignes = Array.isArray(req.body && req.body.lignes) ? req.body.lignes : null;
-        if (!pack || !lignes) {
-            return res.status(400).json({ success: false, message: 'pack et lignes requis' });
+        const controle = validerCompositionPack(pack, req.body && req.body.lignes);
+        if (!controle.ok) {
+            return res.status(400).json({ success: false, message: controle.message });
         }
-
-        const valides = [];
-        for (let i = 0; i < lignes.length; i++) {
-            const l = lignes[i] || {};
-            const produit = String(l.produit || '').trim();
-            const quantite = parseFloat(l.quantite);
-            const unite = String(l.unite || 'kg').trim().toLowerCase();
-            if (!produit) continue;
-            if (!(quantite > 0)) {
-                return res.status(400).json({ success: false, message: `${produit}: quantite invalide` });
-            }
-            const poids = parseFloat(l.poids_unitaire);
-            // Une piece sans poids unitaire ne peut pas etre convertie en kilos:
-            // elle disparaitrait du parage sans erreur. On refuse a la saisie.
-            // Refuse a l'ecriture: une unite inconnue vaut 0 kg au calcul,
-            // le pack serait ampute sans que l'ecran ne montre rien.
-            if (!UNITES_CONNUES.includes(unite)) {
-                return res.status(400).json({
-                    success: false,
-                    message: `${produit}: unite "${l.unite}" inconnue (attendu: ${UNITES_CONNUES.join(', ')})`
-                });
-            }
-            if ((unite === 'piece' || unite === 'pièce') && !(poids > 0)) {
-                return res.status(400).json({
-                    success: false,
-                    message: `${produit}: une unite "pièce" exige un poids unitaire`
-                });
-            }
-            valides.push({
-                pack, ordre: valides.length, produit, quantite, unite,
-                poids_unitaire: poids > 0 ? poids : null
-            });
-        }
+        const valides = controle.valides;
 
         const { PackComposition } = require('./db/models');
         await sequelize.transaction(async (t) => {
