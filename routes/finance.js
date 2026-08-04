@@ -1062,7 +1062,8 @@ router.delete('/charges/:nom', async (req, res) => {
 //      - total_avances (sur la periode, depuis MataBanq)
 //      - commission_maas (3% sur ventes elligibles)
 //      + marge_cdc (Il me doit)
-//      - charges_proratisees (charges_mensuelles × nb_jours_periode / 30)
+//      - charges_proratisees (par mois: charges_mensuelles × jours_couverts /
+//        jours_reels_du_mois ; 30 fixe surestimait juillet de 3,3%)
 //      - depenses_periode (table depenses, saisies onglet Depenses, periode)
 //      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
 //      + variation_stock_nette
@@ -1114,7 +1115,9 @@ router.get('/pl', async (req, res) => {
             return res.status(400).json({ success: false, error: 'invalid dateFin' });
         }
 
-        // Nombre de jours dans la periode (inclus). Convention 30 jours/mois.
+        // Nombre de jours dans la periode (inclus). Sert a l'affichage: le
+        // prorata des charges, lui, se calcule mois par mois sur les jours
+        // REELS de chaque mois (voir decouperEnMois), sans mois conventionnel.
         const startD = new Date(dateDebut + 'T00:00:00Z');
         const endD = new Date(dateFin + 'T00:00:00Z');
         if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {

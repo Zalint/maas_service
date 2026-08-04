@@ -111,7 +111,14 @@ console.log('Estimation model:', !!Estimation);
 console.log('Estimation.create:', typeof Estimation.create === 'function' ? 'function available' : 'NOT AVAILABLE');
 
 // Run the schema update scripts when the server starts
-(async function() {
+//
+// Expose une promesse: la verification des compositions de packs, plus bas,
+// interroge une table que CETTE fonction cree. Sans point de rendez-vous, les
+// deux demarraient en parallele et, au premier lancement d'un tenant, la
+// verification lisait une table inexistante: elle affichait une alerte
+// trompeuse et ne verifiait jamais rien - exactement au demarrage ou elle
+// aurait servi.
+const schemaPret = (async function() {
   try {
     console.log('Running database schema updates...');
     await updateSchema();
@@ -236,8 +243,19 @@ console.log('Estimation.create:', typeof Estimation.create === 'function' ? 'fun
     }
   } catch (error) {
     console.error('Error during schema updates:', error);
+    // Relance apres journalisation: avalee, l'erreur faisait resoudre
+    // schemaPret comme si la migration avait reussi, et la verification des
+    // compositions partait interroger un schema incomplet - pour y rapporter
+    // des problemes de configuration qui n'en sont pas. Les appelants de
+    // schemaPret doivent donc capturer: ils sont deux, plus bas (verification
+    // des compositions de packs, puis des references de caisse).
+    throw error;
   }
 })();
+// Les consommateurs de schemaPret capturent chacun leur rejet. Ce garde evite
+// un rejet non gere s'ils venaient a disparaitre, sans masquer l'erreur, deja
+// journalisee ci-dessus.
+schemaPret.catch(() => {});
 
 // Middleware
 // Allow all origins in production for Render
@@ -5363,6 +5381,16 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 // qu'on ne relie pas spontanement a un fichier de configuration.
 (async function () {
     try {
+        // La table doit exister et etre amorcee. Si la migration a echoue, on
+        // ne verifie pas: le message porterait sur un schema incomplet et
+        // designerait la configuration alors que la cause est ailleurs.
+        try {
+            await schemaPret;
+        } catch (e) {
+            console.error('⚠️  Compositions de packs non vérifiées : '
+                + "la mise à jour du schéma a échoué (voir l'erreur ci-dessus).");
+            return;
+        }
         const { verifierCompositions } = require('./config/pack-compositions');
         const problemes = verifierCompositions(await lirePackCompositions());
         if (problemes.length) {
@@ -5373,6 +5401,66 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
         }
     } catch (e) {
         console.error('⚠️  Compositions de packs illisibles :', e.message);
+    }
+})();
+
+// Verification au demarrage: chaque point de vente a-t-il une reference de
+// caisse ?
+//
+// scripts/apply-tenant-config.js refuse deja de deployer un tenant dont
+// references_caisse est vide, mais il ne voit que le fichier. Un point de vente
+// cree depuis ADMIN (PointVente.create, sans payment_ref) n'y figure pas:
+// generateCashReference rend null, la cloture saute l'ecriture, et elle repond
+// 201 succes sans enregistrer le cash.
+//
+// Portee reelle, a ne pas surestimer: ce controle ne voit que l'etat au
+// DEMARRAGE. Un point de vente cree apres coup n'apparait qu'au redemarrage
+// suivant; c'est le journal de la cloture, plus bas, qui couvre l'intervalle.
+//
+// Non bloquant volontairement: un tenant peut legitimement demarrer avec un
+// point de vente pas encore configure, et refuser de servir couterait plus que
+// le defaut lui-meme. Mais le silence, lui, n'est plus une option.
+(async function () {
+    try {
+        await schemaPret;
+    } catch (e) {
+        return; // migration en echec: deja signalee, la table peut manquer
+    }
+    try {
+        const { CASH_REFERENCES, erreurConfigReferences } = require('./config/cash-references');
+        if (erreurConfigReferences()) return; // deja signale au chargement
+        // Pas de filtre sur `active`: la cloture n'en pose pas non plus, elle
+        // accepte le point de vente que le corps de requete lui donne. Filtrer
+        // ici verifierait autre chose que ce qui peut reellement arriver.
+        const lignes = await sequelize.query(
+            `SELECT nom FROM points_vente ORDER BY nom`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const sansReference = lignes
+            .map((l) => l.nom)
+            .filter((nom) => !CASH_REFERENCES[nom]);
+        if (sansReference.length) {
+            console.error('⚠️  Points de vente SANS référence de caisse : '
+                + sansReference.join(', '));
+            console.error('   Leurs clôtures réussiront sans enregistrer le cash, et ces');
+            console.error('   points de vente seront absents de la réconciliation.');
+            const slug = process.env.TENANT_SLUG;
+            console.error('   Ajoutez-les à references_caisse dans '
+                + (slug && slug !== 'default'
+                    ? `config/tenants/${slug}/brand-config.json`
+                    : 'brand-config.json'));
+            if (slug && slug !== 'default') {
+                console.error('   (et non à la racine, qui est écrasée à chaque déploiement).');
+            }
+        } else if (!lignes.length) {
+            // Zero point de vente: il n'y a rien eu a verifier. Une coche verte
+            // ici certifierait plus que ce qui a ete fait.
+            console.log('ℹ️  Références de caisse : aucun point de vente enregistré, rien à vérifier.');
+        } else {
+            console.log(`✅ Références de caisse vérifiées (${lignes.length} point(s) de vente)`);
+        }
+    } catch (e) {
+        console.error('⚠️  Références de caisse non vérifiées :', e.message);
     }
 })();
 
@@ -5437,36 +5525,17 @@ app.get('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) 
 // garantit qu'on ne laisse jamais un pack a moitie enregistre.
 app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
     try {
+        // Validation dans lib/composition-pack.js: les regles qu'elle applique
+        // arretent des defauts muets (unite inconnue, piece sans poids, pack
+        // efface par une composition vide), donc elles sont tenues par des
+        // tests plutot que par la relecture.
+        const { validerCompositionPack } = require('./lib/composition-pack');
         const pack = String(req.body && req.body.pack || '').trim();
-        const lignes = Array.isArray(req.body && req.body.lignes) ? req.body.lignes : null;
-        if (!pack || !lignes) {
-            return res.status(400).json({ success: false, message: 'pack et lignes requis' });
+        const controle = validerCompositionPack(pack, req.body && req.body.lignes);
+        if (!controle.ok) {
+            return res.status(400).json({ success: false, message: controle.message });
         }
-
-        const valides = [];
-        for (let i = 0; i < lignes.length; i++) {
-            const l = lignes[i] || {};
-            const produit = String(l.produit || '').trim();
-            const quantite = parseFloat(l.quantite);
-            const unite = String(l.unite || 'kg').trim().toLowerCase();
-            if (!produit) continue;
-            if (!(quantite > 0)) {
-                return res.status(400).json({ success: false, message: `${produit}: quantite invalide` });
-            }
-            const poids = parseFloat(l.poids_unitaire);
-            // Une piece sans poids unitaire ne peut pas etre convertie en kilos:
-            // elle disparaitrait du parage sans erreur. On refuse a la saisie.
-            if ((unite === 'piece' || unite === 'pièce') && !(poids > 0)) {
-                return res.status(400).json({
-                    success: false,
-                    message: `${produit}: une unite "pièce" exige un poids unitaire`
-                });
-            }
-            valides.push({
-                pack, ordre: valides.length, produit, quantite, unite,
-                poids_unitaire: poids > 0 ? poids : null
-            });
-        }
+        const valides = controle.valides;
 
         const { PackComposition } = require('./db/models');
         await sequelize.transaction(async (t) => {
@@ -17462,6 +17531,7 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         if (date.match(/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/)) { const parts = date.split(/[\/\-]/); isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`; }
         const transaction = await sequelize.transaction();
         let cloture;
+        let referenceManquante = false;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
             cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
@@ -17506,8 +17576,26 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
                     type: sequelize.QueryTypes.INSERT
                 });
             }
+            referenceManquante = !cashRef;
             await transaction.commit();
         } catch (txError) { await transaction.rollback(); throw txError; }
+        if (referenceManquante) {
+            // Pas de reference: aucune ligne de caisse n'a ete ecrite. Le
+            // comportement reste non bloquant - c'est l'historique - mais la
+            // cloture repondait 201 succes sans laisser la moindre trace.
+            //
+            // Journalise APRES le commit, et HORS du try: emis avant, un echec
+            // de transaction aurait date un trou qui n'a jamais existe; emis
+            // dedans, une exception ici aurait declenche un rollback sur une
+            // transaction deja commitee, dont l'erreur aurait remplace tout le
+            // reste - le defaut corrige dans db/update-schema.js plus tot.
+            //
+            // JSON.stringify neutralise les retours a la ligne: la valeur vient
+            // du corps de la requete et pourrait forger une ligne de journal.
+            console.warn(`[cloture] ${JSON.stringify(pointVente)} n'a pas de référence de `
+                + `caisse: aucune ligne écrite dans cash_payments pour le ${isoDate}. `
+                + `Ce point de vente sera absent de la réconciliation.`);
+        }
         res.status(201).json({ success: true, message: `Clôture enregistrée pour ${pointVente} le ${isoDate}`, data: cloture });
     } catch (error) {
         console.error('Erreur cloture POST:', error.message);

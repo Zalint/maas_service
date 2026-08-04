@@ -704,11 +704,7 @@ async function updateSchema() {
         // Amorcage depuis le fichier, UNIQUEMENT si la table est vide: c'est
         // une reprise de l'existant, pas une synchronisation. Une fois amorcee,
         // la base fait foi et le fichier n'est plus relu.
-        const [dejaLa] = await sequelize.query(
-            'SELECT COUNT(*)::int AS n FROM pack_compositions',
-            { type: sequelize.QueryTypes.SELECT }
-        );
-        if (!dejaLa || dejaLa.n === 0) {
+        {
             const { PACK_COMPOSITIONS } = require('../config/pack-compositions');
             const lignes = [];
             for (const [pack, composition] of Object.entries(PACK_COMPOSITIONS || {})) {
@@ -723,16 +719,47 @@ async function updateSchema() {
                     });
                 });
             }
-            for (const l of lignes) {
+            // Tout ou rien, et une seule fois. Deux garde-fous, pour deux
+            // pannes differentes:
+            //  - la transaction: une coupure au milieu de la boucle laisserait
+            //    la table non vide donc definitivement incomplete, puisque le
+            //    rejeu exige une table VIDE. Un pack ampute produit des kilos
+            //    rattaches a aucune categorie, donc un parage faux et muet.
+            //  - le verrou + le comptage DANS la transaction: lu au dehors, il
+            //    laisse deux instances qui demarrent ensemble voir zero toutes
+            //    les deux et amorcer chacune leur tour. Chaque pack en double
+            //    doublerait le theorique, sans la moindre erreur.
+            const tx = await sequelize.transaction();
+            try {
                 await sequelize.query(
-                    `INSERT INTO pack_compositions (pack, ordre, produit, quantite, unite, poids_unitaire)
-                     VALUES (:pack, :ordre, :produit, :quantite, :unite, :poids_unitaire)`,
-                    { replacements: l }
+                    'LOCK TABLE pack_compositions IN EXCLUSIVE MODE',
+                    { transaction: tx }
                 );
+                const [dejaLa] = await sequelize.query(
+                    'SELECT COUNT(*)::int AS n FROM pack_compositions',
+                    { type: sequelize.QueryTypes.SELECT, transaction: tx }
+                );
+                if (dejaLa && dejaLa.n > 0) {
+                    await tx.commit();
+                    console.log(`Table pack_compositions verifiee (${dejaLa.n} ligne(s))`);
+                } else {
+                    for (const l of lignes) {
+                        await sequelize.query(
+                            `INSERT INTO pack_compositions (pack, ordre, produit, quantite, unite, poids_unitaire)
+                             VALUES (:pack, :ordre, :produit, :quantite, :unite, :poids_unitaire)`,
+                            { replacements: l, transaction: tx }
+                        );
+                    }
+                    await tx.commit();
+                    console.log(`Table pack_compositions amorcee: ${lignes.length} ligne(s)`);
+                }
+            } catch (e) {
+                // commit() marque la transaction "finished" dans son finally,
+                // meme quand il echoue: rollback() levait alors sa propre
+                // erreur, qui remplacait la vraie et sautait le throw ci-dessous.
+                try { await tx.rollback(); } catch (_) { /* deja terminee */ }
+                throw e;
             }
-            console.log(`Table pack_compositions amorcee: ${lignes.length} ligne(s)`);
-        } else {
-            console.log(`Table pack_compositions verifiee (${dejaLa.n} ligne(s))`);
         }
 
         // Reference de caisse des points de vente.
@@ -747,17 +774,31 @@ async function updateSchema() {
         // Renseigne uniquement les lignes encore NULL: une reference saisie a
         // la main n'est jamais ecrasee. Idempotent.
         try {
-            const { CASH_REFERENCES } = require('../config/cash-references');
-            let renseignes = 0;
-            for (const [nom, ref] of Object.entries(CASH_REFERENCES)) {
-                const [, meta] = await sequelize.query(
-                    `UPDATE points_vente SET payment_ref = :ref
-                     WHERE nom = :nom AND payment_ref IS NULL`,
-                    { replacements: { nom, ref } }
-                );
-                renseignes += (meta && meta.rowCount) || 0;
+            const { CASH_REFERENCES, erreurConfigReferences } = require('../config/cash-references');
+            // Configuration illisible: la table est PARTIELLE. Ecrire quand meme
+            // renseignerait une partie des points de vente et laisserait les
+            // autres a NULL - un mapping incomplet est indiscernable d'un
+            // mapping correct, et les paiements des points manquants tombent
+            // sur 'Non specifie' a l'import. On saute; le prochain demarrage
+            // rejouera, la colonne etant encore NULL.
+            const pb = erreurConfigReferences();
+            if (pb) {
+                // Saut explicite, sans lever: le catch ci-dessous annonce une
+                // "table absente", ce qui designerait la mauvaise cause.
+                console.error('points_vente.payment_ref NON renseigne, '
+                    + 'configuration des references illisible:', pb.message);
+            } else {
+                let renseignes = 0;
+                for (const [nom, ref] of Object.entries(CASH_REFERENCES)) {
+                    const [, meta] = await sequelize.query(
+                        `UPDATE points_vente SET payment_ref = :ref
+                         WHERE nom = :nom AND payment_ref IS NULL`,
+                        { replacements: { nom, ref } }
+                    );
+                    renseignes += (meta && meta.rowCount) || 0;
+                }
+                console.log(`points_vente.payment_ref: ${renseignes} reference(s) renseignee(s)`);
             }
-            console.log(`points_vente.payment_ref: ${renseignes} reference(s) renseignee(s)`);
         } catch (e) {
             // Table absente sur un tenant vierge (avant sequelize.sync): non bloquant.
             console.warn('points_vente.payment_ref non renseigne:', e.message);

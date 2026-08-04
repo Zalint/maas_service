@@ -62,6 +62,13 @@ const brandConfig = {
         footer_facture: 'Merci de votre confiance !',
         footer_whatsapp: 'Merci de votre confiance !',
         points_vente_codes: [],
+        // Reference de caisse par point de vente, ecrite dans
+        // cash_payments.payment_reference a chaque cloture. Laissee VIDE
+        // volontairement: tenant:apply refuse de deployer tant qu'elle l'est.
+        // Sans elle, generateCashReference rend null, server.js saute
+        // l'ecriture, et la cloture repond 201 succes SANS enregistrer le
+        // cash - le point de vente disparait de la reconciliation.
+        references_caisse: {},
     },
 };
 
@@ -138,7 +145,12 @@ console.log('   - client-config.json');
 console.log('   - .env.tenant');
 console.log('');
 console.log('Next steps:');
-console.log(`  1. Edit config/tenants/${slug}/brand-config.json — fill phones, address, points_vente_codes.`);
+console.log(`  1. Edit config/tenants/${slug}/brand-config.json — fill phones, address, points_vente_codes,`);
+console.log('     and REQUIRED: references_caisse, one entry per point de vente, e.g.');
+console.log('       "references_caisse": { "Mbao": "CASH_MBA", "Touba": "CASH_TB" }');
+console.log('     The key is the point de vente name exactly as stored in the DB.');
+console.log('     Leaving it empty makes tenant:apply fail the deploy — on purpose:');
+console.log('     without it, cash closings succeed without recording any cash.');
 console.log('  2. In Render: create a new Postgres for this tenant; copy its Internal Database URL.');
 console.log(`  3. In Render: create a new Web Service from this branch with env vars from config/tenants/${slug}/.env.tenant`);
 console.log(`     (replace DATABASE_URL with the value from step 2).`);

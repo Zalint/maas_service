@@ -1617,7 +1617,7 @@
         if (!el) return;
         const total = (rows || []).reduce((s, r) => s + (parseFloat(r.montant_mensuel) || 0), 0);
         const nbSaisis = (rows || []).filter((r) => r.saisi_ce_mois).length;
-        const libelle = formatMoisFr(mois);
+        const libelle = esc(formatMoisFr(mois));
 
         if (!rows || !rows.length) { el.textContent = ''; return; }
         if (nbSaisis === rows.length) {
@@ -2086,7 +2086,7 @@
             </div>
 
             <!-- Detail charges -->
-            <h6 class="fin-subheading">Détail des charges (au prorata des ${esc(d.periode.nb_jours)} jours / 30)</h6>
+            <h6 class="fin-subheading">Détail des charges (au prorata des ${esc(d.periode.nb_jours)} jours couverts)</h6>
             <div class="table-responsive">
                 <table class="table table-sm mb-0">
                     <thead>

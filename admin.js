@@ -6816,7 +6816,7 @@ async function chargerParageExclusions() {
         majCompteurParageExclusions();
         pxListeChargee = true;
     } catch (e) {
-        conteneur.innerHTML = '<div class="col-12 text-danger py-3">Erreur: ' + e.message + '</div>';
+        conteneur.innerHTML = '<div class="col-12 text-danger py-3">Erreur: ' + escapeHtmlDc(e.message) + '</div>';
     }
 }
 
