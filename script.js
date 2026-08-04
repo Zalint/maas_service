@@ -9817,6 +9817,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         let totalVentesSaisiesMois = 0;
         let totalCreancesMois = 0;
         let totalVersementsMois = 0;
+        const lignesCalculees = [];
         let dernierJourAvecDonnees = 0; // Pour l'estimation
         // --- Fin initialisation totaux ---
 
@@ -10076,125 +10077,13 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                  if (!POINTS_VENTE_PHYSIQUES.includes(pointVente)) return;
 
                  const data = dailyReconciliation[pointVente];
-                 const row = document.createElement('tr');
-
-                 // Cellule Date
-                 let cell = document.createElement('td');
-                 cell.textContent = dateStr;
-                 row.appendChild(cell);
-
-                 // Cellule Point de Vente
-                 cell = document.createElement('td');
-                 cell.textContent = pointVente;
-                 row.appendChild(cell);
-
-                 // Cellules de valeurs (stock matin, stock soir, etc.)
-                 const columns = [
-                     { key: 'stockMatin', format: 'currency' },
-                     { key: 'stockSoir', format: 'currency' },
-                     { key: 'transferts', format: 'currency' },
-                     { key: 'ventes', format: 'currency' }, // Theoretical Sales
-                     { key: 'ventesSaisies', format: 'currency' },
-                     { key: 'creances', format: 'currency' }, // Créances
-                     { key: 'difference', format: 'currency' }, // Ecart
-                     { key: 'cashPayment', format: 'currency' },
-                     { key: 'pourcentageEcart', format: 'percentage' }, // Ecart %
-                     { key: 'ecartCash', format: 'currency' },
-                     // Parage: null quand le stock theorique est nul ou negatif.
-                     // On affiche alors un tiret, jamais 0% qui se lirait
-                     // "aucune perte".
-                     { key: 'parageBovin', format: 'parage', detail: 'parageBovinDetail', libelle: 'Bovin' },
-                     { key: 'parageOvin', format: 'parage', detail: 'parageOvinDetail', libelle: 'Ovin' }
-                 ];
-
-                 columns.forEach(columnInfo => {
-                     cell = document.createElement('td');
-                     cell.className = 'text-end';
-
-                     const value = data ? data[columnInfo.key] : 0;
-
-                     if (columnInfo.format === 'parage') {
-                         // Infobulle: le detail du calcul. Un pourcentage seul
-                         // ne permet pas de savoir d'ou il sort ni de reperer
-                         // une saisie de stock manquante.
-                         const det = data ? data[columnInfo.detail] : null;
-                         const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
-                         if (det) {
-                             cell.title = det.theorique > 0
-                                 ? `${columnInfo.libelle}
-`
-                                     + `Vendu (packs inclus) : ${kg(det.vendu)}
-`
-                                     + `Stock théorique (matin + transferts − soir) : ${kg(det.theorique)}
-`
-                                     + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
-`
-                                     + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
-                                 : `${columnInfo.libelle}
-`
-                                     + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
-`
-                                     + `Vendu (packs inclus) : ${kg(det.vendu)}`;
-                             cell.style.cursor = 'help';
-                         }
-
-                         if (value === null || value === undefined) {
-                             cell.textContent = '—';
-                             cell.classList.add('text-muted');
-                         } else {
-                             const pct = parseFloat(value) * 100;
-                             cell.textContent = `${pct.toFixed(1)}%`;
-                             // Un parage negatif signifie qu'on a vendu plus que
-                             // ce que le stock permettait: anomalie de saisie.
-                             if (pct < 0 || pct > 15) {
-                                 cell.classList.add('text-danger', 'fw-bold');
-                             } else if (pct > 8) {
-                                 cell.classList.add('text-warning', 'fw-bold');
-                             } else {
-                                 cell.classList.add('text-success');
-                             }
-                         }
-                     } else if (columnInfo.format === 'percentage') {
-                         const percentageValue = parseFloat(value) || 0;
-                         cell.textContent = `${percentageValue.toFixed(2)}%`;
-
-                         if (Math.abs(percentageValue) > 10) {
-                             cell.classList.add('text-danger', 'fw-bold');
-                         } else if (Math.abs(percentageValue) > 8) {
-                             cell.classList.add('text-warning', 'fw-bold');
-                         } else if (Math.abs(percentageValue) > 0) {
-                             cell.classList.add('text-success', 'fw-bold');
-                         }
-                     } else { // currency
-                         const currencyValue = parseFloat(value) || 0;
-                         cell.textContent = formatMonetaire(currencyValue);
-
-                         if ((columnInfo.key === 'difference' || columnInfo.key === 'ecartCash') && currencyValue !== 0) {
-                             cell.classList.add(currencyValue < 0 ? 'negative' : 'positive');
-                         }
-                         
-                         // Style pour les créances
-                         if (columnInfo.key === 'creances' && currencyValue > 0) {
-                             cell.style.color = '#dc3545';
-                             cell.style.fontWeight = 'bold';
-                         }
-                     }
-                     row.appendChild(cell);
-                 });
-
-                 // Cellule Commentaire
-                 cell = document.createElement('td');
-                 const inputComment = document.createElement('input');
-                 inputComment.type = 'text';
-                 inputComment.className = 'form-control form-control-sm'; // smaller input
-                 inputComment.value = data.commentaire || '';
-                 inputComment.setAttribute('data-point-vente', pointVente);
-                 inputComment.setAttribute('data-date', dateStr);
-                 // Add event listener for saving comments if needed later
-                 cell.appendChild(inputComment);
-                 row.appendChild(cell);
-
-                 tableBody.appendChild(row);
+                 // Memorise la ligne CALCULEE pour le cache. Auparavant le
+                 // cache relisait le DOM par index de cellule (cells[2],
+                 // cells[3]...) sous un garde `cells.length >= 12`: l'ajout des
+                 // colonnes de parage a porte le tableau a 15 colonnes, le
+                 // garde est reste vrai, et les index ont glisse en silence.
+                 lignesCalculees.push(Object.assign({ date: dateStr, pointVente }, data));
+                 tableBody.appendChild(construireLigneReconciliationMois(dateStr, pointVente, data));
              });
         }
 
@@ -10256,27 +10145,9 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
         // Sauvegarder dans le cache
         const cacheKey = `${mois}-${annee}`;
-        const reconciliationData = []; // Collecter les données pour le cache
-        
-        // Collecter les données du tableau pour le cache
-        const rows = tableBody.querySelectorAll('tr');
-        rows.forEach(row => {
-            const cells = row.cells;
-            if (cells.length >= 12) {
-                reconciliationData.push({
-                    date: cells[0].textContent,
-                    pointVente: cells[1].textContent,
-                    ventesTheoriques: extractNumericValue(cells[2].textContent),
-                    ventesSaisies: extractNumericValue(cells[3].textContent),
-                    versements: extractNumericValue(cells[4].textContent),
-                    estimation: extractNumericValue(cells[7].textContent),
-                    commentaires: cells[9].textContent
-                });
-            }
-        });
-        
+
         const cacheData = {
-            data: reconciliationData,
+            data: lignesCalculees,
             totaux: {
                 ventesTheoriques: totalVentesTheoriquesMois,
                 ventesSaisies: totalVentesSaisiesMois,
@@ -10336,16 +10207,153 @@ function filtrerTableauReconciliationMensuelle() {
 }
 
 /**
- * Affiche les données de réconciliation mensuelle (utilisée pour le cache)
- * @param {Array} reconciliationData - Les données de réconciliation à afficher
+ * Fabrique la ligne du tableau "Reconciliation du mois".
+ *
+ * Partagee entre le calcul direct et le rendu depuis le cache. Il existait
+ * auparavant DEUX rendus distincts pour le meme tableau, qui avaient diverge:
+ * celui du cache ne produisait plus que 11 colonnes sous un en-tete qui en
+ * compte 15, avec les valeurs decalees d'un cran - un "Ventes Theoriques" a
+ * -302 800 F CFA et un "Ecart %" a -100,00%. Une seule fabrique rend cette
+ * divergence impossible.
+ */
+function construireLigneReconciliationMois(dateStr, pointVente, data) {
+    const row = document.createElement('tr');
+
+    // Cellule Date
+    let cell = document.createElement('td');
+    cell.textContent = dateStr;
+    row.appendChild(cell);
+
+    // Cellule Point de Vente
+    cell = document.createElement('td');
+    cell.textContent = pointVente;
+    row.appendChild(cell);
+    // Cellules de valeurs (stock matin, stock soir, etc.)
+    const columns = [
+        { key: 'stockMatin', format: 'currency' },
+        { key: 'stockSoir', format: 'currency' },
+        { key: 'transferts', format: 'currency' },
+        { key: 'ventes', format: 'currency' }, // Theoretical Sales
+        { key: 'ventesSaisies', format: 'currency' },
+        { key: 'creances', format: 'currency' }, // Créances
+        { key: 'difference', format: 'currency' }, // Ecart
+        { key: 'cashPayment', format: 'currency' },
+        { key: 'pourcentageEcart', format: 'percentage' }, // Ecart %
+        { key: 'ecartCash', format: 'currency' },
+        // Parage: null quand le stock theorique est nul ou negatif.
+        // On affiche alors un tiret, jamais 0% qui se lirait
+        // "aucune perte".
+        { key: 'parageBovin', format: 'parage', detail: 'parageBovinDetail', libelle: 'Bovin' },
+        { key: 'parageOvin', format: 'parage', detail: 'parageOvinDetail', libelle: 'Ovin' }
+    ];
+
+    columns.forEach(columnInfo => {
+        cell = document.createElement('td');
+        cell.className = 'text-end';
+
+        const value = data ? data[columnInfo.key] : 0;
+
+        if (columnInfo.format === 'parage') {
+            // Infobulle: le detail du calcul. Un pourcentage seul
+            // ne permet pas de savoir d'ou il sort ni de reperer
+            // une saisie de stock manquante.
+            const det = data ? data[columnInfo.detail] : null;
+            const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
+            if (det) {
+                cell.title = det.theorique > 0
+                    ? `${columnInfo.libelle}
+`
+                        + `Vendu (packs inclus) : ${kg(det.vendu)}
+`
+                        + `Stock théorique (matin + transferts − soir) : ${kg(det.theorique)}
+`
+                        + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
+`
+                        + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                    : `${columnInfo.libelle}
+`
+                        + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
+`
+                        + `Vendu (packs inclus) : ${kg(det.vendu)}`;
+                cell.style.cursor = 'help';
+            }
+
+            if (value === null || value === undefined) {
+                cell.textContent = '—';
+                cell.classList.add('text-muted');
+            } else {
+                const pct = parseFloat(value) * 100;
+                cell.textContent = `${pct.toFixed(1)}%`;
+                // Un parage negatif signifie qu'on a vendu plus que
+                // ce que le stock permettait: anomalie de saisie.
+                if (pct < 0 || pct > 15) {
+                    cell.classList.add('text-danger', 'fw-bold');
+                } else if (pct > 8) {
+                    cell.classList.add('text-warning', 'fw-bold');
+                } else {
+                    cell.classList.add('text-success');
+                }
+            }
+        } else if (columnInfo.format === 'percentage') {
+            const percentageValue = parseFloat(value) || 0;
+            cell.textContent = `${percentageValue.toFixed(2)}%`;
+
+            if (Math.abs(percentageValue) > 10) {
+                cell.classList.add('text-danger', 'fw-bold');
+            } else if (Math.abs(percentageValue) > 8) {
+                cell.classList.add('text-warning', 'fw-bold');
+            } else if (Math.abs(percentageValue) > 0) {
+                cell.classList.add('text-success', 'fw-bold');
+            }
+        } else { // currency
+            const currencyValue = parseFloat(value) || 0;
+            cell.textContent = formatMonetaire(currencyValue);
+
+            if ((columnInfo.key === 'difference' || columnInfo.key === 'ecartCash') && currencyValue !== 0) {
+                cell.classList.add(currencyValue < 0 ? 'negative' : 'positive');
+            }
+            
+            // Style pour les créances
+            if (columnInfo.key === 'creances' && currencyValue > 0) {
+                cell.style.color = '#dc3545';
+                cell.style.fontWeight = 'bold';
+            }
+        }
+        row.appendChild(cell);
+    });
+
+    // Cellule Commentaire
+    cell = document.createElement('td');
+    const inputComment = document.createElement('input');
+    inputComment.type = 'text';
+    inputComment.className = 'form-control form-control-sm'; // smaller input
+    inputComment.value = data.commentaire || '';
+    inputComment.setAttribute('data-point-vente', pointVente);
+    inputComment.setAttribute('data-date', dateStr);
+    // Add event listener for saving comments if needed later
+    cell.appendChild(inputComment);
+    row.appendChild(cell);
+
+    return row;
+}
+
+/**
+ * Rend le tableau "Reconciliation du mois" a partir de lignes deja calculees
+ * (chemin du cache).
+ *
+ * Delegue a construireLigneReconciliationMois, la meme fabrique que le calcul
+ * direct. Cette fonction construisait auparavant ses propres cellules, dans un
+ * ordre et un nombre differents: le tableau rendu depuis le cache n'avait que
+ * 11 colonnes sous un en-tete qui en compte 15, et affichait des valeurs
+ * impossibles - "Ventes Theoriques" a -302 800 F CFA, "Ecart %" a -100,00%.
  */
 function afficherDonneesReconciliationMensuelle(reconciliationData) {
     const tableBody = document.querySelector('#reconciliation-mois-table tbody');
     if (!tableBody) return;
-    
+
     tableBody.innerHTML = '';
-    
-    if (!reconciliationData || reconciliationData.length === 0) {
+
+    if (!reconciliationData || !reconciliationData.length) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
         cell.colSpan = 15;
@@ -10355,80 +10363,14 @@ function afficherDonneesReconciliationMensuelle(reconciliationData) {
         tableBody.appendChild(row);
         return;
     }
-    
-    reconciliationData.forEach(entry => {
-        const row = document.createElement('tr');
-        
-        // Date
-        const tdDate = document.createElement('td');
-        tdDate.textContent = entry.date;
-        row.appendChild(tdDate);
-        
-        // Point de vente
-        const tdPointVente = document.createElement('td');
-        tdPointVente.textContent = entry.pointVente;
-        row.appendChild(tdPointVente);
-        
-        // Ventes théoriques
-        const tdVentesTheoriques = document.createElement('td');
-        tdVentesTheoriques.textContent = formatMonetaire(entry.ventesTheoriques);
-        row.appendChild(tdVentesTheoriques);
-        
-        // Ventes saisies
-        const tdVentesSaisies = document.createElement('td');
-        tdVentesSaisies.textContent = formatMonetaire(entry.ventesSaisies);
-        row.appendChild(tdVentesSaisies);
-        
-        // Versements
-        const tdVersements = document.createElement('td');
-        tdVersements.textContent = formatMonetaire(entry.versements);
-        row.appendChild(tdVersements);
-        
-        // Écart
-        const tdEcart = document.createElement('td');
-        const ecart = entry.ventesSaisies - entry.ventesTheoriques;
-        tdEcart.textContent = formatMonetaire(ecart);
-        tdEcart.className = ecart >= 0 ? 'text-success' : 'text-danger';
-        row.appendChild(tdEcart);
-        
-        // Pourcentage d'écart
-        const tdPourcentage = document.createElement('td');
-        const pourcentage = entry.ventesTheoriques > 0 ? (ecart / entry.ventesTheoriques) * 100 : 0;
-        tdPourcentage.textContent = `${pourcentage.toFixed(2)}%`;
-        tdPourcentage.className = Math.abs(pourcentage) <= 5 ? 'text-success' : 
-                                 Math.abs(pourcentage) <= 10 ? 'text-warning' : 'text-danger';
-        row.appendChild(tdPourcentage);
-        
-        // Estimation
-        const tdEstimation = document.createElement('td');
-        tdEstimation.textContent = formatMonetaire(entry.estimation);
-        row.appendChild(tdEstimation);
-        
-        // Écart estimation
-        const tdEcartEstimation = document.createElement('td');
-        const ecartEstimation = entry.versements - entry.estimation;
-        tdEcartEstimation.textContent = formatMonetaire(ecartEstimation);
-        tdEcartEstimation.className = Math.abs(ecartEstimation) <= 10000 ? 'text-success' : 
-                                     Math.abs(ecartEstimation) <= 50000 ? 'text-warning' : 'text-danger';
-        row.appendChild(tdEcartEstimation);
-        
-        // Commentaires
-        const tdCommentaires = document.createElement('td');
-        tdCommentaires.textContent = entry.commentaires || '';
-        row.appendChild(tdCommentaires);
-        
-        // Actions
-        const tdActions = document.createElement('td');
-        const btnDetails = document.createElement('button');
-        btnDetails.className = 'btn btn-sm btn-outline-primary';
-        btnDetails.textContent = 'Détails';
-        btnDetails.onclick = () => naviguerVersReconciliation(entry.date);
-        tdActions.appendChild(btnDetails);
-        row.appendChild(tdActions);
-        
-        tableBody.appendChild(row);
+
+    reconciliationData.forEach((entry) => {
+        tableBody.appendChild(
+            construireLigneReconciliationMois(entry.date, entry.pointVente, entry)
+        );
     });
 }
+
 
 /**
  * Charge les commentaires pour la réconciliation mensuelle
