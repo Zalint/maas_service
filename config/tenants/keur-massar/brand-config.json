@@ -11,9 +11,15 @@
     "feedback_url": "https://docs.google.com/forms/d/e/1FAIpQLSfmbmzHLkCwb735lOzvxKcoGtZ_27sx9CA58vSdkw5TSyeQrQ/viewform?usp=pp_url&entry.859845320={commande_id}&entry.1712117606=Keur%20Massar",
     "points_vente_codes": [],
     "references_caisse": {
+      "Dahra": "CASH_DHR",
+      "Linguere": "CASH_LGR",
+      "Mbao": "CASH_MBA",
       "Keur Massar": "CASH_KM",
+      "O.Foire": "CASH_OSF",
+      "Sacre Coeur": "CASH_SAC",
       "Abattage": "CASH_ABATS",
-      "Dépôt central": "CASH_ABATS"
+      "Dépôt central": "CASH_ABATS",
+      "Touba": "CASH_TB"
     }
   }
 }

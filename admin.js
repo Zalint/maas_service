@@ -4028,6 +4028,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Initialiser la section Categories depenses
             initDepenseCategoriesSection();
             initParageExclusionsSection();
+            initPackCompositionsSection();
         }
     });
 });
@@ -6623,6 +6624,119 @@ function escapeHtmlDc(s) {
 }
 
 // ============================================================
+// COMPOSITIONS DES PACKS
+// ============================================================
+// La table vivait dans un fichier de configuration, recopie a l'identique
+// dans trois fichiers du depot. Les copies ont diverge quatre fois et chaque
+// divergence faisait disparaitre des kilos du parage. Elle est desormais en
+// base, sauvegardee avec le reste et modifiable ici sans redeploiement.
+
+let pcProduits = [];
+let pcChargee = false;
+
+function initPackCompositionsSection() {
+    if (!document.getElementById('pack-compositions-section')) return;
+    chargerPackCompositions();
+    document.querySelectorAll('[data-section="pack-compositions"]').forEach(function (el) {
+        el.addEventListener('click', chargerPackCompositions);
+    });
+}
+
+async function chargerPackCompositions() {
+    const conteneur = document.getElementById('pcListe');
+    if (!conteneur) return;
+    conteneur.innerHTML = '<div class="text-center text-muted py-4">Chargement...</div>';
+    pcChargee = false;
+    try {
+        const res = await fetch('/api/admin/pack-compositions', { credentials: 'include' });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.message || 'Erreur');
+        pcProduits = j.produits || [];
+        conteneur.innerHTML = Object.keys(j.packs || {}).sort()
+            .map((pack) => pcCarte(pack, j.packs[pack])).join('')
+            || '<div class="alert alert-info">Aucun pack configuré.</div>';
+        pcChargee = true;
+    } catch (e) {
+        conteneur.innerHTML = '<div class="alert alert-danger">Erreur: ' + escapeHtmlDc(e.message) + '</div>';
+    }
+}
+
+function pcOptionsProduits(selection) {
+    return pcProduits.map(function (p) {
+        const sel = p.nom === selection ? ' selected' : '';
+        return '<option value="' + escapeHtmlDc(p.nom) + '"' + sel + '>' + escapeHtmlDc(p.nom) + '</option>';
+    }).join('');
+}
+
+function pcLigne(c) {
+    const u = String((c && c.unite) || 'kg').toLowerCase();
+    const opt = function (v, libelle) {
+        return '<option value="' + v + '"' + (u === v ? ' selected' : '') + '>' + libelle + '</option>';
+    };
+    return '<tr>'
+        + '<td><select class="form-select form-select-sm pc-produit">' + pcOptionsProduits(c && c.produit) + '</select></td>'
+        + '<td style="width:120px"><input type="number" step="0.001" min="0" class="form-control form-control-sm pc-quantite" value="' + (c ? c.quantite : '') + '"></td>'
+        + '<td style="width:130px"><select class="form-select form-select-sm pc-unite">'
+        + opt('kg', 'kg') + opt('pièce', 'pièce') + opt('tablette', 'tablette') + '</select></td>'
+        + '<td style="width:140px"><input type="number" step="0.001" min="0" class="form-control form-control-sm pc-poids" placeholder="kg / pièce" value="'
+        + (c && c.poids_unitaire != null ? c.poids_unitaire : '') + '"></td>'
+        + '<td style="width:50px" class="text-end"><button class="btn btn-sm btn-outline-danger" onclick="this.closest(&quot;tr&quot;).remove()" title="Retirer"><i class="bi bi-trash"></i></button></td>'
+        + '</tr>';
+}
+
+function pcCarte(pack, composition) {
+    const id = 'pc_' + pack.replace(/[^a-zA-Z0-9]/g, '_');
+    return '<div class="card mb-3" data-pack="' + escapeHtmlDc(pack) + '" id="' + id + '">'
+        + '<div class="card-header d-flex justify-content-between align-items-center">'
+        + '<h5 class="mb-0"><i class="bi bi-box me-2"></i>' + escapeHtmlDc(pack) + '</h5>'
+        + '<div class="d-flex gap-2">'
+        + '<button class="btn btn-sm btn-outline-secondary" onclick="pcAjouterLigne(&quot;' + id + '&quot;)"><i class="bi bi-plus-lg"></i> Ligne</button>'
+        + '<button class="btn btn-sm btn-primary" onclick="sauvegarderPackComposition(&quot;' + id + '&quot;)"><i class="bi bi-save"></i> Enregistrer</button>'
+        + '</div></div>'
+        + '<div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">'
+        + '<thead><tr><th>Produit</th><th>Quantité</th><th>Unité</th><th>Poids unitaire</th><th></th></tr></thead>'
+        + '<tbody>' + (composition || []).map(pcLigne).join('') + '</tbody>'
+        + '</table></div></div></div>';
+}
+
+function pcAjouterLigne(idCarte) {
+    const tbody = document.querySelector('#' + idCarte + ' tbody');
+    if (!tbody) return;
+    tbody.insertAdjacentHTML('beforeend', pcLigne(null));
+}
+
+async function sauvegarderPackComposition(idCarte) {
+    if (!pcChargee) {
+        showToast("Liste non chargée : rien n'a été enregistré.", 'warning');
+        return;
+    }
+    const carte = document.getElementById(idCarte);
+    if (!carte) return;
+    const pack = carte.dataset.pack;
+    const lignes = Array.from(carte.querySelectorAll('tbody tr')).map(function (tr) {
+        return {
+            produit: tr.querySelector('.pc-produit').value,
+            quantite: tr.querySelector('.pc-quantite').value,
+            unite: tr.querySelector('.pc-unite').value,
+            poids_unitaire: tr.querySelector('.pc-poids').value
+        };
+    });
+    try {
+        const res = await fetch('/api/admin/pack-compositions', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pack: pack, lignes: lignes })
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.message || 'Erreur');
+        showToast(pack + ' : ' + lignes.length + ' ligne(s) enregistrée(s)', 'success');
+    } catch (e) {
+        showToast('Erreur: ' + e.message, 'danger');
+    }
+}
+
+// ============================================================
 // EXCLUSIONS DU PARAGE
 // ============================================================
 // Les produits coches sont retires des DEUX cotes du rapport de parage:
@@ -6644,11 +6758,17 @@ function initParageExclusionsSection() {
 // categorie, ou un produit retire du catalogue). L'ecran ne montre que Bovin et
 // Ovin: sans cette memoire, enregistrer effacerait ces entrees sans le dire.
 let pxExclusionsHorsListe = [];
+// Tant que le chargement n'a pas abouti, il n'y a AUCUNE case dans le DOM et
+// pxExclusionsHorsListe est vide: enregistrer ecrirait une liste vide et
+// effacerait le reglage, avec un message de succes. On refuse tant que la
+// liste n'est pas reellement chargee.
+let pxListeChargee = false;
 
 async function chargerParageExclusions() {
     const conteneur = document.getElementById('pxListe');
     if (!conteneur) return;
     conteneur.innerHTML = '<div class="col-12 text-center text-muted py-3">Chargement...</div>';
+    pxListeChargee = false;
     try {
         const res = await fetch('/api/parage/produits', { credentials: 'include' });
         const j = await res.json();
@@ -6666,8 +6786,8 @@ async function chargerParageExclusions() {
                 const coche = exclus.has(nom) ? ' checked' : '';
                 return '<div class="form-check">'
                     + '<input class="form-check-input px-item" type="checkbox" id="' + id + '"'
-                    + ' data-nom="' + nom.replace(/"/g, '&quot;') + '"' + coche + '>'
-                    + '<label class="form-check-label" for="' + id + '">' + nom + '</label>'
+                    + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche + '>'
+                    + '<label class="form-check-label" for="' + id + '">' + escapeHtmlDc(nom) + '</label>'
                     + '</div>';
             }).join('');
             return '<div class="col-md-6">'
@@ -6685,7 +6805,7 @@ async function chargerParageExclusions() {
         if (pxExclusionsHorsListe.length) {
             note = '<div class="col-12 mt-3"><div class="alert alert-secondary py-2 mb-0 small">'
                 + '<i class="bi bi-info-circle me-1"></i>Également exclus, hors catégories Bovin et Ovin : <b>'
-                + pxExclusionsHorsListe.join(', ') + "</b>. Ces entrées sont conservées à l'enregistrement."
+                + pxExclusionsHorsListe.map(escapeHtmlDc).join(', ') + "</b>. Ces entrées sont conservées à l'enregistrement."
                 + '</div></div>';
         }
 
@@ -6694,6 +6814,7 @@ async function chargerParageExclusions() {
             c.addEventListener('change', majCompteurParageExclusions);
         });
         majCompteurParageExclusions();
+        pxListeChargee = true;
     } catch (e) {
         conteneur.innerHTML = '<div class="col-12 text-danger py-3">Erreur: ' + e.message + '</div>';
     }
@@ -6706,6 +6827,10 @@ function majCompteurParageExclusions() {
 }
 
 async function sauvegarderParageExclusions() {
+    if (!pxListeChargee) {
+        showToast("Liste non chargée : rien n'a été enregistré.", "warning");
+        return;
+    }
     // Les exclusions hors liste sont reportees telles quelles: l'ecran ne peut
     // pas les decocher, il ne doit donc pas les supprimer.
     const noms = Array.from(document.querySelectorAll('.px-item:checked'))

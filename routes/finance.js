@@ -948,8 +948,12 @@ router.put('/charges', async (req, res) => {
                 const montantCatalogue = (moisCible && existing)
                     ? oldMontant
                     : v.montant;
-                const catalogueChange = libelleChanged || ordreChanged
-                    || (montantCatalogue !== oldMontant);
+                // Meme tolerance que montantChanged: comparer des flottants en
+                // strict rewritait la ligne et bougeait updated_at pour un ecart
+                // sous le seuil, sans entree d'historique correspondante.
+                const montantCatalogueChange = oldMontant == null
+                    || Math.abs(oldMontant - montantCatalogue) > 0.001;
+                const catalogueChange = libelleChanged || ordreChanged || montantCatalogueChange;
 
                 // updated_at ne bouge QUE si quelque chose a change.
                 if (!existing || catalogueChange) {
@@ -974,7 +978,15 @@ router.put('/charges', async (req, res) => {
                 }
 
                 if (anyChange || !existing) {
-                    auditEntries.push({ nom: v.nom, montant_mensuel: v.montant });
+                    // montantCatalogue et non v.montant: avec un mois cible,
+                    // l'ancrage n'est PAS modifie. Journaliser le montant saisi
+                    // laisserait croire a un changement du catalogue qui n'a pas
+                    // eu lieu - d'autant que l'historique est saute dans ce cas.
+                    auditEntries.push({
+                        nom: v.nom,
+                        montant_mensuel: montantCatalogue,
+                        ...(moisCible ? { mois: moisCible, montant_du_mois: v.montant } : {})
+                    });
                 }
 
                 // Montant date: enregistre pour le mois demande. Le PL de ce

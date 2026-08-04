@@ -1540,6 +1540,20 @@ const ReconciliationManager = (function() {
     }
     
     // Créer un tableau de détails pour stock, transferts ou ventes
+    // Meme conversion que lib/parage.js cote serveur: kg tel quel, piece
+    // multipliee par son poids unitaire, tablette ignoree.
+    function quantitePackEnKg(composant) {
+        const q = parseFloat(composant && composant.quantite) || 0;
+        if (q <= 0) return 0;
+        const unite = String((composant && composant.unite) || '').toLowerCase();
+        if (unite === 'kg') return q;
+        if (unite === 'piece' || unite === 'pièce') {
+            const poids = parseFloat(composant.poids_unitaire);
+            return Number.isFinite(poids) && poids > 0 ? q * poids : 0;
+        }
+        return 0;
+    }
+
     // Composition d'une vente de pack: celle enregistree avec la vente en
     // priorite, sinon celle par defaut du catalogue.
     function compositionDeLaVente(item) {
@@ -1569,11 +1583,21 @@ const ReconciliationManager = (function() {
             const composition = compositionDeLaVente(item);
             if (!composition) return;
 
-            const nbPacks = parseFloat(item.nombre) || 1;
+            // || 0 et non || 1: une ligne a quantite nulle (vente annulee) ne
+            // doit pas se developper en un pack fantome. lib/parage.js lit le
+            // meme champ de la meme facon.
+            const nbPacks = parseFloat(item.nombre) || 0;
+            if (nbPacks <= 0) return;
+
             composition.forEach(c => {
-                const q = (parseFloat(c.quantite) || 0) * nbPacks;
-                if (q <= 0) return;
                 const unite = String(c.unite || '').toLowerCase();
+                // Conversion en kilos, comme lib/parage.js: additionner des
+                // pieces de poulet a des kilos de boeuf dans un meme
+                // sous-total ne veut rien dire. Une piece sans poids unitaire
+                // connu, ou une tablette, n'est pas convertible: on ne
+                // l'ajoute pas plutot que d'inventer un poids.
+                const q = quantitePackEnKg(c) * nbPacks;
+                if (q <= 0) return;
                 out.push({
                     produit: c.produit,
                     // L'origine est portee par le libelle, pas par une colonne
@@ -1779,10 +1803,15 @@ const ReconciliationManager = (function() {
                 
                 if (colonne.id === 'produit') {
                     if (item._issuDunPack) {
-                        const unite = item._unite && item._unite !== 'kg' ? ` ${item._unite}` : '';
-                        td.textContent = `↳ ${item.produit || ''}${unite} (${item._origine})`;
+                        // La quantite affichee est TOUJOURS en kg apres
+                        // conversion; mentionner l'unite d'origine ("piece")
+                        // ferait croire que la colonne compte des pieces.
+                        td.textContent = `↳ ${item.produit || ''} (${item._origine})`;
                         td.classList.add('text-muted', 'fst-italic');
-                        td.title = `Contenu du ${item._origine}. Le montant est porte par la ligne du pack, pas ici.`;
+                        const origine = item._unite && item._unite !== 'kg'
+                            ? ` Exprime en ${item._unite} dans la composition, converti en kg.`
+                            : '';
+                        td.title = `Contenu du ${item._origine}. Le montant est porte par la ligne du pack, pas ici.${origine}`;
                     } else {
                         td.textContent = item.produit || '';
                     }

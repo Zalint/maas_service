@@ -4447,7 +4447,10 @@
     <script src="js/zoom-controls.js"></script>
     
     <!-- Script pour la gestion des compositions de packs -->
-    <script src="js/modules/pack-composition.js?v=20260804"></script>
+    <!-- Source unique des compositions de packs, generee depuis
+         config/pack-compositions.js. Doit preceder tout consommateur. -->
+    <script src="/pack-compositions.js"></script>
+    <script src="js/modules/pack-composition.js?v=20260804c"></script>
       
 </body>
 </html>

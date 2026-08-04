@@ -271,3 +271,36 @@ describe('plusieurs points de vente', () => {
         expect(r.Dahra.bovin.ratio).toBeCloseTo(0.9, 6);
     });
 });
+
+describe('exclusions insensibles a la casse et aux accents', () => {
+    // L'inventaire ecrit "Patte de mouton", le catalogue "Patte de Mouton".
+    // Une comparaison stricte excluait le produit d'un seul cote du rapport,
+    // ce que cette fonctionnalite existe justement pour empecher.
+    const catOvin = () => 'ovin';
+
+    test('un produit exclu sort des deux cotes malgre une casse differente', () => {
+        const r = calculerParage({
+            stocksMatin: [
+                { pointVente: 'M', produit: 'Patte de mouton', quantite: 10 },
+                { pointVente: 'M', produit: 'Agneau', quantite: 20 }
+            ],
+            ventes: [
+                { pointVente: 'M', produit: 'Patte de Mouton', nombre: 10 },
+                { pointVente: 'M', produit: 'Agneau', nombre: 18 }
+            ],
+            categorieDe: catOvin,
+            exclusions: new Set(['Patte de Mouton'])
+        });
+        expect(r.M.ovin.theorique).toBe(20);
+        expect(r.M.ovin.vendu).toBe(18);
+    });
+
+    test('les accents ne font pas echouer la correspondance', () => {
+        const r = calculerParage({
+            stocksMatin: [{ pointVente: 'M', produit: 'Tete Agneau', quantite: 5 }],
+            categorieDe: catOvin,
+            exclusions: new Set(['Tête Agneau'])
+        });
+        expect(r.M).toBeUndefined();
+    });
+});

@@ -384,6 +384,11 @@
                                 <i class="bi bi-star me-1"></i>Gros clients
                             </a>
                         </li>
+                        <li class="nav-item" id="pack-compositions-nav">
+                            <a class="nav-link" href="#" data-section="pack-compositions">
+                                <i class="bi bi-box-seam me-1"></i>Compositions des packs
+                            </a>
+                        </li>
                         <li class="nav-item" id="parage-exclusions-nav">
                             <a class="nav-link" href="#" data-section="parage-exclusions">
                                 <i class="bi bi-funnel me-1"></i>Exclusions parage
@@ -1236,6 +1241,22 @@
             </div>
 
             <!-- Section Categories depenses -->
+            <div id="pack-compositions-section" class="admin-section">
+                <h2><i class="bi bi-box-seam me-2"></i>Compositions des packs</h2>
+                <p class="text-muted">
+                    Contenu <b>par défaut</b> de chaque pack, proposé au caissier lors de la vente.
+                    Il reste modifiable au cas par cas dans le POS : une vente conserve sa propre
+                    composition, donc <b>modifier ici ne réécrit aucune vente passée</b>.
+                    <br>
+                    Ces compositions alimentent aussi le calcul du parage. Une ligne en
+                    <b>pièce</b> exige un <b>poids unitaire</b> : sans lui, elle ne peut pas être
+                    convertie en kilos et disparaîtrait du calcul sans erreur visible.
+                </p>
+                <div id="pcListe">
+                    <div class="text-center text-muted py-4">Chargement...</div>
+                </div>
+            </div>
+
             <div id="parage-exclusions-section" class="admin-section">
                 <h2><i class="bi bi-funnel me-2"></i>Exclusions du parage</h2>
                 <p class="text-muted">
@@ -1680,6 +1701,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260804-parage-exclusions"></script>
+    <script src="admin.js?v=20260804-packs-admin"></script>
 </body>
 </html> 

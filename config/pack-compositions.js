@@ -93,8 +93,46 @@ function getAllPacks() {
   return Object.keys(PACK_COMPOSITIONS);
 }
 
+/**
+ * Verifie que la table est exploitable. Appelee au demarrage du serveur:
+ * mieux vaut un message clair au boot qu'un parage faux decouvert un mois
+ * plus tard, ou un pack affiche sans composition en caisse.
+ *
+ * Rend la liste des problemes, vide si tout va bien.
+ */
+function verifierCompositions(table) {
+    const source = table || PACK_COMPOSITIONS;
+    const problemes = [];
+    const packs = Object.keys(source);
+    if (!packs.length) {
+        problemes.push('aucun pack defini');
+        return problemes;
+    }
+    for (const pack of packs) {
+        const composition = source[pack];
+        if (!Array.isArray(composition) || !composition.length) {
+            problemes.push(`${pack}: composition vide`);
+            continue;
+        }
+        composition.forEach((c, i) => {
+            if (!c || !c.produit) problemes.push(`${pack}[${i}]: produit manquant`);
+            if (!(parseFloat(c && c.quantite) > 0)) problemes.push(`${pack}[${i}]: quantite invalide`);
+            const unite = String((c && c.unite) || '').toLowerCase();
+            // Une piece sans poids unitaire ne peut pas etre convertie en kg:
+            // elle disparait silencieusement du parage. C'est exactement la
+            // divergence qui existait entre les copies.
+            if ((unite === 'piece' || unite === 'pièce')
+                && !(parseFloat(c.poids_unitaire) > 0)) {
+                problemes.push(`${pack}[${i}] ${c.produit}: unite "piece" sans poids_unitaire`);
+            }
+        });
+    }
+    return problemes;
+}
+
 module.exports = {
   PACK_COMPOSITIONS,
+  verifierCompositions,
   getPackComposition,
   createPackExtension,
   isPack,

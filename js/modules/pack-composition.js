@@ -10,46 +10,32 @@
 // SANS categorie: les kilos d'un pack decompose ici n'etaient rattaches ni a
 // Bovin ni a Ovin. C'est cette copie que charge index.html, donc celle que
 // voient Visualisation et Reconciliation.
-const PACK_COMPOSITIONS = {
-  "Pack25000": [
-    { produit: "Veau en détail", quantite: 4, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
-  ],
-  "Pack20000": [
-    { produit: "Veau en détail", quantite: 3.5, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 1, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
-  ],
-  "Pack50000": [
-    { produit: "Agneau", quantite: 2.5, unite: "kg" },
-    { produit: "Veau en détail", quantite: 6, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 4, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 1, unite: "tablette" }
-  ],
-  "Pack35000": [
-    { produit: "Veau en détail", quantite: 4, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
-  ],
-  "Pack30000": [
-    { produit: "Veau en détail", quantite: 2, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 6, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
-  ],
-  "Pack75000": [
-    { produit: "Veau en détail", quantite: 8, unite: "kg" },
-    { produit: "Agneau", quantite: 5, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 1, unite: "tablette" }
-  ],
-  "Pack100000": [
-    { produit: "Veau en détail", quantite: 8, unite: "kg" },
-    { produit: "Agneau", quantite: 1, unite: "kg" },
-    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
-    { produit: "Oeuf", quantite: 1, unite: "tablette" }
-  ]
-};
+// Compositions de packs: UNE seule source, config/pack-compositions.js cote
+// serveur, servie par /pack-compositions.js et deposee dans
+// window.__PACK_COMPOSITIONS__.
+//
+// Ce fichier portait auparavant une copie litterale de la table. Il y en avait
+// trois au total, qui ont diverge quatre fois - noms de produits differents,
+// poids_unitaire manquant - et chaque divergence produisait des kilos
+// rattaches a aucune categorie, donc un parage faux. Ne pas reintroduire de
+// litteral ici: modifier config/pack-compositions.js suffit.
+//
+// Si le script n'a pas ete charge, on ne se rabat PAS silencieusement sur une
+// table vide: un pack afficherait alors une composition vide comme si c'etait
+// la realite. On le signale, bruyamment.
+function __packsIndisponibles() {
+    const message = 'Compositions de packs indisponibles : /pack-compositions.js '
+        + "n'a pas ete charge. Les packs s'afficheront sans leur composition par defaut.";
+    console.error('[PACKS] ' + message);
+    if (typeof showToast === 'function') {
+        try { showToast(message, 'danger'); } catch (e) {}
+    }
+    return {};
+}
+const PACK_COMPOSITIONS = (window.__PACK_COMPOSITIONS__
+    && Object.keys(window.__PACK_COMPOSITIONS__).length)
+    ? window.__PACK_COMPOSITIONS__
+    : __packsIndisponibles();
 
 // État global pour gérer les compositions de pack par produit-entry
 let packCompositions = new Map();

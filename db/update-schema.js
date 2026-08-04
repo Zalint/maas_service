@@ -680,6 +680,61 @@ async function updateSchema() {
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_config_mois_key ON finance_config_mois(key, mois DESC)`);
         console.log('Table finance_config_mois verifiee');
 
+        // Compositions par defaut des packs.
+        //
+        // Elles vivaient dans config/pack-compositions.js, recopie a
+        // l'identique dans deux fichiers clients. Les trois copies ont diverge
+        // quatre fois, et chaque divergence faisait disparaitre des kilos du
+        // parage sans erreur visible. En base: sauvegardees avec le reste,
+        // modifiables depuis ADMIN sans redeploiement, propres au tenant.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS pack_compositions (
+                id SERIAL PRIMARY KEY,
+                pack VARCHAR(100) NOT NULL,
+                ordre INTEGER NOT NULL DEFAULT 0,
+                produit VARCHAR(150) NOT NULL,
+                quantite NUMERIC(10, 3) NOT NULL CHECK (quantite > 0),
+                unite VARCHAR(20) NOT NULL DEFAULT 'kg',
+                poids_unitaire NUMERIC(10, 3),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pack_compositions_pack ON pack_compositions(pack, ordre)`);
+
+        // Amorcage depuis le fichier, UNIQUEMENT si la table est vide: c'est
+        // une reprise de l'existant, pas une synchronisation. Une fois amorcee,
+        // la base fait foi et le fichier n'est plus relu.
+        const [dejaLa] = await sequelize.query(
+            'SELECT COUNT(*)::int AS n FROM pack_compositions',
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        if (!dejaLa || dejaLa.n === 0) {
+            const { PACK_COMPOSITIONS } = require('../config/pack-compositions');
+            const lignes = [];
+            for (const [pack, composition] of Object.entries(PACK_COMPOSITIONS || {})) {
+                (composition || []).forEach((c, i) => {
+                    lignes.push({
+                        pack,
+                        ordre: i,
+                        produit: c.produit,
+                        quantite: c.quantite,
+                        unite: c.unite || 'kg',
+                        poids_unitaire: c.poids_unitaire != null ? c.poids_unitaire : null
+                    });
+                });
+            }
+            for (const l of lignes) {
+                await sequelize.query(
+                    `INSERT INTO pack_compositions (pack, ordre, produit, quantite, unite, poids_unitaire)
+                     VALUES (:pack, :ordre, :produit, :quantite, :unite, :poids_unitaire)`,
+                    { replacements: l }
+                );
+            }
+            console.log(`Table pack_compositions amorcee: ${lignes.length} ligne(s)`);
+        } else {
+            console.log(`Table pack_compositions verifiee (${dejaLa.n} ligne(s))`);
+        }
+
         // Reference de caisse des points de vente.
         //
         // points_vente.payment_ref etait NULL partout, alors que les clotures

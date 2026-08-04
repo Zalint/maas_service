@@ -7744,7 +7744,8 @@ async function calculerReconciliationParPointVente(date, stockMatin, stockSoir, 
             // total porte DEJA le signe en base (impact = -1 => total negatif),
             // contrairement a quantite qui est toujours positive. Ne pas
             // remultiplier par impact ici: cela reinverserait le signe d'un
-            // transfert sortant. impact reste lu pour le journal de debogage.
+            // transfert sortant. impact n'est conserve que pour debugInfo,
+            // quelques lignes plus bas.
             const valeurTransfert = montant;
             console.log(`  [DEBUG calcReconPV] Transfert ${pointVente}-${transfert.produit}: valeurTransfert = ${valeurTransfert}`); // Log transfer value
             totalTransfert += valeurTransfert;

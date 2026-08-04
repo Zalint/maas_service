@@ -5343,9 +5343,163 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 //
 // Deux colonnes seulement, bovin et ovin: boeuf et veau sont interchangeables
 // et tombent tous deux dans bovin.
+// Compositions de packs, servies aux clients comme un script.
+//
+// La table vivait en TROIS copies litterales - config/pack-compositions.js,
+// pos.js et js/modules/pack-composition.js - qui ont diverge quatre fois:
+// noms de produits differents entre serveur et client, poids_unitaire present
+// d'un cote et pas de l'autre. Chaque divergence produisait des kilos
+// rattaches a aucune categorie, donc un parage faux.
+//
+// Les clients ne portent plus de litteral: ils lisent ce script, genere depuis
+// config/pack-compositions.js. Un <script src> plutot qu'un fetch pour rester
+// synchrone, le code appelant supposant la table disponible au chargement.
+//
+// Pas d'authentification: c'est le contenu commercial des packs, deja affiche
+// a tout utilisateur du POS, sans donnee personnelle. La proteger casserait le
+// chargement de la page au lieu de proteger quoi que ce soit.
+// Verification au demarrage: une composition invalide se traduirait par des
+// kilos absents du parage, ou un pack sans contenu en caisse - des symptomes
+// qu'on ne relie pas spontanement a un fichier de configuration.
+(async function () {
+    try {
+        const { verifierCompositions } = require('./config/pack-compositions');
+        const problemes = verifierCompositions(await lirePackCompositions());
+        if (problemes.length) {
+            console.error('⚠️  Compositions de packs invalides :');
+            problemes.forEach((p) => console.error('   - ' + p));
+        } else {
+            console.log('✅ Compositions de packs vérifiées');
+        }
+    } catch (e) {
+        console.error('⚠️  Compositions de packs illisibles :', e.message);
+    }
+})();
+
+// Reconstruit la table { pack: [composants] } depuis la base.
+async function lirePackCompositions() {
+    const { PackComposition } = require('./db/models');
+    const lignes = await PackComposition.findAll({
+        order: [['pack', 'ASC'], ['ordre', 'ASC']],
+        raw: true
+    });
+    const table = {};
+    for (const l of lignes) {
+        if (!table[l.pack]) table[l.pack] = [];
+        const composant = {
+            produit: l.produit,
+            quantite: parseFloat(l.quantite),
+            unite: l.unite
+        };
+        if (l.poids_unitaire != null) composant.poids_unitaire = parseFloat(l.poids_unitaire);
+        table[l.pack].push(composant);
+    }
+    return table;
+}
+
+app.get('/pack-compositions.js', async (req, res) => {
+    try {
+        const PACK_COMPOSITIONS = await lirePackCompositions();
+        res.type('application/javascript');
+        // no-cache: une modification de la config doit etre prise au
+        // rechargement, sans avoir a vider le cache du navigateur.
+        res.set('Cache-Control', 'no-cache');
+        res.send('window.__PACK_COMPOSITIONS__ = '
+            + JSON.stringify(PACK_COMPOSITIONS, null, 2) + ';');
+    } catch (error) {
+        console.error('GET /pack-compositions.js:', error);
+        res.type('application/javascript').status(500)
+            .send('window.__PACK_COMPOSITIONS__ = {};');
+    }
+});
+
+// ===== ADMIN: compositions par defaut des packs =====
+// Lecture: la table complete + la liste des produits, pour alimenter les
+// selecteurs de l'ecran.
+app.get('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const produits = await sequelize.query(
+            `SELECT DISTINCT p.nom, COALESCE(LOWER(c.nom), '') AS categorie
+             FROM produits p LEFT JOIN categories c ON c.id = p.categorie_id
+             WHERE COALESCE(p.archived, false) = false
+             ORDER BY p.nom`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        res.json({ success: true, packs: await lirePackCompositions(), produits });
+    } catch (error) {
+        console.error('GET /api/admin/pack-compositions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Ecriture: remplace les lignes d'UN pack. Le remplacement complet evite
+// d'avoir a suivre les identifiants de lignes cote client, et la transaction
+// garantit qu'on ne laisse jamais un pack a moitie enregistre.
+app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const pack = String(req.body && req.body.pack || '').trim();
+        const lignes = Array.isArray(req.body && req.body.lignes) ? req.body.lignes : null;
+        if (!pack || !lignes) {
+            return res.status(400).json({ success: false, message: 'pack et lignes requis' });
+        }
+
+        const valides = [];
+        for (let i = 0; i < lignes.length; i++) {
+            const l = lignes[i] || {};
+            const produit = String(l.produit || '').trim();
+            const quantite = parseFloat(l.quantite);
+            const unite = String(l.unite || 'kg').trim().toLowerCase();
+            if (!produit) continue;
+            if (!(quantite > 0)) {
+                return res.status(400).json({ success: false, message: `${produit}: quantite invalide` });
+            }
+            const poids = parseFloat(l.poids_unitaire);
+            // Une piece sans poids unitaire ne peut pas etre convertie en kilos:
+            // elle disparaitrait du parage sans erreur. On refuse a la saisie.
+            if ((unite === 'piece' || unite === 'pièce') && !(poids > 0)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `${produit}: une unite "pièce" exige un poids unitaire`
+                });
+            }
+            valides.push({
+                pack, ordre: valides.length, produit, quantite, unite,
+                poids_unitaire: poids > 0 ? poids : null
+            });
+        }
+
+        const { PackComposition } = require('./db/models');
+        await sequelize.transaction(async (t) => {
+            await PackComposition.destroy({ where: { pack }, transaction: t });
+            if (valides.length) {
+                await PackComposition.bulkCreate(
+                    valides.map((v) => ({ ...v, updated_at: new Date() })),
+                    { transaction: t }
+                );
+            }
+        });
+
+        // Le journal ne doit JAMAIS faire echouer une ecriture deja commitee:
+        // sans ce garde, une erreur ici renvoyait "Erreur" au client alors que
+        // la modification etait bien enregistree.
+        try {
+            require('./lib/finance-audit').log(req, 'pack_composition.update', {
+                pack, lignes: valides.length
+            });
+        } catch (e) {
+            console.warn('audit pack_composition.update:', e.message);
+        }
+
+        res.json({ success: true, packs: await lirePackCompositions() });
+    } catch (error) {
+        console.error('PUT /api/admin/pack-compositions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 // Produits Bovin et Ovin, pour l'ecran ADMIN des exclusions du parage.
 // Renvoie aussi les exclusions courantes, pour eviter un second appel.
-app.get('/api/parage/produits', checkAuth, async (req, res) => {
+app.get('/api/parage/produits', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { FinanceConfig } = require('./db/models');
         const produits = await sequelize.query(
@@ -5385,8 +5539,9 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
             : `${p[2]}-${p[1]}-${p[0]}`;
 
         const { calculerParage } = require('./lib/parage');
-        const { PACK_COMPOSITIONS } = require('./config/pack-compositions');
         const { FinanceConfig } = require('./db/models');
+        // Compositions par defaut lues en base, comme les clients.
+        const PACK_COMPOSITIONS = await lirePackCompositions();
 
         // Produit -> bovin | ovin.
         //
@@ -5430,11 +5585,19 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
                 .filter(Boolean)
         );
 
+        // Les tables melangent les formats de date selon leur anciennete:
+        // /api/ventes-date et la reconciliation font deja un OR sur plusieurs
+        // variantes. Interroger un seul format ferait tomber le numerateur a
+        // zero tout en gardant le denominateur, soit 100% de parage affiche.
+        const { Op } = require('sequelize');
+        const dateSlash = dateFr.replace(/-/g, '/');
+        const toutesFormes = { [Op.in]: [dateFr, dateIso, dateSlash] };
+
         const [stocksMatin, stocksSoir, transferts, ventes] = await Promise.all([
-            Stock.findAll({ where: { date: dateFr, typeStock: 'matin' }, raw: true }),
-            Stock.findAll({ where: { date: dateFr, typeStock: 'soir' }, raw: true }),
-            Transfert.findAll({ where: { date: dateFr }, raw: true }),
-            Vente.findAll({ where: { date: dateIso }, raw: true })
+            Stock.findAll({ where: { date: toutesFormes, typeStock: 'matin' }, raw: true }),
+            Stock.findAll({ where: { date: toutesFormes, typeStock: 'soir' }, raw: true }),
+            Transfert.findAll({ where: { date: toutesFormes }, raw: true }),
+            Vente.findAll({ where: { date: toutesFormes }, raw: true })
         ]);
 
         const parPv = calculerParage({
