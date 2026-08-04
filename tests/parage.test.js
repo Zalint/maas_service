@@ -251,6 +251,35 @@ describe('ratio', () => {
         expect(r.Mbao.ovin.perte).toBeNull();
     });
 
+    // Cas constate en production le 03/08/2026: 18,8 kg de stock theorique et
+    // AUCUNE vente. Le rapport valait 0, donc un parage de 100% affiche en
+    // rouge - alors que cette valeur ne dit rien de la decoupe. Elle signale du
+    // stock parti sans vente enregistree, ce que la colonne Ecart montre deja
+    // en francs. Ces 100% noyaient les vrais taux, qui tournent autour de 5%.
+    test('aucune vente: pas de ratio, meme avec du stock theorique', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 18.8 }],
+            stocksSoir: [],
+            ventes: []
+        }));
+        expect(r.Mbao.bovin.theorique).toBeCloseTo(18.8, 6);
+        expect(r.Mbao.bovin.vendu).toBe(0);
+        expect(r.Mbao.bovin.ratio).toBeNull();
+        expect(r.Mbao.bovin.perte).toBeNull();
+        // Surtout pas 1: c'est ce 100% qui s'affichait.
+        expect(r.Mbao.bovin.perte).not.toBe(1);
+    });
+
+    test('une seule vente suffit a rendre le parage mesurable', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 18.8 }],
+            stocksSoir: [],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 17.8 }]
+        }));
+        expect(r.Mbao.bovin.ratio).toBeCloseTo(17.8 / 18.8, 6);
+        expect(r.Mbao.bovin.perte).toBeCloseTo(1 - 17.8 / 18.8, 6);
+    });
+
     test('vendu au-dela du theorique: la perte devient negative, pas bornee', () => {
         // Un rendement > 100% signale une erreur de saisie (stock du soir
         // sous-estime). La valeur doit ressortir telle quelle pour que

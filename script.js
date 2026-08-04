@@ -9811,6 +9811,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Réinitialiser l'estimation ---
         if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+        afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         // --- Initialiser les variables de calcul des totaux ---
         let totalVentesTheoriquesMois = 0;
@@ -9818,6 +9819,13 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         let totalCreancesMois = 0;
         let totalVersementsMois = 0;
         const lignesCalculees = [];
+        // Parage cumule du mois: on somme les KILOS, pas les pourcentages.
+        // Moyenner les taux journaliers donnerait le meme poids a une journee
+        // de 2 kg qu'a une journee de 200 kg.
+        const parageMois = {
+            bovin: { vendu: 0, theorique: 0 },
+            ovin: { vendu: 0, theorique: 0 }
+        };
         let dernierJourAvecDonnees = 0; // Pour l'estimation
         // --- Fin initialisation totaux ---
 
@@ -9860,6 +9868,9 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(cachedData.totaux.ventesSaisies);
                     if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(cachedData.totaux.versements);
                     if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(cachedData.totaux.estimation);
+                    // Sans cette ligne, revenir sur l'ecran depuis le cache
+                    // laissait les deux cartes de parage a leur tiret initial.
+                    afficherParageMois(cachedData.totaux.parage);
                 }
                 
                 isLoadingReconciliationMensuelle = false;
@@ -9889,6 +9900,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
             if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
             if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+            afficherParageMois(null); // tiret, pas le taux du mois precedent
             return; // Stop execution
         }
         // --- End check ---
@@ -10060,6 +10072,21 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     // un pourcentage seul ne permet pas de verifier d'ou il sort.
                     dailyReconciliation[pointVente].parageBovinDetail = p ? p.bovin : null;
                     dailyReconciliation[pointVente].parageOvinDetail = p ? p.ovin : null;
+
+                    // Cumul du mois. Une journee sans rien a mesurer (0/0)
+                    // n'ajoute rien des deux cotes: elle ne peut donc ni
+                    // gonfler ni diluer le taux du mois.
+                    ['bovin', 'ovin'].forEach((cat) => {
+                        const d = p && p[cat];
+                        // Une journee non mesurable (ratio null: pas de vente,
+                        // ou pas de stock theorique) n'entre NI au numerateur
+                        // NI au denominateur. La compter gonflerait le taux du
+                        // mois avec du stock qui n'a jamais ete rapporte a une
+                        // vente - le meme 100% trompeur, cumule.
+                        if (!d || d.ratio === null || d.ratio === undefined) return;
+                        parageMois[cat].vendu += parseFloat(d.vendu) || 0;
+                        parageMois[cat].theorique += parseFloat(d.theorique) || 0;
+                    });
                 });
             } else {
                 Object.keys(dailyReconciliation).forEach(pointVente => {
@@ -10124,6 +10151,9 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         }
         // --- Fin calcul et affichage estimation ---
 
+        // Parage cumule du mois (cartes du haut).
+        afficherParageMois(parageMois);
+
 
         // If after checking all days, no data was found, display a message
         if (!hasAnyData) {
@@ -10140,6 +10170,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
              if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
              // --- Reset estimation si aucune donnée ---
              if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+             afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         } else {
             // --- Mettre à jour les totaux affichés si des données existent ---
@@ -10159,7 +10190,8 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 ventesTheoriques: totalVentesTheoriquesMois,
                 ventesSaisies: totalVentesSaisiesMois,
                 versements: totalVersementsMois,
-                estimation: estimationVersements
+                estimation: estimationVersements,
+                parage: parageMois
             },
             timestamp: Date.now()
         };
@@ -10189,6 +10221,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Reset estimation en cas d'erreur majeure ---
          if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+         afficherParageMois(null); // tiret, pas le taux du mois precedent
     } finally { // Add finally block
         isLoadingReconciliationMensuelle = false;
         const loadingIndicator = document.getElementById('loading-indicator-reconciliation-mois'); // Ensure indicator is hidden
@@ -10214,6 +10247,51 @@ function filtrerTableauReconciliationMensuelle() {
         } else {
             row.style.display = 'none';
         }
+    });
+}
+
+/**
+ * Affiche le parage cumule du mois dans les deux cartes du haut.
+ *
+ * Cumul et non moyenne: le taux du mois est la somme des kilos vendus
+ * rapportee a la somme des kilos theoriques. Moyenner les pourcentages
+ * journaliers donnerait a une journee de 2 kg le meme poids qu'a une journee
+ * de 200 kg.
+ *
+ * Un denominateur nul n'affiche PAS 0% - qui se lirait "aucune perte" - mais
+ * un tiret: il n'y avait rien a mesurer.
+ */
+function afficherParageMois(parageMois) {
+    const cartes = [
+        { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
+        { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
+    ];
+    const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg`;
+
+    cartes.forEach(({ cat, valeur, detail }) => {
+        const elValeur = document.getElementById(valeur);
+        const elDetail = document.getElementById(detail);
+        const d = parageMois && parageMois[cat];
+        const theorique = d ? (parseFloat(d.theorique) || 0) : 0;
+        const vendu = d ? (parseFloat(d.vendu) || 0) : 0;
+
+        if (!elValeur) return;
+        if (theorique <= 0) {
+            elValeur.textContent = '—';
+            if (elDetail) elDetail.textContent = vendu > 0 ? `${kg(vendu)} vendus, théorique inconnu` : '';
+            elValeur.title = 'Aucun stock théorique sur le mois : rien à mesurer.';
+            return;
+        }
+        const perte = 1 - (vendu / theorique);
+        elValeur.textContent = `${(perte * 100).toFixed(1)} %`;
+        if (elDetail) elDetail.textContent = `${kg(vendu)} vendus / ${kg(theorique)} théoriques`;
+        elValeur.title = `Vendu (packs inclus) : ${kg(vendu)}
+`
+            + `Stock théorique (matin + transferts − soir) : ${kg(theorique)}
+`
+            + `Rendement : ${(vendu / theorique * 100).toFixed(1)} %
+`
+            + `Parage : 100 − ${(vendu / theorique * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
     });
 }
 
