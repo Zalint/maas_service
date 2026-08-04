@@ -9634,7 +9634,13 @@ function initReconciliationMensuelle() {
             console.log('[DEBUG] Bouton Export Excel (export-reconciliation-mois) trouvé. Ajout écouteur.'); 
             btnExportExcelMois.addEventListener('click', exportReconciliationMoisToExcel);
         } else {
-            console.error('Bouton d\'export Excel non trouvé!');
+            console.error("Bouton d'export Excel (export-reconciliation-mois) non trouvé.");
+        }
+        const btnExportDetails = document.getElementById('export-parage-details');
+        if (btnExportDetails) {
+            btnExportDetails.addEventListener('click', exportParageDetailsToExcel);
+        } else {
+            console.error("Bouton d'export détails parage (export-parage-details) non trouvé.");
         }
     // Ajouter l'écouteur d'événement pour le filtre de point de vente
     const pointVenteFiltre = document.getElementById('point-vente-filtre-mois');
@@ -9802,7 +9808,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         const totalCreancesEl = document.getElementById('total-creances-mois');
         const totalVersementsEl = document.getElementById('total-versements-mois');
         // --- Récupérer l'élément pour l'estimation ---
-        const estimationVersementsEl = document.getElementById('estimation-versements-mois');
 
         // --- Réinitialiser les totaux affichés ---
         if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(0);
@@ -9810,14 +9815,21 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalCreancesEl) totalCreancesEl.textContent = formatMonetaire(0);
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Réinitialiser l'estimation ---
-        if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+        afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         // --- Initialiser les variables de calcul des totaux ---
         let totalVentesTheoriquesMois = 0;
         let totalVentesSaisiesMois = 0;
         let totalCreancesMois = 0;
         let totalVersementsMois = 0;
-        let dernierJourAvecDonnees = 0; // Pour l'estimation
+        const lignesCalculees = [];
+        // Parage cumule du mois: on somme les KILOS, pas les pourcentages.
+        // Moyenner les taux journaliers donnerait le meme poids a une journee
+        // de 2 kg qu'a une journee de 200 kg.
+        const parageMois = {
+            bovin: { vendu: 0, theorique: 0 },
+            ovin: { vendu: 0, theorique: 0 }
+        };
         // --- Fin initialisation totaux ---
 
         if (!moisSelect || !anneeSelect) {
@@ -9840,18 +9852,26 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 
                 // Afficher les données en cache
                 afficherDonneesReconciliationMensuelle(cachedData.data);
-                
+
+                // Puis reappliquer le filtre par point de vente, comme le fait
+                // le chemin calcule apres son rendu. Cette branche sort en
+                // `return` avant d'y arriver: sans cet appel, revenir sur
+                // l'ecran avec un filtre actif reaffichait TOUS les points de
+                // vente, le menu deroulant continuant d'en annoncer un seul.
+                filtrerTableauReconciliationMensuelle();
+
                 // Mettre à jour les totaux
                 if (cachedData.totaux) {
                     const totalVentesTheoriquesEl = document.getElementById('total-ventes-theoriques-mois');
                     const totalVentesSaisiesEl = document.getElementById('total-ventes-saisies-mois');
                     const totalVersementsEl = document.getElementById('total-versements-mois');
-                    const estimationVersementsEl = document.getElementById('estimation-versements-mois');
-                    
+                                
                     if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(cachedData.totaux.ventesTheoriques);
                     if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(cachedData.totaux.ventesSaisies);
                     if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(cachedData.totaux.versements);
-                    if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(cachedData.totaux.estimation);
+                    // Sans cette ligne, revenir sur l'ecran depuis le cache
+                    // laissait les deux cartes de parage a leur tiret initial.
+                    afficherParageMois(cachedData.totaux.parage);
                 }
                 
                 isLoadingReconciliationMensuelle = false;
@@ -9880,7 +9900,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(0);
             if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
             if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
-            if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+                afficherParageMois(null); // tiret, pas le taux du mois precedent
             return; // Stop execution
         }
         // --- End check ---
@@ -9955,7 +9975,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             }
 
             hasAnyData = true; // Mark that we found data for at least one day
-            dernierJourAvecDonnees = jour; // Update last day with data for estimation
 
             // 3. Calculate reconciliation for the day
             let dailyReconciliation = {};
@@ -10052,6 +10071,25 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     // un pourcentage seul ne permet pas de verifier d'ou il sort.
                     dailyReconciliation[pointVente].parageBovinDetail = p ? p.bovin : null;
                     dailyReconciliation[pointVente].parageOvinDetail = p ? p.ovin : null;
+
+                    // Cumul du mois. Une journee sans rien a mesurer (0/0)
+                    // n'ajoute rien des deux cotes: elle ne peut donc ni
+                    // gonfler ni diluer le taux du mois.
+                    ['bovin', 'ovin'].forEach((cat) => {
+                        const d = p && p[cat];
+                        // Seules les journees SANS matiere sont ignorees
+                        // (ratio null: theorique nul ou negatif). Elles
+                        // n'apporteraient rien au numerateur comme au
+                        // denominateur, et un theorique negatif fausserait la
+                        // somme.
+                        //
+                        // Une journee ou du stock est sorti SANS vente compte,
+                        // elle: ses kilos ont bel et bien disparu, et le cumul
+                        // du mois doit les porter.
+                        if (!d || d.ratio === null || d.ratio === undefined) return;
+                        parageMois[cat].vendu += parseFloat(d.vendu) || 0;
+                        parageMois[cat].theorique += parseFloat(d.theorique) || 0;
+                    });
                 });
             } else {
                 Object.keys(dailyReconciliation).forEach(pointVente => {
@@ -10076,157 +10114,19 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                  if (!POINTS_VENTE_PHYSIQUES.includes(pointVente)) return;
 
                  const data = dailyReconciliation[pointVente];
-                 const row = document.createElement('tr');
-
-                 // Cellule Date
-                 let cell = document.createElement('td');
-                 cell.textContent = dateStr;
-                 row.appendChild(cell);
-
-                 // Cellule Point de Vente
-                 cell = document.createElement('td');
-                 cell.textContent = pointVente;
-                 row.appendChild(cell);
-
-                 // Cellules de valeurs (stock matin, stock soir, etc.)
-                 const columns = [
-                     { key: 'stockMatin', format: 'currency' },
-                     { key: 'stockSoir', format: 'currency' },
-                     { key: 'transferts', format: 'currency' },
-                     { key: 'ventes', format: 'currency' }, // Theoretical Sales
-                     { key: 'ventesSaisies', format: 'currency' },
-                     { key: 'creances', format: 'currency' }, // Créances
-                     { key: 'difference', format: 'currency' }, // Ecart
-                     { key: 'cashPayment', format: 'currency' },
-                     { key: 'pourcentageEcart', format: 'percentage' }, // Ecart %
-                     { key: 'ecartCash', format: 'currency' },
-                     // Parage: null quand le stock theorique est nul ou negatif.
-                     // On affiche alors un tiret, jamais 0% qui se lirait
-                     // "aucune perte".
-                     { key: 'parageBovin', format: 'parage', detail: 'parageBovinDetail', libelle: 'Bovin' },
-                     { key: 'parageOvin', format: 'parage', detail: 'parageOvinDetail', libelle: 'Ovin' }
-                 ];
-
-                 columns.forEach(columnInfo => {
-                     cell = document.createElement('td');
-                     cell.className = 'text-end';
-
-                     const value = data ? data[columnInfo.key] : 0;
-
-                     if (columnInfo.format === 'parage') {
-                         // Infobulle: le detail du calcul. Un pourcentage seul
-                         // ne permet pas de savoir d'ou il sort ni de reperer
-                         // une saisie de stock manquante.
-                         const det = data ? data[columnInfo.detail] : null;
-                         const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
-                         if (det) {
-                             cell.title = det.theorique > 0
-                                 ? `${columnInfo.libelle}
-`
-                                     + `Vendu (packs inclus) : ${kg(det.vendu)}
-`
-                                     + `Stock théorique (matin + transferts − soir) : ${kg(det.theorique)}
-`
-                                     + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
-`
-                                     + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
-                                 : `${columnInfo.libelle}
-`
-                                     + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
-`
-                                     + `Vendu (packs inclus) : ${kg(det.vendu)}`;
-                             cell.style.cursor = 'help';
-                         }
-
-                         if (value === null || value === undefined) {
-                             cell.textContent = '—';
-                             cell.classList.add('text-muted');
-                         } else {
-                             const pct = parseFloat(value) * 100;
-                             cell.textContent = `${pct.toFixed(1)}%`;
-                             // Un parage negatif signifie qu'on a vendu plus que
-                             // ce que le stock permettait: anomalie de saisie.
-                             if (pct < 0 || pct > 15) {
-                                 cell.classList.add('text-danger', 'fw-bold');
-                             } else if (pct > 8) {
-                                 cell.classList.add('text-warning', 'fw-bold');
-                             } else {
-                                 cell.classList.add('text-success');
-                             }
-                         }
-                     } else if (columnInfo.format === 'percentage') {
-                         const percentageValue = parseFloat(value) || 0;
-                         cell.textContent = `${percentageValue.toFixed(2)}%`;
-
-                         if (Math.abs(percentageValue) > 10) {
-                             cell.classList.add('text-danger', 'fw-bold');
-                         } else if (Math.abs(percentageValue) > 8) {
-                             cell.classList.add('text-warning', 'fw-bold');
-                         } else if (Math.abs(percentageValue) > 0) {
-                             cell.classList.add('text-success', 'fw-bold');
-                         }
-                     } else { // currency
-                         const currencyValue = parseFloat(value) || 0;
-                         cell.textContent = formatMonetaire(currencyValue);
-
-                         if ((columnInfo.key === 'difference' || columnInfo.key === 'ecartCash') && currencyValue !== 0) {
-                             cell.classList.add(currencyValue < 0 ? 'negative' : 'positive');
-                         }
-                         
-                         // Style pour les créances
-                         if (columnInfo.key === 'creances' && currencyValue > 0) {
-                             cell.style.color = '#dc3545';
-                             cell.style.fontWeight = 'bold';
-                         }
-                     }
-                     row.appendChild(cell);
-                 });
-
-                 // Cellule Commentaire
-                 cell = document.createElement('td');
-                 const inputComment = document.createElement('input');
-                 inputComment.type = 'text';
-                 inputComment.className = 'form-control form-control-sm'; // smaller input
-                 inputComment.value = data.commentaire || '';
-                 inputComment.setAttribute('data-point-vente', pointVente);
-                 inputComment.setAttribute('data-date', dateStr);
-                 // Add event listener for saving comments if needed later
-                 cell.appendChild(inputComment);
-                 row.appendChild(cell);
-
-                 tableBody.appendChild(row);
+                 // Memorise la ligne CALCULEE pour le cache. Auparavant le
+                 // cache relisait le DOM par index de cellule (cells[2],
+                 // cells[3]...) sous un garde `cells.length >= 12`: l'ajout des
+                 // colonnes de parage a porte le tableau a 15 colonnes, le
+                 // garde est reste vrai, et les index ont glisse en silence.
+                 lignesCalculees.push(Object.assign({ date: dateStr, pointVente }, data));
+                 tableBody.appendChild(construireLigneReconciliationMois(dateStr, pointVente, data));
              });
         }
 
-        // --- Calcul et affichage de l'estimation ---
-        let estimationVersements = 0;
-        if (hasAnyData && dernierJourAvecDonnees > 0) {
-            let effectiveDaysPassed = 0;
-            for (let d = 1; d <= dernierJourAvecDonnees; d++) {
-                const currentDate = new Date(anneeNum, moisNum - 1, d);
-                effectiveDaysPassed += (currentDate.getDay() === 0) ? 0.5 : 1; // Sunday is 0
-            }
 
-            let totalEffectiveDaysInMonth = 0;
-            for (let d = 1; d <= totalDaysInMonth; d++) {
-                const currentDate = new Date(anneeNum, moisNum - 1, d);
-                totalEffectiveDaysInMonth += (currentDate.getDay() === 0) ? 0.5 : 1; // Sunday is 0
-            }
-
-            if (effectiveDaysPassed > 0) {
-                estimationVersements = totalVersementsMois * (totalEffectiveDaysInMonth / effectiveDaysPassed);
-                console.log(`Estimation calculée: TotalVersements=${totalVersementsMois}, JoursEffectifsPassés=${effectiveDaysPassed}, TotalJoursEffectifs=${totalEffectiveDaysInMonth}, Estimation=${estimationVersements}`);
-            } else {
-                 console.log("Jours effectifs passés est 0, estimation mise à 0.");
-            }
-        } else {
-            console.log("Aucune donnée ou dernier jour avec données est 0, estimation mise à 0.");
-        }
-
-        if (estimationVersementsEl) {
-            estimationVersementsEl.textContent = formatMonetaire(estimationVersements);
-        }
-        // --- Fin calcul et affichage estimation ---
+        // Parage cumule du mois (cartes du haut).
+        afficherParageMois(parageMois);
 
 
         // If after checking all days, no data was found, display a message
@@ -10243,7 +10143,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
              if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
              if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
              // --- Reset estimation si aucune donnée ---
-             if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+                  afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         } else {
             // --- Mettre à jour les totaux affichés si des données existent ---
@@ -10256,32 +10156,14 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
         // Sauvegarder dans le cache
         const cacheKey = `${mois}-${annee}`;
-        const reconciliationData = []; // Collecter les données pour le cache
-        
-        // Collecter les données du tableau pour le cache
-        const rows = tableBody.querySelectorAll('tr');
-        rows.forEach(row => {
-            const cells = row.cells;
-            if (cells.length >= 12) {
-                reconciliationData.push({
-                    date: cells[0].textContent,
-                    pointVente: cells[1].textContent,
-                    ventesTheoriques: extractNumericValue(cells[2].textContent),
-                    ventesSaisies: extractNumericValue(cells[3].textContent),
-                    versements: extractNumericValue(cells[4].textContent),
-                    estimation: extractNumericValue(cells[7].textContent),
-                    commentaires: cells[9].textContent
-                });
-            }
-        });
-        
+
         const cacheData = {
-            data: reconciliationData,
+            data: lignesCalculees,
             totaux: {
                 ventesTheoriques: totalVentesTheoriquesMois,
                 ventesSaisies: totalVentesSaisiesMois,
                 versements: totalVersementsMois,
-                estimation: estimationVersements
+                parage: parageMois
             },
             timestamp: Date.now()
         };
@@ -10310,7 +10192,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Reset estimation en cas d'erreur majeure ---
-         if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
+          afficherParageMois(null); // tiret, pas le taux du mois precedent
     } finally { // Add finally block
         isLoadingReconciliationMensuelle = false;
         const loadingIndicator = document.getElementById('loading-indicator-reconciliation-mois'); // Ensure indicator is hidden
@@ -10326,6 +10208,10 @@ function filtrerTableauReconciliationMensuelle() {
     const rows = document.querySelectorAll('#reconciliation-mois-table tbody tr');
     
     rows.forEach(row => {
+        // La ligne "Aucune donnée disponible" n'a qu'UNE cellule (colSpan=15):
+        // lire cells[1] y leverait, et l'erreur remonterait au chargement
+        // entier de l'ecran pour une table simplement vide.
+        if (!row.cells || row.cells.length < 2) return;
         const pointVente = row.cells[1].textContent;
         if (filtre === '' || pointVente === filtre) {
             row.style.display = '';
@@ -10336,16 +10222,198 @@ function filtrerTableauReconciliationMensuelle() {
 }
 
 /**
- * Affiche les données de réconciliation mensuelle (utilisée pour le cache)
- * @param {Array} reconciliationData - Les données de réconciliation à afficher
+ * Affiche le parage cumule du mois dans les deux cartes du haut.
+ *
+ * Cumul et non moyenne: le taux du mois est la somme des kilos vendus
+ * rapportee a la somme des kilos theoriques. Moyenner les pourcentages
+ * journaliers donnerait a une journee de 2 kg le meme poids qu'a une journee
+ * de 200 kg.
+ *
+ * Un denominateur nul n'affiche PAS 0% - qui se lirait "aucune perte" - mais
+ * un tiret: il n'y avait rien a mesurer.
+ */
+function afficherParageMois(parageMois) {
+    const cartes = [
+        { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
+        { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
+    ];
+    const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg`;
+
+    cartes.forEach(({ cat, valeur, detail }) => {
+        const elValeur = document.getElementById(valeur);
+        const elDetail = document.getElementById(detail);
+        const d = parageMois && parageMois[cat];
+        const theorique = d ? (parseFloat(d.theorique) || 0) : 0;
+        const vendu = d ? (parseFloat(d.vendu) || 0) : 0;
+
+        if (!elValeur) return;
+        if (theorique <= 0) {
+            elValeur.textContent = '—';
+            if (elDetail) elDetail.textContent = vendu > 0 ? `${kg(vendu)} vendus, théorique inconnu` : '';
+            elValeur.title = 'Aucun stock théorique sur le mois : rien à mesurer.';
+            return;
+        }
+        const perte = 1 - (vendu / theorique);
+        elValeur.textContent = `${(perte * 100).toFixed(1)} %`;
+        if (elDetail) elDetail.textContent = `${kg(vendu)} vendus / ${kg(theorique)} théoriques`;
+        elValeur.title = `Vendu (packs inclus) : ${kg(vendu)}
+`
+            + `Stock théorique (matin + transferts − soir) : ${kg(theorique)}
+`
+            + `Rendement : ${(vendu / theorique * 100).toFixed(1)} %
+`
+            + `Parage : 100 − ${(vendu / theorique * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
+    });
+}
+
+/**
+ * Fabrique la ligne du tableau "Reconciliation du mois".
+ *
+ * Partagee entre le calcul direct et le rendu depuis le cache. Il existait
+ * auparavant DEUX rendus distincts pour le meme tableau, qui avaient diverge:
+ * celui du cache ne produisait plus que 11 colonnes sous un en-tete qui en
+ * compte 15, avec les valeurs decalees d'un cran - un "Ventes Theoriques" a
+ * -302 800 F CFA et un "Ecart %" a -100,00%. Une seule fabrique rend cette
+ * divergence impossible.
+ */
+function construireLigneReconciliationMois(dateStr, pointVente, data) {
+    const row = document.createElement('tr');
+
+    // Cellule Date
+    let cell = document.createElement('td');
+    cell.textContent = dateStr;
+    row.appendChild(cell);
+
+    // Cellule Point de Vente
+    cell = document.createElement('td');
+    cell.textContent = pointVente;
+    row.appendChild(cell);
+    // Cellules de valeurs (stock matin, stock soir, etc.)
+    const columns = [
+        { key: 'stockMatin', format: 'currency' },
+        { key: 'stockSoir', format: 'currency' },
+        { key: 'transferts', format: 'currency' },
+        { key: 'ventes', format: 'currency' }, // Theoretical Sales
+        { key: 'ventesSaisies', format: 'currency' },
+        { key: 'creances', format: 'currency' }, // Créances
+        { key: 'difference', format: 'currency' }, // Ecart
+        { key: 'cashPayment', format: 'currency' },
+        { key: 'pourcentageEcart', format: 'percentage' }, // Ecart %
+        { key: 'ecartCash', format: 'currency' },
+        // Parage: null quand le stock theorique est nul ou negatif.
+        // On affiche alors un tiret, jamais 0% qui se lirait
+        // "aucune perte".
+        { key: 'parageBovin', format: 'parage', detail: 'parageBovinDetail', libelle: 'Bovin' },
+        { key: 'parageOvin', format: 'parage', detail: 'parageOvinDetail', libelle: 'Ovin' }
+    ];
+
+    columns.forEach(columnInfo => {
+        cell = document.createElement('td');
+        cell.className = 'text-end';
+
+        const value = data ? data[columnInfo.key] : 0;
+
+        if (columnInfo.format === 'parage') {
+            // Infobulle: le detail du calcul. Un pourcentage seul
+            // ne permet pas de savoir d'ou il sort ni de reperer
+            // une saisie de stock manquante.
+            const det = data ? data[columnInfo.detail] : null;
+            const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
+            if (det) {
+                cell.title = det.theorique > 0
+                    ? `${columnInfo.libelle}
+`
+                        + `Vendu (packs inclus) : ${kg(det.vendu)}
+`
+                        + `Stock théorique (matin + transferts − soir) : ${kg(det.theorique)}
+`
+                        + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
+`
+                        + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                    : `${columnInfo.libelle}
+`
+                        + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
+`
+                        + `Vendu (packs inclus) : ${kg(det.vendu)}`;
+                cell.style.cursor = 'help';
+            }
+
+            if (value === null || value === undefined) {
+                cell.textContent = '—';
+                cell.classList.add('text-muted');
+            } else {
+                const pct = parseFloat(value) * 100;
+                cell.textContent = `${pct.toFixed(1)}%`;
+                // Un parage negatif signifie qu'on a vendu plus que
+                // ce que le stock permettait: anomalie de saisie.
+                if (pct < 0 || pct > 15) {
+                    cell.classList.add('text-danger', 'fw-bold');
+                } else if (pct > 8) {
+                    cell.classList.add('text-warning', 'fw-bold');
+                } else {
+                    cell.classList.add('text-success');
+                }
+            }
+        } else if (columnInfo.format === 'percentage') {
+            const percentageValue = parseFloat(value) || 0;
+            cell.textContent = `${percentageValue.toFixed(2)}%`;
+
+            if (Math.abs(percentageValue) > 10) {
+                cell.classList.add('text-danger', 'fw-bold');
+            } else if (Math.abs(percentageValue) > 8) {
+                cell.classList.add('text-warning', 'fw-bold');
+            } else if (Math.abs(percentageValue) > 0) {
+                cell.classList.add('text-success', 'fw-bold');
+            }
+        } else { // currency
+            const currencyValue = parseFloat(value) || 0;
+            cell.textContent = formatMonetaire(currencyValue);
+
+            if ((columnInfo.key === 'difference' || columnInfo.key === 'ecartCash') && currencyValue !== 0) {
+                cell.classList.add(currencyValue < 0 ? 'negative' : 'positive');
+            }
+            
+            // Style pour les créances
+            if (columnInfo.key === 'creances' && currencyValue > 0) {
+                cell.style.color = '#dc3545';
+                cell.style.fontWeight = 'bold';
+            }
+        }
+        row.appendChild(cell);
+    });
+
+    // Cellule Commentaire
+    cell = document.createElement('td');
+    const inputComment = document.createElement('input');
+    inputComment.type = 'text';
+    inputComment.className = 'form-control form-control-sm'; // smaller input
+    inputComment.value = data.commentaire || '';
+    inputComment.setAttribute('data-point-vente', pointVente);
+    inputComment.setAttribute('data-date', dateStr);
+    // Add event listener for saving comments if needed later
+    cell.appendChild(inputComment);
+    row.appendChild(cell);
+
+    return row;
+}
+
+/**
+ * Rend le tableau "Reconciliation du mois" a partir de lignes deja calculees
+ * (chemin du cache).
+ *
+ * Delegue a construireLigneReconciliationMois, la meme fabrique que le calcul
+ * direct. Cette fonction construisait auparavant ses propres cellules, dans un
+ * ordre et un nombre differents: le tableau rendu depuis le cache n'avait que
+ * 11 colonnes sous un en-tete qui en compte 15, et affichait des valeurs
+ * impossibles - "Ventes Theoriques" a -302 800 F CFA, "Ecart %" a -100,00%.
  */
 function afficherDonneesReconciliationMensuelle(reconciliationData) {
     const tableBody = document.querySelector('#reconciliation-mois-table tbody');
     if (!tableBody) return;
-    
+
     tableBody.innerHTML = '';
-    
-    if (!reconciliationData || reconciliationData.length === 0) {
+
+    if (!reconciliationData || !reconciliationData.length) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
         cell.colSpan = 15;
@@ -10355,80 +10423,14 @@ function afficherDonneesReconciliationMensuelle(reconciliationData) {
         tableBody.appendChild(row);
         return;
     }
-    
-    reconciliationData.forEach(entry => {
-        const row = document.createElement('tr');
-        
-        // Date
-        const tdDate = document.createElement('td');
-        tdDate.textContent = entry.date;
-        row.appendChild(tdDate);
-        
-        // Point de vente
-        const tdPointVente = document.createElement('td');
-        tdPointVente.textContent = entry.pointVente;
-        row.appendChild(tdPointVente);
-        
-        // Ventes théoriques
-        const tdVentesTheoriques = document.createElement('td');
-        tdVentesTheoriques.textContent = formatMonetaire(entry.ventesTheoriques);
-        row.appendChild(tdVentesTheoriques);
-        
-        // Ventes saisies
-        const tdVentesSaisies = document.createElement('td');
-        tdVentesSaisies.textContent = formatMonetaire(entry.ventesSaisies);
-        row.appendChild(tdVentesSaisies);
-        
-        // Versements
-        const tdVersements = document.createElement('td');
-        tdVersements.textContent = formatMonetaire(entry.versements);
-        row.appendChild(tdVersements);
-        
-        // Écart
-        const tdEcart = document.createElement('td');
-        const ecart = entry.ventesSaisies - entry.ventesTheoriques;
-        tdEcart.textContent = formatMonetaire(ecart);
-        tdEcart.className = ecart >= 0 ? 'text-success' : 'text-danger';
-        row.appendChild(tdEcart);
-        
-        // Pourcentage d'écart
-        const tdPourcentage = document.createElement('td');
-        const pourcentage = entry.ventesTheoriques > 0 ? (ecart / entry.ventesTheoriques) * 100 : 0;
-        tdPourcentage.textContent = `${pourcentage.toFixed(2)}%`;
-        tdPourcentage.className = Math.abs(pourcentage) <= 5 ? 'text-success' : 
-                                 Math.abs(pourcentage) <= 10 ? 'text-warning' : 'text-danger';
-        row.appendChild(tdPourcentage);
-        
-        // Estimation
-        const tdEstimation = document.createElement('td');
-        tdEstimation.textContent = formatMonetaire(entry.estimation);
-        row.appendChild(tdEstimation);
-        
-        // Écart estimation
-        const tdEcartEstimation = document.createElement('td');
-        const ecartEstimation = entry.versements - entry.estimation;
-        tdEcartEstimation.textContent = formatMonetaire(ecartEstimation);
-        tdEcartEstimation.className = Math.abs(ecartEstimation) <= 10000 ? 'text-success' : 
-                                     Math.abs(ecartEstimation) <= 50000 ? 'text-warning' : 'text-danger';
-        row.appendChild(tdEcartEstimation);
-        
-        // Commentaires
-        const tdCommentaires = document.createElement('td');
-        tdCommentaires.textContent = entry.commentaires || '';
-        row.appendChild(tdCommentaires);
-        
-        // Actions
-        const tdActions = document.createElement('td');
-        const btnDetails = document.createElement('button');
-        btnDetails.className = 'btn btn-sm btn-outline-primary';
-        btnDetails.textContent = 'Détails';
-        btnDetails.onclick = () => naviguerVersReconciliation(entry.date);
-        tdActions.appendChild(btnDetails);
-        row.appendChild(tdActions);
-        
-        tableBody.appendChild(row);
+
+    reconciliationData.forEach((entry) => {
+        tableBody.appendChild(
+            construireLigneReconciliationMois(entry.date, entry.pointVente, entry)
+        );
     });
 }
+
 
 /**
  * Charge les commentaires pour la réconciliation mensuelle
@@ -10954,6 +10956,172 @@ async function exportVisualisationToExcel() {
 }
 
 // Function to export monthly reconciliation data to Excel
+/**
+ * Export "detail parage": bovin et ovin uniquement, EN KILOS, jour par jour.
+ *
+ * Le tableau de la reconciliation n'affiche que le taux de parage. Quand il
+ * parait faux, rien ne permet de voir LAQUELLE des saisies manque - stock du
+ * matin, du soir, transferts ou ventes. Cet export sort les quatre, plus le
+ * theorique et le taux, pour qu'une ligne suspecte se verifie a la main.
+ *
+ * Les kilos viennent de /api/reconciliation/parage, donc du MEME calcul que
+ * l'ecran (lib/parage.js): exclusions appliquees des deux cotes, packs
+ * decomposes en kilos. Refaire l'addition ici produirait un second chiffre,
+ * qui finirait par diverger.
+ */
+async function exportParageDetailsToExcel() {
+    const CATEGORIES = [
+        { cle: 'bovin', libelle: 'Boeuf' },
+        { cle: 'ovin', libelle: 'Agneau' }
+    ];
+    let indicateur = null;
+    try {
+        if (typeof XLSX === 'undefined') {
+            alert("La bibliotheque XLSX n'est pas chargee. Rafraichissez la page.");
+            return;
+        }
+        const mois = document.getElementById('mois-reconciliation').value;
+        const annee = document.getElementById('annee-reconciliation').value;
+        if (!mois) {
+            alert('Selectionnez un mois.');
+            return;
+        }
+        const pvFiltre = (document.getElementById('point-vente-filtre-mois') || {}).value || '';
+
+        indicateur = document.createElement('div');
+        indicateur.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);'
+            + 'background:#fff;padding:20px;border:2px solid #198754;border-radius:8px;z-index:1080;'
+            + 'box-shadow:0 4px 8px rgba(0,0,0,.2);text-align:center;';
+        indicateur.innerHTML = '<div class="spinner-border text-success" role="status"></div>'
+            + '<p class="mt-2 mb-0">Export du detail parage...</p>';
+        document.body.appendChild(indicateur);
+
+        const anneeNum = parseInt(annee, 10);
+        const moisNum = parseInt(mois, 10);
+        const nbJours = new Date(anneeNum, moisNum, 0).getDate();
+        const arrondi = (n) => Math.round((parseFloat(n) || 0) * 100) / 100;
+
+        const lignes = [];
+        const cumul = {};
+        CATEGORIES.forEach((c) => {
+            cumul[c.cle] = { matin: 0, transferts: 0, soir: 0, theorique: 0, vendu: 0 };
+        });
+
+        // Les journees sont interrogees par LOTS et non une par une: 31
+        // allers-retours en file d'attente faisaient durer l'export sans
+        // raison. Le lot reste petit pour ne pas ouvrir 31 connexions d'un
+        // coup, et les resultats sont reassembles dans l'ordre du calendrier -
+        // l'ordre des lignes du fichier ne doit pas dependre de la latence.
+        const TAILLE_LOT = 5;
+        const jourVersDate = (j) => String(j).padStart(2, '0') + '/'
+            + String(moisNum).padStart(2, '0') + '/' + anneeNum;
+
+        const lireJour = async (jour) => {
+            const dateStr = jourVersDate(jour);
+            try {
+                const rep = await fetch('/api/reconciliation/parage?date=' + dateStr, {
+                    method: 'GET', credentials: 'include'
+                });
+                const json = rep.ok ? await rep.json() : null;
+                return json && json.success ? json.data : null;
+            } catch (e) {
+                // Une journee illisible ne doit pas vider tout l'export: on la
+                // saute en le disant, plutot que d'abandonner le mois entier.
+                console.warn('Detail parage: ' + dateStr + ' illisible', e);
+                return null;
+            }
+        };
+
+        const parJour = new Array(nbJours + 1).fill(null);
+        for (let debut = 1; debut <= nbJours; debut += TAILLE_LOT) {
+            const lot = [];
+            for (let j = debut; j < debut + TAILLE_LOT && j <= nbJours; j++) lot.push(j);
+            const resultats = await Promise.all(lot.map(lireJour));
+            lot.forEach((j, i) => { parJour[j] = resultats[i]; });
+        }
+
+        for (let jour = 1; jour <= nbJours; jour++) {
+            const dateStr = jourVersDate(jour);
+            const data = parJour[jour];
+            if (!data) continue;
+
+            Object.keys(data).forEach((pointVente) => {
+                if (pvFiltre && pointVente !== pvFiltre) return;
+                CATEGORIES.forEach(function (c) {
+                    const d = data[pointVente] && data[pointVente][c.cle];
+                    if (!d) return;
+                    // Journee sans matiere: pas de ligne vide dans le fichier.
+                    if (!d.matin && !d.soir && !d.transferts && !d.vendu) return;
+
+                    lignes.push({
+                        'Date': dateStr,
+                        'Point de Vente': pointVente,
+                        'Categorie': c.libelle,
+                        'Stock matin (kg)': arrondi(d.matin),
+                        'Transferts (kg)': arrondi(d.transferts),
+                        'Stock soir (kg)': arrondi(d.soir),
+                        'Theorique (kg)': arrondi(d.theorique),
+                        'Ventes saisies (kg)': arrondi(d.vendu),
+                        // Vide et non 0 quand le parage n'est pas calculable:
+                        // un 0 se lirait "aucune perte".
+                        'Parage (%)': (d.perte === null || d.perte === undefined)
+                            ? '' : Math.round(d.perte * 1000) / 10
+                    });
+                    // Le TOTAL ne cumule que les journees MESURABLES, comme les
+                    // cartes du haut de l'ecran. Une journee a 10 kg vendus
+                    // pour 0 kg theorique ajouterait du numerateur sans
+                    // denominateur: le taux derive, jusqu'a un parage negatif.
+                    // Deux totaux differents pour la meme grandeur seraient
+                    // pires que pas de total du tout.
+                    if (d.perte === null || d.perte === undefined) return;
+                    ['matin', 'transferts', 'soir', 'theorique', 'vendu'].forEach(function (k) {
+                        cumul[c.cle][k] += parseFloat(d[k]) || 0;
+                    });
+                });
+            });
+        }
+
+        if (!lignes.length) {
+            alert('Aucun detail boeuf ou agneau pour ce mois.');
+            return;
+        }
+
+        // Cumul du mois, meme regle que les cartes: somme des kilos, et un
+        // taux vide plutot que 0 quand le denominateur est nul.
+        lignes.push({});
+        CATEGORIES.forEach(function (c) {
+            const t = cumul[c.cle];
+            lignes.push({
+                'Date': 'TOTAL MOIS (jours mesurables)',
+                'Point de Vente': pvFiltre || 'Tous',
+                'Categorie': c.libelle,
+                'Stock matin (kg)': arrondi(t.matin),
+                'Transferts (kg)': arrondi(t.transferts),
+                'Stock soir (kg)': arrondi(t.soir),
+                'Theorique (kg)': arrondi(t.theorique),
+                'Ventes saisies (kg)': arrondi(t.vendu),
+                'Parage (%)': t.theorique > 0
+                    ? Math.round((1 - t.vendu / t.theorique) * 1000) / 10 : ''
+            });
+        });
+
+        const feuille = XLSX.utils.json_to_sheet(lignes);
+        feuille['!cols'] = [
+            { wch: 12 }, { wch: 16 }, { wch: 10 }, { wch: 16 },
+            { wch: 16 }, { wch: 16 }, { wch: 15 }, { wch: 19 }, { wch: 11 }
+        ];
+        const classeur = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(classeur, feuille, 'Detail parage');
+        XLSX.writeFile(classeur, 'detail-parage-' + annee + '-'
+            + String(moisNum).padStart(2, '0') + '.xlsx');
+    } catch (erreur) {
+        console.error('Export detail parage:', erreur);
+        alert("Erreur pendant l'export du detail : " + erreur.message);
+    } finally {
+        if (indicateur && indicateur.parentNode) indicateur.parentNode.removeChild(indicateur);
+    }
+}
+
 async function exportReconciliationMoisToExcel() {
     try {
         // Check if XLSX library is loaded

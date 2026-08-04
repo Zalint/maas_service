@@ -1,0 +1,119 @@
+/**
+ * @jest-environment jsdom
+ *
+ * Parage cumule du mois (cartes du haut de la reconciliation mensuelle).
+ *
+ * Charge la VRAIE fonction depuis script.js par extraction, plutot que d'en
+ * recopier la logique: une copie diverge, et c'est une duplication de rendu qui
+ * avait deja fait afficher a ce tableau 11 colonnes sous un en-tete de 15.
+ */
+const fs = require('fs');
+const path = require('path');
+
+function charger() {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
+    const debut = source.indexOf('function afficherParageMois(parageMois)');
+    if (debut === -1) throw new Error('afficherParageMois introuvable dans script.js');
+    const fin = source.indexOf('\n}', debut) + 2;
+    // eslint-disable-next-line no-new-func
+    return new Function(`${source.slice(debut, fin)}\nreturn afficherParageMois;`)();
+}
+
+const afficher = charger();
+
+function poser() {
+    document.body.innerHTML = `
+        <p id="parage-bovin-mois">—</p><p id="parage-bovin-mois-detail"></p>
+        <p id="parage-ovin-mois">—</p><p id="parage-ovin-mois-detail"></p>`;
+}
+
+const lire = (cat) => ({
+    valeur: document.getElementById(`parage-${cat}-mois`).textContent,
+    detail: document.getElementById(`parage-${cat}-mois-detail`).textContent,
+    titre: document.getElementById(`parage-${cat}-mois`).title
+});
+
+beforeEach(poser);
+
+describe('cumul du mois', () => {
+    test('somme des kilos, pas moyenne des taux journaliers', () => {
+        // Une journee a 2 kg vendus sur 4 (50% de perte) et une journee a 200 kg
+        // vendus sur 200 (0%). La moyenne des taux donnerait 25%; le cumul
+        // donne 1 - 202/204 = 0,98%, ce qui est la realite du mois.
+        afficher({ bovin: { vendu: 202, theorique: 204 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').valeur).toBe('1.0 %');
+        expect(lire('bovin').valeur).not.toBe('25.0 %');
+    });
+
+    test('cas nominal: 5% de perte', () => {
+        afficher({ bovin: { vendu: 95, theorique: 100 }, ovin: { vendu: 190, theorique: 200 } });
+        expect(lire('bovin').valeur).toBe('5.0 %');
+        expect(lire('ovin').valeur).toBe('5.0 %');
+    });
+
+    test('le detail montre le numerateur et le denominateur', () => {
+        afficher({ bovin: { vendu: 95.5, theorique: 100 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').detail).toBe('95,5 kg vendus / 100 kg théoriques');
+    });
+
+    test('l infobulle donne le calcul complet', () => {
+        afficher({ bovin: { vendu: 95, theorique: 100 }, ovin: { vendu: 0, theorique: 0 } });
+        const t = lire('bovin').titre;
+        expect(t).toContain('95 kg');
+        expect(t).toContain('100 kg');
+        expect(t).toContain('Parage : 100 − 95.0 = 5.0 %');
+    });
+});
+
+describe('denominateur nul: on ignore, on n affiche pas zero', () => {
+    // 0% se lirait "decoupe parfaite". Un tiret dit "rien a mesurer".
+    test('0 / 0 affiche un tiret', () => {
+        afficher({ bovin: { vendu: 0, theorique: 0 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').valeur).toBe('—');
+        expect(lire('ovin').valeur).toBe('—');
+        expect(lire('bovin').valeur).not.toBe('0.0 %');
+    });
+
+    test('theorique negatif aussi', () => {
+        afficher({ bovin: { vendu: 10, theorique: -5 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').valeur).toBe('—');
+    });
+
+    test('du vendu sans theorique: tiret, mais le detail le signale', () => {
+        afficher({ bovin: { vendu: 34.75, theorique: 0 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').valeur).toBe('—');
+        expect(lire('bovin').detail).toBe('34,8 kg vendus, théorique inconnu');
+    });
+
+    test('aucune donnee du tout', () => {
+        afficher(null);
+        expect(lire('bovin').valeur).toBe('—');
+        expect(lire('ovin').valeur).toBe('—');
+    });
+});
+
+describe('robustesse', () => {
+    test('une categorie absente ne fait pas lever', () => {
+        expect(() => afficher({ bovin: { vendu: 10, theorique: 20 } })).not.toThrow();
+        expect(lire('bovin').valeur).toBe('50.0 %');
+        expect(lire('ovin').valeur).toBe('—');
+    });
+
+    test('des valeurs illisibles sont traitees comme absentes', () => {
+        afficher({ bovin: { vendu: 'abc', theorique: null }, ovin: { vendu: undefined, theorique: 'x' } });
+        expect(lire('bovin').valeur).toBe('—');
+        expect(lire('ovin').valeur).toBe('—');
+    });
+
+    test('les elements absents du DOM ne font pas lever', () => {
+        document.body.innerHTML = '';
+        expect(() => afficher({ bovin: { vendu: 95, theorique: 100 } })).not.toThrow();
+    });
+
+    // Vendre plus que le theorique signale une erreur de saisie: la valeur doit
+    // ressortir negative telle quelle, au lieu d'etre ecretee a zero.
+    test('un rendement au-dela de 100% donne un parage negatif', () => {
+        afficher({ bovin: { vendu: 110, theorique: 100 }, ovin: { vendu: 0, theorique: 0 } });
+        expect(lire('bovin').valeur).toBe('-10.0 %');
+    });
+});

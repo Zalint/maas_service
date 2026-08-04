@@ -2459,11 +2459,25 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="col cash-module-card">
+                                    <!-- Parage cumule du mois: somme des kilos vendus rapportee a
+                                         la somme des kilos theoriques. Un cumul, et NON une moyenne
+                                         des pourcentages journaliers: une journee a 2 kg peserait
+                                         alors autant qu'une journee a 200 kg. -->
+                                    <div class="col">
                                          <div class="card text-dark bg-warning h-100">
                                              <div class="card-body">
-                                                 <h5 class="card-title">Estimation Versements (Mois)</h5>
-                                                 <p class="card-text fs-4 fw-bold" id="estimation-versements-mois">0 FCFA</p>
+                                                 <h5 class="card-title">Parage Bœuf (Mois)</h5>
+                                                 <p class="card-text fs-4 fw-bold" id="parage-bovin-mois">—</p>
+                                                 <p class="card-text small mb-0" id="parage-bovin-mois-detail"></p>
+                                             </div>
+                                         </div>
+                                    </div>
+                                    <div class="col">
+                                         <div class="card text-dark bg-warning h-100">
+                                             <div class="card-body">
+                                                 <h5 class="card-title">Parage Agneau (Mois)</h5>
+                                                 <p class="card-text fs-4 fw-bold" id="parage-ovin-mois">—</p>
+                                                 <p class="card-text small mb-0" id="parage-ovin-mois-detail"></p>
                                              </div>
                                          </div>
                                     </div>
@@ -2506,6 +2520,15 @@
                                     <div class="col-md-3 d-flex align-items-end justify-content-end">
                                         <button class="btn btn-success" id="export-reconciliation-mois">
                                             <i class="fas fa-file-excel"></i> Export Excel
+                                        </button>
+                                        <!-- Detail EN KILOS, bovin et ovin uniquement: le stock du
+                                             matin, celui du soir, les transferts et les ventes
+                                             saisies, jour par jour. Le tableau n'affiche que le
+                                             taux de parage; sans ses composantes on ne peut pas
+                                             voir LAQUELLE des saisies manque quand il parait faux. -->
+                                        <button class="btn btn-outline-success ms-2" id="export-parage-details"
+                                                title="Bœuf et agneau, en kg : stock matin, stock soir, transferts et ventes saisies, jour par jour">
+                                            <i class="fas fa-weight-hanging"></i> Export détails
                                         </button>
                                     </div>
                                 </div>

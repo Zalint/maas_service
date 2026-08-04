@@ -38,6 +38,37 @@ const DEFAULT_ADMIN_USERNAME = process.env.DEFAULT_ADMIN_USERNAME || 'ADMIN';
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'ChangeMe123!';
 
 function resetDataFiles() {
+    // Garde-fou. Ces fichiers sont COMMITES dans le depot et appartiennent a
+    // Mata; les effacer n'a de sens que pour provisionner un vrai tenant.
+    //
+    // La condition d'appel porte sur la BASE (aucun utilisateur), mais la
+    // destruction porte sur le DISQUE, partage par toutes les bases. Lancer
+    // tenant:init depuis une copie de travail en pointant une base de tenant
+    // neuve - donc vide - effacait donc les fichiers du DEPOT: acheteur.json
+    // reduit a [], la liste des livreurs videe, et tout data/by-date/ supprime
+    // par rmSync. Le nom de la commande invite pourtant a la lancer d'ici.
+    //
+    // On verifie donc l'axe qui compte: a-t-on affaire a un tenant, ou a la
+    // configuration Mata par defaut ?
+    if (!tenant.slug || tenant.slug === 'default') {
+        console.warn('⚠️  TENANT_SLUG absent ou "default": les fichiers de donnees du depot');
+        console.warn('   ne sont PAS effaces - ils appartiennent a Mata et sont commites.');
+        console.warn('   Definissez TENANT_SLUG pour provisionner un vrai tenant.');
+        return;
+    }
+    // Le slug doit designer un tenant REEL. config/tenant.js se contente de
+    // relire la variable d'environnement: il n'a jamais valide qu'elle
+    // corresponde a quoi que ce soit. Une faute de frappe - TENANT_SLUG=mboa -
+    // passait donc le garde ci-dessus et effacait les fichiers du depot, ce que
+    // ce garde existe precisement pour empecher.
+    const dossierTenant = path.join(__dirname, '..', 'config', 'tenants', tenant.slug);
+    if (!fs.existsSync(dossierTenant)) {
+        console.warn(`⚠️  Aucun tenant "${tenant.slug}" dans config/tenants/: les fichiers`);
+        console.warn('   de donnees du depot ne sont PAS effaces.');
+        console.warn(`   Creez-le d'abord: npm run tenant:create -- --slug=${tenant.slug} --name="<Nom>"`);
+        return;
+    }
+
     const root = path.join(__dirname, '..');
     const wipes = [
         ['data/stock-matin.json', '{}\n'],
