@@ -1,4 +1,8 @@
-const CACHE_NAME = 'mata-pos-v30';
+// Bump a chaque changement d'actif servi en cache-first. L'activation supprime
+// les caches dont le nom differe: sans ce bump, les anciennes URL versionnees
+// (script.js?v=..., pos.js?v=...) resteraient stockees indefiniment, aucune
+// regle ne les evincant.
+const CACHE_NAME = 'mata-pos-v31';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',
