@@ -56,6 +56,18 @@ function resetDataFiles() {
         console.warn('   Definissez TENANT_SLUG pour provisionner un vrai tenant.');
         return;
     }
+    // Le slug doit designer un tenant REEL. config/tenant.js se contente de
+    // relire la variable d'environnement: il n'a jamais valide qu'elle
+    // corresponde a quoi que ce soit. Une faute de frappe - TENANT_SLUG=mboa -
+    // passait donc le garde ci-dessus et effacait les fichiers du depot, ce que
+    // ce garde existe precisement pour empecher.
+    const dossierTenant = path.join(__dirname, '..', 'config', 'tenants', tenant.slug);
+    if (!fs.existsSync(dossierTenant)) {
+        console.warn(`⚠️  Aucun tenant "${tenant.slug}" dans config/tenants/: les fichiers`);
+        console.warn('   de donnees du depot ne sont PAS effaces.');
+        console.warn(`   Creez-le d'abord: npm run tenant:create -- --slug=${tenant.slug} --name="<Nom>"`);
+        return;
+    }
 
     const root = path.join(__dirname, '..');
     const wipes = [

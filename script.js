@@ -9633,12 +9633,14 @@ function initReconciliationMensuelle() {
         if (btnExportExcelMois) {
             console.log('[DEBUG] Bouton Export Excel (export-reconciliation-mois) trouvé. Ajout écouteur.'); 
             btnExportExcelMois.addEventListener('click', exportReconciliationMoisToExcel);
+        } else {
+            console.error("Bouton d'export Excel (export-reconciliation-mois) non trouvé.");
         }
         const btnExportDetails = document.getElementById('export-parage-details');
         if (btnExportDetails) {
             btnExportDetails.addEventListener('click', exportParageDetailsToExcel);
         } else {
-            console.error('Bouton d\'export Excel non trouvé!');
+            console.error("Bouton d'export détails parage (export-parage-details) non trouvé.");
         }
     // Ajouter l'écouteur d'événement pour le filtre de point de vente
     const pointVenteFiltre = document.getElementById('point-vente-filtre-mois');
@@ -9806,7 +9808,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         const totalCreancesEl = document.getElementById('total-creances-mois');
         const totalVersementsEl = document.getElementById('total-versements-mois');
         // --- Récupérer l'élément pour l'estimation ---
-        const estimationVersementsEl = document.getElementById('estimation-versements-mois');
 
         // --- Réinitialiser les totaux affichés ---
         if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(0);
@@ -9814,7 +9815,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalCreancesEl) totalCreancesEl.textContent = formatMonetaire(0);
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Réinitialiser l'estimation ---
-        if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
         afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         // --- Initialiser les variables de calcul des totaux ---
@@ -9830,7 +9830,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             bovin: { vendu: 0, theorique: 0 },
             ovin: { vendu: 0, theorique: 0 }
         };
-        let dernierJourAvecDonnees = 0; // Pour l'estimation
         // --- Fin initialisation totaux ---
 
         if (!moisSelect || !anneeSelect) {
@@ -9866,12 +9865,10 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     const totalVentesTheoriquesEl = document.getElementById('total-ventes-theoriques-mois');
                     const totalVentesSaisiesEl = document.getElementById('total-ventes-saisies-mois');
                     const totalVersementsEl = document.getElementById('total-versements-mois');
-                    const estimationVersementsEl = document.getElementById('estimation-versements-mois');
-                    
+                                
                     if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(cachedData.totaux.ventesTheoriques);
                     if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(cachedData.totaux.ventesSaisies);
                     if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(cachedData.totaux.versements);
-                    if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(cachedData.totaux.estimation);
                     // Sans cette ligne, revenir sur l'ecran depuis le cache
                     // laissait les deux cartes de parage a leur tiret initial.
                     afficherParageMois(cachedData.totaux.parage);
@@ -9903,8 +9900,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(0);
             if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
             if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
-            if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
-            afficherParageMois(null); // tiret, pas le taux du mois precedent
+                afficherParageMois(null); // tiret, pas le taux du mois precedent
             return; // Stop execution
         }
         // --- End check ---
@@ -9979,7 +9975,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             }
 
             hasAnyData = true; // Mark that we found data for at least one day
-            dernierJourAvecDonnees = jour; // Update last day with data for estimation
 
             // 3. Calculate reconciliation for the day
             let dailyReconciliation = {};
@@ -10129,35 +10124,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
              });
         }
 
-        // --- Calcul et affichage de l'estimation ---
-        let estimationVersements = 0;
-        if (hasAnyData && dernierJourAvecDonnees > 0) {
-            let effectiveDaysPassed = 0;
-            for (let d = 1; d <= dernierJourAvecDonnees; d++) {
-                const currentDate = new Date(anneeNum, moisNum - 1, d);
-                effectiveDaysPassed += (currentDate.getDay() === 0) ? 0.5 : 1; // Sunday is 0
-            }
-
-            let totalEffectiveDaysInMonth = 0;
-            for (let d = 1; d <= totalDaysInMonth; d++) {
-                const currentDate = new Date(anneeNum, moisNum - 1, d);
-                totalEffectiveDaysInMonth += (currentDate.getDay() === 0) ? 0.5 : 1; // Sunday is 0
-            }
-
-            if (effectiveDaysPassed > 0) {
-                estimationVersements = totalVersementsMois * (totalEffectiveDaysInMonth / effectiveDaysPassed);
-                console.log(`Estimation calculée: TotalVersements=${totalVersementsMois}, JoursEffectifsPassés=${effectiveDaysPassed}, TotalJoursEffectifs=${totalEffectiveDaysInMonth}, Estimation=${estimationVersements}`);
-            } else {
-                 console.log("Jours effectifs passés est 0, estimation mise à 0.");
-            }
-        } else {
-            console.log("Aucune donnée ou dernier jour avec données est 0, estimation mise à 0.");
-        }
-
-        if (estimationVersementsEl) {
-            estimationVersementsEl.textContent = formatMonetaire(estimationVersements);
-        }
-        // --- Fin calcul et affichage estimation ---
 
         // Parage cumule du mois (cartes du haut).
         afficherParageMois(parageMois);
@@ -10177,8 +10143,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
              if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
              if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
              // --- Reset estimation si aucune donnée ---
-             if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
-             afficherParageMois(null); // tiret, pas le taux du mois precedent
+                  afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         } else {
             // --- Mettre à jour les totaux affichés si des données existent ---
@@ -10198,7 +10163,6 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 ventesTheoriques: totalVentesTheoriquesMois,
                 ventesSaisies: totalVentesSaisiesMois,
                 versements: totalVersementsMois,
-                estimation: estimationVersements,
                 parage: parageMois
             },
             timestamp: Date.now()
@@ -10228,8 +10192,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
         if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
         // --- Reset estimation en cas d'erreur majeure ---
-         if (estimationVersementsEl) estimationVersementsEl.textContent = formatMonetaire(0);
-         afficherParageMois(null); // tiret, pas le taux du mois precedent
+          afficherParageMois(null); // tiret, pas le taux du mois precedent
     } finally { // Add finally block
         isLoadingReconciliationMensuelle = false;
         const loadingIndicator = document.getElementById('loading-indicator-reconciliation-mois'); // Ensure indicator is hidden
@@ -11044,21 +11007,42 @@ async function exportParageDetailsToExcel() {
             cumul[c.cle] = { matin: 0, transferts: 0, soir: 0, theorique: 0, vendu: 0 };
         });
 
-        for (let jour = 1; jour <= nbJours; jour++) {
-            const dateStr = String(jour).padStart(2, '0') + '/'
-                + String(moisNum).padStart(2, '0') + '/' + anneeNum;
-            let data = null;
+        // Les journees sont interrogees par LOTS et non une par une: 31
+        // allers-retours en file d'attente faisaient durer l'export sans
+        // raison. Le lot reste petit pour ne pas ouvrir 31 connexions d'un
+        // coup, et les resultats sont reassembles dans l'ordre du calendrier -
+        // l'ordre des lignes du fichier ne doit pas dependre de la latence.
+        const TAILLE_LOT = 5;
+        const jourVersDate = (j) => String(j).padStart(2, '0') + '/'
+            + String(moisNum).padStart(2, '0') + '/' + anneeNum;
+
+        const lireJour = async (jour) => {
+            const dateStr = jourVersDate(jour);
             try {
                 const rep = await fetch('/api/reconciliation/parage?date=' + dateStr, {
                     method: 'GET', credentials: 'include'
                 });
                 const json = rep.ok ? await rep.json() : null;
-                data = json && json.success ? json.data : null;
+                return json && json.success ? json.data : null;
             } catch (e) {
                 // Une journee illisible ne doit pas vider tout l'export: on la
                 // saute en le disant, plutot que d'abandonner le mois entier.
                 console.warn('Detail parage: ' + dateStr + ' illisible', e);
+                return null;
             }
+        };
+
+        const parJour = new Array(nbJours + 1).fill(null);
+        for (let debut = 1; debut <= nbJours; debut += TAILLE_LOT) {
+            const lot = [];
+            for (let j = debut; j < debut + TAILLE_LOT && j <= nbJours; j++) lot.push(j);
+            const resultats = await Promise.all(lot.map(lireJour));
+            lot.forEach((j, i) => { parJour[j] = resultats[i]; });
+        }
+
+        for (let jour = 1; jour <= nbJours; jour++) {
+            const dateStr = jourVersDate(jour);
+            const data = parJour[jour];
             if (!data) continue;
 
             Object.keys(data).forEach((pointVente) => {
