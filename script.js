@@ -10233,6 +10233,10 @@ function filtrerTableauReconciliationMensuelle() {
  * un tiret: il n'y avait rien a mesurer.
  */
 function afficherParageMois(parageMois) {
+    // Meme seuil qu'en lib/parage.js: un gramme. En dessous, il n'y a rien a
+    // mesurer, et un residu de virgule flottante s'affichait "0 kg" tout en
+    // produisant un parage de 100%.
+    const SEUIL_KG = 0.001;
     const cartes = [
         { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
         { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
@@ -10247,7 +10251,7 @@ function afficherParageMois(parageMois) {
         const vendu = d ? (parseFloat(d.vendu) || 0) : 0;
 
         if (!elValeur) return;
-        if (theorique <= 0) {
+        if (theorique <= SEUIL_KG) {
             elValeur.textContent = '—';
             if (elDetail) elDetail.textContent = vendu > 0 ? `${kg(vendu)} vendus, théorique inconnu` : '';
             elValeur.title = 'Aucun stock théorique sur le mois : rien à mesurer.';
@@ -11100,7 +11104,8 @@ async function exportParageDetailsToExcel() {
                 'Stock soir (kg)': arrondi(t.soir),
                 'Theorique (kg)': arrondi(t.theorique),
                 'Ventes saisies (kg)': arrondi(t.vendu),
-                'Parage (%)': t.theorique > 0
+                // Meme seuil qu'en lib/parage.js: sous un gramme, rien a mesurer.
+                'Parage (%)': t.theorique > 0.001
                     ? Math.round((1 - t.vendu / t.theorique) * 1000) / 10 : ''
             });
         });
