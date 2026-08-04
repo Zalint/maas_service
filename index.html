@@ -2533,6 +2533,8 @@
                                                 <th class="text-end cash-module-col">Montant Total Cash</th>
                                                 <th class="text-end">Écart %</th>
                                                 <th class="text-end cash-module-col">Ecart Cash</th>
+                                                <th class="text-end" title="Perte de découpe Bovin : 1 − (quantité vendue, packs inclus ÷ stock théorique). Un tiret quand le stock théorique est nul.">Parage Bœuf</th>
+                                                <th class="text-end" title="Perte de découpe Ovin, même calcul.">Parage Agneau</th>
                                                 <th>Commentaire</th>
                                             </tr>
                                         </thead>
@@ -2951,14 +2953,27 @@
                         <div data-fin-pane="charges" style="display:none">
                             <div class="alert alert-light border small mb-3">
                                 <i class="bi bi-info-circle"></i>
-                                Charges mensuelles fixes. Utilisées par le PL au prorata des jours linéaires
-                                (30 jours conventionnels = 1 mois).
+                                Charges mensuelles fixes, saisies par mois. Le PL les prorate sur les jours
+                                réels de chaque mois : un mois complet vaut exactement son montant.
+                                Un montant saisi vaut aussi pour les mois suivants, jusqu'à la prochaine saisie.
+                            </div>
+
+                            <!-- Mois de saisie: les montants sont datés (finance_charges_mois). -->
+                            <div class="row g-2 mb-3 align-items-end p-2" style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px">
+                                <div class="col-md-4">
+                                    <label class="form-label small">Mois des charges</label>
+                                    <input type="month" id="fin-charges-mois" class="form-control form-control-sm"
+                                           title="Les montants ci-dessous s'appliquent à ce mois et aux suivants.">
+                                </div>
+                                <div class="col-md-8">
+                                    <small class="text-muted" id="fin-charges-mois-info"></small>
+                                </div>
                             </div>
 
                             <!-- Réglage pertes découpe (% appliqué sur la variation stock dans le PL) -->
                             <div class="row g-2 mb-3 align-items-end p-2" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px">
                                 <div class="col-md-4">
-                                    <label class="form-label small">Pertes découpe (%)</label>
+                                    <label class="form-label small">Pertes découpe (%) — mois choisi ci-dessus</label>
                                     <input type="number" id="fin-stock-pertes-pct"
                                            class="form-control form-control-sm"
                                            min="0" max="100" step="0.1"
@@ -2973,6 +2988,7 @@
                                     <small class="text-muted">
                                         Coefficient appliqué : <span id="fin-stock-coeff" class="fw-bold">95%</span>
                                         × (Stock soir − Stock matin)
+                                        <br><span id="fin-pertes-origine" class="fst-italic"></span>
                                     </small>
                                 </div>
                             </div>
@@ -3805,7 +3821,7 @@
     </script>
     <!-- Helpers UI partages (toast + modal de confirmation, override alert) -->
     <script src="js/ui-helpers.js"></script>
-    <script src="reconciliationManager.js"></script>
+    <script src="reconciliationManager.js?v=20260804-packs3"></script>
     <script src="cash-payment-function.js"></script>
     <script src="js/vente-abonnement.js"></script>
     <!-- Gestionnaire de modules - doit être chargé avant script.js -->
@@ -3813,11 +3829,11 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260731-gros-client-colonne"></script>
+    <script src="script.js?v=20260804-packs"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260801-solde-mois"></script>
+    <script src="js/finance.js?v=20260801-pertes-mois"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>
@@ -4431,7 +4447,10 @@
     <script src="js/zoom-controls.js"></script>
     
     <!-- Script pour la gestion des compositions de packs -->
-    <script src="js/modules/pack-composition.js"></script>
+    <!-- Source unique des compositions de packs, generee depuis
+         config/pack-compositions.js. Doit preceder tout consommateur. -->
+    <script src="/pack-compositions.js"></script>
+    <script src="js/modules/pack-composition.js?v=20260804c"></script>
       
 </body>
 </html>

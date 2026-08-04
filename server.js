@@ -4308,7 +4308,13 @@ app.get('/api/ventes-date', checkAuth, async (req, res) => {
                 montantRestantDu: parseFloat(vente.montantRestantDu) || 0,
                 commande_id: vente.commandeId || null,
                 statut_preparation: vente.statutPreparation || 'en_preparation',
-                livreur_assigne: vente.livreurAssigne || null
+                livreur_assigne: vente.livreurAssigne || null,
+                // Composition d'un pack telle qu'enregistree a la vente.
+                // Sans ce champ, le modal de detail retombait sur la
+                // composition PAR DEFAUT: un pack dont on avait remplace le
+                // veau par du boeuf continuait d'afficher du veau, la
+                // modification restant invisible bien qu'enregistree.
+                extension: vente.extension || null
             };
         });
         
@@ -5328,6 +5334,294 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
     }
 });
 
+// Parage (perte de decoupe) par categorie, pour une date.
+//
+//   parage = ventesNombreAjustePack / ventesTheoriquesNombre
+//
+// Le calcul lui-meme est dans lib/parage.js (teste sans base). Cet endpoint ne
+// fait que rassembler les donnees du jour et resoudre produit -> bovin/ovin.
+//
+// Deux colonnes seulement, bovin et ovin: boeuf et veau sont interchangeables
+// et tombent tous deux dans bovin.
+// Compositions de packs, servies aux clients comme un script.
+//
+// La table vivait en TROIS copies litterales - config/pack-compositions.js,
+// pos.js et js/modules/pack-composition.js - qui ont diverge quatre fois:
+// noms de produits differents entre serveur et client, poids_unitaire present
+// d'un cote et pas de l'autre. Chaque divergence produisait des kilos
+// rattaches a aucune categorie, donc un parage faux.
+//
+// Les clients ne portent plus de litteral: ils lisent ce script, genere depuis
+// config/pack-compositions.js. Un <script src> plutot qu'un fetch pour rester
+// synchrone, le code appelant supposant la table disponible au chargement.
+//
+// Pas d'authentification: c'est le contenu commercial des packs, deja affiche
+// a tout utilisateur du POS, sans donnee personnelle. La proteger casserait le
+// chargement de la page au lieu de proteger quoi que ce soit.
+// Verification au demarrage: une composition invalide se traduirait par des
+// kilos absents du parage, ou un pack sans contenu en caisse - des symptomes
+// qu'on ne relie pas spontanement a un fichier de configuration.
+(async function () {
+    try {
+        const { verifierCompositions } = require('./config/pack-compositions');
+        const problemes = verifierCompositions(await lirePackCompositions());
+        if (problemes.length) {
+            console.error('⚠️  Compositions de packs invalides :');
+            problemes.forEach((p) => console.error('   - ' + p));
+        } else {
+            console.log('✅ Compositions de packs vérifiées');
+        }
+    } catch (e) {
+        console.error('⚠️  Compositions de packs illisibles :', e.message);
+    }
+})();
+
+// Reconstruit la table { pack: [composants] } depuis la base.
+async function lirePackCompositions() {
+    const { PackComposition } = require('./db/models');
+    const lignes = await PackComposition.findAll({
+        order: [['pack', 'ASC'], ['ordre', 'ASC']],
+        raw: true
+    });
+    const table = {};
+    for (const l of lignes) {
+        if (!table[l.pack]) table[l.pack] = [];
+        const composant = {
+            produit: l.produit,
+            quantite: parseFloat(l.quantite),
+            unite: l.unite
+        };
+        if (l.poids_unitaire != null) composant.poids_unitaire = parseFloat(l.poids_unitaire);
+        table[l.pack].push(composant);
+    }
+    return table;
+}
+
+app.get('/pack-compositions.js', async (req, res) => {
+    try {
+        const PACK_COMPOSITIONS = await lirePackCompositions();
+        res.type('application/javascript');
+        // no-cache: une modification de la config doit etre prise au
+        // rechargement, sans avoir a vider le cache du navigateur.
+        res.set('Cache-Control', 'no-cache');
+        res.send('window.__PACK_COMPOSITIONS__ = '
+            + JSON.stringify(PACK_COMPOSITIONS, null, 2) + ';');
+    } catch (error) {
+        console.error('GET /pack-compositions.js:', error);
+        res.type('application/javascript').status(500)
+            .send('window.__PACK_COMPOSITIONS__ = {};');
+    }
+});
+
+// ===== ADMIN: compositions par defaut des packs =====
+// Lecture: la table complete + la liste des produits, pour alimenter les
+// selecteurs de l'ecran.
+app.get('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const produits = await sequelize.query(
+            `SELECT DISTINCT p.nom, COALESCE(LOWER(c.nom), '') AS categorie
+             FROM produits p LEFT JOIN categories c ON c.id = p.categorie_id
+             WHERE COALESCE(p.archived, false) = false
+             ORDER BY p.nom`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        res.json({ success: true, packs: await lirePackCompositions(), produits });
+    } catch (error) {
+        console.error('GET /api/admin/pack-compositions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Ecriture: remplace les lignes d'UN pack. Le remplacement complet evite
+// d'avoir a suivre les identifiants de lignes cote client, et la transaction
+// garantit qu'on ne laisse jamais un pack a moitie enregistre.
+app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
+    try {
+        const pack = String(req.body && req.body.pack || '').trim();
+        const lignes = Array.isArray(req.body && req.body.lignes) ? req.body.lignes : null;
+        if (!pack || !lignes) {
+            return res.status(400).json({ success: false, message: 'pack et lignes requis' });
+        }
+
+        const valides = [];
+        for (let i = 0; i < lignes.length; i++) {
+            const l = lignes[i] || {};
+            const produit = String(l.produit || '').trim();
+            const quantite = parseFloat(l.quantite);
+            const unite = String(l.unite || 'kg').trim().toLowerCase();
+            if (!produit) continue;
+            if (!(quantite > 0)) {
+                return res.status(400).json({ success: false, message: `${produit}: quantite invalide` });
+            }
+            const poids = parseFloat(l.poids_unitaire);
+            // Une piece sans poids unitaire ne peut pas etre convertie en kilos:
+            // elle disparaitrait du parage sans erreur. On refuse a la saisie.
+            if ((unite === 'piece' || unite === 'pièce') && !(poids > 0)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `${produit}: une unite "pièce" exige un poids unitaire`
+                });
+            }
+            valides.push({
+                pack, ordre: valides.length, produit, quantite, unite,
+                poids_unitaire: poids > 0 ? poids : null
+            });
+        }
+
+        const { PackComposition } = require('./db/models');
+        await sequelize.transaction(async (t) => {
+            await PackComposition.destroy({ where: { pack }, transaction: t });
+            if (valides.length) {
+                await PackComposition.bulkCreate(
+                    valides.map((v) => ({ ...v, updated_at: new Date() })),
+                    { transaction: t }
+                );
+            }
+        });
+
+        // Le journal ne doit JAMAIS faire echouer une ecriture deja commitee:
+        // sans ce garde, une erreur ici renvoyait "Erreur" au client alors que
+        // la modification etait bien enregistree.
+        try {
+            require('./lib/finance-audit').log(req, 'pack_composition.update', {
+                pack, lignes: valides.length
+            });
+        } catch (e) {
+            console.warn('audit pack_composition.update:', e.message);
+        }
+
+        res.json({ success: true, packs: await lirePackCompositions() });
+    } catch (error) {
+        console.error('PUT /api/admin/pack-compositions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Produits Bovin et Ovin, pour l'ecran ADMIN des exclusions du parage.
+// Renvoie aussi les exclusions courantes, pour eviter un second appel.
+app.get('/api/parage/produits', checkAuth, checkReadAccess, async (req, res) => {
+    try {
+        const { FinanceConfig } = require('./db/models');
+        const produits = await sequelize.query(
+            `SELECT DISTINCT p.nom, LOWER(c.nom) AS categorie
+             FROM produits p JOIN categories c ON c.id = p.categorie_id
+             WHERE LOWER(c.nom) IN ('bovin', 'ovin')
+             ORDER BY LOWER(c.nom), p.nom`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
+        const exclusions = String((cfg && cfg.value) || '')
+            .split(',').map((x) => x.trim()).filter(Boolean);
+        res.json({ success: true, produits, exclusions });
+    } catch (error) {
+        console.error('GET /api/parage/produits:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, res) => {
+    try {
+        const dateBrute = req.query.date;
+        if (!dateBrute) {
+            return res.status(400).json({ success: false, message: 'date requise' });
+        }
+        // stocks et transferts sont en DD-MM-YYYY, ventes en YYYY-MM-DD.
+        // Le front envoie DD/MM/YYYY ou DD-MM-YYYY.
+        const p = String(dateBrute).split(/[\/\-]/);
+        if (p.length !== 3) {
+            return res.status(400).json({ success: false, message: 'date invalide' });
+        }
+        const dateFr = p[0].length === 4
+            ? `${p[2]}-${p[1]}-${p[0]}`   // recu en ISO
+            : `${p[0]}-${p[1]}-${p[2]}`;
+        const dateIso = p[0].length === 4
+            ? `${p[0]}-${p[1]}-${p[2]}`
+            : `${p[2]}-${p[1]}-${p[0]}`;
+
+        const { calculerParage } = require('./lib/parage');
+        const { FinanceConfig } = require('./db/models');
+        // Compositions par defaut lues en base, comme les clients.
+        const PACK_COMPOSITIONS = await lirePackCompositions();
+
+        // Produit -> bovin | ovin.
+        //
+        // La comparaison ignore la casse et les accents: l'inventaire contient
+        // 'Patte de mouton' la ou le catalogue dit 'Patte de Mouton', et une
+        // comparaison stricte perdait la ligne.
+        const normaliser = (n) => String(n || '')
+            .normalize('NFD').replace(/[̀-ͯ]/g, '')
+            .trim().toLowerCase();
+
+        const produitsCat = await sequelize.query(
+            `SELECT p.nom, LOWER(c.nom) AS categorie
+             FROM produits p JOIN categories c ON c.id = p.categorie_id
+             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const parProduit = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
+
+        // Puis les alias de config, pour les noms d'inventaire que le catalogue
+        // ne categorise pas ('Boeuf', 'Veau'). Sans eux, le stock de viande
+        // n'etait rattache a rien: denominateur nul alors que des dizaines de
+        // kilos etaient vendus. Le catalogue reste prioritaire.
+        try {
+            const alias = require('./config/parage-categories.json').aliases || {};
+            for (const [nom, cat] of Object.entries(alias)) {
+                const cle = normaliser(nom);
+                if (!parProduit.has(cle)) parProduit.set(cle, cat);
+            }
+        } catch (e) {
+            console.warn('parage: alias de categories non charges:', e.message);
+        }
+
+        const categorieDe = (produit) => parProduit.get(normaliser(produit)) || null;
+
+        // Exclusions: liste de produits retires des DEUX cotes du rapport.
+        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
+        const exclusions = new Set(
+            String((cfg && cfg.value) || '')
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+        );
+
+        // Les tables melangent les formats de date selon leur anciennete:
+        // /api/ventes-date et la reconciliation font deja un OR sur plusieurs
+        // variantes. Interroger un seul format ferait tomber le numerateur a
+        // zero tout en gardant le denominateur, soit 100% de parage affiche.
+        const { Op } = require('sequelize');
+        const dateSlash = dateFr.replace(/-/g, '/');
+        const toutesFormes = { [Op.in]: [dateFr, dateIso, dateSlash] };
+
+        const [stocksMatin, stocksSoir, transferts, ventes] = await Promise.all([
+            Stock.findAll({ where: { date: toutesFormes, typeStock: 'matin' }, raw: true }),
+            Stock.findAll({ where: { date: toutesFormes, typeStock: 'soir' }, raw: true }),
+            Transfert.findAll({ where: { date: toutesFormes }, raw: true }),
+            Vente.findAll({ where: { date: toutesFormes }, raw: true })
+        ]);
+
+        const parPv = calculerParage({
+            stocksMatin: stocksMatin.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+            stocksSoir: stocksSoir.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+            transferts: transferts.map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+            ventes: ventes.map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
+            categorieDe,
+            exclusions,
+            packs: PACK_COMPOSITIONS
+        });
+
+        res.json({
+            success: true,
+            date: dateFr,
+            exclusions: [...exclusions],
+            data: parPv
+        });
+    } catch (error) {
+        console.error('GET /api/reconciliation/parage:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/api/reconciliation/load', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date } = req.query;
@@ -5410,7 +5704,11 @@ app.post('/api/cash-payments/import', checkAuth, checkWriteAccess, async (req, r
         }
         
         // Charger le mapping des références de paiement via la fonction utilitaire
-        const paymentRefToPointDeVente = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, la variable contient
+        // une Promise et mapping[ref] rend undefined, si bien que TOUTES les
+        // lignes importees tombaient sur 'Non specifie' - donc hors des
+        // points de vente physiques, donc invisibles dans la reconciliation.
+        const paymentRefToPointDeVente = await getPaymentRefMapping();
         
         // Convertir les dates du format "1 avr. 2025, 16:18" en format standard
         const processedData = data.map(item => {
@@ -5941,9 +6239,11 @@ app.post('/api/cash-payments/manual', checkAuth, checkAdminOnly, async (req, res
 });
 
 // Route pour récupérer le mapping des références de paiement
-app.get('/api/payment-ref-mapping', checkAuth, (req, res) => {
+app.get('/api/payment-ref-mapping', checkAuth, async (req, res) => {
     try {
-        const paymentRefMapping = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, on serialisait une
+        // Promise, et la reponse contenait un objet vide.
+        const paymentRefMapping = await getPaymentRefMapping();
         res.json({
             success: true,
             data: paymentRefMapping
@@ -6036,7 +6336,11 @@ app.post('/api/external/cash-payment/import', validateApiKey, async (req, res) =
         }
         
         // Charger le mapping des références de paiement via la fonction utilitaire
-        const paymentRefToPointDeVente = getPaymentRefMapping();
+        // getPaymentRefMapping est async: sans await, la variable contient
+        // une Promise et mapping[ref] rend undefined, si bien que TOUTES les
+        // lignes importees tombaient sur 'Non specifie' - donc hors des
+        // points de vente physiques, donc invisibles dans la reconciliation.
+        const paymentRefToPointDeVente = await getPaymentRefMapping();
         
         // Vérifier les doublons par tr_id (ID externe)
         const externalIds = data.map(item => item.id).filter(Boolean);
@@ -11717,8 +12021,17 @@ app.get('/api/external/reconciliation', validateApiKey, async (req, res) => {
                         detailsByPDV[pdv][category].transfertsNombre = 0;
                     }
                     const quantite = parseFloat(transfert.quantite) || 0;
-                    // Apply the same sign logic as montant for transfertsNombre
-                    const quantiteAvecSigne = montant >= 0 ? quantite : -quantite;
+                    // Le signe vient d'impact, pas du signe du montant.
+                    //
+                    // En base, transferts.quantite est TOUJOURS positive tandis que
+                    // total porte deja le signe. Deduire le signe du montant donnait
+                    // donc le bon resultat par ricochet - sauf sur un transfert a
+                    // montant nul (prix unitaire a 0): "montant >= 0" le comptait
+                    // alors en positif meme avec impact = -1, soit un transfert
+                    // sortant compte comme entrant. impact est le champ qui porte
+                    // l'intention, on le lit directement, comme le fait db/utils.js.
+                    const impact = parseInt(transfert.impact, 10);
+                    const quantiteAvecSigne = (Number.isFinite(impact) ? impact : 1) * quantite;
                     detailsByPDV[pdv][category].transfertsNombre += quantiteAvecSigne;
                 }
             });
@@ -17086,10 +17399,10 @@ app.get('/api/livreur/check/:commandeId', checkAuth, async (req, res) => {
 });
 
 // ===== CLOTURES DE CAISSE =====
-function generateCashReference(pointVente) {
-    const posMapping = { 'Dahra': 'CASH_DHR', 'Linguere': 'CASH_LGR', 'Mbao': 'CASH_MBA', 'Keur Massar': 'CASH_KM', 'O.Foire': 'CASH_OSF', 'Sacre Coeur': 'CASH_SAC', 'Abattage': 'CASH_ABATS', 'Dépôt central': 'CASH_ABATS', 'Touba': 'CASH_TB' };
-    return posMapping[pointVente] || null;
-}
+// La table de correspondance vit dans config/cash-references.js: la migration
+// s'en sert aussi pour renseigner points_vente.payment_ref, qui doit rester
+// coherent avec ce qui est ecrit ici.
+const { generateCashReference } = require('./config/cash-references');
 
 app.get('/api/clotures-caisse/estimatif', checkAuth, async (req, res) => {
     try {

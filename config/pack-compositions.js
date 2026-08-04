@@ -1,45 +1,52 @@
 /**
  * Configuration des compositions par défaut pour les packs
  * Chaque pack contient une liste de produits avec leurs quantités
+ *
+ * Les noms de produits doivent correspondre EXACTEMENT au catalogue, car ils
+ * servent à retrouver la catégorie du produit (Bovin, Ovin...) lorsqu'un pack
+ * est décomposé. Cette copie référençait "Veau" et "Poulet", qui existent au
+ * catalogue mais SANS catégorie: les kilos d'un pack vendu sans composition
+ * personnalisée n'étaient donc rattachés à aucune catégorie. L'écran de
+ * mapping du POS, lui, propose bien "Veau en détail" et "Poulet en détail".
  */
 
 const PACK_COMPOSITIONS = {
   "Pack25000": [
-    { produit: "Veau", quantite: 4, unite: "kg" },
-    { produit: "Poulet", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 4, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack20000": [
-    { produit: "Veau", quantite: 3.5, unite: "kg" },
-    { produit: "Poulet", quantite: 1, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 3.5, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 1, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack50000": [
     { produit: "Agneau", quantite: 2.5, unite: "kg" },
-    { produit: "Veau", quantite: 6, unite: "kg" },
-    { produit: "Poulet", quantite: 4, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 6, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 4, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ],
   "Pack35000": [
-    { produit: "Veau", quantite: 4, unite: "kg" },
-    { produit: "Poulet", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 4, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 2, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack30000": [
-    { produit: "Veau", quantite: 2, unite: "kg" },
-    { produit: "Poulet", quantite: 6, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Veau en détail", quantite: 2, unite: "kg" },
+    { produit: "Poulet en détail", quantite: 6, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 0.5, unite: "tablette" }
   ],
   "Pack75000": [
-    { produit: "Veau", quantite: 8, unite: "kg" },
+    { produit: "Veau en détail", quantite: 8, unite: "kg" },
     { produit: "Agneau", quantite: 5, unite: "kg" },
-    { produit: "Poulet", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ],
   "Pack100000": [
-    { produit: "Veau", quantite: 8, unite: "kg" },
+    { produit: "Veau en détail", quantite: 8, unite: "kg" },
     { produit: "Agneau", quantite: 1, unite: "kg" },
-    { produit: "Poulet", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
+    { produit: "Poulet en détail", quantite: 5, unite: "pièce", poids_unitaire: 1.5 },
     { produit: "Oeuf", quantite: 1, unite: "tablette" }
   ]
 };
@@ -86,8 +93,46 @@ function getAllPacks() {
   return Object.keys(PACK_COMPOSITIONS);
 }
 
+/**
+ * Verifie que la table est exploitable. Appelee au demarrage du serveur:
+ * mieux vaut un message clair au boot qu'un parage faux decouvert un mois
+ * plus tard, ou un pack affiche sans composition en caisse.
+ *
+ * Rend la liste des problemes, vide si tout va bien.
+ */
+function verifierCompositions(table) {
+    const source = table || PACK_COMPOSITIONS;
+    const problemes = [];
+    const packs = Object.keys(source);
+    if (!packs.length) {
+        problemes.push('aucun pack defini');
+        return problemes;
+    }
+    for (const pack of packs) {
+        const composition = source[pack];
+        if (!Array.isArray(composition) || !composition.length) {
+            problemes.push(`${pack}: composition vide`);
+            continue;
+        }
+        composition.forEach((c, i) => {
+            if (!c || !c.produit) problemes.push(`${pack}[${i}]: produit manquant`);
+            if (!(parseFloat(c && c.quantite) > 0)) problemes.push(`${pack}[${i}]: quantite invalide`);
+            const unite = String((c && c.unite) || '').toLowerCase();
+            // Une piece sans poids unitaire ne peut pas etre convertie en kg:
+            // elle disparait silencieusement du parage. C'est exactement la
+            // divergence qui existait entre les copies.
+            if ((unite === 'piece' || unite === 'pièce')
+                && !(parseFloat(c.poids_unitaire) > 0)) {
+                problemes.push(`${pack}[${i}] ${c.produit}: unite "piece" sans poids_unitaire`);
+            }
+        });
+    }
+    return problemes;
+}
+
 module.exports = {
   PACK_COMPOSITIONS,
+  verifierCompositions,
   getPackComposition,
   createPackExtension,
   isPack,

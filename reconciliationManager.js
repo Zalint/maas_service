@@ -1540,6 +1540,181 @@ const ReconciliationManager = (function() {
     }
     
     // Créer un tableau de détails pour stock, transferts ou ventes
+    // Meme conversion que lib/parage.js cote serveur: kg tel quel, piece
+    // multipliee par son poids unitaire, tablette ignoree.
+    function quantitePackEnKg(composant) {
+        const q = parseFloat(composant && composant.quantite) || 0;
+        if (q <= 0) return 0;
+        const unite = String((composant && composant.unite) || '').toLowerCase();
+        if (unite === 'kg') return q;
+        if (unite === 'piece' || unite === 'pièce') {
+            const poids = parseFloat(composant.poids_unitaire);
+            return Number.isFinite(poids) && poids > 0 ? q * poids : 0;
+        }
+        return 0;
+    }
+
+    // Composition d'une vente de pack: celle enregistree avec la vente en
+    // priorite, sinon celle par defaut du catalogue.
+    function compositionDeLaVente(item) {
+        const ext = item && item.extension;
+        if (ext && Array.isArray(ext.composition) && ext.composition.length) return ext.composition;
+        const table = (window.PackComposition && window.PackComposition.PACK_COMPOSITIONS) || {};
+        const parDefaut = table[item && item.produit];
+        return Array.isArray(parDefaut) && parDefaut.length ? parDefaut : null;
+    }
+
+    /**
+     * Developpe les ventes de packs en lignes par produit contenu.
+     *
+     * Un Pack100000 apparaissait comme une seule ligne a 100 000 FCFA: le
+     * boeuf et l'agneau qu'il contient etaient invisibles, et absents des
+     * sous-totaux par produit alors qu'ils sont bel et bien sortis du stock.
+     *
+     * Les lignes ajoutees portent la QUANTITE mais AUCUN montant: le prix est
+     * celui du pack, deja compte sur sa propre ligne. Leur additionner une
+     * valeur ferait un double compte. Le sous-total en nombre integre donc le
+     * contenu des packs, celui en montant non - c'est voulu.
+     */
+    function developperPacks(ventes) {
+        const out = [];
+        (ventes || []).forEach(item => {
+            out.push(item);
+            const composition = compositionDeLaVente(item);
+            if (!composition) return;
+
+            // || 0 et non || 1: une ligne a quantite nulle (vente annulee) ne
+            // doit pas se developper en un pack fantome. lib/parage.js lit le
+            // meme champ de la meme facon.
+            const nbPacks = parseFloat(item.nombre) || 0;
+            if (nbPacks <= 0) return;
+
+            composition.forEach(c => {
+                const unite = String(c.unite || '').toLowerCase();
+                // Conversion en kilos, comme lib/parage.js: additionner des
+                // pieces de poulet a des kilos de boeuf dans un meme
+                // sous-total ne veut rien dire. Une piece sans poids unitaire
+                // connu, ou une tablette, n'est pas convertible: on ne
+                // l'ajoute pas plutot que d'inventer un poids.
+                const q = quantitePackEnKg(c) * nbPacks;
+                if (q <= 0) return;
+                out.push({
+                    produit: c.produit,
+                    // L'origine est portee par le libelle, pas par une colonne
+                    // dediee: le tableau n'en a que quatre.
+                    _origine: item.produit,
+                    _unite: unite,
+                    pu: null,
+                    nombre: q,
+                    montant: 0,
+                    _issuDunPack: true
+                });
+            });
+        });
+        return out;
+    }
+
+    // Famille d'un produit: "Boeuf en detail" et "Boeuf en gros" partagent la
+    // famille "Boeuf". Rend null si le produit n'est pas une declinaison, pour
+    // ne pas inventer des familles a un seul membre.
+    function familleDeProduit(nom) {
+        const m = String(nom || '').match(/^(.*?)\s+en\s+(d[ée]tail|gros)$/i);
+        return m ? m[1].trim() : null;
+    }
+
+    // Insere, dans l'ordre d'affichage, un sous-total apres chaque produit et
+    // un total de famille apres la derniere declinaison de cette famille.
+    function insererSousTotauxVentes(tbody, donneesTri, colonnes) {
+        const idx = {
+            produit: colonnes.findIndex(c => c.id === 'produit'),
+            nombre: colonnes.findIndex(c => c.id === 'nombre'),
+            montant: colonnes.findIndex(c => c.id === 'montant')
+        };
+        if (idx.produit < 0) return;
+
+        // Agregats par produit, dans l'ordre ou les produits apparaissent.
+        const parProduit = new Map();
+        donneesTri.forEach(item => {
+            const nom = item.produit || '';
+            if (!parProduit.has(nom)) parProduit.set(nom, { nombre: 0, montant: 0 });
+            const a = parProduit.get(nom);
+            a.nombre += parseFloat(item.nombre) || 0;
+            a.montant += parseFloat(item.montant || item.valeur) || 0;
+        });
+
+        // Familles ayant au moins deux declinaisons.
+        const parFamille = new Map();
+        parProduit.forEach((agg, nom) => {
+            const f = familleDeProduit(nom);
+            if (!f) return;
+            if (!parFamille.has(f)) parFamille.set(f, { nombre: 0, montant: 0, membres: 0 });
+            const a = parFamille.get(f);
+            a.nombre += agg.nombre;
+            a.montant += agg.montant;
+            a.membres += 1;
+        });
+
+        const nb = (v) => (Math.round(v * 100) / 100).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+
+        const ligne = (libelle, agg, classes) => {
+            const tr = document.createElement('tr');
+            tr.classList.add(...classes);
+            colonnes.forEach((c, i) => {
+                const td = document.createElement('td');
+                if (i === idx.produit) td.textContent = libelle;
+                else if (i === idx.nombre) { td.textContent = nb(agg.nombre); td.className = 'text-end'; }
+                else if (i === idx.montant) {
+                    // Un sous-total a 0 FCFA n'est pas un montant nul: c'est un
+                    // produit qui n'existe que via des packs, dont le prix est
+                    // porte par la ligne du pack. On ecrit un tiret.
+                    td.textContent = agg.montant === 0 ? '—' : formatMonetaire(agg.montant);
+                    td.className = agg.montant === 0 ? 'text-end text-muted' : 'text-end';
+                }
+                else if (c.className) td.className = c.className;
+                tr.appendChild(td);
+            });
+            return tr;
+        };
+
+        // Parcours des lignes existantes: on insere apres la derniere
+        // occurrence de chaque produit, puis de chaque famille.
+        const lignes = Array.from(tbody.children);
+        const dernierePar = new Map();
+        lignes.forEach((tr, i) => {
+            const nom = tr.dataset ? (tr.dataset.produit || '') : '';
+            if (nom) dernierePar.set(nom, i);
+        });
+
+        // Famille -> index de sa derniere ligne, tous produits confondus.
+        const derniereFamille = new Map();
+        dernierePar.forEach((i, nom) => {
+            const f = familleDeProduit(nom);
+            if (!f) return;
+            if (!derniereFamille.has(f) || derniereFamille.get(f) < i) derniereFamille.set(f, i);
+        });
+
+        // On insere en partant de la fin pour que les index restent valides.
+        const insertions = [];
+        dernierePar.forEach((i, nom) => {
+            const agg = parProduit.get(nom);
+            if (!agg) return;
+            insertions.push({ apres: i, ordre: 0, tr: ligne('Sous-total ' + nom, agg, ['table-light', 'fw-semibold']) });
+        });
+        derniereFamille.forEach((i, f) => {
+            const agg = parFamille.get(f);
+            if (!agg || agg.membres < 2) return;
+            insertions.push({ apres: i, ordre: 1, tr: ligne('Total ' + f, agg, ['table-info', 'fw-bold']) });
+        });
+
+        insertions
+            .sort((a, b) => (b.apres - a.apres) || (b.ordre - a.ordre))
+            .forEach(ins => {
+                const ref = lignes[ins.apres];
+                if (ref && ref.nextSibling) tbody.insertBefore(ins.tr, ref.nextSibling);
+                else tbody.appendChild(ins.tr);
+            });
+    }
+
     function creerTableauDetail(titre, donnees, estTransfert = false, estVente = false, total = 0) {
         const container = document.createElement('div');
         container.classList.add('mb-4');
@@ -1558,7 +1733,11 @@ const ReconciliationManager = (function() {
         }
         
         // Trier les données selon l'ordre spécifié
-        const donneesTri = trierProduits([...donnees]);
+        // Les ventes de packs sont developpees en lignes par produit contenu,
+        // pour que le boeuf d'un Pack100000 apparaisse et compte dans les
+        // sous-totaux en quantite.
+        const donneesSource = estVente ? developperPacks(donnees) : [...donnees];
+        const donneesTri = trierProduits(donneesSource);
         
         // Créer le tableau
         const table = document.createElement('table');
@@ -1611,6 +1790,9 @@ const ReconciliationManager = (function() {
         
         donneesTri.forEach(item => {
             const row = document.createElement('tr');
+            // Le libelle affiche peut etre decore ("↳ Agneau (Pack75000)");
+            // les sous-totaux ont besoin du nom brut.
+            row.dataset.produit = item.produit || '';
             
             colonnes.forEach(colonne => {
                 const td = document.createElement('td');
@@ -1620,14 +1802,33 @@ const ReconciliationManager = (function() {
                 }
                 
                 if (colonne.id === 'produit') {
-                    td.textContent = item.produit || '';
+                    if (item._issuDunPack) {
+                        // La quantite affichee est TOUJOURS en kg apres
+                        // conversion; mentionner l'unite d'origine ("piece")
+                        // ferait croire que la colonne compte des pieces.
+                        td.textContent = `↳ ${item.produit || ''} (${item._origine})`;
+                        td.classList.add('text-muted', 'fst-italic');
+                        const origine = item._unite && item._unite !== 'kg'
+                            ? ` Exprime en ${item._unite} dans la composition, converti en kg.`
+                            : '';
+                        td.title = `Contenu du ${item._origine}. Le montant est porte par la ligne du pack, pas ici.${origine}`;
+                    } else {
+                        td.textContent = item.produit || '';
+                    }
                 } else if (colonne.id === 'impact') {
                     td.textContent = item.impact || '';
                     td.className = 'text-center';
                 } else if (colonne.id === 'montant') {
-                    const montant = estTransfert ? item.montant : (item.montant || item.valeur);
-                    td.textContent = formatMonetaire(montant || 0);
-                    td.className = 'text-end';
+                    // Une ligne issue d'un pack n'a pas de montant propre: le
+                    // prix est celui du pack, deja compte sur sa ligne.
+                    if (item._issuDunPack) {
+                        td.textContent = '—';
+                        td.className = 'text-end text-muted';
+                    } else {
+                        const montant = estTransfert ? item.montant : (item.montant || item.valeur);
+                        td.textContent = formatMonetaire(montant || 0);
+                        td.className = 'text-end';
+                    }
                 } else if (colonne.id === 'valeur') {
                     td.textContent = formatMonetaire(item.valeur || 0);
                     td.className = 'text-end';
@@ -1637,8 +1838,8 @@ const ReconciliationManager = (function() {
                         td.classList.add('text-danger');
                     }
                 } else if (colonne.id === 'pu') {
-                    td.textContent = formatMonetaire(item.pu || 0);
-                    td.className = 'text-end';
+                    td.textContent = item._issuDunPack ? '—' : formatMonetaire(item.pu || 0);
+                    td.className = item._issuDunPack ? 'text-end text-muted' : 'text-end';
                 } else if (colonne.id === 'nombre') {
                     td.textContent = item.nombre || '';
                     td.className = 'text-end';
@@ -1649,7 +1850,24 @@ const ReconciliationManager = (function() {
             
             tbody.appendChild(row);
         });
-        
+
+        // --- Sous-totaux par produit, puis par famille ------------------
+        //
+        // Le tableau aligne une ligne par vente: quinze "Boeuf en detail" a
+        // la suite, sans jamais dire ce que cela fait au total. On insere
+        // donc, apres la derniere ligne de chaque produit, un sous-total en
+        // nombre ET en montant.
+        //
+        // Puis un total de FAMILLE quand plusieurs declinaisons du meme
+        // animal coexistent (Boeuf en detail + Boeuf en gros): c'est la
+        // grandeur qui interesse, la repartition detail/gros etant une
+        // modalite de vente. Le total famille n'apparait que s'il y a au
+        // moins deux declinaisons, sinon il ferait doublon avec le
+        // sous-total unique.
+        if (estVente) {
+            insererSousTotauxVentes(tbody, donneesTri, colonnes);
+        }
+
         // Ligne de total
         const totalRow = document.createElement('tr');
         totalRow.classList.add('table-secondary', 'fw-bold');
@@ -1760,12 +1978,20 @@ const ReconciliationManager = (function() {
                         stockSoir: 0,
                         transferts: 0,
                         venteTheorique: 0,
+                        // Quantites, affichees entre parentheses a cote des
+                        // valeurs: une valeur seule ne dit pas si l'ecart vient
+                        // du volume ou du prix.
+                        stockMatinQte: 0,
+                        stockSoirQte: 0,
+                        transfertsQte: 0,
+                        venteTheoriqueQte: 0,
                         stockMatinDetails: [],
                         stockSoirDetails: [],
                         transfertsDetails: []
                     };
                 }
                 produitsMap[item.produit].stockMatin += (item.valeur || item.montant || 0);
+                produitsMap[item.produit].stockMatinQte += (parseFloat(item.quantite) || 0);
                 produitsMap[item.produit].stockMatinDetails.push(item);
             });
         }
@@ -1780,12 +2006,20 @@ const ReconciliationManager = (function() {
                         stockSoir: 0,
                         transferts: 0,
                         venteTheorique: 0,
+                        // Quantites, affichees entre parentheses a cote des
+                        // valeurs: une valeur seule ne dit pas si l'ecart vient
+                        // du volume ou du prix.
+                        stockMatinQte: 0,
+                        stockSoirQte: 0,
+                        transfertsQte: 0,
+                        venteTheoriqueQte: 0,
                         stockMatinDetails: [],
                         stockSoirDetails: [],
                         transfertsDetails: []
                     };
                 }
                 produitsMap[item.produit].stockSoir += (item.valeur || item.montant || 0);
+                produitsMap[item.produit].stockSoirQte += (parseFloat(item.quantite) || 0);
                 produitsMap[item.produit].stockSoirDetails.push(item);
             });
         }
@@ -1800,12 +2034,25 @@ const ReconciliationManager = (function() {
                         stockSoir: 0,
                         transferts: 0,
                         venteTheorique: 0,
+                        // Quantites, affichees entre parentheses a cote des
+                        // valeurs: une valeur seule ne dit pas si l'ecart vient
+                        // du volume ou du prix.
+                        stockMatinQte: 0,
+                        stockSoirQte: 0,
+                        transfertsQte: 0,
+                        venteTheoriqueQte: 0,
                         stockMatinDetails: [],
                         stockSoirDetails: [],
                         transfertsDetails: []
                     };
                 }
                 produitsMap[item.produit].transferts += (item.valeur || item.montant || 0);
+                // Le signe vient d'impact: transferts.quantite est toujours positive.
+                (function () {
+                    const imp = parseInt(item.impact, 10);
+                    const signe = Number.isFinite(imp) ? imp : 1;
+                    produitsMap[item.produit].transfertsQte += signe * (parseFloat(item.quantite) || 0);
+                })();
                 produitsMap[item.produit].transfertsDetails.push(item);
             });
         }
@@ -1868,6 +2115,7 @@ const ReconciliationManager = (function() {
         // Calculer les ventes théoriques pour chaque produit
         Object.values(produitsMap).forEach(data => {
             data.venteTheorique = data.stockMatin - data.stockSoir + data.transferts;
+            data.venteTheoriqueQte = (data.stockMatinQte || 0) - (data.stockSoirQte || 0) + (data.transfertsQte || 0);
         });
 
         // Masquer les produits dont TOUTES les valeurs sont a zero (rien
@@ -1884,6 +2132,17 @@ const ReconciliationManager = (function() {
         // Convertir en tableau et trier
         const produitsTries = trierProduits(produitsNonZero);
         
+        // "(117,8) 565 440 FCFA": la quantite entre parentheses a gauche de la
+        // valeur. Une valeur seule ne dit pas si un ecart vient du volume ou
+        // du prix. Quantite omise si nulle, pour ne pas alourdir les lignes
+        // qui n'en ont pas.
+        const avecQte = (valeur, quantite) => {
+            const q = parseFloat(quantite);
+            const montant = formatMonetaire(valeur);
+            if (!Number.isFinite(q) || q === 0) return montant;
+            return `(${q.toLocaleString('fr-FR', { maximumFractionDigits: 2 })}) ${montant}`;
+        };
+
         // Créer les lignes du tableau
         produitsTries.forEach(data => {
             const row = document.createElement('tr');
@@ -1895,7 +2154,7 @@ const ReconciliationManager = (function() {
             
             // Stock Matin
             const tdStockMatin = document.createElement('td');
-            tdStockMatin.textContent = formatMonetaire(data.stockMatin);
+            tdStockMatin.textContent = avecQte(data.stockMatin, data.stockMatinQte);
             tdStockMatin.className = 'text-end';
             
             // Ajouter des détails de tooltip pour stock matin
@@ -1920,7 +2179,7 @@ const ReconciliationManager = (function() {
             
             // Stock Soir
             const tdStockSoir = document.createElement('td');
-            tdStockSoir.textContent = formatMonetaire(data.stockSoir);
+            tdStockSoir.textContent = avecQte(data.stockSoir, data.stockSoirQte);
             tdStockSoir.className = 'text-end';
             
             // Ajouter des détails de tooltip pour stock soir
@@ -1945,7 +2204,7 @@ const ReconciliationManager = (function() {
             
             // Transferts
             const tdTransferts = document.createElement('td');
-            tdTransferts.textContent = formatMonetaire(data.transferts);
+            tdTransferts.textContent = avecQte(data.transferts, data.transfertsQte);
             tdTransferts.className = 'text-end';
             
             // Ajouter des détails de tooltip pour transferts
@@ -1970,7 +2229,7 @@ const ReconciliationManager = (function() {
             
             // Vente Théorique
             const tdVenteTheorique = document.createElement('td');
-            tdVenteTheorique.textContent = formatMonetaire(data.venteTheorique);
+            tdVenteTheorique.textContent = avecQte(data.venteTheorique, data.venteTheoriqueQte);
             tdVenteTheorique.className = 'text-end';
             
             // Ajouter un tooltip pour la vente théorique, montrant la formule de calcul avec quantités et prix unitaires
@@ -2015,6 +2274,10 @@ const ReconciliationManager = (function() {
         tdTotal.textContent = 'TOTAL';
         totalRow.appendChild(tdTotal);
         
+        // Pas de total en QUANTITE: additionner des kilos de boeuf et des
+        // pieces de poulet ne veut rien dire. Seule la valeur est homogene,
+        // c'est donc la seule chose que totalise cette ligne.
+
         // Total Stock Matin
         const tdTotalStockMatin = document.createElement('td');
         tdTotalStockMatin.textContent = formatMonetaire(details.totalStockMatin);

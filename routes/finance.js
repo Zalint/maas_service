@@ -45,6 +45,7 @@
 const express = require('express');
 const multer = require('multer');
 const { Op } = require('sequelize');
+const { decouperEnMois } = require('../lib/charges-prorata');
 
 const {
     Depense,
@@ -57,6 +58,8 @@ const {
     PrixVenteHistory,
     FinanceCharge,
     FinanceChargeHistory,
+    FinanceChargeMois,
+    FinanceConfigMois,
     ClotureCaisse,
     Produit,
     Vente,
@@ -793,12 +796,44 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
 // CHARGES MENSUELLES FIXES (pour le calcul PL)
 // =====================================================
 
+// ?mois=YYYY-MM : rend les montants applicables a ce mois (saisie du mois, ou
+// report du dernier mois saisi, ou valeur courante). Sans le parametre, rend
+// les valeurs courantes - comportement d'origine, conserve pour les appelants
+// qui ne connaissent pas la dimension mensuelle.
 router.get('/charges', async (req, res) => {
     try {
         const rows = await FinanceCharge.findAll({
             order: [['ordre', 'ASC'], ['nom', 'ASC']]
         });
-        res.json({ success: true, data: rows });
+
+        const mois = req.query.mois;
+        if (!mois) {
+            return res.json({ success: true, data: rows });
+        }
+        if (!/^\d{4}-\d{2}$/.test(mois)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+        }
+
+        const montants = (await resolveChargesPourMois([mois], rows))[mois];
+        // saisi_ce_mois distingue une valeur propre au mois d'une valeur
+        // heritee: l'interface peut ainsi signaler "report" plutot que de
+        // laisser croire a une saisie.
+        const saisis = new Set(
+            (await FinanceChargeMois.findAll({ where: { mois }, raw: true }))
+                .map((r) => r.nom)
+        );
+
+        res.json({
+            success: true,
+            mois,
+            data: rows.map((r) => ({
+                nom: r.nom,
+                libelle: r.libelle,
+                ordre: r.ordre,
+                montant_mensuel: montants[r.nom],
+                saisi_ce_mois: saisis.has(r.nom)
+            }))
+        });
     } catch (e) {
         console.error('GET /api/finance/charges:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -819,6 +854,13 @@ router.put('/charges', async (req, res) => {
         const items = Array.isArray(req.body?.items) ? req.body.items : null;
         if (!items) {
             return res.status(400).json({ success: false, error: 'items: array requis' });
+        }
+        // Mois optionnel: sans lui, seule la valeur courante est mise a jour
+        // (comportement d'origine). Avec lui, le montant est aussi date et
+        // s'applique a ce mois et aux suivants.
+        const moisCible = req.body?.mois || null;
+        if (moisCible && !/^\d{4}-\d{2}$/.test(moisCible)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
         }
         const now = new Date();
         const rawUsername = req.session && req.session.user
@@ -896,19 +938,37 @@ router.put('/charges', async (req, res) => {
                 const ordreChanged = oldOrdre !== v.ordre;
                 const anyChange = montantChanged || libelleChanged || ordreChanged;
 
+                // Quand un mois est vise, finance_charges.montant_mensuel ne
+                // doit PAS bouger: cette valeur sert de repli aux mois
+                // anterieurs a toute saisie mensuelle. L'ecraser ferait
+                // remonter la nouvelle valeur dans le passe - saisir juillet
+                // changeait retroactivement juin, mai, etc.
+                // Une charge creee a cette occasion n'a pas de passe: son
+                // montant sert alors d'ancrage.
+                const montantCatalogue = (moisCible && existing)
+                    ? oldMontant
+                    : v.montant;
+                // Meme tolerance que montantChanged: comparer des flottants en
+                // strict rewritait la ligne et bougeait updated_at pour un ecart
+                // sous le seuil, sans entree d'historique correspondante.
+                const montantCatalogueChange = oldMontant == null
+                    || Math.abs(oldMontant - montantCatalogue) > 0.001;
+                const catalogueChange = libelleChanged || ordreChanged || montantCatalogueChange;
+
                 // updated_at ne bouge QUE si quelque chose a change.
-                if (!existing || anyChange) {
+                if (!existing || catalogueChange) {
                     await FinanceCharge.upsert({
                         nom: v.nom,
                         libelle: v.libelle,
-                        montant_mensuel: v.montant,
+                        montant_mensuel: montantCatalogue,
                         ordre: v.ordre,
-                        updated_at: anyChange ? now : (existing ? existing.updated_at : now)
+                        updated_at: catalogueChange ? now : (existing ? existing.updated_at : now)
                     }, { transaction: t });
                 }
 
-                // History: seulement si le montant a change (ou nouvelle charge).
-                if (montantChanged) {
+                // History: trace les changements de la valeur d'ancrage. Les
+                // montants mensuels sont eux traces par finance_charges_mois.
+                if (montantChanged && !moisCible) {
                     await FinanceChargeHistory.create({
                         nom: v.nom,
                         libelle: v.libelle,
@@ -918,7 +978,27 @@ router.put('/charges', async (req, res) => {
                 }
 
                 if (anyChange || !existing) {
-                    auditEntries.push({ nom: v.nom, montant_mensuel: v.montant });
+                    // montantCatalogue et non v.montant: avec un mois cible,
+                    // l'ancrage n'est PAS modifie. Journaliser le montant saisi
+                    // laisserait croire a un changement du catalogue qui n'a pas
+                    // eu lieu - d'autant que l'historique est saute dans ce cas.
+                    auditEntries.push({
+                        nom: v.nom,
+                        montant_mensuel: montantCatalogue,
+                        ...(moisCible ? { mois: moisCible, montant_du_mois: v.montant } : {})
+                    });
+                }
+
+                // Montant date: enregistre pour le mois demande. Le PL de ce
+                // mois et des suivants s'en servira, sans toucher aux mois
+                // anterieurs deja calcules.
+                if (moisCible) {
+                    await FinanceChargeMois.upsert({
+                        mois: moisCible,
+                        nom: v.nom,
+                        montant_mensuel: v.montant,
+                        updated_at: now
+                    }, { transaction: t });
                 }
             }
         });
@@ -1145,15 +1225,44 @@ router.get('/pl', async (req, res) => {
         });
         const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
 
-        // 5. Charges proratisees (30 jours conventionnels)
+        // 5. Charges proratisees, mois par mois.
+        //
+        // C'etait auparavant montant_mensuel x nbJoursPeriode / 30. Ce mois
+        // conventionnel de 30 jours facturait juillet 31/30e: 420 000 devenait
+        // 434 000 pour un mois pourtant complet. On prorate desormais sur les
+        // jours REELS de chaque mois, si bien qu'un mois entier vaut
+        // exactement son montant (31/31, 28/28...).
+        //
+        // Le decoupage par mois sert aussi les montants dates: une periode a
+        // cheval prend le montant propre a chaque mois traverse.
         const chargesRows = await FinanceCharge.findAll({ order: [['ordre', 'ASC']] });
-        const ratio = nbDaysPeriod / 30;
-        const chargesDetail = chargesRows.map((c) => ({
-            nom: c.nom,
-            libelle: c.libelle,
-            montant_mensuel: parseFloat(c.montant_mensuel) || 0,
-            prorata: round2((parseFloat(c.montant_mensuel) || 0) * ratio)
-        }));
+        const moisCouverts = decouperEnMois(dateDebut, dateFin);
+        const montantsParMois = await resolveChargesPourMois(
+            moisCouverts.map((m) => m.mois),
+            chargesRows
+        );
+
+        const chargesDetail = chargesRows.map((c) => {
+            const parMois = moisCouverts.map((m) => {
+                const montant = montantsParMois[m.mois][c.nom];
+                return {
+                    mois: m.mois,
+                    montant_mensuel: montant,
+                    jours_couverts: m.joursCouverts,
+                    jours_du_mois: m.joursDuMois,
+                    prorata: round2(montant * m.joursCouverts / m.joursDuMois)
+                };
+            });
+            return {
+                nom: c.nom,
+                libelle: c.libelle,
+                // Montant du dernier mois de la periode: c'est celui qui a un
+                // sens a afficher en regard d'une periode d'un seul mois.
+                montant_mensuel: parMois[parMois.length - 1].montant_mensuel,
+                prorata: round2(parMois.reduce((s, p) => s + p.prorata, 0)),
+                par_mois: parMois
+            };
+        });
         const chargesTotalMensuel = chargesDetail.reduce((s, c) => s + c.montant_mensuel, 0);
         const chargesProratisees = chargesDetail.reduce((s, c) => s + c.prorata, 0);
 
@@ -1218,7 +1327,15 @@ router.get('/pl', async (req, res) => {
         // de la variation brute.
         const cfgRows = await FinanceConfig.findAll();
         const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
-        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        // Taux du mois de la date de FIN. La variation stock est un seul
+        // nombre pour toute la periode (stock matin du debut -> stock soir de
+        // la fin): un seul coefficient s'y applique, il n'y a rien a
+        // decouper par mois. Pour un PL d'un seul mois - le cas courant -
+        // c'est exactement le taux de ce mois.
+        const moisFin = dateFin.slice(0, 7);
+        const pertesPct = parseFloat(await resolveConfigPourMois(
+            moisFin, 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+        ));
         const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
             ? pertesPct
             : 5;
@@ -1250,7 +1367,13 @@ router.get('/pl', async (req, res) => {
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
-                    ratio_jours: round2(ratio),
+                    // Rapport global periode/mois. N'est plus un simple
+                    // nbJours/30: chaque mois compte sur ses propres jours,
+                    // donc un mois complet donne exactement 1.
+                    ratio_jours: chargesTotalMensuel > 0
+                        ? round2(chargesProratisees / chargesTotalMensuel)
+                        : 0,
+                    mois_couverts: moisCouverts,
                     total_prorata: round2(chargesProratisees),
                     detail: chargesDetail
                 },
@@ -1275,6 +1398,68 @@ router.get('/pl', async (req, res) => {
 
 function round2(n) {
     return Math.round(n * 100) / 100;
+}
+
+/**
+ * Valeur d'un parametre de Finance applicable a un mois.
+ *
+ * Meme mecanique que les charges: la ligne finance_config_mois la plus
+ * recente avec mois <= M, a defaut la valeur courante de finance_config.
+ *
+ * Sans cela, changer le taux de pertes decoupe recalculait tous les PL passes
+ * avec la nouvelle valeur: un PL deja imprime n'etait plus reproductible.
+ */
+async function resolveConfigPourMois(mois, key, valeurAncrage) {
+    const { Op } = require('sequelize');
+    const row = await FinanceConfigMois.findOne({
+        where: { key, mois: { [Op.lte]: mois } },
+        order: [['mois', 'DESC']],
+        raw: true
+    });
+    return row ? row.value : valeurAncrage;
+}
+
+/**
+ * Montant de chaque charge pour chacun des mois demandes.
+ *
+ * Pour un mois M et une charge C: la ligne finance_charges_mois la plus
+ * recente avec mois <= M; a defaut finance_charges.montant_mensuel.
+ *
+ * Le report en avant est voulu - une saisie pour 2026-07 vaut aussi pour les
+ * mois suivants jusqu'a la prochaine - et le repli sur la valeur courante
+ * garantit qu'un PL anterieur a toute saisie mensuelle rend le meme resultat
+ * qu'avant l'introduction de cette table.
+ *
+ * Rend { [mois]: { [nom]: montant } }.
+ */
+async function resolveChargesPourMois(listeMois, chargesRows) {
+    const defauts = Object.fromEntries(
+        chargesRows.map((c) => [c.nom, parseFloat(c.montant_mensuel) || 0])
+    );
+    const resultat = Object.fromEntries(
+        listeMois.map((m) => [m, { ...defauts }])
+    );
+    if (!listeMois.length || !chargesRows.length) return resultat;
+
+    // Une seule requete: toutes les lignes <= au plus grand mois demande.
+    // Le volume est celui du nombre de saisies, pas des mois traverses.
+    const moisMax = listeMois.reduce((a, b) => (a > b ? a : b));
+    const { Op: SeqOp } = require('sequelize');
+    const rows = await FinanceChargeMois.findAll({
+        where: { mois: { [SeqOp.lte]: moisMax } },
+        order: [['nom', 'ASC'], ['mois', 'ASC']],
+        raw: true
+    });
+
+    for (const mois of listeMois) {
+        for (const row of rows) {
+            // rows triees par mois croissant: la derniere <= mois gagne.
+            if (row.mois <= mois) {
+                resultat[mois][row.nom] = parseFloat(row.montant_mensuel) || 0;
+            }
+        }
+    }
+    return resultat;
 }
 
 // =====================================================
@@ -1391,7 +1576,10 @@ router.get('/cash-stock', async (req, res) => {
         // 2) Coefficient (partage avec PL via finance_config).
         const cfgRows = await FinanceConfig.findAll();
         const cfgMap = Object.fromEntries(cfgRows.map((r) => [r.key, r.value]));
-        const pertesPct = parseFloat(cfgMap.stock_pertes_decoupe_pct);
+        // Taux applicable au mois de la date demandee.
+        const pertesPct = parseFloat(await resolveConfigPourMois(
+            dateD.slice(0, 7), 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+        ));
         const safePertesPct = Number.isFinite(pertesPct) && pertesPct >= 0 && pertesPct <= 100
             ? pertesPct
             : 5;
@@ -1478,11 +1666,28 @@ router.get('/cash-stock', async (req, res) => {
 // CONFIG
 // =====================================================
 
+// ?mois=YYYY-MM : stock_pertes_decoupe_pct est rendu pour ce mois (saisie du
+// mois, report du dernier mois saisi, ou valeur d'ancrage). Sans le
+// parametre, valeurs courantes - comportement d'origine.
 router.get('/config', async (req, res) => {
     try {
         const rows = await FinanceConfig.findAll();
         const config = {};
         for (const r of rows) config[r.key] = r.value;
+
+        const mois = req.query.mois;
+        if (mois) {
+            if (!/^\d{4}-\d{2}$/.test(mois)) {
+                return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+            }
+            config.stock_pertes_decoupe_pct = await resolveConfigPourMois(
+                mois, 'stock_pertes_decoupe_pct', config.stock_pertes_decoupe_pct
+            );
+            const propre = await FinanceConfigMois.findOne({
+                where: { mois, key: 'stock_pertes_decoupe_pct' }, raw: true
+            });
+            return res.json({ success: true, mois, data: config, pertes_saisi_ce_mois: !!propre });
+        }
         res.json({ success: true, data: config });
     } catch (e) {
         console.error('GET /api/finance/config:', e);
@@ -1493,7 +1698,13 @@ router.get('/config', async (req, res) => {
 // Body: { commission_pct?, categories_eligibles?, stock_pertes_decoupe_pct? }
 router.put('/config', async (req, res) => {
     try {
-        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct'];
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions'];
+        // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
+        // parametre date a ce jour.
+        const moisCible = req.body?.mois || null;
+        if (moisCible && !/^\d{4}-\d{2}$/.test(moisCible)) {
+            return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
+        }
         const now = new Date();
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
@@ -1507,7 +1718,14 @@ router.put('/config', async (req, res) => {
                         error: `${key} doit etre entre 0 et 100`
                     });
                 }
-                await FinanceConfig.upsert({ key, value, updated_at: now });
+                // Avec un mois, le taux de pertes est DATE et l'ancrage
+                // n'est pas touche: sinon la nouvelle valeur deviendrait le
+                // repli des mois anterieurs et reecrirait le passe.
+                if (moisCible && key === 'stock_pertes_decoupe_pct') {
+                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now });
+                } else {
+                    await FinanceConfig.upsert({ key, value, updated_at: now });
+                }
             }
         }
         // commission_pct change -> les calculs derives (commission MaaS cumul

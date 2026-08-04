@@ -510,7 +510,8 @@ async function updateSchema() {
             INSERT INTO finance_config (key, value, updated_at) VALUES
               ('commission_pct', '3.0', NOW()),
               ('categories_eligibles', 'Bovin,Ovin,Caprin,Volaille,Poisson', NOW()),
-              ('stock_pertes_decoupe_pct', '5', NOW())
+              ('stock_pertes_decoupe_pct', '5', NOW()),
+              ('parage_exclusions', 'Boeuf sur pied,Veau sur pied,Mouton sur pied,Chevre sur pied', NOW())
             ON CONFLICT (key) DO NOTHING
         `);
         console.log('Table finance_config verifiee (seed commission_pct=3.0)');
@@ -630,6 +631,137 @@ async function updateSchema() {
             )
         `);
         console.log('Table finance_charges_history verifiee (genesis seedee)');
+
+        // Montants des charges fixes par mois.
+        //
+        // finance_charges porte le catalogue et le montant courant; cette
+        // table porte les montants DATES, saisis depuis Finance > Charges en
+        // choisissant un mois. Le PL resout, pour chaque mois qu'il couvre,
+        // la ligne la plus recente avec mois <= ce mois; a defaut il retombe
+        // sur finance_charges.montant_mensuel.
+        //
+        // Volontairement NON seedee: sans ligne, la resolution rend la valeur
+        // courante, donc un PL anterieur a toute saisie mensuelle donne
+        // exactement le meme resultat qu'avant cette table.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_charges_mois (
+                mois CHAR(7) NOT NULL CHECK (mois ~ '^\\d{4}-\\d{2}$'),
+                nom VARCHAR(100) NOT NULL
+                    REFERENCES finance_charges(nom) ON DELETE CASCADE,
+                montant_mensuel NUMERIC(12, 2) NOT NULL CHECK (montant_mensuel >= 0),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, nom)
+            )
+        `);
+        // Resolution = "derniere ligne <= mois demande, par charge": l'index
+        // descendant sur (nom, mois) sert directement ce parcours.
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_charges_mois_nom ON finance_charges_mois(nom, mois DESC)`);
+        console.log('Table finance_charges_mois verifiee');
+
+        // Valeurs datees des parametres de Finance (aujourd'hui: le % de
+        // pertes decoupe). finance_config garde la valeur courante, qui sert
+        // d'ancrage pour les mois anterieurs a toute saisie mensuelle.
+        //
+        // Sans cela, changer le taux recalculait TOUS les PL passes avec la
+        // nouvelle valeur, sans trace de l'ancienne: un PL imprime n'etait
+        // plus reproductible.
+        //
+        // Colonne `key` generique: ajouter un autre parametre date ne
+        // demandera pas une nouvelle table. Volontairement NON seedee.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_config_mois (
+                mois CHAR(7) NOT NULL CHECK (mois ~ '^\\d{4}-\\d{2}$'),
+                key VARCHAR(60) NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, key)
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_finance_config_mois_key ON finance_config_mois(key, mois DESC)`);
+        console.log('Table finance_config_mois verifiee');
+
+        // Compositions par defaut des packs.
+        //
+        // Elles vivaient dans config/pack-compositions.js, recopie a
+        // l'identique dans deux fichiers clients. Les trois copies ont diverge
+        // quatre fois, et chaque divergence faisait disparaitre des kilos du
+        // parage sans erreur visible. En base: sauvegardees avec le reste,
+        // modifiables depuis ADMIN sans redeploiement, propres au tenant.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS pack_compositions (
+                id SERIAL PRIMARY KEY,
+                pack VARCHAR(100) NOT NULL,
+                ordre INTEGER NOT NULL DEFAULT 0,
+                produit VARCHAR(150) NOT NULL,
+                quantite NUMERIC(10, 3) NOT NULL CHECK (quantite > 0),
+                unite VARCHAR(20) NOT NULL DEFAULT 'kg',
+                poids_unitaire NUMERIC(10, 3),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_pack_compositions_pack ON pack_compositions(pack, ordre)`);
+
+        // Amorcage depuis le fichier, UNIQUEMENT si la table est vide: c'est
+        // une reprise de l'existant, pas une synchronisation. Une fois amorcee,
+        // la base fait foi et le fichier n'est plus relu.
+        const [dejaLa] = await sequelize.query(
+            'SELECT COUNT(*)::int AS n FROM pack_compositions',
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        if (!dejaLa || dejaLa.n === 0) {
+            const { PACK_COMPOSITIONS } = require('../config/pack-compositions');
+            const lignes = [];
+            for (const [pack, composition] of Object.entries(PACK_COMPOSITIONS || {})) {
+                (composition || []).forEach((c, i) => {
+                    lignes.push({
+                        pack,
+                        ordre: i,
+                        produit: c.produit,
+                        quantite: c.quantite,
+                        unite: c.unite || 'kg',
+                        poids_unitaire: c.poids_unitaire != null ? c.poids_unitaire : null
+                    });
+                });
+            }
+            for (const l of lignes) {
+                await sequelize.query(
+                    `INSERT INTO pack_compositions (pack, ordre, produit, quantite, unite, poids_unitaire)
+                     VALUES (:pack, :ordre, :produit, :quantite, :unite, :poids_unitaire)`,
+                    { replacements: l }
+                );
+            }
+            console.log(`Table pack_compositions amorcee: ${lignes.length} ligne(s)`);
+        } else {
+            console.log(`Table pack_compositions verifiee (${dejaLa.n} ligne(s))`);
+        }
+
+        // Reference de caisse des points de vente.
+        //
+        // points_vente.payment_ref etait NULL partout, alors que les clotures
+        // ecrivent bien une reference (CASH_MBA, CASH_KM...) dans
+        // cash_payments.payment_reference. getPaymentRefMapping, qui construit
+        // reference -> point de vente a partir de cette colonne, rendait donc
+        // un mapping VIDE: a l'import, chaque paiement tombait sur
+        // 'Non specifie' et disparaissait de la reconciliation.
+        //
+        // Renseigne uniquement les lignes encore NULL: une reference saisie a
+        // la main n'est jamais ecrasee. Idempotent.
+        try {
+            const { CASH_REFERENCES } = require('../config/cash-references');
+            let renseignes = 0;
+            for (const [nom, ref] of Object.entries(CASH_REFERENCES)) {
+                const [, meta] = await sequelize.query(
+                    `UPDATE points_vente SET payment_ref = :ref
+                     WHERE nom = :nom AND payment_ref IS NULL`,
+                    { replacements: { nom, ref } }
+                );
+                renseignes += (meta && meta.rowCount) || 0;
+            }
+            console.log(`points_vente.payment_ref: ${renseignes} reference(s) renseignee(s)`);
+        } catch (e) {
+            // Table absente sur un tenant vierge (avant sequelize.sync): non bloquant.
+            console.warn('points_vente.payment_ref non renseigne:', e.message);
+        }
 
         // Mapping libelle de vente -> entree du catalogue prix.
         // Sert a remplacer le matching prefix (startsWith) par un alias
