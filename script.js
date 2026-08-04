@@ -9633,6 +9633,10 @@ function initReconciliationMensuelle() {
         if (btnExportExcelMois) {
             console.log('[DEBUG] Bouton Export Excel (export-reconciliation-mois) trouvé. Ajout écouteur.'); 
             btnExportExcelMois.addEventListener('click', exportReconciliationMoisToExcel);
+        }
+        const btnExportDetails = document.getElementById('export-parage-details');
+        if (btnExportDetails) {
+            btnExportDetails.addEventListener('click', exportParageDetailsToExcel);
         } else {
             console.error('Bouton d\'export Excel non trouvé!');
         }
@@ -10989,6 +10993,151 @@ async function exportVisualisationToExcel() {
 }
 
 // Function to export monthly reconciliation data to Excel
+/**
+ * Export "detail parage": bovin et ovin uniquement, EN KILOS, jour par jour.
+ *
+ * Le tableau de la reconciliation n'affiche que le taux de parage. Quand il
+ * parait faux, rien ne permet de voir LAQUELLE des saisies manque - stock du
+ * matin, du soir, transferts ou ventes. Cet export sort les quatre, plus le
+ * theorique et le taux, pour qu'une ligne suspecte se verifie a la main.
+ *
+ * Les kilos viennent de /api/reconciliation/parage, donc du MEME calcul que
+ * l'ecran (lib/parage.js): exclusions appliquees des deux cotes, packs
+ * decomposes en kilos. Refaire l'addition ici produirait un second chiffre,
+ * qui finirait par diverger.
+ */
+async function exportParageDetailsToExcel() {
+    const CATEGORIES = [
+        { cle: 'bovin', libelle: 'Boeuf' },
+        { cle: 'ovin', libelle: 'Agneau' }
+    ];
+    let indicateur = null;
+    try {
+        if (typeof XLSX === 'undefined') {
+            alert("La bibliotheque XLSX n'est pas chargee. Rafraichissez la page.");
+            return;
+        }
+        const mois = document.getElementById('mois-reconciliation').value;
+        const annee = document.getElementById('annee-reconciliation').value;
+        if (!mois) {
+            alert('Selectionnez un mois.');
+            return;
+        }
+        const pvFiltre = (document.getElementById('point-vente-filtre-mois') || {}).value || '';
+
+        indicateur = document.createElement('div');
+        indicateur.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);'
+            + 'background:#fff;padding:20px;border:2px solid #198754;border-radius:8px;z-index:1080;'
+            + 'box-shadow:0 4px 8px rgba(0,0,0,.2);text-align:center;';
+        indicateur.innerHTML = '<div class="spinner-border text-success" role="status"></div>'
+            + '<p class="mt-2 mb-0">Export du detail parage...</p>';
+        document.body.appendChild(indicateur);
+
+        const anneeNum = parseInt(annee, 10);
+        const moisNum = parseInt(mois, 10);
+        const nbJours = new Date(anneeNum, moisNum, 0).getDate();
+        const arrondi = (n) => Math.round((parseFloat(n) || 0) * 100) / 100;
+
+        const lignes = [];
+        const cumul = {};
+        CATEGORIES.forEach((c) => {
+            cumul[c.cle] = { matin: 0, transferts: 0, soir: 0, theorique: 0, vendu: 0 };
+        });
+
+        for (let jour = 1; jour <= nbJours; jour++) {
+            const dateStr = String(jour).padStart(2, '0') + '/'
+                + String(moisNum).padStart(2, '0') + '/' + anneeNum;
+            let data = null;
+            try {
+                const rep = await fetch('/api/reconciliation/parage?date=' + dateStr, {
+                    method: 'GET', credentials: 'include'
+                });
+                const json = rep.ok ? await rep.json() : null;
+                data = json && json.success ? json.data : null;
+            } catch (e) {
+                // Une journee illisible ne doit pas vider tout l'export: on la
+                // saute en le disant, plutot que d'abandonner le mois entier.
+                console.warn('Detail parage: ' + dateStr + ' illisible', e);
+            }
+            if (!data) continue;
+
+            Object.keys(data).forEach((pointVente) => {
+                if (pvFiltre && pointVente !== pvFiltre) return;
+                CATEGORIES.forEach(function (c) {
+                    const d = data[pointVente] && data[pointVente][c.cle];
+                    if (!d) return;
+                    // Journee sans matiere: pas de ligne vide dans le fichier.
+                    if (!d.matin && !d.soir && !d.transferts && !d.vendu) return;
+
+                    lignes.push({
+                        'Date': dateStr,
+                        'Point de Vente': pointVente,
+                        'Categorie': c.libelle,
+                        'Stock matin (kg)': arrondi(d.matin),
+                        'Transferts (kg)': arrondi(d.transferts),
+                        'Stock soir (kg)': arrondi(d.soir),
+                        'Theorique (kg)': arrondi(d.theorique),
+                        'Ventes saisies (kg)': arrondi(d.vendu),
+                        // Vide et non 0 quand le parage n'est pas calculable:
+                        // un 0 se lirait "aucune perte".
+                        'Parage (%)': (d.perte === null || d.perte === undefined)
+                            ? '' : Math.round(d.perte * 1000) / 10
+                    });
+                    // Le TOTAL ne cumule que les journees MESURABLES, comme les
+                    // cartes du haut de l'ecran. Une journee a 10 kg vendus
+                    // pour 0 kg theorique ajouterait du numerateur sans
+                    // denominateur: le taux derive, jusqu'a un parage negatif.
+                    // Deux totaux differents pour la meme grandeur seraient
+                    // pires que pas de total du tout.
+                    if (d.perte === null || d.perte === undefined) return;
+                    ['matin', 'transferts', 'soir', 'theorique', 'vendu'].forEach(function (k) {
+                        cumul[c.cle][k] += parseFloat(d[k]) || 0;
+                    });
+                });
+            });
+        }
+
+        if (!lignes.length) {
+            alert('Aucun detail boeuf ou agneau pour ce mois.');
+            return;
+        }
+
+        // Cumul du mois, meme regle que les cartes: somme des kilos, et un
+        // taux vide plutot que 0 quand le denominateur est nul.
+        lignes.push({});
+        CATEGORIES.forEach(function (c) {
+            const t = cumul[c.cle];
+            lignes.push({
+                'Date': 'TOTAL MOIS (jours mesurables)',
+                'Point de Vente': pvFiltre || 'Tous',
+                'Categorie': c.libelle,
+                'Stock matin (kg)': arrondi(t.matin),
+                'Transferts (kg)': arrondi(t.transferts),
+                'Stock soir (kg)': arrondi(t.soir),
+                'Theorique (kg)': arrondi(t.theorique),
+                'Ventes saisies (kg)': arrondi(t.vendu),
+                'Parage (%)': t.theorique > 0
+                    ? Math.round((1 - t.vendu / t.theorique) * 1000) / 10 : ''
+            });
+        });
+
+        const feuille = XLSX.utils.json_to_sheet(lignes);
+        feuille['!cols'] = [
+            { wch: 12 }, { wch: 16 }, { wch: 10 }, { wch: 16 },
+            { wch: 16 }, { wch: 16 }, { wch: 15 }, { wch: 19 }, { wch: 11 }
+        ];
+        const classeur = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(classeur, feuille, 'Detail parage');
+        XLSX.writeFile(classeur, 'detail-parage-' + annee + '-'
+            + String(moisNum).padStart(2, '0') + '.xlsx');
+    } catch (erreur) {
+        console.error('Export detail parage:', erreur);
+        alert("Erreur pendant l'export du detail : " + erreur.message);
+    } finally {
+        if (indicateur && indicateur.parentNode) indicateur.parentNode.removeChild(indicateur);
+    }
+}
+
 async function exportReconciliationMoisToExcel() {
     try {
         // Check if XLSX library is loaded

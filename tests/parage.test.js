@@ -216,6 +216,60 @@ describe('exclusions', () => {
     });
 });
 
+describe('composantes du stock theorique', () => {
+    // theorique = matin + transferts - soir. Exposer la somme seule ne permet
+    // pas de voir LAQUELLE des trois saisies manque quand le chiffre parait
+    // faux - et c'est ce detail que l'export par jour doit porter.
+    test('les trois composantes sont rendues separement', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 100 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 20, impact: '1' }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 30 }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 85 }]
+        }));
+        const b = r.Mbao.bovin;
+        expect(b.matin).toBe(100);
+        expect(b.transferts).toBe(20);
+        expect(b.soir).toBe(30);
+        expect(b.theorique).toBe(90);
+        expect(b.vendu).toBe(85);
+        // La somme doit rester coherente avec les composantes.
+        expect(b.matin + b.transferts - b.soir).toBe(b.theorique);
+    });
+
+    test('un transfert sortant compte en negatif', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 50 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 15, impact: '-1' }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 30 }]
+        }));
+        expect(r.Mbao.bovin.transferts).toBe(-15);
+        expect(r.Mbao.bovin.theorique).toBe(35);
+    });
+
+    test('les kilos issus des packs comptent au vendu, pas au stock', () => {
+        const r = calculerParage(Object.assign(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 20 }],
+            ventes: [{ pointVente: 'Mbao', produit: 'PackTest', nombre: 2 }]
+        }), { packs: { PackTest: [{ produit: 'Boeuf en détail', quantite: 4, unite: 'kg' }] } }));
+        expect(r.Mbao.bovin.matin).toBe(20);
+        expect(r.Mbao.bovin.transferts).toBe(0);
+        expect(r.Mbao.bovin.vendu).toBe(8);
+    });
+
+    test('un produit exclu ne compte dans aucune composante', () => {
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Agneau', quantite: 40 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Agneau', quantite: 10 }],
+            exclusions: new Set(['Agneau'])
+        }));
+        const o = r.Mbao ? r.Mbao.ovin : { matin: 0, soir: 0, theorique: 0 };
+        expect(o.matin).toBe(0);
+        expect(o.soir).toBe(0);
+        expect(o.theorique).toBe(0);
+    });
+});
+
 describe('ratio', () => {
     test('rapport nominal', () => {
         const r = calculerParage(base({
