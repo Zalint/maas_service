@@ -3,13 +3,6 @@
  * Gère l'affichage, la modification et la sauvegarde des compositions de packs
  */
 
-// Configuration des compositions de packs (doit rester alignee sur
-// config/pack-compositions.js et sur la copie de pos.js).
-//
-// Cette copie referencait "Veau" et "Poulet", qui existent au catalogue mais
-// SANS categorie: les kilos d'un pack decompose ici n'etaient rattaches ni a
-// Bovin ni a Ovin. C'est cette copie que charge index.html, donc celle que
-// voient Visualisation et Reconciliation.
 // Compositions de packs: UNE seule source, config/pack-compositions.js cote
 // serveur, servie par /pack-compositions.js et deposee dans
 // window.__PACK_COMPOSITIONS__.

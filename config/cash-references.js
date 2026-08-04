@@ -39,7 +39,15 @@ function chargerReferences() {
         try {
             config = require(fichier);
         } catch (e) {
-            continue; // fichier absent: on passe au suivant
+            // Un fichier absent est normal: tous les tenants n'ont pas leur
+            // propre brand-config.json. Une AUTRE erreur (JSON malforme) ne
+            // l'est pas: elle vide la table des references, generateCashReference
+            // rend alors null, et server.js saute purement l'ecriture de la
+            // ligne de caisse - la cloture reussit sans enregistrer le cash.
+            // Ce silence-la a deja coute six references.
+            if (e && e.code === 'MODULE_NOT_FOUND') continue;
+            console.error(`[cash-references] ${fichier} illisible:`, e && e.message);
+            continue;
         }
         for (const marque of Object.values(config || {})) {
             Object.assign(refs, (marque && marque.references_caisse) || {});

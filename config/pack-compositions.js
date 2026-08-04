@@ -100,6 +100,8 @@ function getAllPacks() {
  *
  * Rend la liste des problemes, vide si tout va bien.
  */
+const { UNITES_CONNUES } = require('../lib/parage');
+
 function verifierCompositions(table) {
     const source = table || PACK_COMPOSITIONS;
     const problemes = [];
@@ -124,6 +126,11 @@ function verifierCompositions(table) {
             if ((unite === 'piece' || unite === 'pièce')
                 && !(parseFloat(c.poids_unitaire) > 0)) {
                 problemes.push(`${pack}[${i}] ${c.produit}: unite "piece" sans poids_unitaire`);
+            }
+            // Une unite inconnue est convertie en 0 kg sans erreur: le pack
+            // perd ces kilos et le parage baisse sans qu'on sache pourquoi.
+            if (!UNITES_CONNUES.includes(unite)) {
+                problemes.push(`${pack}[${i}] ${c.produit}: unite inconnue "${c.unite}"`);
             }
         });
     }

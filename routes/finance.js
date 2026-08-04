@@ -1062,7 +1062,8 @@ router.delete('/charges/:nom', async (req, res) => {
 //      - total_avances (sur la periode, depuis MataBanq)
 //      - commission_maas (3% sur ventes elligibles)
 //      + marge_cdc (Il me doit)
-//      - charges_proratisees (charges_mensuelles × nb_jours_periode / 30)
+//      - charges_proratisees (par mois: charges_mensuelles × jours_couverts /
+//        jours_reels_du_mois ; 30 fixe surestimait juillet de 3,3%)
 //      - depenses_periode (table depenses, saisies onglet Depenses, periode)
 //      - paiements_fournisseur (table fournisseur_paiements, sur la periode)
 //      + variation_stock_nette

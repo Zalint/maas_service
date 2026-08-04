@@ -1559,7 +1559,18 @@ const ReconciliationManager = (function() {
     function compositionDeLaVente(item) {
         const ext = item && item.extension;
         if (ext && Array.isArray(ext.composition) && ext.composition.length) return ext.composition;
-        const table = (window.PackComposition && window.PackComposition.PACK_COMPOSITIONS) || {};
+        // Si le module n'a pas ete charge, un pack se decomposerait en RIEN:
+        // son boeuf et son agneau disparaitraient des sous-totaux sans que
+        // l'ecran ne montre la moindre anomalie. On le signale une fois.
+        if (!window.PackComposition || !window.PackComposition.PACK_COMPOSITIONS) {
+            if (!compositionDeLaVente._alerte) {
+                compositionDeLaVente._alerte = true;
+                console.error('[reconciliation] compositions de packs indisponibles: '
+                    + 'le contenu des packs sera absent des sous-totaux.');
+            }
+            return null;
+        }
+        const table = window.PackComposition.PACK_COMPOSITIONS;
         const parDefaut = table[item && item.produit];
         return Array.isArray(parDefaut) && parDefaut.length ? parDefaut : null;
     }

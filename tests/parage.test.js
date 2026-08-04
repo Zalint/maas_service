@@ -224,6 +224,10 @@ describe('ratio', () => {
             ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 76 }]
         }));
         expect(r.Mbao.bovin.ratio).toBeCloseTo(0.95, 6);
+        // perte est la valeur AFFICHEE a l'ecran (les 5% de parage), pas
+        // ratio: c'est elle qu'il faut tenir, sinon une inversion de signe
+        // passerait les tests en affichant 95% de perte au lieu de 5%.
+        expect(r.Mbao.bovin.perte).toBeCloseTo(0.05, 6);
     });
 
     test('denominateur nul: pas de ratio, et surtout pas zero', () => {
@@ -232,6 +236,9 @@ describe('ratio', () => {
         }));
         expect(r.Mbao.ovin.ratio).toBeNull();
         expect(r.Mbao.ovin.ratio).not.toBe(0);
+        // null et non 0: l'ecran doit montrer un tiret, pas "0% de parage"
+        // qui se lirait comme une decoupe parfaite.
+        expect(r.Mbao.ovin.perte).toBeNull();
     });
 
     test('denominateur negatif: pas de ratio non plus', () => {
@@ -241,6 +248,20 @@ describe('ratio', () => {
         }));
         expect(r.Mbao.ovin.theorique).toBe(-20);
         expect(r.Mbao.ovin.ratio).toBeNull();
+        expect(r.Mbao.ovin.perte).toBeNull();
+    });
+
+    test('vendu au-dela du theorique: la perte devient negative, pas bornee', () => {
+        // Un rendement > 100% signale une erreur de saisie (stock du soir
+        // sous-estime). La valeur doit ressortir telle quelle pour que
+        // l'anomalie se voie, au lieu d'etre ecretee a zero.
+        const r = calculerParage(base({
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 100 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 20 }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 90 }]
+        }));
+        expect(r.Mbao.bovin.ratio).toBeCloseTo(1.125, 6);
+        expect(r.Mbao.bovin.perte).toBeCloseTo(-0.125, 6);
     });
 
     test('aucun mouvement: les deux categories sans ratio', () => {

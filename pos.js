@@ -4703,7 +4703,6 @@ function viderRechercheTransactions() {
 }
 
 // ===== Pack Composition Management =====
-// Configuration des compositions de packs par défaut
 // Compositions de packs: UNE seule source, config/pack-compositions.js cote
 // serveur, servie par /pack-compositions.js et deposee dans
 // window.__PACK_COMPOSITIONS__.
@@ -4722,7 +4721,10 @@ function __packsIndisponibles() {
         + "n'a pas ete charge. Les packs s'afficheront sans leur composition par defaut.";
     console.error('[PACKS] ' + message);
     if (typeof showToast === 'function') {
-        try { showToast(message, 'danger'); } catch (e) {}
+        // 'error' et non 'danger': showToast de pos.js ne connait que
+        // success/warning/error, et le CSS n'a pas de classe .toast-danger.
+        // Le message serait affiche sans style, donc invisible.
+        try { showToast(message, 'error'); } catch (e) {}
     }
     return {};
 }

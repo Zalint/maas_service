@@ -111,7 +111,14 @@ console.log('Estimation model:', !!Estimation);
 console.log('Estimation.create:', typeof Estimation.create === 'function' ? 'function available' : 'NOT AVAILABLE');
 
 // Run the schema update scripts when the server starts
-(async function() {
+//
+// Expose une promesse: la verification des compositions de packs, plus bas,
+// interroge une table que CETTE fonction cree. Sans point de rendez-vous, les
+// deux demarraient en parallele et, au premier lancement d'un tenant, la
+// verification lisait une table inexistante: elle affichait une alerte
+// trompeuse et ne verifiait jamais rien - exactement au demarrage ou elle
+// aurait servi.
+const schemaPret = (async function() {
   try {
     console.log('Running database schema updates...');
     await updateSchema();
@@ -5363,6 +5370,7 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 // qu'on ne relie pas spontanement a un fichier de configuration.
 (async function () {
     try {
+        await schemaPret; // la table doit exister et etre amorcee
         const { verifierCompositions } = require('./config/pack-compositions');
         const problemes = verifierCompositions(await lirePackCompositions());
         if (problemes.length) {
@@ -5436,6 +5444,7 @@ app.get('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) 
 // d'avoir a suivre les identifiants de lignes cote client, et la transaction
 // garantit qu'on ne laisse jamais un pack a moitie enregistre.
 app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) => {
+    const { UNITES_CONNUES } = require('./lib/parage');
     try {
         const pack = String(req.body && req.body.pack || '').trim();
         const lignes = Array.isArray(req.body && req.body.lignes) ? req.body.lignes : null;
@@ -5456,6 +5465,14 @@ app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) 
             const poids = parseFloat(l.poids_unitaire);
             // Une piece sans poids unitaire ne peut pas etre convertie en kilos:
             // elle disparaitrait du parage sans erreur. On refuse a la saisie.
+            // Refuse a l'ecriture: une unite inconnue vaut 0 kg au calcul,
+            // le pack serait ampute sans que l'ecran ne montre rien.
+            if (!UNITES_CONNUES.includes(unite)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `${produit}: unite "${l.unite}" inconnue (attendu: ${UNITES_CONNUES.join(', ')})`
+                });
+            }
             if ((unite === 'piece' || unite === 'pièce') && !(poids > 0)) {
                 return res.status(400).json({
                     success: false,
