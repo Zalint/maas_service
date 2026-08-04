@@ -24,15 +24,53 @@ describe('references de caisse', () => {
         expect(generateCashReference(undefined)).toBeNull();
     });
 
-    test('les points de vente configures gardent tous leur reference', () => {
+    // Regression: en deplacant la table de server.js vers la configuration, six
+    // references sur neuf avaient ete perdues. server.js fait `if (cashRef)` et
+    // saute alors l'ecriture: la cloture reussissait sans enregistrer le cash du
+    // point de vente concerne.
+    //
+    // La table attendue est ECRITE ICI, jamais relue depuis brand-config.json:
+    // comparer la configuration a elle-meme serait une tautologie, et une table
+    // amputee reste coherente avec elle-meme. Une iteration sur ses propres cles
+    // passerait au vert sur les trois survivantes.
+    //
+    // Consequence assumee: l'ajout d'un dixieme point de vente fait rougir ce
+    // test. C'est voulu - c'est exactement la notification qui manquait.
+    const REFERENCES_ATTENDUES = {
+        'Dahra': 'CASH_DHR',
+        'Linguere': 'CASH_LGR',
+        'Mbao': 'CASH_MBA',
+        'Keur Massar': 'CASH_KM',
+        'O.Foire': 'CASH_OSF',
+        'Sacre Coeur': 'CASH_SAC',
+        'Abattage': 'CASH_ABATS',
+        'Dépôt central': 'CASH_ABATS',
+        'Touba': 'CASH_TB'
+    };
+
+    test('les neuf points de vente gardent exactement leur reference', () => {
         const { CASH_REFERENCES, generateCashReference } = require('../config/cash-references');
-        // Regression: en deplacant la table de server.js vers la configuration,
-        // six references sur neuf avaient ete perdues. server.js fait
-        // `if (cashRef)` et saute alors l'ecriture: la cloture reussissait sans
-        // enregistrer le cash du point de vente concerne.
-        for (const nom of Object.keys(CASH_REFERENCES)) {
-            expect(generateCashReference(nom)).toBe(CASH_REFERENCES[nom]);
+        // Dans les deux sens: aucune reference perdue, aucune apparue par
+        // surprise. Le sens "aucune manquante" est celui qui a deja casse.
+        expect(CASH_REFERENCES).toEqual(REFERENCES_ATTENDUES);
+        for (const [nom, ref] of Object.entries(REFERENCES_ATTENDUES)) {
+            expect(generateCashReference(nom)).toBe(ref);
         }
+    });
+
+    test('une reference perdue serait detectee', () => {
+        // Applique l'assertion du test precedent a une table amputee, et
+        // verifie qu'elle ECHOUE. La version initiale de ce test iterait sur
+        // les cles de la table elle-meme: une table amputee restant coherente
+        // avec elle-meme, elle passait au vert sur les survivantes. Ce
+        // meta-test empeche d'y revenir.
+        const ampute = Object.assign({}, REFERENCES_ATTENDUES);
+        delete ampute['Dahra'];
+        expect(() => expect(ampute).toEqual(REFERENCES_ATTENDUES)).toThrow();
+
+        // Et une reference alteree, pas seulement absente.
+        const altere = Object.assign({}, REFERENCES_ATTENDUES, { Mbao: 'CASH_XXX' });
+        expect(() => expect(altere).toEqual(REFERENCES_ATTENDUES)).toThrow();
     });
 
     test('une configuration illisible leve au lieu de rendre null', () => {
