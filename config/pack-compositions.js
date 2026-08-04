@@ -129,7 +129,10 @@ function verifierCompositions(table) {
             }
             // Une unite inconnue est convertie en 0 kg sans erreur: le pack
             // perd ces kilos et le parage baisse sans qu'on sache pourquoi.
-            if (!UNITES_CONNUES.includes(unite)) {
+            // Acces null-safe: un element null est deja signale plus haut
+            // ("produit manquant"); ici il ferait lever verifierCompositions,
+            // qui ne rapporterait plus AUCUN probleme au lieu de tous les lister.
+            if (c && !UNITES_CONNUES.includes(unite)) {
                 problemes.push(`${pack}[${i}] ${c.produit}: unite inconnue "${c.unite}"`);
             }
         });

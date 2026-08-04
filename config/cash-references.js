@@ -22,6 +22,12 @@ const path = require('path');
 
 // brand-config.json est charge une fois puis mis en cache par require().
 // La configuration du tenant, quand elle existe, prime sur celle de la racine.
+// Renseigne quand un fichier de configuration existe mais ne se lit pas. On
+// ne peut pas lever ici: le module est charge par require() au demarrage, et
+// une exception empecherait le serveur entier de partir pour un fichier qui ne
+// concerne que la caisse. On retient l'erreur et on la leve au point d'usage.
+let erreurChargement = null;
+
 function chargerReferences() {
     const refs = {};
     const candidats = [
@@ -39,14 +45,21 @@ function chargerReferences() {
         try {
             config = require(fichier);
         } catch (e) {
-            // Un fichier absent est normal: tous les tenants n'ont pas leur
-            // propre brand-config.json. Une AUTRE erreur (JSON malforme) ne
-            // l'est pas: elle vide la table des references, generateCashReference
-            // rend alors null, et server.js saute purement l'ecriture de la
-            // ligne de caisse - la cloture reussit sans enregistrer le cash.
-            // Ce silence-la a deja coute six references.
+            // Fichier absent: normal, tous les tenants n'ont pas leur propre
+            // brand-config.json.
             if (e && e.code === 'MODULE_NOT_FOUND') continue;
+            // Fichier present mais illisible (JSON malforme, droits): la table
+            // serait PARTIELLE, et une table partielle est indiscernable d'un
+            // point de vente sans reference. Laisse ainsi, generateCashReference
+            // rendrait null, server.js sauterait l'ecriture de la ligne de
+            // caisse, et la cloture reussirait sans enregistrer le cash - ce
+            // silence-la a deja coute six references. On memorise donc l'erreur
+            // pour la lever au point d'usage.
             console.error(`[cash-references] ${fichier} illisible:`, e && e.message);
+            erreurChargement = new Error(
+                `Configuration des references de caisse illisible (${fichier}): `
+                + `${e && e.message}`
+            );
             continue;
         }
         for (const marque of Object.values(config || {})) {
@@ -60,11 +73,29 @@ const CASH_REFERENCES = chargerReferences();
 
 /**
  * Reference de caisse d'un point de vente, ou null s'il n'en a pas.
+ *
+ * Leve si la configuration elle-meme n'a pas pu etre lue. La distinction est
+ * essentielle: l'appelant (cloture de caisse) fait `if (cashRef)` et saute
+ * l'ecriture quand c'est null. Rendre null sur une configuration cassee ferait
+ * donc passer la cloture SANS enregistrer le cash, en repondant 201 succes.
+ * En levant, la transaction de cloture roule en arriere et l'operateur voit une
+ * erreur - au lieu de decouvrir la caisse manquante des semaines plus tard.
+ *
+ * Un point de vente simplement absent de la table rend toujours null: c'est un
+ * cas legitime, pas une panne.
+ *
  * @param {string} pointVente
  * @returns {string|null}
+ * @throws {Error} si un fichier de configuration existe mais n'a pas pu etre lu
  */
 function generateCashReference(pointVente) {
+    if (erreurChargement) throw erreurChargement;
     return CASH_REFERENCES[pointVente] || null;
 }
 
-module.exports = { CASH_REFERENCES, generateCashReference };
+/** Pour les tests et un eventuel controle de sante au demarrage. */
+function erreurConfigReferences() {
+    return erreurChargement;
+}
+
+module.exports = { CASH_REFERENCES, generateCashReference, erreurConfigReferences };

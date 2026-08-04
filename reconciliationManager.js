@@ -1562,7 +1562,12 @@ const ReconciliationManager = (function() {
         // Si le module n'a pas ete charge, un pack se decomposerait en RIEN:
         // son boeuf et son agneau disparaitraient des sous-totaux sans que
         // l'ecran ne montre la moindre anomalie. On le signale une fois.
-        if (!window.PackComposition || !window.PackComposition.PACK_COMPOSITIONS) {
+        // Table vide comprise comme indisponible: quand le script ne s'est pas
+        // charge, js/modules/pack-composition.js rend {} - un objet truthy qui
+        // passait ce garde sans declencher l'alerte, et les packs se
+        // decomposaient en rien, en silence.
+        const dispo = window.PackComposition && window.PackComposition.PACK_COMPOSITIONS;
+        if (!dispo || !Object.keys(dispo).length) {
             if (!compositionDeLaVente._alerte) {
                 compositionDeLaVente._alerte = true;
                 console.error('[reconciliation] compositions de packs indisponibles: '
@@ -1570,8 +1575,7 @@ const ReconciliationManager = (function() {
             }
             return null;
         }
-        const table = window.PackComposition.PACK_COMPOSITIONS;
-        const parDefaut = table[item && item.produit];
+        const parDefaut = dispo[item && item.produit];
         return Array.isArray(parDefaut) && parDefaut.length ? parDefaut : null;
     }
 

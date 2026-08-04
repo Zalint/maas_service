@@ -243,8 +243,18 @@ const schemaPret = (async function() {
     }
   } catch (error) {
     console.error('Error during schema updates:', error);
+    // Relance apres journalisation: avalee, l'erreur faisait resoudre
+    // schemaPret comme si la migration avait reussi, et la verification des
+    // compositions partait interroger un schema incomplet - pour y rapporter
+    // des problemes de configuration qui n'en sont pas. Les appelants de
+    // schemaPret doivent donc capturer; il n'y en a qu'un, plus bas.
+    throw error;
   }
 })();
+// Le rejet est traite par le seul consommateur de schemaPret (verification des
+// compositions de packs). Ce garde evite un rejet non gere si ce consommateur
+// venait a disparaitre, sans masquer l'erreur, deja journalisee ci-dessus.
+schemaPret.catch(() => {});
 
 // Middleware
 // Allow all origins in production for Render
@@ -5370,7 +5380,16 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 // qu'on ne relie pas spontanement a un fichier de configuration.
 (async function () {
     try {
-        await schemaPret; // la table doit exister et etre amorcee
+        // La table doit exister et etre amorcee. Si la migration a echoue, on
+        // ne verifie pas: le message porterait sur un schema incomplet et
+        // designerait la configuration alors que la cause est ailleurs.
+        try {
+            await schemaPret;
+        } catch (e) {
+            console.error('⚠️  Compositions de packs non vérifiées : '
+                + "la mise à jour du schéma a échoué (voir l'erreur ci-dessus).");
+            return;
+        }
         const { verifierCompositions } = require('./config/pack-compositions');
         const problemes = verifierCompositions(await lirePackCompositions());
         if (problemes.length) {

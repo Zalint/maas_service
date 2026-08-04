@@ -1115,7 +1115,9 @@ router.get('/pl', async (req, res) => {
             return res.status(400).json({ success: false, error: 'invalid dateFin' });
         }
 
-        // Nombre de jours dans la periode (inclus). Convention 30 jours/mois.
+        // Nombre de jours dans la periode (inclus). Sert a l'affichage: le
+        // prorata des charges, lui, se calcule mois par mois sur les jours
+        // REELS de chaque mois (voir decouperEnMois), sans mois conventionnel.
         const startD = new Date(dateDebut + 'T00:00:00Z');
         const endD = new Date(dateFin + 'T00:00:00Z');
         if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
