@@ -1180,3 +1180,616 @@ html, body {
         overflow: visible;
     }
 }
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - CORRECTIF AFFICHAGE POS
+   ----------------------------------------------------------------------------
+   Symptome constate sur iPhone: aucun produit visible. La grille produits etait
+   reduite a ~24px de haut pour 2300px de contenu.
+
+   Quatre causes cumulees, corrigees ici:
+
+   1) Le POS herite du modele desktop "hauteur d'ecran fixe, page non scrollable"
+      (body{overflow:hidden}, .pos-main{height:calc(100vh - 80px);overflow:hidden},
+      .pos-products{overflow:hidden}). Le bloc telephone plus haut remet bien
+      .pos-main en height:auto mais ne rouvre jamais les overflow: la grille,
+      en flex:1 sur un parent clippe, s'ecrase a quelques pixels.
+      -> On rend la page scrollable et on rouvre les conteneurs.
+
+   2) Le panier mobile vide occupait 506px sur 844 (60% de l'ecran). Le bloc
+      tablette masque .mobile-cart-items quand le panier est vide; les
+      telephones n'heritaient pas de cette compaction.
+      -> Meme traitement ici (panier vide: 506px -> 208px).
+
+   3) Le bouton "+" des cartes produit (seul moyen d'ajouter au panier sur
+      telephone) n'etait affiche que dans le bloc tablette.
+
+   4) Le panier mobile n'avait pas de flex-direction sur telephone et
+      s'affichait en colonnes horizontales des qu'il contenait des lignes.
+
+   Bloc place en fin de fichier volontairement: l'ordre source suffit a battre
+   les regles telephone precedentes de meme specificite (notamment le
+   padding-bottom du bloc <= 400px).
+   ============================================================================ */
+@media (max-width: 767px) {
+    html,
+    body {
+        height: auto !important;
+        overflow-y: auto !important;
+    }
+
+    .pos-container {
+        height: auto !important;
+    }
+
+    .pos-main {
+        height: auto !important;
+        overflow: visible !important;
+        /* Reserve la place du panneau panier, qui est en position fixed.
+           --reserve-panier est mesuree en JS (_majReservePanier) car la
+           hauteur du panneau va de 92px replie a 55vh rempli: toute constante
+           est fausse dans au moins un etat. 220px = valeur de repli si le JS
+           n'a pas encore tourne. */
+        padding-bottom: var(--reserve-panier, 220px) !important;
+    }
+
+    .pos-products {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+
+    /* La grille suit la hauteur de son contenu: c'est la page qui scrolle. */
+    .products-grid {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        flex: 0 0 auto !important;
+    }
+
+    /* Panier fixe: ne doit jamais manger plus de la moitie de l'ecran. */
+    .mobile-cart-panel {
+        max-height: 55vh !important;
+    }
+
+    .mobile-cart-panel.cart-empty {
+        height: auto !important;
+        min-height: 0 !important;
+    }
+
+    .mobile-cart-panel.cart-empty .mobile-cart-items {
+        display: none !important;
+    }
+
+    .mobile-cart-panel.cart-has-items .mobile-cart-items {
+        display: flex !important;
+        flex-direction: column;
+        overflow-y: auto;
+    }
+
+    /* (3) Le bouton "+" est le SEUL moyen d'ajouter au panier sur telephone:
+       pos.js ne declenche le clic sur la carte que si innerWidth > 768. Or son
+       display:flex n'existait que dans le bloc tablette (min-width: 768px), donc
+       les telephones gardaient le display:none de pos.css. Resultat: aucun
+       produit ne pouvait etre ajoute au panier. 44px = cible tactile minimale. */
+    .product-add-btn {
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+        width: 44px !important;
+        height: 44px !important;
+        min-width: 44px !important;
+        margin: 0.5rem auto 0;
+        padding: 0 !important;
+        border: none;
+        border-radius: 50%;
+        background: var(--primary-color);
+        color: var(--white);
+        font-size: 1.25rem !important;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    /* (4) Le bloc telephone posait display:flex sans flex-direction: le panier
+       rempli s'affichait en 3 colonnes horizontales (titre | lignes | total). */
+    .mobile-cart-panel {
+        flex-direction: column !important;
+    }
+
+    .mobile-cart-header {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+        flex-shrink: 0;
+    }
+
+    .mobile-cart-header > div,
+    .mobile-cart-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .mobile-cart-header h2 {
+        font-size: 1.1rem;
+        margin: 0;
+    }
+
+    .mobile-cart-items {
+        flex: 1 1 auto;
+        overflow-y: auto;
+    }
+
+    .mobile-cart-footer {
+        flex-shrink: 0;
+    }
+}
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - PRESENTATION
+   ----------------------------------------------------------------------------
+   Le bloc precedent retablit le fonctionnement; celui-ci s'occupe du rendu.
+   Avant: ~424px des 844px de l'ecran etaient consommes par l'en-tete, le
+   bandeau "Produits", la recherche, un <select> de categories ET une rangee
+   de chips qui faisait doublon avec lui, le tout avant le premier produit.
+
+   Apres: ~250px, en-tete structure en 3 rangees nettes, categories sur une
+   seule ligne defilante, cartes produit compactes avec le "+" en pastille.
+
+   Tout est borne a max-width: 767px: les tablettes (bloc
+   min-width:768px + pointer:coarse) et le desktop ne sont pas touches.
+   ============================================================================ */
+@media (max-width: 767px) {
+    /* --- Aucun debordement horizontal ---
+       En grid/flex, min-width:auto empeche un enfant de retrecir sous la
+       largeur de son contenu: la rangee de categories en nowrap elargissait
+       toute la page. */
+    .pos-main,
+    .pos-products,
+    .products-grid,
+    .categories,
+    .product-card {
+        min-width: 0 !important;
+    }
+
+    body {
+        overflow-x: hidden !important;
+    }
+
+    /* --- En-tete: 3 rangees lisibles (titre / point de vente / actions) --- */
+    .pos-header {
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        padding: 0.4rem 0.6rem !important;
+        gap: 0.3rem !important;
+        row-gap: 0.35rem !important;
+    }
+
+    .header-left {
+        flex: 1 1 auto !important;
+        font-size: 0.95rem !important;
+    }
+
+    .header-right {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        flex-wrap: wrap !important;
+        justify-content: flex-start !important;
+        gap: 0.3rem !important;
+        row-gap: 0.3rem !important;
+    }
+
+    /* Le selecteur prend sa propre rangee: les 6 boutons + le selecteur ne
+       tiennent pas sur une seule ligne a 390px. */
+    .point-vente-selector {
+        flex: 1 1 100% !important;
+        width: 100% !important;
+        order: -1 !important;
+    }
+
+    .point-vente-selector select {
+        width: 100% !important;
+        min-width: 0 !important; /* sinon min-width:150px deborde du conteneur */
+        padding: 0.35rem 0.6rem !important;
+        font-size: 0.9rem !important;
+    }
+
+    /* :not(.admin-menu-item) est indispensable: les entrees du menu Admin
+       sont elles aussi des <button> dans .header-right. Sans l'exclusion
+       elles devenaient des carres de 36px alignes en ligne. */
+    .pos-header .btn-icon:not(.admin-menu-item),
+    .header-right button:not(.admin-menu-item) {
+        width: 36px !important;
+        height: 36px !important;
+        min-width: 36px !important;
+        padding: 0 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 0.8rem !important;
+    }
+
+    /* Le menu Admin est ancre a left:-164px pour le desktop: sur 390px il
+       sortait de l'ecran par la gauche. On l'aligne sur le bord droit. */
+    .admin-menu-dropdown {
+        /* Ancre a GAUCHE du conteneur et non a droite: le bouton du menu est
+           le 4e d'une rangee alignee a gauche (~132px), un menu de 210px
+           ancre a droite sortait de l'ecran par la gauche. */
+        left: 0 !important;
+        right: auto !important;
+        min-width: 210px !important;
+        max-width: calc(100vw - 1.2rem) !important;
+    }
+
+    .admin-menu-item {
+        display: flex !important;
+        align-items: center;
+        justify-content: flex-start !important;
+        gap: 0.6rem;
+        width: 100% !important;
+        min-width: 0 !important;
+        height: auto !important;
+        min-height: 40px;
+        padding: 0.5rem 0.8rem !important;
+        font-size: 0.85rem !important;
+        white-space: nowrap;
+    }
+
+    /* --- Bandeau produits + recherche --- */
+    .products-header {
+        padding: 0.45rem 0.75rem !important;
+    }
+
+    .search-box {
+        padding: 0.5rem 0.75rem !important;
+    }
+
+    .search-box input {
+        padding: 0.55rem 0.75rem 0.55rem 2.25rem !important;
+        font-size: 0.95rem !important; /* >= 16px evite le zoom auto iOS */
+    }
+
+    .search-icon {
+        left: 1.35rem !important;
+    }
+
+    /* --- Categories: une seule rangee defilante ---
+       Le <select> "Toutes les categories" faisait doublon avec les chips
+       (qui proposent en plus Favoris) pour 57px de hauteur. */
+    .category-dropdown-container {
+        display: none !important;
+    }
+
+    .categories {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 0.4rem !important;
+        /* padding-right: laisse entrevoir la chip suivante = indice de scroll */
+        padding: 0.5rem 1.5rem 0.5rem 0.75rem !important;
+        scrollbar-width: none;
+    }
+
+    .categories::-webkit-scrollbar {
+        display: none;
+    }
+
+    .category-btn {
+        flex: 0 0 auto !important;
+        height: 38px !important;
+        min-height: 38px !important;
+        padding: 0 0.9rem !important;
+        font-size: 0.85rem !important;
+        border-radius: 19px !important;
+        white-space: nowrap;
+    }
+
+    /* --- Cartes produit: 2 colonnes compactes, "+" en pastille --- */
+    .products-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 0.5rem !important;
+        padding: 0 0.75rem 0.75rem !important;
+    }
+
+    .product-card {
+        position: relative;
+        min-height: 0 !important;
+        /* padding-right: reserve la place de la pastille "+" */
+        padding: 0.55rem 3.1rem 0.55rem 0.65rem !important;
+        align-items: flex-start !important;
+    }
+
+    /* Le centrage venait de la flexbox, pas de text-align. */
+    .product-card-content {
+        align-items: flex-start !important;
+        width: 100%;
+    }
+
+    .product-name {
+        font-size: 0.88rem !important;
+        line-height: 1.2 !important;
+        text-align: left !important;
+    }
+
+    .product-price {
+        font-size: 1rem !important;
+        margin: 0.15rem 0 !important;
+        text-align: left !important;
+    }
+
+    .product-category {
+        font-size: 0.68rem !important;
+        text-align: left !important;
+    }
+
+    .product-add-btn {
+        position: absolute !important;
+        right: 0.5rem !important;
+        bottom: 0.5rem !important;
+        margin: 0 !important;
+    }
+
+    /* --- Panier: boutons homogenes, action principale mise en avant --- */
+    .mobile-cart-header {
+        padding: 0.55rem 0.85rem !important;
+    }
+
+    .mobile-cart-header-actions > * {
+        width: 40px !important;
+        height: 40px !important;
+        min-width: 40px !important;
+        padding: 0 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 10px !important;
+        background: var(--white) !important;
+        color: var(--text-color, #333) !important;
+        box-shadow: none !important;
+        font-size: 0.95rem !important;
+    }
+
+    .mobile-cart-header-actions .btn-clear-mobile {
+        color: #c0392b !important;
+    }
+
+    .mobile-cart-header-actions .btn-precommande {
+        background: #f39c12 !important;
+        border-color: #f39c12 !important;
+        color: #fff !important;
+    }
+
+    /* Encaisser = action principale de l'ecran. */
+    .mobile-cart-header-actions .btn-mobile-checkout {
+        width: 48px !important;
+        background: var(--primary-color) !important;
+        border-color: var(--primary-color) !important;
+        color: #fff !important;
+    }
+
+    .mobile-cart-items {
+        padding: 0.5rem 0.85rem !important;
+    }
+
+    .mobile-cart-items .cart-item {
+        padding: 0.5rem 0 !important;
+    }
+
+    .mobile-cart-footer {
+        padding: 0.6rem 0.85rem !important;
+    }
+
+    .mobile-cart-total span:last-child {
+        font-weight: 700;
+    }
+}
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - RESUME DU JOUR / LISTE DES COMMANDES
+   ----------------------------------------------------------------------------
+   .pos-summary (Resume du jour, Dernieres transactions, Faire la caisse) etait
+   simplement masque sur telephone. Le mode "transactions-expanded" existe bien
+   et est deja style pour mobile, mais le bouton qui le declenche
+   (.btn-expand-transactions, pos.html) vit A L'INTERIEUR de .pos-summary: sur
+   telephone il etait donc impossible d'atteindre la liste des commandes.
+
+   La page defile desormais: on empile simplement le bloc sous les produits,
+   sans zone de scroll imbriquee (mauvaise pratique sur mobile).
+   ============================================================================ */
+@media (max-width: 767px) {
+    .pos-summary {
+        display: flex !important;
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        border-radius: 12px;
+        margin-top: 0.5rem;
+    }
+
+    .transactions-list {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+}
+
+/* La reserve sous le contenu est desormais mesuree (var(--reserve-panier),
+   cf _majReservePanier dans pos.js). Trois regles a constantes vivaient ici -
+   360px pour un panier rempli, un repli @supports pour Safari < 16.4, 110px
+   pour un panier replie - et chacune s'est revelee fausse dans au moins un
+   etat: avec 8 lignes le panneau atteint 441px pour 360px reserves. */
+
+
+
+/* Les sous-categories (visibles en Epicerie: Riz & Feculents, Conserves,
+   Epices...) s'empilaient sur 3 lignes et mangeaient 132px. Meme traitement
+   que la rangee de categories: une seule ligne defilante. */
+@media (max-width: 767px) {
+    .sub-categories {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        overflow-y: hidden;
+        gap: 0.4rem !important;
+        padding: 0.4rem 1.5rem 0.4rem 0.75rem !important;
+        scrollbar-width: none;
+        min-width: 0 !important;
+    }
+
+    .sub-categories::-webkit-scrollbar {
+        display: none;
+    }
+
+    .subcategory-btn {
+        flex: 0 0 auto !important;
+        white-space: nowrap;
+        padding: 0 0.8rem !important;
+        height: 34px !important;
+        font-size: 0.8rem !important;
+        border-radius: 17px !important;
+    }
+}
+
+/* ============================================================================
+   TELEPHONES (<= 767px) - CATEGORIES NON TRONQUEES, PANIER, ZONE REPLIABLE
+   ============================================================================ */
+@media (max-width: 767px) {
+    /* --- Categories principales: elles sont peu nombreuses (Boucherie,
+       Epicerie, Tous, Favoris + edition). Les faire defiler coupait "Tous"
+       ou "Favoris" au bord de l'ecran. On les laisse passer a la ligne: rien
+       n'est tronque, et cela coute au plus une rangee de 38px.
+       Les SOUS-categories, elles, restent defilantes: elles peuvent etre
+       nombreuses (10 en Epicerie) et rempliraient l'ecran. */
+    .categories {
+        flex-wrap: wrap !important;
+        overflow-x: visible !important;
+        padding: 0.5rem 0.75rem !important;
+        row-gap: 0.4rem !important;
+    }
+
+    .category-btn {
+        padding: 0 0.75rem !important;
+        font-size: 0.8rem !important;
+    }
+
+    /* --- Sections repliables: Produits, Panier, Dernieres transactions ---
+       Taper sur le titre replie la section. Trois zones sur un ecran de
+       844px: pouvoir en fermer deux degage vraiment la troisieme. */
+    .pos-collapse-title {
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        display: flex !important;
+        align-items: center;
+        gap: 0.5rem;
+        min-width: 0;
+    }
+
+    .pos-collapse-icon {
+        font-size: 0.75rem;
+        opacity: 0.55;
+        margin-left: auto;
+        padding-left: 0.5rem;
+    }
+
+    .pos-products.products-collapsed .search-box,
+    .pos-products.products-collapsed .category-dropdown-container,
+    .pos-products.products-collapsed .categories,
+    .pos-products.products-collapsed .sub-categories,
+    .pos-products.products-collapsed .products-grid {
+        display: none !important;
+    }
+
+    /* Panier replie: on garde l'en-tete et ses 4 actions, on masque les
+       lignes et le pied (total + acces commandes). */
+    .mobile-cart-panel.cart-collapsed .mobile-cart-items,
+    .mobile-cart-panel.cart-collapsed .mobile-cart-footer {
+        display: none !important;
+    }
+
+    .recent-transactions.transactions-collapsed .payment-status-filters,
+    .recent-transactions.transactions-collapsed .transactions-list,
+    .recent-transactions.transactions-collapsed .transactions-search-box {
+        display: none !important;
+    }
+
+    /* --- Boutons du panier: centres, et non plus colles a gauche --- */
+    .mobile-cart-header {
+        flex-wrap: wrap !important;
+        row-gap: 0.45rem !important;
+    }
+
+    .mobile-cart-header > div:first-child {
+        flex: 1 1 100%;
+    }
+
+    .mobile-cart-header-actions {
+        flex: 1 1 100%;
+        justify-content: center !important;
+        gap: 0.6rem !important;
+    }
+
+    /* --- Acces aux pre-commandes / commandes web ---
+       Ces boutons vivent dans .pos-cart (masque sur telephone): ils
+       disparaissaient completement. Repris ici dans le pied du panier. */
+    .mobile-orders-actions {
+        display: flex !important;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+    }
+
+    .btn-mobile-orders {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 44px; /* cible tactile */
+        padding: 0.5rem 0.4rem;
+        border: 1px solid var(--border-color);
+        border-radius: 10px;
+        background: var(--white);
+        color: var(--text-color, #333);
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.15;
+        /* "Commandes Web" ne tient pas sur une demi-largeur: on laisse passer
+           a la ligne plutot que de tronquer le libelle. */
+        white-space: normal;
+        cursor: pointer;
+    }
+
+    .btn-mobile-orders-web {
+        background: #667eea;
+        border-color: #667eea;
+        color: #fff;
+    }
+
+    /* L'indicateur de pre-commandes est un bloc de 20px concu pour le bouton
+       desktop: en flux normal il ecrasait le libelle. Pastille d'angle ici. */
+    .mobile-orders-actions .precommandes-indicator {
+        position: absolute !important;
+        top: 5px;
+        right: 5px;
+        width: 9px !important;
+        height: 9px !important;
+        border-radius: 50%;
+    }
+
+}
+
+/* Hors telephone, le pendant mobile des boutons de commandes n'existe pas. */
+.mobile-orders-actions {
+    display: none;
+}
+
+/* Un panier replie ne contient que son en-tete et ses 4 actions, soit 92px.
+   Or le bloc <= 400px impose .mobile-cart-panel { min-height: 240px }, et
+   cette valeur n'etait neutralisee que pour .cart-empty: un panier replie
+   AVEC des lignes restait force a 240px sur un iPhone SE ou 13 mini. Le repli
+   ne liberait donc rien, et 130px de bas de page passaient sous le panneau. */
+@media (max-width: 767px) {
+    .mobile-cart-panel.cart-collapsed {
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+    }
+}

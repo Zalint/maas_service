@@ -3,6 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=0.75, minimum-scale=0.6, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+    <script>
+        /* initial-scale=0.75 fait mettre la page en page sur une largeur de
+           device-width / 0.75 (520px sur un iPhone de 390pt) avant de reduire
+           le rendu. Sur telephone le resultat est tronque a droite et le texte
+           devient minuscule. On repasse donc a l'echelle 1 pour les telephones
+           uniquement: les tablettes gardent le 0.75, qui leur sert a faire
+           tenir la mise en page en 3 colonnes.
+           Place avant les feuilles de style pour que le reflow ait lieu tot. */
+        (function () {
+            if (window.matchMedia('(max-width: 767px)').matches) {
+                var m = document.querySelector('meta[name="viewport"]');
+                if (m) {
+                    m.setAttribute('content', 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover');
+                }
+            }
+        })();
+    </script>
     <title>Caisse - Matix</title>
     <script src="public/js/tenant-branding.js" defer></script>
 
@@ -38,7 +55,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="stylesheet" href="pos.css?v=20250107e">
-    <link rel="stylesheet" href="pos-mobile.css?v=20250106h">
+    <link rel="stylesheet" href="pos-mobile.css?v=20260801a">
     <link rel="stylesheet" href="css/payment-status.css?v=20260222">
 
 </head>
@@ -143,9 +160,13 @@
             <!-- Left Panel - Products -->
             <div class="pos-products" data-pos-col="0">
                 <div class="products-header" style="display: flex; align-items: center; justify-content: space-between;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
+                    <!-- Sur telephone, ce bloc replie/deplie la zone produits
+                         (recherche, categories, grille) pour degager l'ecran.
+                         togglePosProducts() ne fait rien au-dela de 767px. -->
+                    <div class="pos-collapse-title" onclick="togglePosSection('products')" style="display: flex; align-items: center; gap: 8px;">
                         <i class="fas fa-box"></i>
                         <h2 style="margin: 0;">Produits</h2>
+                        <i class="fas fa-chevron-up pos-collapse-icon" id="productsCollapseIcon"></i>
                     </div>
                     <!-- display:none initial = anti-FOUC. modules-handler.js le
                          repassera a '' au load si le module 'decoupe' est actif
@@ -224,13 +245,13 @@
                 <div class="cart-footer">
                     <!-- Bouton Voir Pré-commandes avec indicateur -->
                     <div class="precommandes-button-container">
-                        <span class="precommandes-indicator" id="precommandesIndicator" style="display: none;"></span>
+                        <span class="precommandes-indicator js-precommandes-indicator" id="precommandesIndicator" style="display: none;"></span>
                         <button class="btn-voir-precommandes" onclick="showPrecommandesModal()">
                             <i class="fas fa-eye"></i> Voir Pré-commandes
                         </button>
                         <button class="btn-voir-precommandes" onclick="ouvrirModalCommandesWeb()" style="background:#667eea;">
                             <i class="fas fa-globe"></i> Commandes Web
-                            <span id="commandesWebBadge" style="display:none; background:#dc3545; color:#fff; border-radius:10px; padding:0 7px; font-size:11px; margin-left:4px;">0</span>
+                            <span id="commandesWebBadge" class="js-commandes-web-badge" style="display:none; background:#dc3545; color:#fff; border-radius:10px; padding:0 7px; font-size:11px; margin-left:4px;">0</span>
                         </button>
                     </div>
                     
@@ -250,22 +271,23 @@
             <!-- Mobile Cart Panel (visible only on mobile/tablet) -->
             <div class="mobile-cart-panel cart-empty">
                 <div class="mobile-cart-header">
-                    <div>
+                    <div class="pos-collapse-title" onclick="togglePosSection('cart')">
                         <i class="fas fa-shopping-cart"></i>
                         <h2>Panier</h2>
                         <span class="cart-count-badge" id="mobileCartCount">0</span>
+                        <i class="fas fa-chevron-up pos-collapse-icon" id="cartCollapseIcon"></i>
                     </div>
                     <div class="mobile-cart-header-actions">
-                        <button class="btn-precommande" onclick="handlePrecommandeClick()" style="padding: 8px 12px; font-size: 12px;">
+                        <button class="btn-precommande" onclick="handlePrecommandeClick()" style="padding: 8px 12px; font-size: 12px;" title="Enregistrer le panier comme pré-commande" aria-label="Enregistrer le panier comme pré-commande">
                             <i class="fas fa-clipboard-list"></i>
                         </button>
-                        <button class="btn-clear-mobile" onclick="viderPanier()">
+                        <button class="btn-clear-mobile" onclick="viderPanier()" title="Vider le panier" aria-label="Vider le panier">
                             <i class="fas fa-trash"></i>
                         </button>
-                        <button class="btn-mobile-save" onclick="sauvegarderPanier()">
+                        <button class="btn-mobile-save" onclick="sauvegarderPanier()" title="Sauvegarder le panier" aria-label="Sauvegarder le panier">
                             <i class="fas fa-save"></i>
                         </button>
-                        <button class="btn-mobile-checkout" onclick="ouvrirModalPaiement()">
+                        <button class="btn-mobile-checkout" onclick="ouvrirModalPaiement()" title="Encaisser — valider la commande" aria-label="Encaisser, valider la commande">
                             <i class="fas fa-cash-register"></i>
                         </button>
                     </div>
@@ -285,6 +307,20 @@
                     <div class="mobile-cart-total">
                         <span>Total :</span>
                         <span id="mobileTotal">0 FCFA</span>
+                    </div>
+                    <!-- Pendant mobile des boutons du pied du panier desktop
+                         (.pos-cart est masque sur telephone, ces acces
+                         disparaissaient donc completement). Affiche uniquement
+                         sous 768px, cf pos-mobile.css. -->
+                    <div class="mobile-orders-actions">
+                        <button type="button" class="btn-mobile-orders" onclick="showPrecommandesModal()">
+                            <i class="fas fa-eye"></i> Pré-commandes
+                            <span class="precommandes-indicator js-precommandes-indicator" style="display: none;"></span>
+                        </button>
+                        <button type="button" class="btn-mobile-orders btn-mobile-orders-web" onclick="ouvrirModalCommandesWeb()">
+                            <i class="fas fa-globe"></i> Commandes Web
+                            <span class="js-commandes-web-badge" style="display:none; background:#dc3545; color:#fff; border-radius:10px; padding:0 7px; font-size:11px; margin-left:4px;">0</span>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -421,7 +457,10 @@
                 </div>
 
                 <div class="recent-transactions">
-                    <h3>Dernières transactions</h3>
+                    <h3 class="pos-collapse-title" onclick="togglePosSection('transactions')">
+                        Dernières transactions
+                        <i class="fas fa-chevron-up pos-collapse-icon" id="transactionsCollapseIcon"></i>
+                    </h3>
                     
                     <!-- Filtres de statut de paiement -->
                     <div class="payment-status-filters" id="paymentStatusFilters" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px 0;">
@@ -952,7 +991,7 @@
     <!-- Source unique des compositions de packs, generee depuis
          config/pack-compositions.js. Doit preceder pos.js. -->
     <script src="/pack-compositions.js"></script>
-    <script src="pos.js?v=packs-poids-20260729-gros-clients"></script>
+    <script src="pos.js?v=20260804-packs-poids"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
