@@ -3902,6 +3902,242 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
     }
 });
 
+// ===========================================================================
+// GET /api/external/parage?date=YYYYMMDD[&pointVente=...]
+// ===========================================================================
+//
+// Parage et marge du JOUR et du MOIS-A-DATE (du 1er a la date fournie).
+// Auth: x-api-key = MAAS_KEY_API, comme les autres routes /api/external/*
+// recentes. Destinee a DATA.
+//
+// Le calcul reutilise lib/parage.js et lib/marge-parage.js, donc EXACTEMENT
+// les memes regles que l'ecran de reconciliation: exclusions appliquees des
+// deux cotes, packs decomposes en kilos, seuil d'un gramme, et null quand il
+// n'y a rien a mesurer. Refaire le calcul ici produirait un second chiffre qui
+// finirait par diverger de ce que voit le gerant.
+//
+// Le mois est cumule JOUR PAR JOUR puis somme sur les journees mesurables -
+// et non calcule d'un bloc sur la periode. Les deux different: une journee a
+// theorique nul doit etre ecartee, sinon elle fausse le cumul.
+app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
+    try {
+        const {
+            parseDateIso, datesJusquA, formesDeDate,
+            grouperParDate, cumulerMois, cumulerMarge, agregerPointsDeVente,
+            isoDepuisForme
+        } = require('./lib/parage-periode');
+        const { calculerParage } = require('./lib/parage');
+        const { calculerMarge } = require('./lib/marge-parage');
+        const { FinanceConfig } = require('./db/models');
+        const { Op } = require('sequelize');
+
+        const dateIso = parseDateIso(req.query.date);
+        if (!dateIso) {
+            return res.status(400).json({
+                success: false,
+                message: 'date requise au format YYYYMMDD (ou YYYY-MM-DD), et doit exister'
+            });
+        }
+        const filtrePv = typeof req.query.pointVente === 'string' && req.query.pointVente.trim()
+            ? req.query.pointVente.trim() : null;
+
+        const avertissements = [];
+
+        // --- Perimetre de dates ------------------------------------------
+        const jours = datesJusquA(dateIso);
+        const toutesFormes = [];
+        for (const j of jours) toutesFormes.push(...formesDeDate(j));
+
+        // --- Categories produit -------------------------------------------
+        const produitsCat = await sequelize.query(
+            `SELECT p.nom, LOWER(c.nom) AS categorie
+             FROM produits p JOIN categories c ON c.id = p.categorie_id
+             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const normaliser = (n) => String(n || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+        const parProduitCat = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
+        try {
+            const alias = require('./config/parage-categories.json').aliases || {};
+            for (const [nom, cat] of Object.entries(alias)) {
+                const cle = normaliser(nom);
+                if (!parProduitCat.has(cle)) parProduitCat.set(cle, cat);
+            }
+        } catch (e) {
+            avertissements.push(`Alias de categories non charges: ${e.message}`);
+        }
+        const categorieDe = (produit) => parProduitCat.get(normaliser(produit)) || null;
+
+        // --- Exclusions ----------------------------------------------------
+        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
+        const exclusions = new Set(
+            String((cfg && cfg.value) || '').split(',').map((s) => s.trim()).filter(Boolean)
+        );
+        if (exclusions.size) {
+            avertissements.push(
+                `Produits exclus du calcul, des DEUX cotes: ${[...exclusions].join(', ')}.`
+            );
+        }
+
+        // --- Prix de vente catalogue (type_catalogue = 'vente') ------------
+        // Un meme nom existe en 'vente', 'abonnement' et 'inventaire', a des
+        // prix differents. Seul le prix de VENTE a un sens pour repartir le
+        // montant d'un pack entre ses composants.
+        const prixCatalogue = await sequelize.query(
+            `SELECT nom, prix_defaut FROM produits
+             WHERE type_catalogue = 'vente' AND COALESCE(archived, false) = false`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const parPrixVente = new Map();
+        for (const r of prixCatalogue) {
+            const v = parseFloat(r.prix_defaut);
+            if (Number.isFinite(v) && v > 0) parPrixVente.set(normaliser(r.nom), v);
+        }
+        const prixVente = (produit) => parPrixVente.get(normaliser(produit)) || null;
+
+        // --- Prix d'achat: catalogue fournisseur, a la date -----------------
+        const { prixAchatALaDate } = require('./lib/prix-achat-date');
+        const achat = await prixAchatALaDate(dateIso);
+        avertissements.push(...achat.avertissements);
+
+        const PACK_COMPOSITIONS = await lirePackCompositions();
+
+        // --- Chargement en UNE passe sur toute la periode -------------------
+        // Une requete par table plutot que 31 x 4: les formats de date etant
+        // melanges, on interroge toutes les formes de toutes les journees.
+        const filtreDate = { date: { [Op.in]: toutesFormes } };
+        const [stocksMatin, stocksSoir, transferts, ventes] = await Promise.all([
+            Stock.findAll({ where: { ...filtreDate, typeStock: 'matin' }, raw: true }),
+            Stock.findAll({ where: { ...filtreDate, typeStock: 'soir' }, raw: true }),
+            Transfert.findAll({ where: filtreDate, raw: true }),
+            Vente.findAll({ where: filtreDate, raw: true })
+        ]);
+
+        const parJourMatin = grouperParDate(stocksMatin);
+        const parJourSoir = grouperParDate(stocksSoir);
+        const parJourTransferts = grouperParDate(transferts);
+        const parJourVentes = grouperParDate(ventes);
+
+        const calculerUnJour = (iso) => {
+            const parPv = calculerParage({
+                stocksMatin: (parJourMatin[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+                stocksSoir: (parJourSoir[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+                transferts: (parJourTransferts[iso] || []).map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+                ventes: (parJourVentes[iso] || []).map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
+                categorieDe, exclusions, packs: PACK_COMPOSITIONS
+            });
+            return agregerPointsDeVente(parPv, filtrePv);
+        };
+
+        // Une passe par journee: le mois se cumule ENSUITE, sur les seules
+        // journees mesurables. Calculer le mois d'un bloc donnerait un
+        // vendu_kg different de celui du parage.
+        const parageParJour = jours.map(calculerUnJour);
+        const parageJour = parageParJour[parageParJour.length - 1];
+        const parageMois = cumulerMois(parageParJour);
+
+        // --- Marge ----------------------------------------------------------
+        // Ventes rangees par journee UNE fois. Refiltrer tout le mois a chaque
+        // jour donnerait 31 balayages de la meme liste, et le require dans le
+        // predicat s'executait a chaque ligne.
+        const ventesParJour = {};
+        for (const v of ventes) {
+            const iso = isoDepuisForme(v.date);
+            if (!iso) continue;
+            if (filtrePv && v.pointVente !== filtrePv) continue;
+            (ventesParJour[iso] = ventesParJour[iso] || []).push({
+                pointVente: v.pointVente, produit: v.produit,
+                nombre: v.nombre, montant: v.montant, extension: v.extension
+            });
+        }
+        const ventesDe = (iso) => ventesParJour[iso] || [];
+        const optionsMarge = {
+            packs: PACK_COMPOSITIONS, categorieDe, prixVente,
+            prixAchat: achat.prixAchat, prixAchatDefaut: achat.prixAchatDefaut, exclusions
+        };
+        const margeParJour = jours.map((iso, i) => calculerMarge({
+            parage: parageParJour[i], ventes: ventesDe(iso), ...optionsMarge
+        }));
+        const margeJour = margeParJour[margeParJour.length - 1];
+        const margeMois = cumulerMarge(margeParJour, parageParJour);
+
+        // --- Reponse ---------------------------------------------------------
+        const bloc = (parage, marge, extra) => {
+            const out = {};
+            for (const cat of ['bovin', 'ovin']) {
+                const p = parage[cat] || {};
+                const m = marge[cat] || {};
+                out[cat] = {
+                    vendu_kg: arrondi(p.vendu),
+                    theorique_kg: arrondi(p.theorique),
+                    parage_pct: p.perte === null || p.perte === undefined ? null : arrondi(p.perte * 100),
+                    stock_matin_kg: arrondi(p.matin),
+                    transferts_kg: arrondi(p.transferts),
+                    stock_soir_kg: arrondi(p.soir),
+                    ca_vendu: arrondi(m.ca_vendu),
+                    prix_vente_moyen: m.prix_vente_moyen == null ? null : arrondi(m.prix_vente_moyen),
+                    cout_theorique: arrondi(m.cout_theorique),
+                    prix_achat_moyen: m.prix_achat_moyen == null ? null : arrondi(m.prix_achat_moyen),
+                    marge: arrondi(m.marge),
+                    details: {
+                        hors_pack: {
+                            vendu_kg: arrondi(m.details && m.details.hors_pack.vendu_kg),
+                            ca_vendu: arrondi(m.details && m.details.hors_pack.ca_vendu),
+                            prix_vente_moyen: m.details && m.details.hors_pack.prix_vente_moyen == null
+                                ? null : arrondi(m.details.hors_pack.prix_vente_moyen)
+                        },
+                        pack: {
+                            vendu_kg: arrondi(m.details && m.details.pack.vendu_kg),
+                            ca_vendu: arrondi(m.details && m.details.pack.ca_vendu),
+                            prix_vente_moyen: m.details && m.details.pack.prix_vente_moyen == null
+                                ? null : arrondi(m.details.pack.prix_vente_moyen)
+                        }
+                    },
+                    ...(extra ? extra(cat, p) : {})
+                };
+                // Hypotheses de prix remontees au niveau global.
+                for (const h of (m.hypotheses || [])) {
+                    const msg = `Prix d'achat de "${h.produit}" ${h.methode} `
+                        + `(prix de vente ${h.prix_vente} -> ${Math.round(h.prix_achat_estime)}).`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+                for (const nom of (m.produits_sans_prix_achat || [])) {
+                    const msg = `Aucun prix d'achat connu pour "${nom}": ses kilos theoriques `
+                        + `ne sont PAS comptes dans le cout.`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+            }
+            return out;
+        };
+
+        res.json({
+            success: true,
+            date: dateIso,
+            point_de_vente: filtrePv || 'tous',
+            jour: bloc(parageJour, margeJour),
+            mois: {
+                periode: dateIso.slice(0, 7),
+                du: jours[0],
+                au: dateIso,
+                ...bloc(parageMois, margeMois, (cat, p) => ({ jours_mesures: p.joursMesures || 0 }))
+            },
+            avertissements
+        });
+    } catch (error) {
+        console.error('GET /api/external/parage:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Arrondi au centieme: les kilos se saisissent au dixieme, et rendre
+// 5.551115123125783e-17 a un appelant externe l'inviterait a en tirer des
+// conclusions.
+function arrondi(n) {
+    const v = parseFloat(n);
+    return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0;
+}
+
 app.get('/api/external/health', validateApiKey, (req, res) => {
     res.json({
         success: true,
