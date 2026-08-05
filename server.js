@@ -3948,37 +3948,19 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
         const toutesFormes = [];
         for (const j of jours) toutesFormes.push(...formesDeDate(j));
 
-        // --- Categories produit -------------------------------------------
-        const produitsCat = await sequelize.query(
-            `SELECT p.nom, LOWER(c.nom) AS categorie
-             FROM produits p JOIN categories c ON c.id = p.categorie_id
-             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
-            { type: sequelize.QueryTypes.SELECT }
-        );
-        const normaliser = (n) => String(n || '')
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
-        const parProduitCat = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
-        try {
-            const alias = require('./config/parage-categories.json').aliases || {};
-            for (const [nom, cat] of Object.entries(alias)) {
-                const cle = normaliser(nom);
-                if (!parProduitCat.has(cle)) parProduitCat.set(cle, cat);
-            }
-        } catch (e) {
-            avertissements.push(`Alias de categories non charges: ${e.message}`);
-        }
-        const categorieDe = (produit) => parProduitCat.get(normaliser(produit)) || null;
-
-        // --- Exclusions ----------------------------------------------------
-        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
-        const exclusions = new Set(
-            String((cfg && cfg.value) || '').split(',').map((s) => s.trim()).filter(Boolean)
-        );
+        // --- Categories, exclusions: contexte PARTAGE avec l'ecran ---------
+        // Le meme module sert /api/reconciliation/parage. Deux copies auraient
+        // fini par rendre deux chiffres pour la meme journee.
+        const { chargerContexteParage } = require('./lib/parage-contexte');
+        const contexte = await chargerContexteParage(sequelize);
+        const { categorieDe, exclusions } = contexte;
+        avertissements.push(...contexte.avertissements);
         if (exclusions.size) {
             avertissements.push(
                 `Produits exclus du calcul, des DEUX cotes: ${[...exclusions].join(', ')}.`
             );
         }
+        const normaliser = require('./lib/parage-contexte').normaliserNom;
 
         // --- Prix de vente catalogue (type_catalogue = 'vente') ------------
         // Un meme nom existe en 'vente', 'abonnement' et 'inventaire', a des
@@ -5848,47 +5830,13 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
         // Compositions par defaut lues en base, comme les clients.
         const PACK_COMPOSITIONS = await lirePackCompositions();
 
-        // Produit -> bovin | ovin.
-        //
-        // La comparaison ignore la casse et les accents: l'inventaire contient
-        // 'Patte de mouton' la ou le catalogue dit 'Patte de Mouton', et une
-        // comparaison stricte perdait la ligne.
-        const normaliser = (n) => String(n || '')
-            .normalize('NFD').replace(/[̀-ͯ]/g, '')
-            .trim().toLowerCase();
-
-        const produitsCat = await sequelize.query(
-            `SELECT p.nom, LOWER(c.nom) AS categorie
-             FROM produits p JOIN categories c ON c.id = p.categorie_id
-             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
-            { type: sequelize.QueryTypes.SELECT }
-        );
-        const parProduit = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
-
-        // Puis les alias de config, pour les noms d'inventaire que le catalogue
-        // ne categorise pas ('Boeuf', 'Veau'). Sans eux, le stock de viande
-        // n'etait rattache a rien: denominateur nul alors que des dizaines de
-        // kilos etaient vendus. Le catalogue reste prioritaire.
-        try {
-            const alias = require('./config/parage-categories.json').aliases || {};
-            for (const [nom, cat] of Object.entries(alias)) {
-                const cle = normaliser(nom);
-                if (!parProduit.has(cle)) parProduit.set(cle, cat);
-            }
-        } catch (e) {
-            console.warn('parage: alias de categories non charges:', e.message);
-        }
-
-        const categorieDe = (produit) => parProduit.get(normaliser(produit)) || null;
-
-        // Exclusions: liste de produits retires des DEUX cotes du rapport.
-        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
-        const exclusions = new Set(
-            String((cfg && cfg.value) || '')
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-        );
+        // Categories et exclusions: contexte PARTAGE avec /api/external/parage.
+        // Ces deux routes doivent partir des memes categories et des memes
+        // exclusions, sinon elles rendent deux chiffres pour la meme journee.
+        const { chargerContexteParage } = require('./lib/parage-contexte');
+        const { categorieDe, exclusions, avertissements: avertContexte } =
+            await chargerContexteParage(sequelize);
+        avertContexte.forEach((a) => console.warn('parage:', a));
 
         // Les tables melangent les formats de date selon leur anciennete:
         // /api/ventes-date et la reconciliation font deja un OR sur plusieurs
