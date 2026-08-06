@@ -3902,6 +3902,285 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
     }
 });
 
+// ===========================================================================
+// GET /api/external/parage?date=YYYYMMDD[&pointVente=...]
+// ===========================================================================
+//
+// Parage et marge du JOUR et du MOIS-A-DATE (du 1er a la date fournie).
+// Auth: x-api-key = MAAS_KEY_API, comme les autres routes /api/external/*
+// recentes. Destinee a DATA.
+//
+// Le calcul reutilise lib/parage.js et lib/marge-parage.js, donc EXACTEMENT
+// les memes regles que l'ecran de reconciliation: exclusions appliquees des
+// deux cotes, packs decomposes en kilos, seuil d'un gramme, et null quand il
+// n'y a rien a mesurer. Refaire le calcul ici produirait un second chiffre qui
+// finirait par diverger de ce que voit le gerant.
+//
+// Le mois est cumule JOUR PAR JOUR puis somme sur les journees mesurables -
+// et non calcule d'un bloc sur la periode. Les deux different: une journee a
+// theorique nul doit etre ecartee, sinon elle fausse le cumul.
+app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
+    try {
+        const {
+            parseDateIso, datesJusquA, formesDeDate,
+            grouperParDate, cumulerMois, cumulerMarge, agregerPointsDeVente,
+            isoDepuisForme
+        } = require('./lib/parage-periode');
+        const { calculerParage, CATEGORIES } = require('./lib/parage');
+        const { calculerMarge } = require('./lib/marge-parage');
+        const { FinanceConfig } = require('./db/models');
+        const { Op } = require('sequelize');
+
+        const dateIso = parseDateIso(req.query.date);
+        if (!dateIso) {
+            return res.status(400).json({
+                success: false,
+                message: 'date requise au format YYYYMMDD (ou YYYY-MM-DD), et doit exister'
+            });
+        }
+        const filtrePv = typeof req.query.pointVente === 'string' && req.query.pointVente.trim()
+            ? req.query.pointVente.trim() : null;
+
+        // Un point de vente inconnu ne doit PAS rendre 200 avec des zeros.
+        // L'appelant saisit ce nom a la main (registre des partenaires cote
+        // DATA): une faute de frappe rendait "0 kg vendus, 0 F de marge", que
+        // rien ne distinguait d'une journee sans activite.
+        if (filtrePv) {
+            const connus = await sequelize.query(
+                'SELECT nom FROM points_vente ORDER BY nom',
+                { type: sequelize.QueryTypes.SELECT }
+            );
+            const noms = connus.map((r) => r.nom);
+            if (!noms.includes(filtrePv)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `point de vente inconnu: "${filtrePv}". Connus: ${noms.join(', ')}`
+                });
+            }
+        }
+
+        const avertissements = [];
+
+        // --- Perimetre de dates ------------------------------------------
+        const jours = datesJusquA(dateIso);
+        const toutesFormes = [];
+        for (const j of jours) toutesFormes.push(...formesDeDate(j));
+
+        // --- Categories, exclusions: contexte PARTAGE avec l'ecran ---------
+        // Le meme module sert /api/reconciliation/parage. Deux copies auraient
+        // fini par rendre deux chiffres pour la meme journee.
+        const { chargerContexteParage } = require('./lib/parage-contexte');
+        const contexte = await chargerContexteParage(sequelize);
+        const { categorieDe, exclusions } = contexte;
+        avertissements.push(...contexte.avertissements);
+        if (exclusions.size) {
+            avertissements.push(
+                `Produits exclus du calcul, des DEUX cotes: ${[...exclusions].join(', ')}.`
+            );
+        }
+        const normaliser = require('./lib/parage-contexte').normaliserNom;
+
+        // --- Prix de vente catalogue (type_catalogue = 'vente') ------------
+        // Un meme nom existe en 'vente', 'abonnement' et 'inventaire', a des
+        // prix differents. Seul le prix de VENTE a un sens pour repartir le
+        // montant d'un pack entre ses composants.
+        const prixCatalogue = await sequelize.query(
+            `SELECT nom, prix_defaut FROM produits
+             WHERE type_catalogue = 'vente' AND COALESCE(archived, false) = false`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        const parPrixVente = new Map();
+        for (const r of prixCatalogue) {
+            const v = parseFloat(r.prix_defaut);
+            if (Number.isFinite(v) && v > 0) parPrixVente.set(normaliser(r.nom), v);
+        }
+        const prixVente = (produit) => parPrixVente.get(normaliser(produit)) || null;
+
+        // --- Prix d'achat: catalogue fournisseur, a la date -----------------
+        // Resolveur charge UNE fois, interroge JOUR PAR JOUR. Le prix du boeuf
+        // varie dans le mois (3735 a 4435 F/kg sur juillet 2026): le figer a la
+        // date demandee valorisait les 31 journees au prix du dernier jour,
+        // jusqu'a 40% d'ecart sur la marge du mois. routes/finance-creances.js
+        // resout deja par date de vente; cette route s'en ecartait.
+        const { creerResolveurPrixAchat } = require('./lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateIso);
+
+        const PACK_COMPOSITIONS = await lirePackCompositions();
+
+        // --- Chargement en UNE passe sur toute la periode -------------------
+        // Une requete par table plutot que 31 x 4: les formats de date etant
+        // melanges, on interroge toutes les formes de toutes les journees.
+        const filtreDate = { date: { [Op.in]: toutesFormes } };
+        const [stocksMatin, stocksSoir, transferts, ventes] = await Promise.all([
+            Stock.findAll({ where: { ...filtreDate, typeStock: 'matin' }, raw: true }),
+            Stock.findAll({ where: { ...filtreDate, typeStock: 'soir' }, raw: true }),
+            Transfert.findAll({ where: filtreDate, raw: true }),
+            Vente.findAll({ where: filtreDate, raw: true })
+        ]);
+
+        const parJourMatin = grouperParDate(stocksMatin);
+        const parJourSoir = grouperParDate(stocksSoir);
+        const parJourTransferts = grouperParDate(transferts);
+        const parJourVentes = grouperParDate(ventes);
+
+        const calculerUnJour = (iso) => {
+            const parPv = calculerParage({
+                stocksMatin: (parJourMatin[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+                stocksSoir: (parJourSoir[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
+                transferts: (parJourTransferts[iso] || []).map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+                ventes: (parJourVentes[iso] || []).map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
+                categorieDe, exclusions, packs: PACK_COMPOSITIONS
+            });
+            return agregerPointsDeVente(parPv, filtrePv);
+        };
+
+        // Une passe par journee: le mois se cumule ENSUITE, sur les seules
+        // journees mesurables. Calculer le mois d'un bloc donnerait un
+        // vendu_kg different de celui du parage.
+        const parageParJour = jours.map(calculerUnJour);
+        const parageJour = parageParJour[parageParJour.length - 1];
+        const parageMois = cumulerMois(parageParJour);
+
+        // --- Marge ----------------------------------------------------------
+        // Ventes rangees par journee UNE fois. Refiltrer tout le mois a chaque
+        // jour donnerait 31 balayages de la meme liste, et le require dans le
+        // predicat s'executait a chaque ligne.
+        const ventesParJour = {};
+        for (const v of ventes) {
+            const iso = isoDepuisForme(v.date);
+            if (!iso) continue;
+            if (filtrePv && v.pointVente !== filtrePv) continue;
+            (ventesParJour[iso] = ventesParJour[iso] || []).push({
+                pointVente: v.pointVente, produit: v.produit,
+                nombre: v.nombre, montant: v.montant, extension: v.extension
+            });
+        }
+        const ventesDe = (iso) => ventesParJour[iso] || [];
+        const margeParJour = jours.map((iso, i) => {
+            const prix = resolveurPrix.pourDate(iso);
+            return calculerMarge({
+                parage: parageParJour[i], ventes: ventesDe(iso),
+                packs: PACK_COMPOSITIONS, categorieDe, prixVente,
+                prixAchat: prix.prixAchat, prixAchatDefaut: prix.prixAchatDefaut,
+                exclusions
+            });
+        });
+        // Les avertissements du resolveur ne sont connus qu'apres usage: il ne
+        // signale un lot manquant que lorsqu'une journee le rencontre.
+        avertissements.push(...resolveurPrix.avertissements);
+        const origineBoeuf = resolveurPrix.pourDate(dateIso).origineBoeuf;
+        const margeJour = margeParJour[margeParJour.length - 1];
+        const margeMois = cumulerMarge(margeParJour, parageParJour);
+
+        // --- Reponse ---------------------------------------------------------
+        const bloc = (parage, marge, extra) => {
+            const out = {};
+            // Les categories du calcul, pas une copie: une troisieme categorie
+            // ajoutee dans lib/parage.js serait calculee mais jamais renvoyee.
+            for (const cat of CATEGORIES) {
+                const p = parage[cat] || {};
+                const m = marge[cat] || {};
+                out[cat] = {
+                    vendu_kg: arrondi(p.vendu),
+                    theorique_kg: arrondi(p.theorique),
+                    parage_pct: p.perte === null || p.perte === undefined ? null : arrondi(p.perte * 100),
+                    stock_matin_kg: arrondi(p.matin),
+                    transferts_kg: arrondi(p.transferts),
+                    stock_soir_kg: arrondi(p.soir),
+                    ca_vendu: arrondi(m.ca_vendu),
+                    prix_vente_moyen: m.prix_vente_moyen == null ? null : arrondi(m.prix_vente_moyen),
+                    cout_theorique: arrondi(m.cout_theorique),
+                    prix_achat_moyen: m.prix_achat_moyen == null ? null : arrondi(m.prix_achat_moyen),
+                    marge: m.marge === null || m.marge === undefined ? null : arrondi(m.marge),
+                    details: {
+                        hors_pack: {
+                            vendu_kg: arrondi(m.details && m.details.hors_pack.vendu_kg),
+                            ca_vendu: arrondi(m.details && m.details.hors_pack.ca_vendu),
+                            prix_vente_moyen: m.details && m.details.hors_pack.prix_vente_moyen == null
+                                ? null : arrondi(m.details.hors_pack.prix_vente_moyen)
+                        },
+                        pack: {
+                            vendu_kg: arrondi(m.details && m.details.pack.vendu_kg),
+                            ca_vendu: arrondi(m.details && m.details.pack.ca_vendu),
+                            prix_vente_moyen: m.details && m.details.pack.prix_vente_moyen == null
+                                ? null : arrondi(m.details.pack.prix_vente_moyen)
+                        }
+                    },
+                    ...(m.jours_ignores
+                        ? {
+                            // Journees ou le cout etait inconnu (aucun stock
+                            // saisi): leur CA existe, il n'entre simplement pas
+                            // dans la marge.
+                            jours_ignores: m.jours_ignores,
+                            ca_ignore: arrondi(m.ca_ignore),
+                            vendu_kg_ignore: arrondi(m.vendu_kg_ignore)
+                        }
+                        : {}),
+                    ...(extra ? extra(cat, p) : {})
+                };
+                // Hypotheses de prix remontees au niveau global.
+                for (const h of (m.hypotheses || [])) {
+                    const msg = `Prix d'achat de "${h.produit}" ${h.methode} `
+                        + `(prix de vente ${h.prix_vente} -> ${Math.round(h.prix_achat_estime)}).`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+                if (m.ca_ignore > 0) {
+                    const msg = `${cat}: ${m.jours_ignores} journee(s) ecartee(s) du calcul de marge `
+                        + `faute de stock theorique - ${Math.round(m.ca_ignore).toLocaleString('fr-FR')} F `
+                        + `de ventes n'y figurent pas.`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+                for (const nom of (m.produits_sans_prix_achat || [])) {
+                    const msg = `Aucun prix d'achat connu pour "${nom}": ses kilos theoriques `
+                        + `ne sont PAS comptes dans le cout.`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+                // Stock theorique negatif: le soir depasse matin + transferts,
+                // le produit est ENTRE en stock. Ecarte du cout, mais dit -
+                // sinon la difference entre le theorique de la categorie et la
+                // somme des kilos coutes reste inexplicable pour l'appelant.
+                for (const n of (m.kgNegatifs || [])) {
+                    const msg = `"${n.produit}" (${cat}): stock theorique negatif `
+                        + `(${arrondi(n.kg)} kg), donc ecarte du cout - saisie a verifier `
+                        + `ou sous-produit de decoupe.`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+            }
+            return out;
+        };
+
+        res.json({
+            success: true,
+            date: dateIso,
+            point_de_vente: filtrePv || 'tous',
+            source_prix_achat: origineBoeuf,
+            jour: bloc(parageJour, margeJour),
+            mois: {
+                periode: dateIso.slice(0, 7),
+                du: jours[0],
+                au: dateIso,
+                ...bloc(parageMois, margeMois, (cat, p) => ({ jours_mesures: p.joursMesures || 0 }))
+            },
+            avertissements
+        });
+    } catch (error) {
+        console.error('GET /api/external/parage:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Arrondi au centieme: les kilos se saisissent au dixieme, et rendre
+// 5.551115123125783e-17 a un appelant externe l'inviterait a en tirer des
+// conclusions.
+// Absent ou non fini rend null, PAS zero. Un zero annonce une mesure - "aucun
+// kilo vendu" - la ou il n'y avait rien a mesurer: categorie absente du
+// resultat, cout inconnu, journee sans saisie. L'appelant additionne ces
+// chiffres; un zero invente s'y fond sans laisser de trace, un null non.
+function arrondi(n) {
+    const v = parseFloat(n);
+    return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
+}
+
 app.get('/api/external/health', validateApiKey, (req, res) => {
     res.json({
         success: true,
@@ -5612,47 +5891,13 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
         // Compositions par defaut lues en base, comme les clients.
         const PACK_COMPOSITIONS = await lirePackCompositions();
 
-        // Produit -> bovin | ovin.
-        //
-        // La comparaison ignore la casse et les accents: l'inventaire contient
-        // 'Patte de mouton' la ou le catalogue dit 'Patte de Mouton', et une
-        // comparaison stricte perdait la ligne.
-        const normaliser = (n) => String(n || '')
-            .normalize('NFD').replace(/[̀-ͯ]/g, '')
-            .trim().toLowerCase();
-
-        const produitsCat = await sequelize.query(
-            `SELECT p.nom, LOWER(c.nom) AS categorie
-             FROM produits p JOIN categories c ON c.id = p.categorie_id
-             WHERE LOWER(c.nom) IN ('bovin', 'ovin')`,
-            { type: sequelize.QueryTypes.SELECT }
-        );
-        const parProduit = new Map(produitsCat.map((r) => [normaliser(r.nom), r.categorie]));
-
-        // Puis les alias de config, pour les noms d'inventaire que le catalogue
-        // ne categorise pas ('Boeuf', 'Veau'). Sans eux, le stock de viande
-        // n'etait rattache a rien: denominateur nul alors que des dizaines de
-        // kilos etaient vendus. Le catalogue reste prioritaire.
-        try {
-            const alias = require('./config/parage-categories.json').aliases || {};
-            for (const [nom, cat] of Object.entries(alias)) {
-                const cle = normaliser(nom);
-                if (!parProduit.has(cle)) parProduit.set(cle, cat);
-            }
-        } catch (e) {
-            console.warn('parage: alias de categories non charges:', e.message);
-        }
-
-        const categorieDe = (produit) => parProduit.get(normaliser(produit)) || null;
-
-        // Exclusions: liste de produits retires des DEUX cotes du rapport.
-        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
-        const exclusions = new Set(
-            String((cfg && cfg.value) || '')
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
-        );
+        // Categories et exclusions: contexte PARTAGE avec /api/external/parage.
+        // Ces deux routes doivent partir des memes categories et des memes
+        // exclusions, sinon elles rendent deux chiffres pour la meme journee.
+        const { chargerContexteParage } = require('./lib/parage-contexte');
+        const { categorieDe, exclusions, avertissements: avertContexte } =
+            await chargerContexteParage(sequelize);
+        avertContexte.forEach((a) => console.warn('parage:', a));
 
         // Les tables melangent les formats de date selon leur anciennete:
         // /api/ventes-date et la reconciliation font deja un OR sur plusieurs
