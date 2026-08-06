@@ -253,6 +253,28 @@ describe('cas limites', () => {
         expect(r.prix_vente_moyen).toBeNull();
     });
 
+    // Le stock du soir peut depasser matin + transferts: le produit est ENTRE
+    // en stock au lieu d'en sortir - c'est le cas du dechet, cree par la
+    // decoupe. Compte tel quel, ses kilos negatifs SOUSTRAYAIENT du cout et
+    // reduisaient aussi le denominateur du prix d'achat moyen, qui montait sans
+    // qu'aucun prix n'ait bouge. Il est ecarte, et nomme.
+    test('un theorique negatif ne diminue ni le cout ni le prix d achat moyen', () => {
+        const parProduit = {
+            'Boeuf en détail': { theorique: 10, vendu: 10 },
+            'Déchet': { theorique: -4, vendu: 0 }
+        };
+        const r = marge({
+            bovin: { theorique: 6, vendu: 10, ratio: 10 / 6, perte: 1 - 10 / 6, parProduit },
+            ovin: { theorique: 0, vendu: 0, ratio: null, perte: null, parProduit: {} }
+        }, [{ pointVente: 'M', produit: 'Boeuf en détail', nombre: 10, montant: 48000 }]).bovin;
+
+        // 10 kg a 4320 (4800 de vente moins la marge supposee de 10%, faute de
+        // prix d'achat propre), et RIEN de soustrait pour les -4 kg.
+        expect(r.cout_theorique).toBe(10 * 4320);
+        expect(r.prix_achat_moyen).toBe(4320);   // et non 43200 / 6 = 7200
+        expect(r.kgNegatifs).toEqual([{ produit: 'Déchet', kg: -4 }]);
+    });
+
     test('un produit exclu ne compte ni en kilos ni en chiffre d affaires', () => {
         const ventes = [{ pointVente: 'M', produit: 'Foie', nombre: 4, montant: 16000 }];
         const r = calculerMarge({

@@ -3926,7 +3926,7 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
             grouperParDate, cumulerMois, cumulerMarge, agregerPointsDeVente,
             isoDepuisForme
         } = require('./lib/parage-periode');
-        const { calculerParage } = require('./lib/parage');
+        const { calculerParage, CATEGORIES } = require('./lib/parage');
         const { calculerMarge } = require('./lib/marge-parage');
         const { FinanceConfig } = require('./db/models');
         const { Op } = require('sequelize');
@@ -4075,7 +4075,9 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
         // --- Reponse ---------------------------------------------------------
         const bloc = (parage, marge, extra) => {
             const out = {};
-            for (const cat of ['bovin', 'ovin']) {
+            // Les categories du calcul, pas une copie: une troisieme categorie
+            // ajoutee dans lib/parage.js serait calculee mais jamais renvoyee.
+            for (const cat of CATEGORIES) {
                 const p = parage[cat] || {};
                 const m = marge[cat] || {};
                 out[cat] = {
@@ -4133,6 +4135,16 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
                         + `ne sont PAS comptes dans le cout.`;
                     if (!avertissements.includes(msg)) avertissements.push(msg);
                 }
+                // Stock theorique negatif: le soir depasse matin + transferts,
+                // le produit est ENTRE en stock. Ecarte du cout, mais dit -
+                // sinon la difference entre le theorique de la categorie et la
+                // somme des kilos coutes reste inexplicable pour l'appelant.
+                for (const n of (m.kgNegatifs || [])) {
+                    const msg = `"${n.produit}" (${cat}): stock theorique negatif `
+                        + `(${arrondi(n.kg)} kg), donc ecarte du cout - saisie a verifier `
+                        + `ou sous-produit de decoupe.`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
             }
             return out;
         };
@@ -4160,9 +4172,13 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
 // Arrondi au centieme: les kilos se saisissent au dixieme, et rendre
 // 5.551115123125783e-17 a un appelant externe l'inviterait a en tirer des
 // conclusions.
+// Absent ou non fini rend null, PAS zero. Un zero annonce une mesure - "aucun
+// kilo vendu" - la ou il n'y avait rien a mesurer: categorie absente du
+// resultat, cout inconnu, journee sans saisie. L'appelant additionne ces
+// chiffres; un zero invente s'y fond sans laisser de trace, un null non.
 function arrondi(n) {
     const v = parseFloat(n);
-    return Number.isFinite(v) ? Math.round(v * 100) / 100 : 0;
+    return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
 }
 
 app.get('/api/external/health', validateApiKey, (req, res) => {
