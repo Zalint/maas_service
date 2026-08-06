@@ -846,6 +846,16 @@ async function updateSchema() {
                     CHECK (depot_mata IS NULL OR depot_mata >= 0)
             `);
             console.log('Colonne clotures_caisse.depot_mata verifiee');
+
+            // depot_precedent_recupere: le depot Mata precedent a-t-il ete
+            // recupere ? Nullable, et sans valeur par defaut: false voudrait
+            // dire "non recupere", ce qui est une AFFIRMATION. Les clotures
+            // anterieures n'ont jamais eu la question, elles restent a NULL.
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS depot_precedent_recupere BOOLEAN
+            `);
+            console.log('Colonne clotures_caisse.depot_precedent_recupere verifiee');
         }
 
         // adresse_client en TEXT (et non VARCHAR(255)).

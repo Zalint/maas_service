@@ -1599,12 +1599,25 @@ router.get('/cash-stock', async (req, res) => {
         if (isNaN(dParsed.getTime())) {
             return res.status(400).json({ success: false, error: 'invalid date' });
         }
-        // Pas de Valeur dans le futur.
+        // Pas de Valeur dans le futur - avec une tolerance d'un jour.
+        //
+        // todayISO vient de toISOString(), donc de l'UTC, alors que l'interface
+        // propose la date LOCALE du navigateur. A l'est de Greenwich les deux
+        // divergent pendant les premieres heures de la journee: a Dubai (UTC+4),
+        // le client proposait le 07 pendant que le serveur en etait au 06, et
+        // Cash et Stock rejetait sa propre date par defaut plusieurs heures par
+        // jour. Un client peut etre jusqu'a 14 h en avance sur UTC; un jour de
+        // tolerance couvre tous les fuseaux, et au-dela l'erreur est reelle.
         const todayParsed = new Date(todayISO + 'T00:00:00Z');
-        if (dParsed > todayParsed) {
+        const borneHaute = new Date(todayParsed.getTime() + 24 * 3600 * 1000);
+        if (dParsed > borneHaute) {
             return res.status(400).json({
                 success: false,
-                error: 'date ne peut pas etre dans le futur'
+                error: 'date ne peut pas etre dans le futur',
+                // Distingue le refus d'une saisie absurde d'une journee
+                // simplement pas encore renseignee: l'interface n'affiche une
+                // erreur rouge que pour le premier cas.
+                code: 'date_futur'
             });
         }
 

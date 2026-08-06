@@ -46,6 +46,15 @@ const ClotureCaisse = sequelize.define('ClotureCaisse', {
             + 'déduit à ce titre par Finance > Cash et Stock. NULL = non '
             + 'renseigné, à ne pas confondre avec 0 = aucun dépôt.'
     },
+    depot_precedent_recupere: {
+        type: DataTypes.BOOLEAN,
+        allowNull: true,
+        comment: 'Le dépôt Mata précédent a-t-il été récupéré ? Demandé (et '
+            + 'obligatoire) dès qu\'un dépôt est saisi, quand un dépôt antérieur '
+            + 'existe. NULL = question non posée ou sans objet, à ne pas '
+            + 'confondre avec false = non récupéré. Traçabilité seule : '
+            + 'n\'entre dans AUCUN calcul de Finance > Cash et Stock.'
+    },
     commercial: {
         type: DataTypes.STRING(150),
         allowNull: false,
