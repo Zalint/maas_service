@@ -2025,9 +2025,16 @@
         const actif = (p) => !plPostesNeutralises.has(p.cle);
         // Le PL affiche se recalcule sur les postes actifs. Il vaut exactement
         // d.pl quand rien n'est neutralise - verifie a l'ecran.
-        const pl = postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0);
-        const plColor = pl >= 0 ? 'success' : 'danger';
+        // Sans neutralisation, on reprend le PL du SERVEUR tel quel. Le
+        // recalcul somme des montants deja arrondis au centime, la ou le
+        // serveur arrondit le total: les deux peuvent differer de quelques
+        // centimes, et l'ecran afficherait alors un chiffre qui n'est celui de
+        // personne. Le recalcul ne sert qu'a la simulation.
         const simulation = plPostesNeutralises.size > 0;
+        const pl = simulation
+            ? postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0)
+            : (d.pl || 0);
+        const plColor = pl >= 0 ? 'success' : 'danger';
         const ecart = pl - (d.pl || 0);
 
         // Marge brute = ventes - avances + variation stock, soit la marge sur
@@ -2037,7 +2044,11 @@
         const margeBrute = postes
             .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle) && actif(p))
             .reduce((s, p) => s + p.signe * p.montant, 0);
-        const ventesActives = actif(postes[0]) ? (d.total_ventes || 0) : 0;
+        // Retrouve par sa CLE, pas par sa position: postes[0] se trouve etre
+        // les ventes aujourd'hui, mais reordonner le tableau ferait alors
+        // diviser par le mauvais montant, en silence.
+        const posteVentes = postes.find((p) => p.cle === 'ventes');
+        const ventesActives = (posteVentes && actif(posteVentes)) ? (d.total_ventes || 0) : 0;
         // Pourcentage du CHIFFRE D'AFFAIRES. Sans ventes, il n'y a pas de taux
         // a calculer: on affiche un tiret plutot qu'un 0% trompeur.
         const margeBrutePct = ventesActives > 0 ? (margeBrute / ventesActives) * 100 : null;
@@ -2331,7 +2342,12 @@
         // reprend le dernier snapshot de stock: il ne mesure rien.
         const aucuneCloture = !(cash.par_pv && cash.par_pv.length);
         const aucunStock = !stock.soir_date_utilisee;
-        if (d.aucune_donnee || (aucuneCloture && aucunStock)) {
+        // Le solde fournisseur compte aussi: il vient des ventes du mois, pas
+        // du stock ni des clotures. Sans lui dans la condition, une periode
+        // avec des ventes mais aucun stock saisi affichait "pas encore de
+        // donnees" en masquant une dette bien reelle.
+        const aucunSolde = !solde;
+        if (d.aucune_donnee || (aucuneCloture && aucunStock && aucunSolde)) {
             resultEl.innerHTML = '<div class="alert alert-secondary mb-0">'
                 + `<i class="bi bi-calendar-x"></i> Pas encore de données pour le ${esc(d.date)} : `
                 + 'ni clôture de caisse, ni stock du soir saisi.</div>';

@@ -17799,7 +17799,7 @@ app.get('/api/clotures-caisse/dernier-depot', checkAuth, async (req, res) => {
         });
     } catch (error) {
         console.error('Erreur dernier-depot GET:', error.message);
-        res.status(500).json({ success: false, message: 'Erreur serveur', error: error.message });
+        res.status(500).json({ success: false, message: 'Erreur serveur' });
     }
 });
 
@@ -17905,7 +17905,7 @@ app.get('/api/clotures-caisse/historique', checkAuth, async (req, res) => {
         });
     } catch (error) {
         console.error('Erreur clotures historique GET:', error.message);
-        res.status(500).json({ success: false, message: 'Erreur serveur', error: error.message });
+        res.status(500).json({ success: false, message: 'Erreur serveur' });
     }
 });
 
