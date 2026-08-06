@@ -835,6 +835,17 @@ async function updateSchema() {
                     CHECK (montant_total_caisse IS NULL OR montant_total_caisse >= 0)
             `);
             console.log('Colonne clotures_caisse.montant_total_caisse verifiee');
+
+            // depot_mata: montant verse a Mata, deduit par Cash et Stock.
+            // Meme regime que ci-dessus - NULL autorise, pas de back-fill: les
+            // clotures anterieures n'avaient pas l'information, et un 0 pose
+            // d'office ferait passer "on ne sait pas" pour "aucun depot".
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS depot_mata NUMERIC(12, 2)
+                    CHECK (depot_mata IS NULL OR depot_mata >= 0)
+            `);
+            console.log('Colonne clotures_caisse.depot_mata verifiee');
         }
 
         // adresse_client en TEXT (et non VARCHAR(255)).

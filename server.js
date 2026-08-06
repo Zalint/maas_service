@@ -5,6 +5,7 @@ require('dotenv').config({
 
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const fs = require('fs');
 const { parse } = require('csv-parse');
 const { stringify } = require('csv-stringify');
@@ -258,6 +259,16 @@ const schemaPret = (async function() {
 schemaPret.catch(() => {});
 
 // Middleware
+//
+// Compression EN PREMIER: elle doit envelopper tout ce qui ecrit une reponse,
+// aussi bien express.static que les routes API. Placee plus bas, elle ne
+// couvrirait pas les middlewares deja enregistres.
+//
+// index.html charge ~1,4 Mo de JavaScript non minifie, dont 800 Ko pour le seul
+// script.js. En local le cout ne se voit pas; sur Render chaque octet traverse
+// le reseau, et c'est la que se joue l'essentiel du temps de demarrage.
+app.use(compression());
+
 // Allow all origins in production for Render
 app.use(cors({
     origin: true, // Allow any origin
@@ -17741,6 +17752,112 @@ app.get('/api/clotures-caisse/estimatif', checkAuth, async (req, res) => {
     }
 });
 
+// Historique des clotures PASSEES, tous points de vente confondus.
+//
+// Route separee, et non un elargissement de GET /api/clotures-caisse: cette
+// derniere exige date + pointVente et sert la modale du jour. Y greffer un mode
+// "tout" aurait rendu ses deux parametres optionnels, donc facile a appeler
+// sans filtre par erreur - alors qu'elle est ouverte a TOUT utilisateur
+// connecte et qu'un montant de caisse par point de vente n'a pas a circuler.
+//
+// Reservee aux roles qui voient deja tous les points de vente (cf
+// canAccessAllPointsVente, server.js#1190).
+app.get('/api/clotures-caisse/historique', checkAuth, async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superutilisateur', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        // La forme ne suffit pas: il faut que la date EXISTE. Le motif seul
+        // acceptait "32-13-2026" et le rendait en "2026-13-32", qui partait
+        // vers Postgres et y produisait une erreur - donc un 500 la ou un 400
+        // explicite etait attendu. Meme chose pour "2026-13-45", que la branche
+        // ISO laissait passer sans le moindre controle.
+        const dateReelle = (a, mo, j) => {
+            const d = new Date(Date.UTC(a, mo - 1, j));
+            return d.getUTCFullYear() === a && d.getUTCMonth() === mo - 1 && d.getUTCDate() === j;
+        };
+        const toIso = (s) => {
+            if (!s) return null;
+            const t = String(s);
+            let a; let mo; let j;
+            const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (iso) {
+                [, a, mo, j] = iso.map(Number);
+                return dateReelle(a, mo, j) ? t : null;
+            }
+            const fr = t.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            if (!fr) return null;
+            j = Number(fr[1]); mo = Number(fr[2]); a = Number(fr[3]);
+            return dateReelle(a, mo, j) ? `${fr[3]}-${fr[2]}-${fr[1]}` : null;
+        };
+        const dateDebut = toIso(req.query.dateDebut);
+        const dateFin = toIso(req.query.dateFin);
+        if (req.query.dateDebut && !dateDebut) {
+            return res.status(400).json({ success: false, message: 'dateDebut invalide (YYYY-MM-DD ou DD-MM-YYYY)' });
+        }
+        if (req.query.dateFin && !dateFin) {
+            return res.status(400).json({ success: false, message: 'dateFin invalide (YYYY-MM-DD ou DD-MM-YYYY)' });
+        }
+        if (dateDebut && dateFin && dateDebut > dateFin) {
+            return res.status(400).json({ success: false, message: 'dateDebut doit preceder dateFin' });
+        }
+
+        // Op est requis DANS le handler, comme partout ailleurs dans ce
+        // fichier: il n'y a pas d'import global, et node --check ne signale
+        // pas une variable absente.
+        const { Op } = require('sequelize');
+        const where = {};
+        if (dateDebut && dateFin) where.date = { [Op.between]: [dateDebut, dateFin] };
+        else if (dateDebut) where.date = { [Op.gte]: dateDebut };
+        else if (dateFin) where.date = { [Op.lte]: dateFin };
+        // Express rend un TABLEAU pour ?pointVente=a&pointVente=b, et un objet
+        // pour ?pointVente[x]=1. Passes tels quels a Sequelize, le premier
+        // devient un IN non voulu et le second est lu comme des operateurs.
+        // On n'accepte donc qu'une chaine.
+        if (req.query.pointVente !== undefined) {
+            if (typeof req.query.pointVente !== 'string') {
+                return res.status(400).json({ success: false, message: 'pointVente doit etre une valeur unique' });
+            }
+            const pv = req.query.pointVente.trim();
+            if (pv) where.point_de_vente = pv;
+        }
+        // Par defaut on ne montre que la DERNIERE cloture de chaque jour et
+        // point de vente: les rectifications successives d'une meme journee
+        // interessent le detail du jour, pas la vue d'ensemble.
+        if (req.query.toutes !== '1') where.is_latest = true;
+
+        // Borne dure: une consultation d'historique ne doit pas pouvoir
+        // rapatrier des annees de clotures d'un coup.
+        const limitDemandee = parseInt(req.query.limit, 10);
+        const limit = Number.isFinite(limitDemandee) && limitDemandee > 0
+            ? Math.min(limitDemandee, 500)
+            : 200;
+
+        const clotures = await ClotureCaisse.findAll({
+            where,
+            order: [['date', 'DESC'], ['point_de_vente', 'ASC'], ['created_at', 'DESC']],
+            limit
+        });
+        res.json({
+            success: true,
+            count: clotures.length,
+            // Dit explicitement si la liste a ete coupee: sans cela, 200 lignes
+            // se lisent comme "il n'y en a que 200".
+            tronque: clotures.length === limit,
+            limit,
+            data: clotures
+        });
+    } catch (error) {
+        console.error('Erreur clotures historique GET:', error.message);
+        res.status(500).json({ success: false, message: 'Erreur serveur', error: error.message });
+    }
+});
+
 app.get('/api/clotures-caisse', checkAuth, async (req, res) => {
     try {
         const { date, pointVente } = req.query;
@@ -17757,7 +17874,7 @@ app.get('/api/clotures-caisse', checkAuth, async (req, res) => {
 
 app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
     try {
-        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, commercial, commentaire } = req.body;
+        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, commercial, commentaire } = req.body;
         const username = req.session?.user?.username || req.user?.username || 'inconnu';
         if (!date || !pointVente || montantEspeces === undefined || !commercial) {
             return res.status(400).json({ success: false, message: 'date, pointVente, montantEspeces et commercial sont requis' });
@@ -17772,6 +17889,25 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'montantTotalCaisse doit etre un nombre >= 0' });
         }
         const montantTotalCaisseValide = vTotalCaisse;
+
+        // depot_mata: OPTIONNEL. Vide/absent reste NULL (= non renseigne), ce
+        // qui se distingue de 0 (= aucun depot ce jour). Finance > Cash et
+        // Stock le deduit du montant total en caisse: le comptage se fait
+        // AVANT le depot, ces billets sont donc encore dans le total.
+        let depotMataValide = null;
+        if (depotMata !== undefined && depotMata !== null && depotMata !== '') {
+            const vDepot = parseFloat(depotMata);
+            if (!Number.isFinite(vDepot) || vDepot < 0) {
+                return res.status(400).json({ success: false, message: 'depotMata doit etre un nombre >= 0' });
+            }
+            // Un depot superieur au tiroir rendrait la Valeur negative sans
+            // explication: c'est une faute de saisie, pas un cas metier.
+            if (vDepot > montantTotalCaisseValide) {
+                return res.status(400).json({ success: false, message: 'depotMata ne peut pas depasser montantTotalCaisse' });
+            }
+            depotMataValide = vDepot;
+        }
+
         let isoDate = date;
         if (date.match(/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/)) { const parts = date.split(/[\/\-]/); isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`; }
         const transaction = await sequelize.transaction();
@@ -17779,7 +17915,7 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         let referenceManquante = false;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
-            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
+            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
                 // Upsert atomic via INSERT ... ON CONFLICT DO UPDATE.

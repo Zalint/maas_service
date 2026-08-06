@@ -99,6 +99,54 @@ const STOCKS_DATE_AS_ISO_SQL =
     "substring(date FROM 4 FOR 2) || '-' || " +
     "substring(date FROM 1 FOR 2))";
 
+// Valorisation d'un snapshot de stock, au prix d'ACHAT quand il est connu.
+//
+// Cette fonction remplace trois blocs SQL identiques au parametre pres (stock
+// matin du PL, stock soir du PL, stock soir de Cash et Stock). Ils faisaient
+// SUM(total), c'est-a-dire la somme d'une valorisation au prix de VENTE figee
+// a la saisie. Les garder separes aurait fait diverger deux ecrans qui doivent
+// afficher le meme stock - ce depot a deja paye ce prix-la plusieurs fois.
+//
+// Le snapshot retenu est le plus recent <= dateMax, ce qui permet d'afficher
+// une valeur un jour ou la saisie du soir n'a pas encore ete faite.
+//
+// Le prix d'achat est resolu A LA DATE DU SNAPSHOT et non a la date demandee:
+// un stock du 05 se valorise au prix du 05, meme si l'ecran affiche le 06. Le
+// resolveur (`pourDate`) est celui de /api/external/parage et des creances - en
+// brancher un troisieme ici aurait donne trois verites du prix d'achat pour le
+// meme produit le meme jour.
+//
+// @param {'matin'|'soir'} typeStock
+// @param {string} dateMax    ISO YYYY-MM-DD, borne haute du snapshot cherche
+// @param {Function} pourDate (isoDate) => { prixAchat, ... }
+async function valoriserSnapshotStock(typeStock, dateMax, pourDate) {
+    // La date du snapshot vient des lignes elles-memes: toutes celles d'un
+    // meme snapshot la partagent, donc une seule requete suffit.
+    const lignes = await sequelize.query(
+        `SELECT date, produit, quantite, total, prix_unitaire
+         FROM stocks
+         WHERE type_stock = :typeStock
+           AND date = (
+             SELECT date FROM stocks
+             WHERE type_stock = :typeStock
+               AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+               AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateMax
+             ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
+             LIMIT 1
+           )`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { typeStock, dateMax } }
+    );
+
+    const dateUtilisee = lignes.length ? lignes[0].date : null;
+    const m = String(dateUtilisee || '').match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    const isoSnapshot = m ? `${m[3]}-${m[2]}-${m[1]}` : dateMax;
+
+    const { valoriserLignes } = require('../lib/valorisation-stock');
+    const prixAchat = pourDate ? pourDate(isoSnapshot).prixAchat : null;
+    const r = valoriserLignes({ lignes, prixAchat });
+    return { ...r, date_utilisee: dateUtilisee };
+}
+
 const router = express.Router();
 
 // ============================================================
@@ -1292,38 +1340,31 @@ router.get('/pl', async (req, res) => {
         // db/update-schema.js#idx_stocks_date_iso). L'ordre lex sur ISO
         // YYYY-MM-DD = ordre chronologique, donc <= et ORDER BY marchent
         // directement sur la forme ISO sans cast vers DATE.
-        const stockMatinRows = await sequelize.query(
-            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
-             FROM stocks
-             WHERE type_stock = 'matin'
-               AND date = (
-                 SELECT date FROM stocks
-                 WHERE type_stock = 'matin'
-                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateDebut
-                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
-                 LIMIT 1
-               )`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut } }
-        );
-        const stockSoirRows = await sequelize.query(
-            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
-             FROM stocks
-             WHERE type_stock = 'soir'
-               AND date = (
-                 SELECT date FROM stocks
-                 WHERE type_stock = 'soir'
-                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateFin
-                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
-                 LIMIT 1
-               )`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { dateFin } }
-        );
-        const stockMatinDebut = parseFloat(stockMatinRows[0].total) || 0;
-        const stockMatinDate = stockMatinRows[0].date_utilisee || null;
-        const stockSoirFin = parseFloat(stockSoirRows[0].total) || 0;
-        const stockSoirDate = stockSoirRows[0].date_utilisee || null;
+        // Stock valorise au prix d'ACHAT quand il est connu (cf
+        // lib/valorisation-stock.js). Un seul resolveur pour les deux bornes:
+        // il charge le catalogue et l'historique une fois, puis resout par
+        // date. Deux appels en creeraient deux, dont un appel de plus a DATA.
+        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateFin);
+        // Les deux bornes sont independantes: elles partent ensemble plutot
+        // qu'en serie, le resolveur de prix etant deja charge.
+        const [stockMatinVal, stockSoirVal] = await Promise.all([
+            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate),
+            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate)
+        ]);
+
+        const stockMatinDebut = stockMatinVal.valeur;
+        const stockMatinDate = stockMatinVal.date_utilisee;
+        const stockSoirFin = stockSoirVal.valeur;
+        const stockSoirDate = stockSoirVal.date_utilisee;
+        // Produits restes au prix de VENTE, faute de prix d'achat: l'ecran les
+        // marque d'un asterisque. Les deux bornes sont rendues SEPAREMENT: un
+        // produit present le matin et absent le soir ne concerne qu'une des
+        // deux lignes, et une liste fusionnee accusait le stock soir d'un
+        // melange de bases qu'il ne contenait pas - une fausse piste pour qui
+        // cherche a expliquer une variation.
+        const stockMatinAuPrixDeVente = stockMatinVal.produits_au_prix_de_vente;
+        const stockSoirAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
         const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Coefficient pertes decoupe (default 5%): la viande perd du
         // volume lors de la decoupe, donc on ne valorise que (100-X)%
@@ -1388,7 +1429,17 @@ router.get('/pl', async (req, res) => {
                     variation_brute: round2(variationStockBrute),
                     pertes_decoupe_pct: safePertesPct,
                     coeff: round2(coeffStock),
-                    variation_nette: round2(variationStockNette)
+                    variation_nette: round2(variationStockNette),
+                    // Base de valorisation: prix d'achat fournisseur, sauf pour
+                    // les produits ci-dessous restes au prix de vente. Une liste
+                    // par borne: elles n'ont aucune raison d'etre identiques.
+                    matin_au_prix_de_vente: stockMatinAuPrixDeVente,
+                    soir_au_prix_de_vente: stockSoirAuPrixDeVente,
+                    // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
+                    // lot pour la journee, historique illisible. Sans cela, un
+                    // repli sur le catalogue fournisseur reste invisible et le
+                    // chiffre parait simplement faux.
+                    avertissements: resolveurPrix.avertissements || []
                 },
                 pl: round2(pl)
             }
@@ -1471,9 +1522,12 @@ async function resolveChargesPourMois(listeMois, chargesRows) {
 // Formule:
 //   Valeur(D) = Stock_soir(D) × coeff
 //             + Σ cloture.montant_total_caisse where date=D, is_latest, NOT NULL
+//             − Σ cloture.depot_mata            where date=D, is_latest, NOT NULL
 //             − Σ commission_MaaS where 1er du mois de D ≤ date ≤ D
 //
 // coeff = (100 - stock_pertes_decoupe_pct) / 100  (partage avec PL)
+// Stock_soir est valorise au PRIX D'ACHAT fournisseur quand il est connu, et
+// au prix de vente sinon (produits alors nommes) - cf lib/valorisation-stock.js.
 // Stock soir: fallback au snapshot le plus proche <= D si pas pile a D.
 // Solde du fournisseur: commission MaaS du MOIS EN COURS, la facturation
 // fournisseur etant mensuelle. C'etait un cumul depuis 1970 jusqu'au
@@ -1559,22 +1613,14 @@ router.get('/cash-stock', async (req, res) => {
         // constante STOCKS_DATE_AS_ISO_SQL (IMMUTABLE, indexable - cf
         // idx_stocks_date_iso). Pas de cast date necessaire: ordre lex sur
         // ISO = ordre chronologique.
-        const stockSoirRows = await sequelize.query(
-            `SELECT COALESCE(SUM(total), 0)::numeric AS total, MAX(date) AS date_utilisee
-             FROM stocks
-             WHERE type_stock = 'soir'
-               AND date = (
-                 SELECT date FROM stocks
-                 WHERE type_stock = 'soir'
-                   AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
-                   AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateD
-                 ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
-                 LIMIT 1
-               )`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { dateD } }
-        );
-        const stockSoirBrut = parseFloat(stockSoirRows[0].total) || 0;
-        const stockSoirDateUtilisee = stockSoirRows[0].date_utilisee || null;
+        // Valorise au prix d'ACHAT quand il est connu, exactement comme le PL:
+        // la MEME fonction, pour que les deux ecrans ne puissent pas diverger.
+        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateD);
+        const stockSoirVal = await valoriserSnapshotStock('soir', dateD, resolveurPrix.pourDate);
+        const stockSoirBrut = stockSoirVal.valeur;
+        const stockSoirDateUtilisee = stockSoirVal.date_utilisee;
+        const stockAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
 
         // 2) Coefficient (partage avec PL via finance_config).
         const cfgRows = await FinanceConfig.findAll();
@@ -1591,23 +1637,44 @@ router.get('/cash-stock', async (req, res) => {
 
         // 3) Cash en caisse = somme montant_total_caisse pour la derniere
         //    cloture (is_latest) de chaque PV a la date D. NULL ignore.
+        // depot_mata figure ici parce que la liste `attributes` est explicite:
+        // une colonne oubliee ne remonte PAS et la ligne afficherait 0 partout,
+        // sans la moindre erreur.
         const cashRows = await ClotureCaisse.findAll({
             where: { date: dateD, is_latest: true },
-            attributes: ['point_de_vente', 'montant_total_caisse', 'updated_at'],
+            attributes: ['point_de_vente', 'montant_total_caisse', 'depot_mata', 'updated_at'],
             order: [['point_de_vente', 'ASC']]
         });
         const cashParPv = cashRows.map((c) => {
             const m = c.montant_total_caisse;
+            const d = c.depot_mata;
             return {
                 point_de_vente: c.point_de_vente,
                 montant: m == null ? null : round2(parseFloat(m)),
-                renseigne: m != null
+                renseigne: m != null,
+                depot_mata: d == null ? null : round2(parseFloat(d))
             };
         });
         const cashCaisseTotal = cashParPv.reduce(
             (s, c) => s + (c.montant != null ? c.montant : 0), 0
         );
         const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
+
+        // 3 bis) Depot Mata = ce que le point de vente a verse a Mata ce
+        //    jour-la. Le comptage de la caisse se fait AVANT le depot, donc
+        //    ces billets sont encore comptes dans montant_total_caisse alors
+        //    qu'ils ne sont plus la valeur du point de vente: on les retire.
+        //
+        //    Ce n'est PAS un paiement au fournisseur: le solde du fournisseur
+        //    (ligne suivante) reste la dette brute et n'est pas touche ici.
+        //    Un depot n'est deduit que si la cloture a DECLARE son cash. Sans
+        //    montant, la ligne compte 0 au-dessus: retirer son depot enleverait
+        //    un argent jamais ajoute. La route POST l'interdit deja (montant
+        //    obligatoire, depot plafonne), mais la table clotures_caisse est
+        //    partagee avec DATA, dont le modele ignore montant_total_caisse.
+        const depotMataTotal = cashParPv.reduce(
+            (s, c) => s + (c.renseigne && c.depot_mata != null ? c.depot_mata : 0), 0
+        );
 
         // 4) Solde du fournisseur = commission MaaS du MOIS EN COURS
         //    (du 1er du mois de D jusqu'a D inclus).
@@ -1632,7 +1699,7 @@ router.get('/cash-stock', async (req, res) => {
         }
 
         // 5) Valeur finale
-        const valeur = stockSoirNet + cashCaisseTotal - soldeDuFournisseur;
+        const valeur = stockSoirNet + cashCaisseTotal - depotMataTotal - soldeDuFournisseur;
 
         res.json({
             success: true,
@@ -1643,8 +1710,12 @@ router.get('/cash-stock', async (req, res) => {
                     soir_date_utilisee: stockSoirDateUtilisee,
                     coeff: round2(coeff),
                     pertes_decoupe_pct: safePertesPct,
-                    soir_net: round2(stockSoirNet)
+                    soir_net: round2(stockSoirNet),
+                    // Produits restes au prix de vente, faute de prix d'achat
+                    // fournisseur: l'ecran les marque d'un asterisque.
+                    produits_au_prix_de_vente: stockAuPrixDeVente
                 },
+                depot_mata: round2(depotMataTotal),
                 cash: {
                     total: round2(cashCaisseTotal),
                     nb_pv_avec_cloture: cashParPv.length,
@@ -1965,8 +2036,23 @@ router.get('/creances', async (req, res) => {
         //   ABANDON = la connexion est tombee avant la fin de l'envoi
         //             (client qui annule/recharge, ou proxy qui coupe)
         // Un FIN sain suivi d'un ABANDON = le calcul n'est pas en cause.
+        // La taille se lit sur la SOCKET et non dans Content-Length: le
+        // middleware compression retire cet en-tete des qu'il gzippe, et cette
+        // instrumentation - la seule du depot a mesurer une taille de reponse,
+        // ajoutee pour diagnostiquer des ERR_CONNECTION_CLOSED - serait
+        // retombee sur "?" pour toute requete de navigateur.
+        //
+        // bytesWritten est CUMULATIF par socket: en keep-alive, il porte aussi
+        // les reponses precedentes. On retient donc sa valeur au depart et on
+        // ne journalise que la difference.
+        const octetsAvant = res.socket ? res.socket.bytesWritten : null;
         res.on('finish', () => {
-            console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || '?'}`);
+            let surLeFil = null;
+            if (res.socket && octetsAvant !== null) {
+                const delta = res.socket.bytesWritten - octetsAvant;
+                if (delta > 0) surLeFil = delta;
+            }
+            console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || surLeFil || '?'}`);
         });
         res.on('close', () => {
             if (!res.writableEnded) {

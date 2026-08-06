@@ -38,6 +38,14 @@ const ClotureCaisse = sequelize.define('ClotureCaisse', {
         allowNull: true,
         comment: 'Total espèces physiquement présentes dans la caisse à la clôture (incluant fond de caisse). Optionnel, utilisé par Finance > Cash et Stock.'
     },
+    depot_mata: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        comment: 'Montant versé à Mata ce jour-là. Compté APRÈS le comptage de '
+            + 'la caisse (donc encore inclus dans montant_total_caisse), et '
+            + 'déduit à ce titre par Finance > Cash et Stock. NULL = non '
+            + 'renseigné, à ne pas confondre avec 0 = aucun dépôt.'
+    },
     commercial: {
         type: DataTypes.STRING(150),
         allowNull: false,
