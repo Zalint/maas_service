@@ -1971,13 +1971,131 @@
         }
     }
 
+    // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
+    // n'existait pas ?". C'est une SIMULATION d'affichage: rien n'est envoye au
+    // serveur, rien n'est enregistre, et le PL reel reste affiche a cote.
+    const plPostesNeutralises = new Set();
+    let plDernieresDonnees = null;
+
     function renderPl(d) {
         const resultEl = document.getElementById('fin-pl-result');
         if (!resultEl) return;
+        // Memorise pour pouvoir re-rendre a chaque bascule sans rappeler l'API.
+        plDernieresDonnees = d;
         const ch = d.charges || { detail: [] };
         const stock = d.stock || { matin_debut: 0, soir_fin: 0, variation_brute: 0, variation_nette: 0, coeff: 0.95, pertes_decoupe_pct: 5 };
-        const pl = d.pl || 0;
+        const plColor0 = (d.pl || 0) >= 0 ? 'success' : 'danger';
+
+        // Les postes du PL, dans l'ordre d'affichage. Les construire ici plutot
+        // que d'ecrire seize lignes de tableau a la main: la neutralisation, le
+        // recalcul et le total decoulent alors d'une seule description.
+        //
+        // signe = la contribution au PL. Ventes et variation stock s'ajoutent,
+        // le reste se retranche. C'est ce signe qui rend le total recalculable
+        // sans rejouer la formule du serveur.
+        const doubleCompte = (d.depenses_double_compte && d.depenses_double_compte.montant > 0)
+            ? `<span class="badge bg-warning text-dark ms-2" title="Ces dépenses sont dans des catégories déjà couvertes par les charges fixes proratisées ci-dessus. Si elles correspondent au paiement de l'abonnement mensuel, elles sont comptées deux fois. Si ce sont des surcoûts ponctuels, tout est correct.">⚠ ${esc(fmtMoney(d.depenses_double_compte.montant))} en ${esc(d.depenses_double_compte.categories.join(', '))}</span>`
+            : '';
+        const stockCouleur = stock.variation_nette >= 0 ? 'success' : 'danger';
+
+        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+
+        const postes = [
+            { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
+              libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes' },
+            { cle: 'avances', signe: -1, montant: d.total_avances || 0, couleur: 'danger', neutralisable: false,
+              libelle: '<i class="bi bi-bank text-danger"></i> Total avances (MataBanq)' },
+            { cle: 'commission', signe: -1, montant: d.commission_maas || 0, couleur: 'warning', neutralisable: true,
+              libelle: '<i class="bi bi-percent text-warning"></i> Commission MaaS (3%)' },
+            { cle: 'marge_cdc', signe: 1, montant: d.marge_cdc || 0, couleur: 'success', neutralisable: true,
+              libelle: '<i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)' },
+            { cle: 'charges', signe: -1, montant: ch.total_prorata || 0, couleur: 'danger', neutralisable: true,
+              libelle: `<i class="bi bi-receipt text-info"></i> Charges proratisées ${esc(libelleProrataCharges(ch))}` },
+            { cle: 'depenses', signe: -1, montant: d.depenses_periode || 0, couleur: 'danger', neutralisable: true,
+              libelle: `<i class="bi bi-cart-dash text-danger"></i> Dépenses (période)${doubleCompte}` },
+            { cle: 'paiements', signe: -1, montant: d.paiements_fournisseur || 0, couleur: 'danger', neutralisable: true,
+              libelle: '<i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur' },
+            { cle: 'stock', signe: 1, montant: stock.variation_nette || 0, couleur: stockCouleur, neutralisable: true,
+              libelle: `<i class="bi bi-box-seam text-${stockCouleur}"></i> Variation stock ×
+                        <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
+                        <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`,
+              titre: stockTooltip }
+        ];
+
+        const actif = (p) => !plPostesNeutralises.has(p.cle);
+        // Le PL affiche se recalcule sur les postes actifs. Il vaut exactement
+        // d.pl quand rien n'est neutralise - verifie a l'ecran.
+        // Sans neutralisation, on reprend le PL du SERVEUR tel quel. Le
+        // recalcul somme des montants deja arrondis au centime, la ou le
+        // serveur arrondit le total: les deux peuvent differer de quelques
+        // centimes, et l'ecran afficherait alors un chiffre qui n'est celui de
+        // personne. Le recalcul ne sert qu'a la simulation.
+        const simulation = plPostesNeutralises.size > 0;
+        const pl = simulation
+            ? postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0)
+            : (d.pl || 0);
         const plColor = pl >= 0 ? 'success' : 'danger';
+        const ecart = pl - (d.pl || 0);
+
+        // Marge brute = ventes - avances + variation stock, soit la marge sur
+        // les achats REELLEMENT consommes: les achats corriges de ce qui est
+        // reste en stock. Elle suit donc la neutralisation de la variation
+        // stock, mais pas celle des charges - qui n'en font pas partie.
+        const margeBrute = postes
+            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle) && actif(p))
+            .reduce((s, p) => s + p.signe * p.montant, 0);
+        // Retrouve par sa CLE, pas par sa position: postes[0] se trouve etre
+        // les ventes aujourd'hui, mais reordonner le tableau ferait alors
+        // diviser par le mauvais montant, en silence.
+        const posteVentes = postes.find((p) => p.cle === 'ventes');
+        const ventesActives = (posteVentes && actif(posteVentes)) ? (d.total_ventes || 0) : 0;
+        // Pourcentage du CHIFFRE D'AFFAIRES. Sans ventes, il n'y a pas de taux
+        // a calculer: on affiche un tiret plutot qu'un 0% trompeur.
+        const margeBrutePct = ventesActives > 0 ? (margeBrute / ventesActives) * 100 : null;
+        const margeColor = margeBrute >= 0 ? 'success' : 'danger';
+
+        // Le calcul EN CLAIR, avec ses montants. Un taux de -176% se verifie
+        // alors a l'oeil au lieu d'etre a prendre pour argent comptant, et on
+        // voit immediatement quel terme le tire vers le bas.
+        const termesMarge = postes
+            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle))
+            .map((p) => {
+                const off = !actif(p);
+                const valeur = p.signe * p.montant;
+                const libelle = { ventes: 'Ventes', avances: 'Avances', stock: 'Variation stock' }[p.cle];
+                const texte = `${valeur >= 0 ? '+' : '−'} ${fmtMoney(Math.abs(valeur))}`;
+                return off
+                    ? `<span class="text-muted" style="text-decoration:line-through;">${libelle} ${esc(texte)}</span>`
+                    : `${libelle} <span class="fw-medium">${esc(texte)}</span>`;
+            }).join(' &nbsp;');
+
+        const lignesDecomposition = postes.map((p) => {
+            const off = !actif(p);
+            // Le signe vient de la CONTRIBUTION REELLE, pas de la place du poste
+            // dans la formule. Une variation de stock negative - le cas courant
+            // d'une journee de boucherie - a signe:+1 et montant negatif: se
+            // fier au seul signe l'affichait "+ 475 000" alors que le bloc
+            // marge brute et le tableau Detail variation stock, sur le meme
+            // ecran, ecrivaient "- 475 000". La colonne cessait de s'additionner
+            // au total qu'elle est censee justifier.
+            const valeur = p.signe * p.montant;
+            // A zero exactement, la contribution ne dit rien: -1 * 0 vaut -0,
+            // et -0 >= 0 est vrai en JavaScript, ce qui affichait "+ 0 FCFA"
+            // sur une ligne de depense. On retombe alors sur la NATURE du
+            // poste, la seule information qui reste.
+            const signeAff = valeur > 0 ? '+' : (valeur < 0 ? '−' : (p.signe > 0 ? '+' : '−'));
+            const style = off
+                ? 'opacity:.45; text-decoration:line-through; cursor:pointer;'
+                : (p.neutralisable ? 'cursor:pointer;' : '');
+            const indice = p.neutralisable
+                ? `<i class="bi ${off ? 'bi-eye-slash' : 'bi-toggle-on'} ms-2 text-muted" style="font-size:.8rem;"></i>`
+                : '';
+            return `<tr data-poste="${p.neutralisable ? esc(p.cle) : ''}" style="${style}"
+                        ${p.neutralisable ? 'title="Cliquer pour retirer cette ligne du PL et voir son effet"' : (p.titre ? `title="${esc(p.titre)}"` : '')}>
+                <td>${p.libelle}${indice}</td>
+                <td class="text-end fw-medium text-${off ? 'muted' : p.couleur}">${signeAff} ${esc(fmtMoney(Math.abs(valeur)))}</td>
+            </tr>`;
+        }).join('');
 
         const chargesRows = (ch.detail || []).map((c) => `
             <tr>
@@ -1988,7 +2106,6 @@
         `).join('');
 
         // Tooltip stock avec dates effectivement utilisees (fallback si pas pile aux dates demandees)
-        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
 
         // Meme regle d'affichage que Cash et Stock: le stock est valorise au
         // prix d'achat fournisseur, et les produits qui n'en ont pas sont
@@ -2021,63 +2138,68 @@
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
         resultEl.innerHTML = `
-            <!-- Carte PL principale -->
-            <div class="card border-${plColor} mb-3">
-                <div class="card-body text-center">
-                    <h6 class="card-subtitle mb-2 text-muted">Profit / Loss (${esc(d.periode.dateDebut)} → ${esc(d.periode.dateFin)}, ${esc(d.periode.nb_jours)} jours)</h6>
-                    <h2 class="text-${plColor} mb-0">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</h2>
+            <!-- Cartes PL et marge brute -->
+            <div class="row g-2 mb-3">
+                <div class="col-md-6">
+                    <div class="card border-${plColor} h-100">
+                        <div class="card-body text-center">
+                            <h6 class="card-subtitle mb-2 text-muted">
+                                ${simulation ? 'PL simulé' : 'Profit / Loss'}
+                                (${esc(d.periode.dateDebut)} → ${esc(d.periode.dateFin)}, ${esc(d.periode.nb_jours)} jours)
+                            </h6>
+                            <h2 class="text-${plColor} mb-0">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</h2>
+                            ${simulation ? `<div class="small text-muted mt-2">
+                                PL réel <strong class="text-${plColor0}">${esc(fmtMoney(d.pl || 0))}</strong>
+                                &nbsp;·&nbsp; écart <strong class="text-${ecart >= 0 ? 'success' : 'danger'}">${ecart >= 0 ? '+' : ''}${esc(fmtMoney(ecart))}</strong>
+                            </div>` : ''}
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card border-${margeColor} h-100">
+                        <div class="card-body text-center">
+                            <h6 class="card-subtitle mb-2 text-muted">Marge brute</h6>
+                            <h2 class="text-${margeColor} mb-0">${margeBrute >= 0 ? '+' : ''}${esc(fmtMoney(margeBrute))}</h2>
+                            <div class="small text-muted mt-2">
+                                ${margeBrutePct === null
+                                    ? 'taux indisponible (aucune vente)'
+                                    : `<strong class="text-${margeColor}">${esc(margeBrutePct.toFixed(2))} %</strong> du chiffre d'affaires`}
+                            </div>
+                            <!-- Le calcul, montants a l'appui: verifiable a l'oeil. -->
+                            <div class="mt-2 pt-2 border-top small text-muted" style="line-height:1.7;">
+                                <div>${termesMarge}</div>
+                                <div class="mt-1">
+                                    <span class="text-body">= <strong class="text-${margeColor}">${esc(fmtMoney(margeBrute))}</strong></span>
+                                    ${margeBrutePct !== null
+                                        ? `&nbsp;÷&nbsp;${esc(fmtMoney(ventesActives))} de ventes
+                                           = <strong class="text-${margeColor}">${esc(margeBrutePct.toFixed(2))} %</strong>`
+                                        : ''}
+                                </div>
+                                <div class="mt-1 fst-italic">
+                                    Marge sur les achats réellement consommés : les achats corrigés
+                                    de ce qui est resté en stock. Les charges, la commission et les
+                                    dépenses n'en font pas partie — elles viennent après.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <!-- Décomposition -->
-            <h6 class="fin-subheading">Décomposition</h6>
+            <h6 class="fin-subheading">
+                Décomposition
+                <small class="text-muted fw-normal ms-2">— cliquez une ligne pour la retirer et voir son effet</small>
+                ${simulation ? `<button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="fin-pl-reset">
+                    <i class="bi bi-arrow-counterclockwise"></i> Tout réactiver (${plPostesNeutralises.size})
+                </button>` : ''}
+            </h6>
             <div class="table-responsive mb-3">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0" id="fin-pl-decomposition">
                     <tbody>
-                        <tr>
-                            <td><i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes</td>
-                            <td class="text-end fw-medium text-primary">+ ${esc(fmtMoney(d.total_ventes))}</td>
-                        </tr>
-                        <tr>
-                            <td><i class="bi bi-bank text-danger"></i> Total avances (MataBanq)</td>
-                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.total_avances))}</td>
-                        </tr>
-                        <tr>
-                            <td><i class="bi bi-percent text-warning"></i> Commission MaaS (3%)</td>
-                            <td class="text-end fw-medium text-warning">− ${esc(fmtMoney(d.commission_maas))}</td>
-                        </tr>
-                        <tr>
-                            <td><i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)</td>
-                            <td class="text-end fw-medium text-success">+ ${esc(fmtMoney(d.marge_cdc))}</td>
-                        </tr>
-                        <tr>
-                            <td><i class="bi bi-receipt text-info"></i> Charges proratisées ${esc(libelleProrataCharges(ch))}</td>
-                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(ch.total_prorata))}</td>
-                        </tr>
-                        <tr>
-                            <td>
-                                <i class="bi bi-cart-dash text-danger"></i> Dépenses (période)
-                                ${(d.depenses_double_compte && d.depenses_double_compte.montant > 0)
-                                    ? `<span class="badge bg-warning text-dark ms-2" title="Ces dépenses sont dans des catégories déjà couvertes par les charges fixes proratisées ci-dessus. Si elles correspondent au paiement de l'abonnement mensuel, elles sont comptées deux fois. Si ce sont des surcoûts ponctuels, tout est correct.">⚠ ${esc(fmtMoney(d.depenses_double_compte.montant))} en ${esc(d.depenses_double_compte.categories.join(', '))}</span>`
-                                    : ''}
-                            </td>
-                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.depenses_periode || 0))}</td>
-                        </tr>
-                        <tr>
-                            <td><i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur</td>
-                            <td class="text-end fw-medium text-danger">− ${esc(fmtMoney(d.paiements_fournisseur))}</td>
-                        </tr>
-                        <tr>
-                            <td title="${esc(stockTooltip)}">
-                                <i class="bi bi-box-seam text-${stockColorNet}"></i>
-                                Variation stock ×
-                                <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
-                                <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>
-                            </td>
-                            <td class="text-end fw-medium text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
-                        </tr>
+                        ${lignesDecomposition}
                         <tr class="table-light fw-bold">
-                            <td>PL</td>
+                            <td>PL${simulation ? ' <span class="badge bg-secondary">simulé</span>' : ''}</td>
                             <td class="text-end text-${plColor}">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</td>
                         </tr>
                     </tbody>
@@ -2137,6 +2259,28 @@
                 </table>
             </div>
         `;
+
+        // Delegation apres le rendu: ce fichier est une IIFE, un onclick inline
+        // ne trouverait pas la fonction. Un seul ecouteur pour tout le tableau,
+        // repose a chaque rendu puisque innerHTML detruit les precedents.
+        const table = document.getElementById('fin-pl-decomposition');
+        if (table) {
+            table.addEventListener('click', (ev) => {
+                const tr = ev.target.closest('tr[data-poste]');
+                const cle = tr && tr.getAttribute('data-poste');
+                if (!cle) return; // ligne non neutralisable (Ventes, Avances, total)
+                if (plPostesNeutralises.has(cle)) plPostesNeutralises.delete(cle);
+                else plPostesNeutralises.add(cle);
+                renderPl(plDernieresDonnees);
+            });
+        }
+        const reset = document.getElementById('fin-pl-reset');
+        if (reset) {
+            reset.addEventListener('click', () => {
+                plPostesNeutralises.clear();
+                renderPl(plDernieresDonnees);
+            });
+        }
     }
 
     // ===== Cash et Stock =====
@@ -2164,7 +2308,16 @@
                 resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
                 return;
             }
-            if (!json.success) throw new Error(json.error || 'Erreur');
+            if (!json.success) {
+                // Une journee pas encore arrivee n'est pas une faute de
+                // l'utilisateur: on le dit calmement, sans alerte rouge.
+                if (json.code === 'date_futur') {
+                    resultEl.innerHTML = '<div class="alert alert-secondary mb-0">'
+                        + '<i class="bi bi-calendar-x"></i> Pas encore de données pour cette date.</div>';
+                    return;
+                }
+                throw new Error(json.error || 'Erreur');
+            }
             renderCashStock(json.data);
         } catch (e) {
             resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
@@ -2180,6 +2333,26 @@
         const depotMata = d.depot_mata || 0;
         const valeur = d.valeur || 0;
         const valColor = valeur >= 0 ? 'success' : 'danger';
+
+        // Journee entierement vierge: aucune cloture ET aucun snapshot de stock
+        // a reprendre. Afficher "0 FCFA" laisserait croire a une valeur mesuree
+        // nulle, alors que rien n'a encore ete saisi.
+        // d.aucune_donnee: journee posterieure a la date du serveur, tombee
+        // dans la tolerance de fuseau, et sans aucune cloture. Le total renvoye
+        // reprend le dernier snapshot de stock: il ne mesure rien.
+        const aucuneCloture = !(cash.par_pv && cash.par_pv.length);
+        const aucunStock = !stock.soir_date_utilisee;
+        // Le solde fournisseur compte aussi: il vient des ventes du mois, pas
+        // du stock ni des clotures. Sans lui dans la condition, une periode
+        // avec des ventes mais aucun stock saisi affichait "pas encore de
+        // donnees" en masquant une dette bien reelle.
+        const aucunSolde = !solde;
+        if (d.aucune_donnee || (aucuneCloture && aucunStock && aucunSolde)) {
+            resultEl.innerHTML = '<div class="alert alert-secondary mb-0">'
+                + `<i class="bi bi-calendar-x"></i> Pas encore de données pour le ${esc(d.date)} : `
+                + 'ni clôture de caisse, ni stock du soir saisi.</div>';
+            return;
+        }
 
         // Periode du solde fournisseur: le mois en cours, du 1er a la date
         // demandee. Renvoyee par l'API pour eviter de la recalculer ici.

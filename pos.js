@@ -3593,6 +3593,24 @@ async function ouvrirClotureCaisse() {
     // au-dessus d'un champ vide, sur un point de vente qui n'avait rien verse.
     const elRappelDepot = document.getElementById('clotureDepotMataRappel');
     if (elRappelDepot) { elRappelDepot.innerHTML = ''; elRappelDepot.style.display = 'none'; }
+    // La question sur le depot precedent se remet a zero avec le champ qu'elle
+    // accompagne: une reponse gardee d'une ouverture precedente porterait sur
+    // un autre depot, et personne ne le verrait.
+    ['clotureDepotPrecedentOui', 'clotureDepotPrecedentNon'].forEach((id) => {
+        const e = document.getElementById(id);
+        if (e) e.checked = false;
+    });
+    const elBlocPrec = document.getElementById('clotureDepotPrecedentBloc');
+    if (elBlocPrec) elBlocPrec.style.display = 'none';
+    dernierDepotMata = null;
+    dernierDepotIndisponible = false;
+
+    // Un seul branchement, pose une fois pour toutes: la question apparait ou
+    // disparait au fil de la saisie du montant.
+    if (elDepotMata && !elDepotMata.dataset.blocPrecedentBranche) {
+        elDepotMata.dataset.blocPrecedentBranche = '1';
+        elDepotMata.addEventListener('input', majBlocDepotPrecedent);
+    }
     // Le champ estimatif est vide ici, puis PRE-REMPLI par
     // chargerEstimatifCloture() des que le calcul revient.
     const elEstimatifInput = document.getElementById('clotureMontantEstimatif');
@@ -3614,11 +3632,17 @@ async function ouvrirClotureCaisse() {
         new bootstrap.Modal(modalEl).show();
     }
 
-    // Charger l'estimatif et l'historique en parallèle
+    // Charger l'estimatif, l'historique et le dernier depot en parallèle.
+    // Le dernier depot est charge en DERNIER dans le tableau mais resolu en
+    // meme temps: chargerHistoriqueCloture peut repeupler le champ Depot Mata,
+    // et majBlocDepotPrecedent est rappele juste apres pour que la question
+    // s'affiche si ce repeuplement a mis un montant.
     await Promise.all([
         chargerEstimatifCloture(today, pointVente),
-        chargerHistoriqueCloture(today, pointVente)
+        chargerHistoriqueCloture(today, pointVente),
+        chargerDernierDepotMata(pointVente, today)
     ]);
+    majBlocDepotPrecedent();
 }
 
 async function chargerEstimatifCloture(date, pointVente) {
@@ -3655,6 +3679,79 @@ async function chargerEstimatifCloture(date, pointVente) {
         if (el) el.innerHTML = '<span class="text-muted">Erreur de calcul</span>';
         return null;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Recuperation du depot Mata precedent
+//
+// Des qu'un depot est saisi, on demande si le PRECEDENT a ete recupere. La
+// question ne se pose que s'il existe un depot anterieur - sinon elle n'a pas
+// d'objet, et exiger une reponse bloquerait la toute premiere cloture.
+//
+// C'est de la tracabilite seule: la reponse n'entre dans aucun calcul de
+// Finance > Cash et Stock.
+// ---------------------------------------------------------------------------
+
+let dernierDepotMata = null;
+// L'appel a-t-il echoue ? Le serveur, lui, refusera la cloture s'il trouve un
+// depot anterieur. Ne pas poser la question dans ce cas laissait l'utilisateur
+// devant un 400 exigeant une reponse qu'aucun bouton ne permettait de donner.
+let dernierDepotIndisponible = false;
+
+async function chargerDernierDepotMata(pointVente, dateCloture) {
+    dernierDepotMata = null;
+    dernierDepotIndisponible = false;
+    try {
+        const p = new URLSearchParams({ pointVente });
+        // Strictement AVANT la cloture en cours: sinon, refaire la caisse d'un
+        // jour deja cloture proposerait son propre depot comme "precedent".
+        if (dateCloture) p.set('avant', dateCloture);
+        const res = await fetch('/api/clotures-caisse/dernier-depot?' + p.toString(), { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || ('HTTP ' + res.status));
+        if (data.data) dernierDepotMata = data.data;
+    } catch (e) {
+        // On pose la question QUAND MEME, avec un libelle generique: mieux vaut
+        // une question parfois inutile - le serveur ecarte la reponse s'il n'y
+        // a pas de depot anterieur - qu'une cloture impossible a valider.
+        dernierDepotIndisponible = true;
+        console.warn('Dernier depot Mata indisponible:', e && e.message);
+    }
+    majBlocDepotPrecedent();
+}
+
+/** Affiche la question seulement si un depot est saisi ET qu'un precedent existe. */
+function majBlocDepotPrecedent() {
+    const bloc = document.getElementById('clotureDepotPrecedentBloc');
+    if (!bloc) return;
+    const brut = (document.getElementById('clotureDepotMata') || {}).value;
+    const saisi = brut != null && String(brut).trim() !== '' && parseFloat(brut) > 0;
+
+    if (!saisi || (!dernierDepotMata && !dernierDepotIndisponible)) {
+        bloc.style.display = 'none';
+        return;
+    }
+    const q = document.getElementById('clotureDepotPrecedentQuestion');
+    if (q) {
+        if (dernierDepotMata) {
+            const d = String(dernierDepotMata.date || '').slice(0, 10).split('-').reverse().join('/');
+            q.textContent = `Le dépôt de ${formatCurrency(dernierDepotMata.montant)} du ${d} a-t-il été récupéré ?`;
+        } else {
+            // Montant et date inconnus: on ne les invente pas.
+            q.textContent = 'Le dépôt précédent a-t-il été récupéré ? '
+                + '(son montant n’a pas pu être chargé)';
+        }
+    }
+    bloc.style.display = 'block';
+}
+
+/** true / false / null (pas encore repondu). */
+function lireDepotPrecedentRecupere() {
+    const oui = document.getElementById('clotureDepotPrecedentOui');
+    const non = document.getElementById('clotureDepotPrecedentNon');
+    if (oui && oui.checked) return true;
+    if (non && non.checked) return false;
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -3757,6 +3854,13 @@ async function chargerArchivesClotures() {
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.fond_de_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_total_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap; color:#dc3545;">${nb(c.depot_mata)}</td>
+                <td style="padding:6px 10px; text-align:center; white-space:nowrap;"
+                    title="${c.depot_precedent_date ? 'Depot du ' + escapeHtml(String(c.depot_precedent_date).slice(0, 10)) : ''}">${
+                    c.depot_precedent_recupere === null || c.depot_precedent_recupere === undefined
+                        ? '<span style="color:#adb5bd;">—</span>'
+                        : (c.depot_precedent_recupere
+                            ? '<span style="color:#198754;font-weight:600;">Oui</span>'
+                            : '<span style="color:#dc3545;font-weight:600;">Non</span>')}</td>
             </tr>`;
         }).join('');
 
@@ -3774,6 +3878,7 @@ async function chargerArchivesClotures() {
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Fond de caisse</th>
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Total caisse</th>
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Dépôt Mata</th>
+                <th style="padding:6px 10px; text-align:center; white-space:nowrap;">Préc. récupéré</th>
             </tr></thead>
             <tbody>${lignes}</tbody>
         </table>`;
@@ -3869,6 +3974,15 @@ async function chargerHistoriqueCloture(date, pointVente) {
                                         c.depot_mata !== null && c.depot_mata !== undefined
                                             ? formatCurrency(parseFloat(c.depot_mata)) : '—'}</td>
                                 </tr>
+                                ${c.depot_precedent_recupere !== null && c.depot_precedent_recupere !== undefined ? `
+                                <tr>
+                                    <td style="color:#6c757d; padding:3px 0;">Dépôt précédent récupéré</td>
+                                    <td style="font-weight:600; color:${c.depot_precedent_recupere ? '#198754' : '#dc3545'};">
+                                        ${c.depot_precedent_recupere ? 'Oui' : 'Non'}
+                                        ${c.depot_precedent_date
+                                            ? `<span style="font-weight:400; color:#6c757d;">— celui du ${escapeHtml(String(c.depot_precedent_date).slice(0, 10).split('-').reverse().join('/'))}</span>`
+                                            : ''}</td>
+                                </tr>` : ''}
                                 ${c.montant_estimatif !== null && c.montant_estimatif !== undefined ? `
                                 <tr>
                                     <td style="color:#6c757d; padding:3px 0;">Estimatif système</td>
@@ -4021,6 +4135,18 @@ async function validerClotureCaisse() {
         return;
     }
 
+    // Recuperation du depot precedent: OBLIGATOIRE des qu'un depot est saisi et
+    // qu'un depot anterieur existe. Le serveur refait le meme controle.
+    const depotPrecedentRecupere = lireDepotPrecedentRecupere();
+    if (depotMata != null && depotMata > 0 && (dernierDepotMata || dernierDepotIndisponible) && depotPrecedentRecupere === null) {
+        showToast('Précisez si le dépôt précédent a été récupéré (Oui ou Non)', 'error');
+        const bloc = document.getElementById('clotureDepotPrecedentBloc');
+        if (bloc) bloc.scrollIntoView({ block: 'center' });
+        const oui = document.getElementById('clotureDepotPrecedentOui');
+        if (oui) oui.focus();
+        return;
+    }
+
     // L'estimatif est lu dans son champ dedie, et non plus reparse depuis le
     // texte affiche. L'ancienne version faisait un match(/[\d\s]+/) sur le
     // contenu de la boite: elle rendait null des que le calcul affichait "Non
@@ -4040,7 +4166,7 @@ async function validerClotureCaisse() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, commercial, commentaire })
+            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, commercial, commentaire })
         });
         const data = await res.json();
 

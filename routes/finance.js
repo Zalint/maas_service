@@ -1599,12 +1599,25 @@ router.get('/cash-stock', async (req, res) => {
         if (isNaN(dParsed.getTime())) {
             return res.status(400).json({ success: false, error: 'invalid date' });
         }
-        // Pas de Valeur dans le futur.
+        // Pas de Valeur dans le futur - avec une tolerance d'un jour.
+        //
+        // todayISO vient de toISOString(), donc de l'UTC, alors que l'interface
+        // propose la date LOCALE du navigateur. A l'est de Greenwich les deux
+        // divergent pendant les premieres heures de la journee: a Dubai (UTC+4),
+        // le client proposait le 07 pendant que le serveur en etait au 06, et
+        // Cash et Stock rejetait sa propre date par defaut plusieurs heures par
+        // jour. Un client peut etre jusqu'a 14 h en avance sur UTC; un jour de
+        // tolerance couvre tous les fuseaux, et au-dela l'erreur est reelle.
         const todayParsed = new Date(todayISO + 'T00:00:00Z');
-        if (dParsed > todayParsed) {
+        const borneHaute = new Date(todayParsed.getTime() + 24 * 3600 * 1000);
+        if (dParsed > borneHaute) {
             return res.status(400).json({
                 success: false,
-                error: 'date ne peut pas etre dans le futur'
+                error: 'date ne peut pas etre dans le futur',
+                // Distingue le refus d'une saisie absurde d'une journee
+                // simplement pas encore renseignee: l'interface n'affiche une
+                // erreur rouge que pour le premier cas.
+                code: 'date_futur'
             });
         }
 
@@ -1701,6 +1714,14 @@ router.get('/cash-stock', async (req, res) => {
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - depotMataTotal - soldeDuFournisseur;
 
+        // La tolerance d'un jour existe pour les fuseaux a l'est de Greenwich,
+        // pas pour valoriser une journee qui n'a pas eu lieu. Au-dela de la
+        // date du serveur ET sans aucune cloture, ce qui sort n'est pas une
+        // mesure: c'est le dernier snapshot de stock repris tel quel, moins une
+        // commission, presente comme une Valeur du jour. On le dit.
+        const dansLaTolerance = dateD > todayISO;
+        const aucuneDonnee = dansLaTolerance && cashParPv.length === 0;
+
         res.json({
             success: true,
             data: {
@@ -1727,7 +1748,11 @@ router.get('/cash-stock', async (req, res) => {
                 // Periode reellement couverte par le solde ci-dessus: permet a
                 // l'interface de dire "du 01 au 31" plutot qu'un vague "cumul".
                 solde_periode: { debut: moisDebut, fin: dateD },
-                valeur: round2(valeur)
+                valeur: round2(valeur),
+                // Journee posterieure a la date du serveur et sans aucune
+                // cloture: l'interface affiche un message neutre plutot que ce
+                // total, qui n'est mesure sur rien.
+                aucune_donnee: aucuneDonnee
             }
         });
     } catch (e) {

@@ -17752,6 +17752,57 @@ app.get('/api/clotures-caisse/estimatif', checkAuth, async (req, res) => {
     }
 });
 
+// Dernier depot Mata enregistre pour un point de vente, avant une date donnee.
+//
+// Sert la question "le depot precedent a-t-il ete recupere ?" posee a la
+// cloture. Elle designe le DERNIER depot enregistre, quelle que soit sa date -
+// et non la veille calendaire: apres un week-end ou une journee sans depot,
+// s'en tenir a J-1 ne trouverait rien alors qu'un depot attend toujours.
+//
+// Ouverte a tout utilisateur authentifie, comme GET /api/clotures-caisse dont
+// elle est un sous-ensemble: le commercial qui cloture doit pouvoir repondre.
+app.get('/api/clotures-caisse/dernier-depot', checkAuth, async (req, res) => {
+    try {
+        const pointVente = req.query.pointVente;
+        if (!pointVente || typeof pointVente !== 'string') {
+            return res.status(400).json({ success: false, message: 'pointVente est requis' });
+        }
+        const { Op } = require('sequelize');
+        // Strictement positif: un depot de 0 F signifie "aucun versement", il
+        // n'y a rien a recuperer. La question doit porter sur de l'argent
+        // reellement remis.
+        const where = {
+            point_de_vente: pointVente,
+            is_latest: true,
+            depot_mata: { [Op.gt]: 0 }
+        };
+        // Avant la date de la cloture en cours: sinon, refaire la caisse d'un
+        // jour deja cloture proposerait son PROPRE depot comme "precedent".
+        if (req.query.avant && typeof req.query.avant === 'string') {
+            where.date = { [Op.lt]: req.query.avant };
+        }
+        const dernier = await ClotureCaisse.findOne({
+            where,
+            order: [['date', 'DESC'], ['created_at', 'DESC']]
+        });
+        res.json({
+            success: true,
+            data: dernier
+                ? {
+                    date: dernier.date,
+                    montant: parseFloat(dernier.depot_mata),
+                    point_de_vente: dernier.point_de_vente,
+                    // Ce que la cloture suivante avait repondu, s'il y en a eu une.
+                    recupere: dernier.depot_precedent_recupere
+                }
+                : null
+        });
+    } catch (error) {
+        console.error('Erreur dernier-depot GET:', error.message);
+        res.status(500).json({ success: false, message: 'Erreur serveur' });
+    }
+});
+
 // Historique des clotures PASSEES, tous points de vente confondus.
 //
 // Route separee, et non un elargissement de GET /api/clotures-caisse: cette
@@ -17854,7 +17905,7 @@ app.get('/api/clotures-caisse/historique', checkAuth, async (req, res) => {
         });
     } catch (error) {
         console.error('Erreur clotures historique GET:', error.message);
-        res.status(500).json({ success: false, message: 'Erreur serveur', error: error.message });
+        res.status(500).json({ success: false, message: 'Erreur serveur' });
     }
 });
 
@@ -17874,7 +17925,7 @@ app.get('/api/clotures-caisse', checkAuth, async (req, res) => {
 
 app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
     try {
-        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, commercial, commentaire } = req.body;
+        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, commercial, commentaire } = req.body;
         const username = req.session?.user?.username || req.user?.username || 'inconnu';
         if (!date || !pointVente || montantEspeces === undefined || !commercial) {
             return res.status(400).json({ success: false, message: 'date, pointVente, montantEspeces et commercial sont requis' });
@@ -17910,12 +17961,76 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
 
         let isoDate = date;
         if (date.match(/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/)) { const parts = date.split(/[\/\-]/); isoDate = `${parts[2]}-${parts[1]}-${parts[0]}`; }
+
+        // depot_precedent_recupere: le depot Mata precedent a-t-il ete
+        // recupere ? OBLIGATOIRE des qu'un depot est saisi ET qu'un depot
+        // anterieur existe. La verification se fait ICI et pas seulement dans
+        // le navigateur: une garde cote client se contourne.
+        //
+        // NULL n'est pas false. NULL = la question ne se posait pas (aucun
+        // depot anterieur, ou aucun depot saisi ce jour); false = on a repondu
+        // "non recupere". Confondre les deux ferait passer une absence
+        // d'information pour un impaye.
+        let depotPrecedentValide = null;
+        let depotPrecedentDate = null;
+        if (depotPrecedentRecupere !== undefined && depotPrecedentRecupere !== null && depotPrecedentRecupere !== '') {
+            if (typeof depotPrecedentRecupere !== 'boolean') {
+                return res.status(400).json({ success: false, message: 'depotPrecedentRecupere doit etre un booleen' });
+            }
+            depotPrecedentValide = depotPrecedentRecupere;
+        }
+        // Un depot de ZERO n'est pas un depot: il dit "aucun versement ce
+        // jour", et il n'y a alors rien a demander sur le precedent. Tester
+        // "!== null" faisait refuser la cloture par le serveur alors que le
+        // client, lui, ne montrait aucun bouton pour repondre (il teste > 0):
+        // l'utilisateur ne pouvait plus valider sans VIDER le champ, ce qui
+        // remplacait "aucun depot" par "non renseigne" - exactement la
+        // distinction que cette colonne existe pour preserver.
+        //
+        // Meme raison du cote de la recherche: un depot anterieur de 0 F n'est
+        // pas un depot en attente, il ne doit pas rendre la question obligatoire.
+        if (depotMataValide !== null && depotMataValide > 0) {
+            const { Op } = require('sequelize');
+            const depotAnterieur = await ClotureCaisse.findOne({
+                where: {
+                    point_de_vente: pointVente,
+                    is_latest: true,
+                    depot_mata: { [Op.gt]: 0 },
+                    date: { [Op.lt]: isoDate }
+                },
+                order: [['date', 'DESC'], ['created_at', 'DESC']]
+            });
+            if (depotAnterieur && depotPrecedentValide === null) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Precisez si le depot precedent a ete recupere (oui ou non)'
+                });
+            }
+            // La date ANCRE la reponse. "Le depot precedent" se resout au
+            // moment de la saisie: sans elle, une cloture inseree plus tard
+            // entre deux dates ferait pointer un oui/non deja enregistre vers
+            // un autre depot, et la tracabilite dirait le contraire du vrai.
+            //
+            // C'est le SERVEUR qui l'ecrit, a partir de la cloture qu'il vient
+            // lui-meme de retrouver: le client peut ne pas la connaitre (sa
+            // requete a pu echouer) et n'a de toute facon pas autorite dessus.
+            if (depotAnterieur) depotPrecedentDate = depotAnterieur.date;
+            // Aucun depot anterieur: la question n'avait pas lieu d'etre, une
+            // reponse eventuelle est ecartee plutot que stockee sans objet.
+            if (!depotAnterieur) depotPrecedentValide = null;
+        } else {
+            // Pas de depot saisi: la question ne se pose pas.
+            depotPrecedentValide = null;
+        }
+        // La date ne survit jamais a une reponse ecartee: une ancre sans
+        // reponse ne designerait rien.
+        if (depotPrecedentValide === null) depotPrecedentDate = null;
         const transaction = await sequelize.transaction();
         let cloture;
         let referenceManquante = false;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
-            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
+            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, depot_precedent_recupere: depotPrecedentValide, depot_precedent_date: depotPrecedentDate, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
                 // Upsert atomic via INSERT ... ON CONFLICT DO UPDATE.
