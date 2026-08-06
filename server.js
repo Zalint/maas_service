@@ -17768,10 +17768,13 @@ app.get('/api/clotures-caisse/dernier-depot', checkAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'pointVente est requis' });
         }
         const { Op } = require('sequelize');
+        // Strictement positif: un depot de 0 F signifie "aucun versement", il
+        // n'y a rien a recuperer. La question doit porter sur de l'argent
+        // reellement remis.
         const where = {
             point_de_vente: pointVente,
             is_latest: true,
-            depot_mata: { [Op.ne]: null }
+            depot_mata: { [Op.gt]: 0 }
         };
         // Avant la date de la cloture en cours: sinon, refaire la caisse d'un
         // jour deja cloture proposerait son PROPRE depot comme "precedent".
@@ -17969,19 +17972,30 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         // "non recupere". Confondre les deux ferait passer une absence
         // d'information pour un impaye.
         let depotPrecedentValide = null;
+        let depotPrecedentDate = null;
         if (depotPrecedentRecupere !== undefined && depotPrecedentRecupere !== null && depotPrecedentRecupere !== '') {
             if (typeof depotPrecedentRecupere !== 'boolean') {
                 return res.status(400).json({ success: false, message: 'depotPrecedentRecupere doit etre un booleen' });
             }
             depotPrecedentValide = depotPrecedentRecupere;
         }
-        if (depotMataValide !== null) {
+        // Un depot de ZERO n'est pas un depot: il dit "aucun versement ce
+        // jour", et il n'y a alors rien a demander sur le precedent. Tester
+        // "!== null" faisait refuser la cloture par le serveur alors que le
+        // client, lui, ne montrait aucun bouton pour repondre (il teste > 0):
+        // l'utilisateur ne pouvait plus valider sans VIDER le champ, ce qui
+        // remplacait "aucun depot" par "non renseigne" - exactement la
+        // distinction que cette colonne existe pour preserver.
+        //
+        // Meme raison du cote de la recherche: un depot anterieur de 0 F n'est
+        // pas un depot en attente, il ne doit pas rendre la question obligatoire.
+        if (depotMataValide !== null && depotMataValide > 0) {
             const { Op } = require('sequelize');
             const depotAnterieur = await ClotureCaisse.findOne({
                 where: {
                     point_de_vente: pointVente,
                     is_latest: true,
-                    depot_mata: { [Op.ne]: null },
+                    depot_mata: { [Op.gt]: 0 },
                     date: { [Op.lt]: isoDate }
                 },
                 order: [['date', 'DESC'], ['created_at', 'DESC']]
@@ -17992,6 +18006,15 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
                     message: 'Precisez si le depot precedent a ete recupere (oui ou non)'
                 });
             }
+            // La date ANCRE la reponse. "Le depot precedent" se resout au
+            // moment de la saisie: sans elle, une cloture inseree plus tard
+            // entre deux dates ferait pointer un oui/non deja enregistre vers
+            // un autre depot, et la tracabilite dirait le contraire du vrai.
+            //
+            // C'est le SERVEUR qui l'ecrit, a partir de la cloture qu'il vient
+            // lui-meme de retrouver: le client peut ne pas la connaitre (sa
+            // requete a pu echouer) et n'a de toute facon pas autorite dessus.
+            if (depotAnterieur) depotPrecedentDate = depotAnterieur.date;
             // Aucun depot anterieur: la question n'avait pas lieu d'etre, une
             // reponse eventuelle est ecartee plutot que stockee sans objet.
             if (!depotAnterieur) depotPrecedentValide = null;
@@ -17999,12 +18022,15 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
             // Pas de depot saisi: la question ne se pose pas.
             depotPrecedentValide = null;
         }
+        // La date ne survit jamais a une reponse ecartee: une ancre sans
+        // reponse ne designerait rien.
+        if (depotPrecedentValide === null) depotPrecedentDate = null;
         const transaction = await sequelize.transaction();
         let cloture;
         let referenceManquante = false;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
-            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, depot_precedent_recupere: depotPrecedentValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
+            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, depot_precedent_recupere: depotPrecedentValide, depot_precedent_date: depotPrecedentDate, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
                 // Upsert atomic via INSERT ... ON CONFLICT DO UPDATE.

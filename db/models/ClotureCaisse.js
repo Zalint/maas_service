@@ -55,6 +55,16 @@ const ClotureCaisse = sequelize.define('ClotureCaisse', {
             + 'confondre avec false = non récupéré. Traçabilité seule : '
             + 'n\'entre dans AUCUN calcul de Finance > Cash et Stock.'
     },
+    depot_precedent_date: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        comment: 'Date de la clôture dont le dépôt est visé par '
+            + 'depot_precedent_recupere. Sans elle, la réponse ne désigne rien : '
+            + '"le dépôt précédent" se résout au moment de la saisie, et une '
+            + 'clôture insérée rétroactivement entre deux dates ferait pointer '
+            + 'un oui/non déjà enregistré vers un AUTRE dépôt. Écrite par le '
+            + 'serveur, qui retrouve lui-même la clôture visée.'
+    },
     commercial: {
         type: DataTypes.STRING(150),
         allowNull: false,

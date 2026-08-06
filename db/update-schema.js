@@ -856,6 +856,17 @@ async function updateSchema() {
                 ADD COLUMN IF NOT EXISTS depot_precedent_recupere BOOLEAN
             `);
             console.log('Colonne clotures_caisse.depot_precedent_recupere verifiee');
+
+            // depot_precedent_date: la cloture que la reponse ci-dessus vise.
+            // Sans elle, "le depot precedent" se resout au moment de la saisie
+            // et cesse d'etre vrai des qu'une cloture est inseree entre deux
+            // dates. Nullable: les reponses deja enregistrees n'ont pas cette
+            // information, et l'inventer serait pire que de l'avouer.
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS depot_precedent_date DATE
+            `);
+            console.log('Colonne clotures_caisse.depot_precedent_date verifiee');
         }
 
         // adresse_client en TEXT (et non VARCHAR(255)).

@@ -2060,7 +2060,19 @@
 
         const lignesDecomposition = postes.map((p) => {
             const off = !actif(p);
-            const signeAff = p.signe > 0 ? '+' : '−';
+            // Le signe vient de la CONTRIBUTION REELLE, pas de la place du poste
+            // dans la formule. Une variation de stock negative - le cas courant
+            // d'une journee de boucherie - a signe:+1 et montant negatif: se
+            // fier au seul signe l'affichait "+ 475 000" alors que le bloc
+            // marge brute et le tableau Detail variation stock, sur le meme
+            // ecran, ecrivaient "- 475 000". La colonne cessait de s'additionner
+            // au total qu'elle est censee justifier.
+            const valeur = p.signe * p.montant;
+            // A zero exactement, la contribution ne dit rien: -1 * 0 vaut -0,
+            // et -0 >= 0 est vrai en JavaScript, ce qui affichait "+ 0 FCFA"
+            // sur une ligne de depense. On retombe alors sur la NATURE du
+            // poste, la seule information qui reste.
+            const signeAff = valeur > 0 ? '+' : (valeur < 0 ? '−' : (p.signe > 0 ? '+' : '−'));
             const style = off
                 ? 'opacity:.45; text-decoration:line-through; cursor:pointer;'
                 : (p.neutralisable ? 'cursor:pointer;' : '');
@@ -2070,7 +2082,7 @@
             return `<tr data-poste="${p.neutralisable ? esc(p.cle) : ''}" style="${style}"
                         ${p.neutralisable ? 'title="Cliquer pour retirer cette ligne du PL et voir son effet"' : (p.titre ? `title="${esc(p.titre)}"` : '')}>
                 <td>${p.libelle}${indice}</td>
-                <td class="text-end fw-medium text-${off ? 'muted' : p.couleur}">${signeAff} ${esc(fmtMoney(Math.abs(p.montant)))}</td>
+                <td class="text-end fw-medium text-${off ? 'muted' : p.couleur}">${signeAff} ${esc(fmtMoney(Math.abs(valeur)))}</td>
             </tr>`;
         }).join('');
 
@@ -2314,9 +2326,12 @@
         // Journee entierement vierge: aucune cloture ET aucun snapshot de stock
         // a reprendre. Afficher "0 FCFA" laisserait croire a une valeur mesuree
         // nulle, alors que rien n'a encore ete saisi.
+        // d.aucune_donnee: journee posterieure a la date du serveur, tombee
+        // dans la tolerance de fuseau, et sans aucune cloture. Le total renvoye
+        // reprend le dernier snapshot de stock: il ne mesure rien.
         const aucuneCloture = !(cash.par_pv && cash.par_pv.length);
         const aucunStock = !stock.soir_date_utilisee;
-        if (aucuneCloture && aucunStock) {
+        if (d.aucune_donnee || (aucuneCloture && aucunStock)) {
             resultEl.innerHTML = '<div class="alert alert-secondary mb-0">'
                 + `<i class="bi bi-calendar-x"></i> Pas encore de données pour le ${esc(d.date)} : `
                 + 'ni clôture de caisse, ni stock du soir saisi.</div>';

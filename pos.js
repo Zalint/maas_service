@@ -3603,6 +3603,7 @@ async function ouvrirClotureCaisse() {
     const elBlocPrec = document.getElementById('clotureDepotPrecedentBloc');
     if (elBlocPrec) elBlocPrec.style.display = 'none';
     dernierDepotMata = null;
+    dernierDepotIndisponible = false;
 
     // Un seul branchement, pose une fois pour toutes: la question apparait ou
     // disparait au fil de la saisie du montant.
@@ -3692,9 +3693,14 @@ async function chargerEstimatifCloture(date, pointVente) {
 // ---------------------------------------------------------------------------
 
 let dernierDepotMata = null;
+// L'appel a-t-il echoue ? Le serveur, lui, refusera la cloture s'il trouve un
+// depot anterieur. Ne pas poser la question dans ce cas laissait l'utilisateur
+// devant un 400 exigeant une reponse qu'aucun bouton ne permettait de donner.
+let dernierDepotIndisponible = false;
 
 async function chargerDernierDepotMata(pointVente, dateCloture) {
     dernierDepotMata = null;
+    dernierDepotIndisponible = false;
     try {
         const p = new URLSearchParams({ pointVente });
         // Strictement AVANT la cloture en cours: sinon, refaire la caisse d'un
@@ -3702,10 +3708,13 @@ async function chargerDernierDepotMata(pointVente, dateCloture) {
         if (dateCloture) p.set('avant', dateCloture);
         const res = await fetch('/api/clotures-caisse/dernier-depot?' + p.toString(), { credentials: 'include' });
         const data = await res.json();
-        if (data.success && data.data) dernierDepotMata = data.data;
+        if (!res.ok || !data.success) throw new Error(data.message || ('HTTP ' + res.status));
+        if (data.data) dernierDepotMata = data.data;
     } catch (e) {
-        // Injoignable: on ne pose pas la question plutot que de bloquer la
-        // cloture sur une information qu'on n'a pas pu charger.
+        // On pose la question QUAND MEME, avec un libelle generique: mieux vaut
+        // une question parfois inutile - le serveur ecarte la reponse s'il n'y
+        // a pas de depot anterieur - qu'une cloture impossible a valider.
+        dernierDepotIndisponible = true;
         console.warn('Dernier depot Mata indisponible:', e && e.message);
     }
     majBlocDepotPrecedent();
@@ -3718,14 +3727,20 @@ function majBlocDepotPrecedent() {
     const brut = (document.getElementById('clotureDepotMata') || {}).value;
     const saisi = brut != null && String(brut).trim() !== '' && parseFloat(brut) > 0;
 
-    if (!saisi || !dernierDepotMata) {
+    if (!saisi || (!dernierDepotMata && !dernierDepotIndisponible)) {
         bloc.style.display = 'none';
         return;
     }
     const q = document.getElementById('clotureDepotPrecedentQuestion');
     if (q) {
-        const d = String(dernierDepotMata.date || '').slice(0, 10).split('-').reverse().join('/');
-        q.textContent = `Le dépôt de ${formatCurrency(dernierDepotMata.montant)} du ${d} a-t-il été récupéré ?`;
+        if (dernierDepotMata) {
+            const d = String(dernierDepotMata.date || '').slice(0, 10).split('-').reverse().join('/');
+            q.textContent = `Le dépôt de ${formatCurrency(dernierDepotMata.montant)} du ${d} a-t-il été récupéré ?`;
+        } else {
+            // Montant et date inconnus: on ne les invente pas.
+            q.textContent = 'Le dépôt précédent a-t-il été récupéré ? '
+                + '(son montant n’a pas pu être chargé)';
+        }
     }
     bloc.style.display = 'block';
 }
@@ -3839,7 +3854,8 @@ async function chargerArchivesClotures() {
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.fond_de_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_total_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap; color:#dc3545;">${nb(c.depot_mata)}</td>
-                <td style="padding:6px 10px; text-align:center; white-space:nowrap;">${
+                <td style="padding:6px 10px; text-align:center; white-space:nowrap;"
+                    title="${c.depot_precedent_date ? 'Depot du ' + escapeHtml(String(c.depot_precedent_date).slice(0, 10)) : ''}">${
                     c.depot_precedent_recupere === null || c.depot_precedent_recupere === undefined
                         ? '<span style="color:#adb5bd;">—</span>'
                         : (c.depot_precedent_recupere
@@ -3962,7 +3978,10 @@ async function chargerHistoriqueCloture(date, pointVente) {
                                 <tr>
                                     <td style="color:#6c757d; padding:3px 0;">Dépôt précédent récupéré</td>
                                     <td style="font-weight:600; color:${c.depot_precedent_recupere ? '#198754' : '#dc3545'};">
-                                        ${c.depot_precedent_recupere ? 'Oui' : 'Non'}</td>
+                                        ${c.depot_precedent_recupere ? 'Oui' : 'Non'}
+                                        ${c.depot_precedent_date
+                                            ? `<span style="font-weight:400; color:#6c757d;">— celui du ${escapeHtml(String(c.depot_precedent_date).slice(0, 10).split('-').reverse().join('/'))}</span>`
+                                            : ''}</td>
                                 </tr>` : ''}
                                 ${c.montant_estimatif !== null && c.montant_estimatif !== undefined ? `
                                 <tr>
@@ -4119,7 +4138,7 @@ async function validerClotureCaisse() {
     // Recuperation du depot precedent: OBLIGATOIRE des qu'un depot est saisi et
     // qu'un depot anterieur existe. Le serveur refait le meme controle.
     const depotPrecedentRecupere = lireDepotPrecedentRecupere();
-    if (depotMata != null && depotMata > 0 && dernierDepotMata && depotPrecedentRecupere === null) {
+    if (depotMata != null && depotMata > 0 && (dernierDepotMata || dernierDepotIndisponible) && depotPrecedentRecupere === null) {
         showToast('Précisez si le dépôt précédent a été récupéré (Oui ou Non)', 'error');
         const bloc = document.getElementById('clotureDepotPrecedentBloc');
         if (bloc) bloc.scrollIntoView({ block: 'center' });

@@ -1714,6 +1714,14 @@ router.get('/cash-stock', async (req, res) => {
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - depotMataTotal - soldeDuFournisseur;
 
+        // La tolerance d'un jour existe pour les fuseaux a l'est de Greenwich,
+        // pas pour valoriser une journee qui n'a pas eu lieu. Au-dela de la
+        // date du serveur ET sans aucune cloture, ce qui sort n'est pas une
+        // mesure: c'est le dernier snapshot de stock repris tel quel, moins une
+        // commission, presente comme une Valeur du jour. On le dit.
+        const dansLaTolerance = dateD > todayISO;
+        const aucuneDonnee = dansLaTolerance && cashParPv.length === 0;
+
         res.json({
             success: true,
             data: {
@@ -1740,7 +1748,11 @@ router.get('/cash-stock', async (req, res) => {
                 // Periode reellement couverte par le solde ci-dessus: permet a
                 // l'interface de dire "du 01 au 31" plutot qu'un vague "cumul".
                 solde_periode: { debut: moisDebut, fin: dateD },
-                valeur: round2(valeur)
+                valeur: round2(valeur),
+                // Journee posterieure a la date du serveur et sans aucune
+                // cloture: l'interface affiche un message neutre plutot que ce
+                // total, qui n'est mesure sur rien.
+                aucune_donnee: aucuneDonnee
             }
         });
     } catch (e) {
