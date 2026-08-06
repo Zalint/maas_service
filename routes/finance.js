@@ -1354,12 +1354,13 @@ router.get('/pl', async (req, res) => {
         const stockSoirFin = stockSoirVal.valeur;
         const stockSoirDate = stockSoirVal.date_utilisee;
         // Produits restes au prix de VENTE, faute de prix d'achat: l'ecran les
-        // marque d'un asterisque. Sans cette liste, la valeur melangerait deux
-        // bases sans que rien ne le dise.
-        const stockAuPrixDeVente = Array.from(new Set([
-            ...stockMatinVal.produits_au_prix_de_vente,
-            ...stockSoirVal.produits_au_prix_de_vente
-        ])).sort();
+        // marque d'un asterisque. Les deux bornes sont rendues SEPAREMENT: un
+        // produit present le matin et absent le soir ne concerne qu'une des
+        // deux lignes, et une liste fusionnee accusait le stock soir d'un
+        // melange de bases qu'il ne contenait pas - une fausse piste pour qui
+        // cherche a expliquer une variation.
+        const stockMatinAuPrixDeVente = stockMatinVal.produits_au_prix_de_vente;
+        const stockSoirAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
         const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Coefficient pertes decoupe (default 5%): la viande perd du
         // volume lors de la decoupe, donc on ne valorise que (100-X)%
@@ -1426,8 +1427,10 @@ router.get('/pl', async (req, res) => {
                     coeff: round2(coeffStock),
                     variation_nette: round2(variationStockNette),
                     // Base de valorisation: prix d'achat fournisseur, sauf pour
-                    // les produits ci-dessous restes au prix de vente.
-                    produits_au_prix_de_vente: stockAuPrixDeVente
+                    // les produits ci-dessous restes au prix de vente. Une liste
+                    // par borne: elles n'ont aucune raison d'etre identiques.
+                    matin_au_prix_de_vente: stockMatinAuPrixDeVente,
+                    soir_au_prix_de_vente: stockSoirAuPrixDeVente
                 },
                 pl: round2(pl)
             }
@@ -2020,7 +2023,13 @@ router.get('/creances', async (req, res) => {
         //             (client qui annule/recharge, ou proxy qui coupe)
         // Un FIN sain suivi d'un ABANDON = le calcul n'est pas en cause.
         res.on('finish', () => {
-            console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || '?'}`);
+            // La taille se lit sur la SOCKET et non dans Content-Length: le
+            // middleware compression retire cet en-tete des qu'il gzippe, et
+            // cette instrumentation - la seule du depot a mesurer une taille de
+            // reponse, ajoutee pour diagnostiquer des ERR_CONNECTION_CLOSED -
+            // serait retombee sur "?" pour toute requete de navigateur.
+            const surLeFil = res.socket ? res.socket.bytesWritten : null;
+            console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || surLeFil || '?'}`);
         });
         res.on('close', () => {
             if (!res.writableEnded) {

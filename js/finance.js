@@ -1993,12 +1993,22 @@
         // Meme regle d'affichage que Cash et Stock: le stock est valorise au
         // prix d'achat fournisseur, et les produits qui n'en ont pas sont
         // nommes. Les deux ecrans doivent dire la meme chose du meme stock.
-        const plAuPrixVente = stock.produits_au_prix_de_vente || [];
-        const plAsterisque = plAuPrixVente.length ? ' <span class="text-warning fw-bold">*</span>' : '';
-        const plLegendePrix = plAuPrixVente.length
+        //
+        // Un asterisque PAR BORNE: le stock matin et le stock soir sont deux
+        // snapshots distincts, un produit sans prix d'achat peut n'etre present
+        // que dans l'un des deux.
+        const plMatinSansPrix = stock.matin_au_prix_de_vente || [];
+        const plSoirSansPrix = stock.soir_au_prix_de_vente || [];
+        const etoile = ' <span class="text-warning fw-bold">*</span>';
+        const plAsterisqueMatin = plMatinSansPrix.length ? etoile : '';
+        const plAsterisqueSoir = plSoirSansPrix.length ? etoile : '';
+        const detailBorne = (nom, liste) => (liste.length
+            ? `<div>${nom} : ${esc(liste.join(', '))}</div>` : '');
+        const plLegendePrix = (plMatinSansPrix.length || plSoirSansPrix.length)
             ? `<small class="text-muted"><span class="text-warning fw-bold">*</span>
-               Valorisé au <strong>prix d'achat fournisseur</strong>, sauf
-               ${esc(plAuPrixVente.join(', '))} — sans prix d'achat renseigné, ces produits restent au prix de vente.</small>`
+               Valorisé au <strong>prix d'achat fournisseur</strong>. Sans prix d'achat renseigné,
+               ces produits restent au prix de vente :
+               ${detailBorne('stock matin', plMatinSansPrix)}${detailBorne('stock soir', plSoirSansPrix)}</small>`
             : `<small class="text-muted">Valorisé au <strong>prix d'achat fournisseur</strong>.</small>`;
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
@@ -2073,11 +2083,11 @@
                 <table class="table table-sm mb-0">
                     <tbody>
                         <tr>
-                            <td>Stock matin${plAsterisque} <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
+                            <td>Stock matin${plAsterisqueMatin} <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
                             <td class="text-end">${esc(fmtMoney(stock.matin_debut))}</td>
                         </tr>
                         <tr>
-                            <td>Stock soir${plAsterisque} <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
+                            <td>Stock soir${plAsterisqueSoir} <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
                             <td class="text-end">${esc(fmtMoney(stock.soir_fin))}</td>
                         </tr>
                         <tr>
@@ -2185,6 +2195,13 @@
                ${esc(auPrixVente.join(', '))} — sans prix d'achat renseigné, ces produits restent au prix de vente.</small></div>`
             : `<div class="mt-2"><small class="text-muted">Stock valorisé au <strong>prix d'achat fournisseur</strong>.</small></div>`;
 
+        // "—" veut dire NON RENSEIGNE, "0 FCFA" veut dire aucun depot. Le pied
+        // du tableau se decidait sur la valeur (0 -> "—"), les lignes sur la
+        // nullite: le meme ecran disait "on ne sait pas" et "zero" du meme
+        // chiffre. Un tiret n'apparait donc que si AUCUNE cloture du jour ne
+        // porte de depot.
+        const depotRenseigne = (cash.par_pv || []).some((p) => p.depot_mata != null);
+
         // Le detail par point de vente porte aussi le depot: sans lui, un total
         // qui parait faux n'est pas diagnosticable.
         const pvRows = (cash.par_pv || []).map((p) => {
@@ -2199,7 +2216,7 @@
             ? `<table class="table table-sm mb-0">
                 <thead><tr><th>Point de vente</th><th class="text-end">Cash en caisse</th><th class="text-end">Dépôt Mata</th></tr></thead>
                 <tbody>${pvRows}</tbody>
-                <tfoot><tr style="background:#f8fafc"><th>Total</th><th class="text-end">${esc(fmtMoney(cash.total))}</th><th class="text-end text-danger">${depotMata ? '− ' + esc(fmtMoney(depotMata)) : '—'}</th></tr></tfoot>
+                <tfoot><tr style="background:#f8fafc"><th>Total</th><th class="text-end">${esc(fmtMoney(cash.total))}</th><th class="text-end text-danger">${depotRenseigne ? '− ' + esc(fmtMoney(depotMata)) : '—'}</th></tr></tfoot>
                </table>`
             : '<div class="text-muted small">Aucune clôture de caisse trouvée pour cette date.</div>';
 
@@ -2240,7 +2257,7 @@
                             </tr>
                             <tr>
                                 <td>− Dépôt Mata <span class="text-muted">(versé à Mata, compté avant le dépôt)</span></td>
-                                <td class="text-end text-danger">− ${esc(fmtMoney(depotMata))}</td>
+                                <td class="text-end text-danger">${depotRenseigne ? '− ' + esc(fmtMoney(depotMata)) : '<span class="text-muted">non renseigné</span>'}</td>
                             </tr>
                             <tr>
                                 <td>− Solde dû fournisseur <span class="text-muted">(commission MaaS ${esc(periodeSolde)})</span></td>

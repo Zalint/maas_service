@@ -5,6 +5,7 @@ require('dotenv').config({
 
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const fs = require('fs');
 const { parse } = require('csv-parse');
 const { stringify } = require('csv-stringify');
@@ -258,6 +259,16 @@ const schemaPret = (async function() {
 schemaPret.catch(() => {});
 
 // Middleware
+//
+// Compression EN PREMIER: elle doit envelopper tout ce qui ecrit une reponse,
+// aussi bien express.static que les routes API. Placee plus bas, elle ne
+// couvrirait pas les middlewares deja enregistres.
+//
+// index.html charge ~1,4 Mo de JavaScript non minifie, dont 800 Ko pour le seul
+// script.js. En local le cout ne se voit pas; sur Render chaque octet traverse
+// le reseau, et c'est la que se joue l'essentiel du temps de demarrage.
+app.use(compression());
+
 // Allow all origins in production for Render
 app.use(cors({
     origin: true, // Allow any origin

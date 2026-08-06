@@ -3585,6 +3585,18 @@ async function ouvrirClotureCaisse() {
     if (elFond)       elFond.value       = '0';
     if (elTotalCaisse) elTotalCaisse.value = '';
     if (elDepotMata)  elDepotMata.value  = '';
+    // Le rappel se remet a zero AVEC le champ qu'il explique. Il ne suffisait
+    // pas de le masquer dans chargerHistoriqueCloture: cette remise a zero
+    // etait a l'interieur du `if (count > 0)`, donc jamais atteinte quand la
+    // nouvelle date - ou le nouveau point de vente - n'a aucune cloture. Le
+    // message "Repris de la cloture precedente (200 000 F)" survivait alors
+    // au-dessus d'un champ vide, sur un point de vente qui n'avait rien verse.
+    const elRappelDepot = document.getElementById('clotureDepotMataRappel');
+    if (elRappelDepot) { elRappelDepot.innerHTML = ''; elRappelDepot.style.display = 'none'; }
+    // Le champ estimatif est vide ici, puis PRE-REMPLI par
+    // chargerEstimatifCloture() des que le calcul revient.
+    const elEstimatifInput = document.getElementById('clotureMontantEstimatif');
+    if (elEstimatifInput) elEstimatifInput.value = '';
     if (elCommercial) elCommercial.value = '';
 
     // Bloc "Clotures passees": reserve aux roles qui voient deja tous les
@@ -3616,19 +3628,31 @@ async function chargerEstimatifCloture(date, pointVente) {
         });
         const data = await res.json();
         const el = document.getElementById('clotureEstimatifDisplay');
+        const input = document.getElementById('clotureMontantEstimatif');
         if (data.success) {
-            const { totalVentes, estimatif } = data.data;
-            el.innerHTML = `
-                <span style="font-size:1.3rem;">${formatCurrency(estimatif)}</span>
-                <br><small style="font-weight:400; color:#b02a37;">
-                    Total ventes (espèces): ${formatCurrency(estimatif)}
-                </small>`;
-        } else {
-            el.innerHTML = '<span class="text-muted">Non disponible</span>';
+            const estimatif = data.data && data.data.estimatif;
+            const connu = estimatif !== null && estimatif !== undefined;
+            // Le montant part dans un champ dedie, l'affichage reste purement
+            // visuel: les deux ne se relisent plus l'un l'autre.
+            if (input) input.value = connu ? estimatif : '';
+            if (el) {
+                el.innerHTML = connu
+                    ? `<span style="font-size:1.3rem;">${formatCurrency(estimatif)}</span>
+                       <br><small style="font-weight:400; color:#b02a37;">
+                           Total ventes (espèces): ${formatCurrency(estimatif)}
+                       </small>`
+                    : '<span class="text-muted">Non disponible</span>';
+            }
+            return connu ? estimatif : null;
         }
-        return data.data?.estimatif || null;
+        if (input) input.value = '';
+        if (el) el.innerHTML = '<span class="text-muted">Non disponible</span>';
+        return null;
     } catch (e) {
-        document.getElementById('clotureEstimatifDisplay').innerHTML = '<span class="text-muted">Erreur de calcul</span>';
+        const input = document.getElementById('clotureMontantEstimatif');
+        const el = document.getElementById('clotureEstimatifDisplay');
+        if (input) input.value = '';
+        if (el) el.innerHTML = '<span class="text-muted">Erreur de calcul</span>';
         return null;
     }
 }
@@ -3727,6 +3751,7 @@ async function chargerArchivesClotures() {
                 <td style="padding:6px 10px;">${escapeHtml(c.point_de_vente || '')}</td>
                 <td style="padding:6px 10px;">${escapeHtml(c.commercial || '')} ${rectif}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_especes)}</td>
+                <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.fond_de_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_total_caisse)}</td>
                 <td style="padding:6px 10px; text-align:right; white-space:nowrap; color:#dc3545;">${nb(c.depot_mata)}</td>
             </tr>`;
@@ -3743,6 +3768,7 @@ async function chargerArchivesClotures() {
                 <th style="padding:6px 10px; text-align:left; white-space:nowrap;">Point de vente</th>
                 <th style="padding:6px 10px; text-align:left; white-space:nowrap;">Commercial</th>
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Espèces</th>
+                <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Fond de caisse</th>
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Total caisse</th>
                 <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Dépôt Mata</th>
             </tr></thead>
@@ -3765,6 +3791,30 @@ async function chargerHistoriqueCloture(date, pointVente) {
         if (data.success && data.count > 0) {
             section.style.display = 'block';
             document.getElementById('clotureUpsertWarning').style.display = 'block';
+
+            // Report du Depot Mata sur une RECTIFICATION.
+            //
+            // Refaire la caisse rouvre la modale entierement vide. Le montant
+            // total en caisse est obligatoire, donc l'operateur le retape; le
+            // depot, lui, est optionnel - il repartait a NULL sans que rien ne
+            // le signale, et Cash et Stock remontait du montant entier du
+            // depot. Un ecart silencieux sur le chiffre en tete d'ecran.
+            //
+            // On le represaisit donc, en le signalant: c'est une valeur a
+            // confirmer ou a corriger, pas une saisie neuve.
+            const derniere = data.data.filter((c) => c.is_latest)[0];
+            const elDepot = document.getElementById('clotureDepotMata');
+            const elRappel = document.getElementById('clotureDepotMataRappel');
+            if (elDepot && derniere && derniere.depot_mata !== null && derniere.depot_mata !== undefined) {
+                elDepot.value = parseFloat(derniere.depot_mata);
+                if (elRappel) {
+                    elRappel.innerHTML = `<i class="fas fa-info-circle"></i> Repris de la clôture précédente `
+                        + `(${formatCurrency(parseFloat(derniere.depot_mata))}) : corrigez ou videz si ce n'est plus exact.`;
+                    elRappel.style.display = 'block';
+                }
+            } else if (elRappel) {
+                elRappel.style.display = 'none';
+            }
 
             list.innerHTML = data.data.map((c, i) => {
                 const heure = new Date(c.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
@@ -3801,6 +3851,20 @@ async function chargerHistoriqueCloture(date, pointVente) {
                                 <tr>
                                     <td style="color:#6c757d; padding:3px 0;">Fond de caisse</td>
                                     <td>${parseFloat(c.fond_de_caisse) > 0 ? formatCurrency(parseFloat(c.fond_de_caisse)) : '—'}</td>
+                                </tr>
+                                <!-- Les deux montants qui alimentent Finance > Cash et Stock.
+                                     Ils etaient absents de ce detail: une rectification pouvait
+                                     donc effacer un depot que l'ecran n'avait jamais montre. -->
+                                <tr>
+                                    <td style="color:#6c757d; padding:3px 0;">Total en caisse</td>
+                                    <td>${c.montant_total_caisse !== null && c.montant_total_caisse !== undefined
+                                        ? formatCurrency(parseFloat(c.montant_total_caisse)) : '—'}</td>
+                                </tr>
+                                <tr>
+                                    <td style="color:#6c757d; padding:3px 0;">Dépôt Mata</td>
+                                    <td style="${c.depot_mata !== null && c.depot_mata !== undefined && parseFloat(c.depot_mata) > 0 ? 'color:#dc3545; font-weight:600;' : ''}">${
+                                        c.depot_mata !== null && c.depot_mata !== undefined
+                                            ? formatCurrency(parseFloat(c.depot_mata)) : '—'}</td>
                                 </tr>
                                 ${c.montant_estimatif !== null && c.montant_estimatif !== undefined ? `
                                 <tr>
@@ -3954,13 +4018,16 @@ async function validerClotureCaisse() {
         return;
     }
 
-    // Récupérer l'estimatif affiché pour le stocker
-    const estimatifText = document.getElementById('clotureEstimatifDisplay')?.textContent || '';
-    const estimatifMatch = estimatifText.match(/[\d\s]+/);
-    let montantEstimatif = null;
-    if (estimatifMatch) {
-        montantEstimatif = parseFloat(estimatifMatch[0].replace(/\s/g, '')) || null;
-    }
+    // L'estimatif est lu dans son champ dedie, et non plus reparse depuis le
+    // texte affiche. L'ancienne version faisait un match(/[\d\s]+/) sur le
+    // contenu de la boite: elle rendait null des que le calcul affichait "Non
+    // disponible", et aurait ramasse n'importe quel chiffre du libelle.
+    //
+    // Pas de validation bloquante ici: la valeur vient du serveur, pas de
+    // l'operateur, qui n'aurait aucun moyen de la corriger.
+    const estimatifRaw = document.getElementById('clotureMontantEstimatif')?.value;
+    const vEstimatif = parseFloat(estimatifRaw);
+    const montantEstimatif = Number.isFinite(vEstimatif) ? vEstimatif : null;
 
     const btn = document.querySelector('#clotureCaisseModal .btn-success');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enregistrement...'; }

@@ -801,40 +801,66 @@ document.addEventListener('DOMContentLoaded', function() {
 // Modification de la fonction checkAuth pour gérer l'affichage de l'onglet Stock inventaire
 async function checkAuth() {
     try {
-        const response = await fetch('/api/check-session', {
-            credentials: 'include'
-        });
+        // ORDRE DE DEMARRAGE.
+        //
+        // index.html est livre dans un etat "rien n'est configure": 11 des 16
+        // entrees de menu portent .module-pending, qui vaut display:none
+        // !important. Le menu par defaut, c'est donc Saisie et Visualisation,
+        // rien d'autre.
+        //
+        // Cette fonction devoilait le <body> des la reponse de check-session,
+        // puis enchainait CINQ allers-retours en serie - dont trois doublons
+        // exacts - avant de retirer module-pending. L'ecran d'usine restait
+        // donc affiche pendant tout ce temps: environ deux secondes en local,
+        // davantage sur Render.
+        //
+        // Deux seules informations conditionnent le menu: l'utilisateur et
+        // l'etat des modules. Elles ne dependent pas l'une de l'autre, donc
+        // elles partent ENSEMBLE. Les points de vente n'y servent pas: ils
+        // partent sans etre attendus, et ne sont rejoints qu'a la fin, la ou
+        // le code en a reellement besoin.
+        const sessionPromise = fetch('/api/check-session', { credentials: 'include' });
+        const modulesPromise = window.ModulesHandler
+            ? window.ModulesHandler.loadStatus().catch((e) => {
+                // Un etat de modules indisponible ne doit pas laisser
+                // l'utilisateur devant un ecran masque: isElementAllowed
+                // retombera sur "autorise" et le menu s'affichera quand meme.
+                console.warn('Etat des modules indisponible:', e && e.message);
+            })
+            : Promise.resolve();
+
+        const response = await sessionPromise;
         const data = await response.json();
-        
+
         if (!data.success) {
             window.location.href = 'login.html';
             return;
         }
-        
+
         // Stocker les informations de l'utilisateur
         currentUser = data.user;
-        
+
         // Stocker l'utilisateur dans la variable window pour l'accès global
         window.currentUser = currentUser;
-        
-        // Afficher le contenu de la page maintenant que l'authentification est vérifiée
-        document.body.classList.remove('auth-pending');
-        document.body.classList.add('auth-verified');
 
-        await populatePointVenteDropdowns();
-        await initPointsVentePhysiques();
-        await initTousPointsVente();
-        
+        // Lances sans await: seule la FIN de checkAuth en depend (le select
+        // #point-vente, qui a besoin de ses options). Les garder en serie ici
+        // les mettait sur le chemin critique du menu pour rien.
+        const pointsVentePromise = (async () => {
+            await populatePointVenteDropdowns();
+            await initPointsVentePhysiques();
+            await initTousPointsVente();
+        })();
+
         // Afficher les informations de l'utilisateur avec le rôle
         const roleDisplayName = getUserRoleDisplayName(currentUser);
         setUserDisplay(currentUser, roleDisplayName);
-        
-        // Charger l'état des modules si le gestionnaire est disponible
-        if (window.ModulesHandler) {
-            await window.ModulesHandler.loadStatus();
-            console.log('✅ État des modules chargé dans checkAuth');
-        }
-        
+
+        // L'etat des modules est necessaire a setElementVisibility ci-dessous.
+        // Il a ete demande en meme temps que la session, il est donc deja la
+        // ou presque.
+        await modulesPromise;
+
         // Fonction helper pour vérifier module + permission et appliquer la visibilité
         const setElementVisibility = (element, elementId, hasPermission) => {
             if (!element) return;
@@ -1003,6 +1029,14 @@ async function checkAuth() {
             configAdminItem.style.display = currentUser.role === 'admin' ? '' : 'none';
         }
 
+        // DEVOILEMENT. Ici, et pas avant: le menu est desormais dans son etat
+        // definitif. Place plus haut, cette ligne montrait l'etat d'usine du
+        // fichier - deux entrees de menu sur seize - pendant tout le temps que
+        // durait la configuration.
+        if (window.__bootLoaderFailsafe) clearTimeout(window.__bootLoaderFailsafe);
+        document.body.classList.remove('auth-pending');
+        document.body.classList.add('auth-verified');
+
         // Bouton "Supprimer ventes du jour" - réservé aux superviseurs et admins
         const btnSupprimerVentesJourAuth = document.getElementById('btn-supprimer-ventes-jour');
         if (btnSupprimerVentesJourAuth) {
@@ -1049,6 +1083,10 @@ async function checkAuth() {
         // Mettre à jour la visibilité du bouton de vidage
         updateViderBaseButtonVisibility();
         
+        // Les points de vente sont rejoints ICI, et pas plus tot: le select
+        // ci-dessous a besoin de ses options, mais rien d'autre avant.
+        await pointsVentePromise;
+
         // Initialiser le point de vente selon l'utilisateur
         const userPointsVente = getUserAuthorizedPointsVente();
         if (!userPointsVente.includes("tous") && userPointsVente.length === 1) {

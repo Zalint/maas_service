@@ -991,7 +991,7 @@
     <!-- Source unique des compositions de packs, generee depuis
          config/pack-compositions.js. Doit preceder pos.js. -->
     <script src="/pack-compositions.js"></script>
-    <script src="pos.js?v=20260806-depot-mata-3"></script>
+    <script src="pos.js?v=20260806-depot-mata-7"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
@@ -1597,9 +1597,17 @@
                             <label class="form-label fw-semibold" style="font-size:0.9rem; color:#6c757d;">
                                 Montant espèces estimatif (pour information)
                             </label>
+                            <!-- NON modifiable: l'ecart especes/estimatif est un controle, et
+                                 un estimatif saisissable permettrait de le ramener a zero. -->
                             <div id="clotureEstimatifDisplay" style="background:#fff5f5; border:1px solid #f5c6cb; border-radius:6px; padding:10px 14px; font-size:1.1rem; font-weight:600; color:#dc3545;">
                                 <i class="fas fa-spinner fa-spin"></i> Calcul en cours...
                             </div>
+                            <!-- La valeur NUMERIQUE, portee par un champ dedie. Elle etait
+                                 auparavant reparsee depuis le texte de la boite ci-dessus
+                                 (match sur les chiffres), ce qui rendait null des que le
+                                 calcul affichait "Non disponible" et pouvait ramasser
+                                 n'importe quel chiffre du libelle. -->
+                            <input type="hidden" id="clotureMontantEstimatif" value="">
                             <small class="text-muted">Total ventes du jour − paiements Bictorys (statut P)</small>
                         </div>
 
@@ -1639,6 +1647,9 @@
                             <input type="number" class="form-control" id="clotureDepotMata"
                                    placeholder="Ex: 200000" min="0" step="500">
                             <small class="text-muted">Montant versé à Mata. À compter dans le montant total ci-dessus : il en sera déduit pour le calcul de la valeur. Laisser vide si aucun dépôt.</small>
+                            <!-- Rappel affiche quand la valeur est reprise d'une cloture
+                                 precedente du meme jour (cf chargerHistoriqueCloture). -->
+                            <div id="clotureDepotMataRappel" class="mt-1" style="display:none; font-size:0.82rem; color:#0d6efd;"></div>
                         </div>
 
                         <!-- Commercial -->

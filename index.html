@@ -13,7 +13,10 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- xlsx etait charge DEUX fois, en 0.18.5 depuis deux CDN differents. La
+         copie du <head> etait bloquante et retardait le premier affichage pour
+         rien: aucun script inline n'utilise XLSX au parse, et celle de fin de
+         body (jsdelivr) ecrasait de toute facon celle-ci. Une seule reste. -->
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/fr.js"></script>
@@ -21,12 +24,67 @@
         /* ============================================
            AUTH: Masquer tout le contenu avant vérification d'authentification
            ============================================ */
-        .auth-pending {
+        /* Le body reste AFFICHE, ce sont ses enfants qui sont masques - sauf
+           l'indicateur de chargement. Un display:none sur le body lui-meme
+           masquait forcement l'indicateur avec le reste, et laissait donc un
+           ecran blanc pendant toute la configuration. */
+        body.auth-pending > *:not(#app-boot-loader) {
             display: none !important;
         }
-        
+
         .auth-verified {
             display: block !important;
+        }
+
+        /* Indicateur de chargement: present des le premier octet, retire des
+           que le menu est dans son etat definitif (script.js#checkAuth). */
+        #app-boot-loader {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            background: #f8f9fa;
+            z-index: 20000;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            color: #6c757d;
+        }
+        /* Le FOND est la des le premier octet: c'est lui qui evite l'ecran
+           blanc. Seuls le spinner et le texte apparaissent en fondu apres
+           250 ms - sur un chargement rapide, un spinner qui clignote deux
+           dixiemes de seconde est plus genant que pas de spinner du tout.
+           Le spinner porte les DEUX animations (cf .abl-spin plus bas): une
+           regle plus specifique y redefinissait `animation` en forme courte,
+           ce qui remettait delai et fill-mode a zero et annulait le fondu
+           pour lui seul - le texte attendait, le spinner non. */
+        #app-boot-loader > * {
+            animation: abl-apparition 0.2s ease-out 0.25s both;
+        }
+        @keyframes abl-apparition {
+            from { opacity: 0; }
+            to   { opacity: 1; }
+        }
+        body.auth-verified #app-boot-loader,
+        body:not(.auth-pending) #app-boot-loader {
+            display: none;
+        }
+        #app-boot-loader .abl-spin {
+            width: 34px;
+            height: 34px;
+            border: 3px solid #dee2e6;
+            border-top-color: #dc3545;
+            border-radius: 50%;
+            /* Les DEUX animations, cumulees: la rotation porte sur transform,
+               le fondu sur opacity, elles ne se disputent rien. Ecrire ici la
+               seule rotation ecrasait le fondu herite ci-dessus. */
+            animation: abl-rotate 0.8s linear infinite,
+                       abl-apparition 0.2s ease-out 0.25s both;
+        }
+        @keyframes abl-rotate { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) {
+            #app-boot-loader .abl-spin { animation-duration: 2.4s; }
         }
         
         /* ============================================
@@ -567,6 +625,23 @@
     </style>
 </head>
 <body class="auth-pending">
+    <!-- Premier element du body: il peint immediatement, avant tout le JS. -->
+    <div id="app-boot-loader">
+        <div class="abl-spin"></div>
+        <div style="font-size:0.9rem;">Chargement…</div>
+    </div>
+    <script>
+        // Garde-fou. Le devoilement depend maintenant de checkAuth: si celui-ci
+        // n'aboutit jamais (erreur JS, reseau coupe), l'utilisateur resterait
+        // devant un spinner sans fin. Au bout de 12 s on rend la page telle
+        // quelle - degradee, mais utilisable - plutot que rien du tout.
+        window.__bootLoaderFailsafe = setTimeout(function () {
+            if (document.body.classList.contains('auth-pending')) {
+                console.warn('Configuration non terminee en 12 s: affichage degrade.');
+                document.body.classList.remove('auth-pending');
+            }
+        }, 12000);
+    </script>
     <div class="container-fluid navbar-container">
         <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
             <div class="container-fluid">
@@ -3856,11 +3931,11 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260805-parage-mois"></script>
+    <script src="script.js?v=20260806-boot2"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260806-depot-mata"></script>
+    <script src="js/finance.js?v=20260806-depot-mata-4"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>
