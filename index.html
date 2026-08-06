@@ -3073,8 +3073,12 @@
                             <div class="alert alert-light border small mb-3">
                                 <i class="bi bi-info-circle"></i>
                                 <strong>Formule Valeur :</strong> Stock soir × coeff
-                                + Cash total en caisse − Solde dû fournisseur (commission MaaS du mois en cours).
-                                Le cash provient des clôtures de caisse (champ "Montant total en caisse").
+                                + Cash total en caisse − Dépôt Mata − Solde dû fournisseur (commission MaaS du mois en cours).
+                                Le cash et le dépôt proviennent des clôtures de caisse (champs "Montant total en caisse"
+                                et "Dépôt Mata") : la caisse étant comptée avant le dépôt, celui-ci est encore inclus
+                                dans le montant total, d'où sa déduction ici.
+                                Le stock est valorisé au prix d'achat fournisseur ; les produits qui n'en ont pas
+                                restent au prix de vente et sont signalés par un astérisque.
                                 Réservé aux administrateurs et superviseurs.
                             </div>
                             <div class="row g-2 mb-3 align-items-end">
@@ -3856,7 +3860,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260805-parage-mois"></script>
+    <script src="js/finance.js?v=20260806-depot-mata"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

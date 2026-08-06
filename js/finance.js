@@ -1989,6 +1989,17 @@
 
         // Tooltip stock avec dates effectivement utilisees (fallback si pas pile aux dates demandees)
         const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+
+        // Meme regle d'affichage que Cash et Stock: le stock est valorise au
+        // prix d'achat fournisseur, et les produits qui n'en ont pas sont
+        // nommes. Les deux ecrans doivent dire la meme chose du meme stock.
+        const plAuPrixVente = stock.produits_au_prix_de_vente || [];
+        const plAsterisque = plAuPrixVente.length ? ' <span class="text-warning fw-bold">*</span>' : '';
+        const plLegendePrix = plAuPrixVente.length
+            ? `<small class="text-muted"><span class="text-warning fw-bold">*</span>
+               Valorisé au <strong>prix d'achat fournisseur</strong>, sauf
+               ${esc(plAuPrixVente.join(', '))} — sans prix d'achat renseigné, ces produits restent au prix de vente.</small>`
+            : `<small class="text-muted">Valorisé au <strong>prix d'achat fournisseur</strong>.</small>`;
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
@@ -2062,11 +2073,11 @@
                 <table class="table table-sm mb-0">
                     <tbody>
                         <tr>
-                            <td>Stock matin <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
+                            <td>Stock matin${plAsterisque} <small class="text-muted">(${esc(stock.matin_date || 'n/a')})</small></td>
                             <td class="text-end">${esc(fmtMoney(stock.matin_debut))}</td>
                         </tr>
                         <tr>
-                            <td>Stock soir <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
+                            <td>Stock soir${plAsterisque} <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
                             <td class="text-end">${esc(fmtMoney(stock.soir_fin))}</td>
                         </tr>
                         <tr>
@@ -2083,6 +2094,7 @@
                         </tr>
                     </tbody>
                 </table>
+                ${plLegendePrix}
             </div>
 
             <!-- Detail charges -->
@@ -2147,6 +2159,7 @@
         const stock = d.stock || {};
         const cash = d.cash || {};
         const solde = d.solde_du_fournisseur || 0;
+        const depotMata = d.depot_mata || 0;
         const valeur = d.valeur || 0;
         const valColor = valeur >= 0 ? 'success' : 'danger';
 
@@ -2161,16 +2174,32 @@
             ? `<small class="text-warning"><i class="bi bi-exclamation-triangle"></i> Snapshot du ${esc(stock.soir_date_utilisee)} utilisé (pas de stock soir saisi le ${esc(d.date)})</small>`
             : '';
 
+        // Produits valorises au prix de VENTE faute de prix d'achat: nommes
+        // sous la decomposition. Un total qui melange deux bases sans le dire
+        // n'est pas verifiable.
+        const auPrixVente = stock.produits_au_prix_de_vente || [];
+        const asterisque = auPrixVente.length ? ' <span class="text-warning fw-bold">*</span>' : '';
+        const legendePrix = auPrixVente.length
+            ? `<div class="mt-2"><small class="text-muted"><span class="text-warning fw-bold">*</span>
+               Stock valorisé au <strong>prix d'achat fournisseur</strong>, sauf
+               ${esc(auPrixVente.join(', '))} — sans prix d'achat renseigné, ces produits restent au prix de vente.</small></div>`
+            : `<div class="mt-2"><small class="text-muted">Stock valorisé au <strong>prix d'achat fournisseur</strong>.</small></div>`;
+
+        // Le detail par point de vente porte aussi le depot: sans lui, un total
+        // qui parait faux n'est pas diagnosticable.
         const pvRows = (cash.par_pv || []).map((p) => {
             const cls = p.renseigne ? '' : 'text-muted';
             const val = p.renseigne ? esc(fmtMoney(p.montant)) : '<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> non renseigné</span>';
-            return `<tr class="${cls}"><td>${esc(p.point_de_vente)}</td><td class="text-end">${val}</td></tr>`;
+            const dep = p.depot_mata == null
+                ? '<span class="text-muted">—</span>'
+                : `<span class="text-danger">− ${esc(fmtMoney(p.depot_mata))}</span>`;
+            return `<tr class="${cls}"><td>${esc(p.point_de_vente)}</td><td class="text-end">${val}</td><td class="text-end">${dep}</td></tr>`;
         }).join('');
         const pvTable = pvRows
             ? `<table class="table table-sm mb-0">
-                <thead><tr><th>Point de vente</th><th class="text-end">Cash en caisse</th></tr></thead>
+                <thead><tr><th>Point de vente</th><th class="text-end">Cash en caisse</th><th class="text-end">Dépôt Mata</th></tr></thead>
                 <tbody>${pvRows}</tbody>
-                <tfoot><tr style="background:#f8fafc"><th>Total</th><th class="text-end">${esc(fmtMoney(cash.total))}</th></tr></tfoot>
+                <tfoot><tr style="background:#f8fafc"><th>Total</th><th class="text-end">${esc(fmtMoney(cash.total))}</th><th class="text-end text-danger">${depotMata ? '− ' + esc(fmtMoney(depotMata)) : '—'}</th></tr></tfoot>
                </table>`
             : '<div class="text-muted small">Aucune clôture de caisse trouvée pour cette date.</div>';
 
@@ -2194,7 +2223,7 @@
                     <table class="table table-sm mb-0">
                         <tbody>
                             <tr>
-                                <td>Stock soir brut</td>
+                                <td>Stock soir brut${asterisque}</td>
                                 <td class="text-end">${esc(fmtMoney(stock.soir_brut))}</td>
                             </tr>
                             <tr>
@@ -2210,6 +2239,10 @@
                                 <td class="text-end text-success">+ ${esc(fmtMoney(cash.total))}</td>
                             </tr>
                             <tr>
+                                <td>− Dépôt Mata <span class="text-muted">(versé à Mata, compté avant le dépôt)</span></td>
+                                <td class="text-end text-danger">− ${esc(fmtMoney(depotMata))}</td>
+                            </tr>
+                            <tr>
                                 <td>− Solde dû fournisseur <span class="text-muted">(commission MaaS ${esc(periodeSolde)})</span></td>
                                 <td class="text-end text-danger">− ${esc(fmtMoney(solde))}</td>
                             </tr>
@@ -2219,6 +2252,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    ${legendePrix}
                     ${stockSnapshotInfo ? `<div class="mt-2">${stockSnapshotInfo}</div>` : ''}
                 </div>
             </div>

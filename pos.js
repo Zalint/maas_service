@@ -3574,6 +3574,7 @@ async function ouvrirClotureCaisse() {
     const elMontant    = document.getElementById('clotureMontantEspeces');
     const elFond       = document.getElementById('clotureFondCaisse');
     const elTotalCaisse= document.getElementById('clotureMontantTotalCaisse');
+    const elDepotMata  = document.getElementById('clotureDepotMata');
     const elCommercial = document.getElementById('clotureCommercial');
     const elComment    = document.getElementById('clotureCommentaire');
     const elEstimatif  = document.getElementById('clotureEstimatifDisplay');
@@ -3583,7 +3584,13 @@ async function ouvrirClotureCaisse() {
     if (elMontant)    elMontant.value    = '';
     if (elFond)       elFond.value       = '0';
     if (elTotalCaisse) elTotalCaisse.value = '';
+    if (elDepotMata)  elDepotMata.value  = '';
     if (elCommercial) elCommercial.value = '';
+
+    // Bloc "Clotures passees": reserve aux roles qui voient deja tous les
+    // points de vente. Le masquer ne suffirait pas - la route le refuse aussi
+    // en 403, cet affichage n'est qu'une commodite.
+    preparerArchivesClotures();
     if (elComment)    elComment.value    = '';
     if (elEstimatif)  elEstimatif.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Calcul en cours...';
     if (elHistorique) elHistorique.style.display = 'none';
@@ -3623,6 +3630,126 @@ async function chargerEstimatifCloture(date, pointVente) {
     } catch (e) {
         document.getElementById('clotureEstimatifDisplay').innerHTML = '<span class="text-muted">Erreur de calcul</span>';
         return null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clotures PASSEES (admin / superviseur)
+//
+// La modale ne montrait que les clotures du jour et du point de vente courant.
+// Un administrateur doit pouvoir remonter le temps et comparer les points de
+// vente entre eux, sans quoi une saisie erronee d'il y a trois jours reste
+// invisible depuis le POS.
+// ---------------------------------------------------------------------------
+
+const ROLES_ARCHIVES = ['admin', 'superutilisateur', 'superviseur'];
+
+function preparerArchivesClotures() {
+    const section = document.getElementById('clotureArchivesSection');
+    if (!section) return;
+
+    const role = (currentUser && currentUser.role || '').toLowerCase();
+    if (!ROLES_ARCHIVES.includes(role)) {
+        section.style.display = 'none';
+        return;
+    }
+    section.style.display = 'block';
+
+    // Periode par defaut: les 30 derniers jours. Assez large pour retrouver une
+    // erreur, assez etroit pour ne pas rapatrier l'annee entiere a l'ouverture.
+    const fin = new Date();
+    const debut = new Date(fin.getTime() - 30 * 24 * 3600 * 1000);
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const elD = document.getElementById('clotureArchivesDebut');
+    const elF = document.getElementById('clotureArchivesFin');
+    if (elD && !elD.value) elD.value = iso(debut);
+    if (elF && !elF.value) elF.value = iso(fin);
+
+    // Liste des points de vente reprise du selecteur principal, pour ne pas
+    // maintenir deux listes qui divergeraient.
+    const src = document.getElementById('pointVenteSelect');
+    const cible = document.getElementById('clotureArchivesPv');
+    if (src && cible && cible.options.length <= 1) {
+        Array.from(src.options).forEach((o) => {
+            if (!o.value) return;
+            const opt = document.createElement('option');
+            opt.value = o.value;
+            opt.textContent = o.textContent;
+            cible.appendChild(opt);
+        });
+    }
+
+    const liste = document.getElementById('clotureArchivesList');
+    if (liste && !liste.innerHTML.trim()) {
+        liste.innerHTML = '<div style="padding:14px; color:#6c757d; font-size:0.88rem;">'
+            + 'Choisissez une période puis cliquez sur « Afficher ».</div>';
+    }
+}
+
+async function chargerArchivesClotures() {
+    const liste = document.getElementById('clotureArchivesList');
+    if (!liste) return;
+    liste.innerHTML = '<div style="padding:14px; color:#6c757d;"><i class="fas fa-spinner fa-spin"></i> Chargement...</div>';
+
+    const p = new URLSearchParams();
+    const d = (document.getElementById('clotureArchivesDebut') || {}).value;
+    const f = (document.getElementById('clotureArchivesFin') || {}).value;
+    const pv = (document.getElementById('clotureArchivesPv') || {}).value;
+    const toutes = (document.getElementById('clotureArchivesToutes') || {}).checked;
+    if (d) p.set('dateDebut', d);
+    if (f) p.set('dateFin', f);
+    if (pv) p.set('pointVente', pv);
+    if (toutes) p.set('toutes', '1');
+
+    try {
+        const res = await fetch('/api/clotures-caisse/historique?' + p.toString(), { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+            liste.innerHTML = `<div style="padding:14px; color:#dc3545; font-size:0.88rem;">`
+                + `${escapeHtml(data.message || 'Erreur ' + res.status)}</div>`;
+            return;
+        }
+        if (!data.count) {
+            liste.innerHTML = '<div style="padding:14px; color:#6c757d; font-size:0.88rem;">Aucune clôture sur cette période.</div>';
+            return;
+        }
+
+        const nb = (v) => (v === null || v === undefined ? '—' : formatCurrency(parseFloat(v)));
+        const lignes = data.data.map((c) => {
+            const jour = String(c.date || '').split('T')[0];
+            // Une rectification n'est PAS la valeur retenue: elle doit se
+            // distinguer au premier coup d'oeil, sinon on lit un total faux.
+            const rectif = c.is_latest
+                ? ''
+                : '<span class="badge bg-warning text-dark" style="font-size:0.65rem;">rectifiée</span>';
+            return `<tr style="${c.is_latest ? '' : 'opacity:.6;'}">
+                <td style="padding:6px 10px; white-space:nowrap;">${escapeHtml(jour)}</td>
+                <td style="padding:6px 10px;">${escapeHtml(c.point_de_vente || '')}</td>
+                <td style="padding:6px 10px;">${escapeHtml(c.commercial || '')} ${rectif}</td>
+                <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_especes)}</td>
+                <td style="padding:6px 10px; text-align:right; white-space:nowrap;">${nb(c.montant_total_caisse)}</td>
+                <td style="padding:6px 10px; text-align:right; white-space:nowrap; color:#dc3545;">${nb(c.depot_mata)}</td>
+            </tr>`;
+        }).join('');
+
+        const avis = data.tronque
+            ? `<div style="padding:8px 10px; background:#fff3cd; color:#664d03; font-size:0.8rem;">`
+              + `Liste limitée aux ${data.limit} clôtures les plus récentes : affinez la période pour voir le reste.</div>`
+            : '';
+
+        liste.innerHTML = avis + `<table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+            <thead><tr style="background:#f8f9fa; position:sticky; top:0;">
+                <th style="padding:6px 10px; text-align:left; white-space:nowrap;">Date</th>
+                <th style="padding:6px 10px; text-align:left; white-space:nowrap;">Point de vente</th>
+                <th style="padding:6px 10px; text-align:left; white-space:nowrap;">Commercial</th>
+                <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Espèces</th>
+                <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Total caisse</th>
+                <th style="padding:6px 10px; text-align:right; white-space:nowrap;">Dépôt Mata</th>
+            </tr></thead>
+            <tbody>${lignes}</tbody>
+        </table>`;
+    } catch (e) {
+        liste.innerHTML = `<div style="padding:14px; color:#dc3545; font-size:0.88rem;">${escapeHtml(e.message)}</div>`;
     }
 }
 
@@ -3784,6 +3911,12 @@ async function validerClotureCaisse() {
     const montantTotalCaisse = (montantTotalCaisseRaw == null || String(montantTotalCaisseRaw).trim() === '')
         ? null
         : parseFloat(montantTotalCaisseRaw);
+    // Depot Mata: OPTIONNEL. Vide reste null (= non renseigne) et ne doit pas
+    // devenir 0, sinon on ne distingue plus "aucun depot" de "pas saisi".
+    const depotMataRaw = document.getElementById('clotureDepotMata')?.value;
+    const depotMata = (depotMataRaw == null || String(depotMataRaw).trim() === '')
+        ? null
+        : parseFloat(depotMataRaw);
     const commercial = document.getElementById('clotureCommercial').value.trim();
     const commentaire = document.getElementById('clotureCommentaire').value.trim();
 
@@ -3805,6 +3938,22 @@ async function validerClotureCaisse() {
         return;
     }
 
+    // Non bloquant, mais un depot negatif ou non numerique n'a pas de sens.
+    if (depotMata != null && (isNaN(depotMata) || depotMata < 0)) {
+        showToast('Le "Dépôt Mata" doit être un montant positif', 'error');
+        const el = document.getElementById('clotureDepotMata');
+        if (el) el.focus();
+        return;
+    }
+    // Un depot superieur au contenu du tiroir est forcement une erreur de
+    // saisie: laisse passer, il rendrait la Valeur negative sans explication.
+    if (depotMata != null && depotMata > montantTotalCaisse) {
+        showToast('Le "Dépôt Mata" ne peut pas dépasser le montant total en caisse', 'error');
+        const el = document.getElementById('clotureDepotMata');
+        if (el) el.focus();
+        return;
+    }
+
     // Récupérer l'estimatif affiché pour le stocker
     const estimatifText = document.getElementById('clotureEstimatifDisplay')?.textContent || '';
     const estimatifMatch = estimatifText.match(/[\d\s]+/);
@@ -3821,7 +3970,7 @@ async function validerClotureCaisse() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, commercial, commentaire })
+            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, commercial, commentaire })
         });
         const data = await res.json();
 

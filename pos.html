@@ -991,7 +991,7 @@
     <!-- Source unique des compositions de packs, generee depuis
          config/pack-compositions.js. Doit preceder pos.js. -->
     <script src="/pack-compositions.js"></script>
-    <script src="pos.js?v=20260805-parage-mois"></script>
+    <script src="pos.js?v=20260806-depot-mata-3"></script>
     <script src="js/change-password.js?v=20260501a"></script>
     <script src="day-screening.js?v=20250107l"></script>
     
@@ -1524,8 +1524,14 @@
 
     <!-- Modal Clôture de Caisse -->
     <div class="modal fade" id="clotureCaisseModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
+        <!-- modal-xl et non modal-lg: le tableau des clotures passees compte six
+             colonnes, dont "Depot Mata" qui se retrouvait coupee en modal-lg. -->
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <!-- max-width en inline, comme les autres modales de ce fichier:
+                 pos.css impose .modal-content { width:90%; max-width:600px },
+                 qui ecrase Bootstrap et ramenait cette modale a 600px quelle
+                 que soit la classe du dialogue. -->
+            <div class="modal-content" style="width:100%; max-width:none;">
                 <div class="modal-header" style="background: var(--primary-color, #dc3545); color: white;">
                     <div>
                         <h5 class="modal-title mb-0">
@@ -1543,6 +1549,41 @@
                             <i class="fas fa-history"></i> Clôtures du jour
                         </h6>
                         <div id="clotureHistoriqueList" style="border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; background: white;"></div>
+                    </div>
+
+                    <!-- Historique des clotures PASSEES: admin / superviseur uniquement,
+                         affiche par ouvrirClotureCaisse() selon le role. -->
+                    <div id="clotureArchivesSection" style="display:none; margin-bottom: 1.5rem;">
+                        <h6 class="fw-bold mb-2" style="color:#6c757d;">
+                            <i class="fas fa-archive"></i> Clôtures passées
+                            <span class="badge bg-secondary" style="font-size:0.68rem;">admin</span>
+                        </h6>
+                        <div class="d-flex flex-wrap align-items-end gap-2 mb-2">
+                            <div>
+                                <label class="form-label mb-1" style="font-size:0.78rem; color:#6c757d;" for="clotureArchivesDebut">Du</label>
+                                <input type="date" class="form-control form-control-sm" id="clotureArchivesDebut" style="min-width:150px;">
+                            </div>
+                            <div>
+                                <label class="form-label mb-1" style="font-size:0.78rem; color:#6c757d;" for="clotureArchivesFin">Au</label>
+                                <input type="date" class="form-control form-control-sm" id="clotureArchivesFin" style="min-width:150px;">
+                            </div>
+                            <div>
+                                <label class="form-label mb-1" style="font-size:0.78rem; color:#6c757d;" for="clotureArchivesPv">Point de vente</label>
+                                <select class="form-select form-select-sm" id="clotureArchivesPv" style="min-width:160px;">
+                                    <option value="">Tous</option>
+                                </select>
+                            </div>
+                            <div class="form-check ms-1 mb-1">
+                                <input class="form-check-input" type="checkbox" id="clotureArchivesToutes">
+                                <label class="form-check-label" for="clotureArchivesToutes" style="font-size:0.78rem; color:#6c757d;">
+                                    Inclure les rectifications
+                                </label>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mb-1" onclick="chargerArchivesClotures()">
+                                <i class="fas fa-search"></i> Afficher
+                            </button>
+                        </div>
+                        <div id="clotureArchivesList" style="border: 1px solid #dee2e6; border-radius: 8px; overflow: auto; max-height: 320px; background: white;"></div>
                     </div>
 
                     <!-- Formulaire nouvelle clôture -->
@@ -1588,6 +1629,16 @@
                             <input type="number" class="form-control" id="clotureMontantTotalCaisse"
                                    placeholder="Ex: 850000" min="0" step="500" required>
                             <small class="text-muted">Total espèces physiquement présentes (incluant fond de caisse). Obligatoire.</small>
+                        </div>
+
+                        <!-- Dépôt Mata (optionnel, déduit par Finance > Cash et Stock) -->
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold" for="clotureDepotMata">
+                                Dépôt Mata (FCFA)
+                            </label>
+                            <input type="number" class="form-control" id="clotureDepotMata"
+                                   placeholder="Ex: 200000" min="0" step="500">
+                            <small class="text-muted">Montant versé à Mata. À compter dans le montant total ci-dessus : il en sera déduit pour le calcul de la valeur. Laisser vide si aucun dépôt.</small>
                         </div>
 
                         <!-- Commercial -->
