@@ -134,14 +134,18 @@ describe('cumul du mois', () => {
 });
 
 describe('cumul de la marge', () => {
-    const m = (v) => ({
-        bovin: Object.assign({ vendu_kg: 0, ca_vendu: 0, cout_theorique: 0, theorique_kg: 0, kg_sans_prix_achat: 0,
+    // Aucun cas de ce bloc n'a de produit sans prix ni de theorique negatif:
+    // tous les kilos theoriques sont donc coutes. kg_coutes est derive plutot
+    // que recopie a chaque appel, pour que cette invariante reste vraie meme
+    // quand un cas de test change de chiffres.
+    const base = (v) => Object.assign(
+        { vendu_kg: 0, ca_vendu: 0, cout_theorique: 0, theorique_kg: 0, kg_sans_prix_achat: 0,
             details: { hors_pack: { vendu_kg: 0, ca_vendu: 0 }, pack: { vendu_kg: 0, ca_vendu: 0 } },
-            hypotheses: [], produits_sans_prix_achat: [] }, v),
-        ovin: { vendu_kg: 0, ca_vendu: 0, cout_theorique: 0, theorique_kg: 0, kg_sans_prix_achat: 0,
-            details: { hors_pack: { vendu_kg: 0, ca_vendu: 0 }, pack: { vendu_kg: 0, ca_vendu: 0 } },
-            hypotheses: [], produits_sans_prix_achat: [] }
-    });
+            hypotheses: [], produits_sans_prix_achat: [] },
+        v,
+        { kg_coutes: (v && v.kg_coutes !== undefined) ? v.kg_coutes : ((v && v.theorique_kg) || 0) }
+    );
+    const m = (v) => ({ bovin: base(v), ovin: base() });
 
     // Le defaut trouve en appelant l'API: le parage ecartait une journee que
     // la marge comptait, et vendu_kg differait de 10 kg entre deux champs de

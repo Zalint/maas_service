@@ -273,6 +273,10 @@ describe('cas limites', () => {
         expect(r.cout_theorique).toBe(10 * 4320);
         expect(r.prix_achat_moyen).toBe(4320);   // et non 43200 / 6 = 7200
         expect(r.kgNegatifs).toEqual([{ produit: 'Déchet', kg: -4 }]);
+        // Les -4 kg ne se deguisent pas en kilos sans prix d'achat: ils ont un
+        // prix, ils ne sont simplement pas sortis du stock.
+        expect(r.kg_sans_prix_achat).toBe(0);
+        expect(r.kg_coutes).toBe(10);
     });
 
     test('un produit exclu ne compte ni en kilos ni en chiffre d affaires', () => {
