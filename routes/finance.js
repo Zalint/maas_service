@@ -1346,8 +1346,12 @@ router.get('/pl', async (req, res) => {
         // date. Deux appels en creeraient deux, dont un appel de plus a DATA.
         const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
         const resolveurPrix = await creerResolveurPrixAchat(dateFin);
-        const stockMatinVal = await valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate);
-        const stockSoirVal = await valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate);
+        // Les deux bornes sont independantes: elles partent ensemble plutot
+        // qu'en serie, le resolveur de prix etant deja charge.
+        const [stockMatinVal, stockSoirVal] = await Promise.all([
+            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate),
+            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate)
+        ]);
 
         const stockMatinDebut = stockMatinVal.valeur;
         const stockMatinDate = stockMatinVal.date_utilisee;
@@ -1430,7 +1434,12 @@ router.get('/pl', async (req, res) => {
                     // les produits ci-dessous restes au prix de vente. Une liste
                     // par borne: elles n'ont aucune raison d'etre identiques.
                     matin_au_prix_de_vente: stockMatinAuPrixDeVente,
-                    soir_au_prix_de_vente: stockSoirAuPrixDeVente
+                    soir_au_prix_de_vente: stockSoirAuPrixDeVente,
+                    // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
+                    // lot pour la journee, historique illisible. Sans cela, un
+                    // repli sur le catalogue fournisseur reste invisible et le
+                    // chiffre parait simplement faux.
+                    avertissements: resolveurPrix.avertissements || []
                 },
                 pl: round2(pl)
             }
@@ -1658,8 +1667,13 @@ router.get('/cash-stock', async (req, res) => {
         //
         //    Ce n'est PAS un paiement au fournisseur: le solde du fournisseur
         //    (ligne suivante) reste la dette brute et n'est pas touche ici.
+        //    Un depot n'est deduit que si la cloture a DECLARE son cash. Sans
+        //    montant, la ligne compte 0 au-dessus: retirer son depot enleverait
+        //    un argent jamais ajoute. La route POST l'interdit deja (montant
+        //    obligatoire, depot plafonne), mais la table clotures_caisse est
+        //    partagee avec DATA, dont le modele ignore montant_total_caisse.
         const depotMataTotal = cashParPv.reduce(
-            (s, c) => s + (c.depot_mata != null ? c.depot_mata : 0), 0
+            (s, c) => s + (c.renseigne && c.depot_mata != null ? c.depot_mata : 0), 0
         );
 
         // 4) Solde du fournisseur = commission MaaS du MOIS EN COURS
@@ -2022,13 +2036,22 @@ router.get('/creances', async (req, res) => {
         //   ABANDON = la connexion est tombee avant la fin de l'envoi
         //             (client qui annule/recharge, ou proxy qui coupe)
         // Un FIN sain suivi d'un ABANDON = le calcul n'est pas en cause.
+        // La taille se lit sur la SOCKET et non dans Content-Length: le
+        // middleware compression retire cet en-tete des qu'il gzippe, et cette
+        // instrumentation - la seule du depot a mesurer une taille de reponse,
+        // ajoutee pour diagnostiquer des ERR_CONNECTION_CLOSED - serait
+        // retombee sur "?" pour toute requete de navigateur.
+        //
+        // bytesWritten est CUMULATIF par socket: en keep-alive, il porte aussi
+        // les reponses precedentes. On retient donc sa valeur au depart et on
+        // ne journalise que la difference.
+        const octetsAvant = res.socket ? res.socket.bytesWritten : null;
         res.on('finish', () => {
-            // La taille se lit sur la SOCKET et non dans Content-Length: le
-            // middleware compression retire cet en-tete des qu'il gzippe, et
-            // cette instrumentation - la seule du depot a mesurer une taille de
-            // reponse, ajoutee pour diagnostiquer des ERR_CONNECTION_CLOSED -
-            // serait retombee sur "?" pour toute requete de navigateur.
-            const surLeFil = res.socket ? res.socket.bytesWritten : null;
+            let surLeFil = null;
+            if (res.socket && octetsAvant !== null) {
+                const delta = res.socket.bytesWritten - octetsAvant;
+                if (delta > 0) surLeFil = delta;
+            }
             console.log(`⏱️  creances SENT ${periode} bytes=${res.get('Content-Length') || surLeFil || '?'}`);
         });
         res.on('close', () => {

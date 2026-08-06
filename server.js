@@ -17772,11 +17772,28 @@ app.get('/api/clotures-caisse/historique', checkAuth, async (req, res) => {
             });
         }
 
+        // La forme ne suffit pas: il faut que la date EXISTE. Le motif seul
+        // acceptait "32-13-2026" et le rendait en "2026-13-32", qui partait
+        // vers Postgres et y produisait une erreur - donc un 500 la ou un 400
+        // explicite etait attendu. Meme chose pour "2026-13-45", que la branche
+        // ISO laissait passer sans le moindre controle.
+        const dateReelle = (a, mo, j) => {
+            const d = new Date(Date.UTC(a, mo - 1, j));
+            return d.getUTCFullYear() === a && d.getUTCMonth() === mo - 1 && d.getUTCDate() === j;
+        };
         const toIso = (s) => {
             if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = String(s).match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+            const t = String(s);
+            let a; let mo; let j;
+            const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (iso) {
+                [, a, mo, j] = iso.map(Number);
+                return dateReelle(a, mo, j) ? t : null;
+            }
+            const fr = t.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            if (!fr) return null;
+            j = Number(fr[1]); mo = Number(fr[2]); a = Number(fr[3]);
+            return dateReelle(a, mo, j) ? `${fr[3]}-${fr[2]}-${fr[1]}` : null;
         };
         const dateDebut = toIso(req.query.dateDebut);
         const dateFin = toIso(req.query.dateFin);
@@ -17798,7 +17815,17 @@ app.get('/api/clotures-caisse/historique', checkAuth, async (req, res) => {
         if (dateDebut && dateFin) where.date = { [Op.between]: [dateDebut, dateFin] };
         else if (dateDebut) where.date = { [Op.gte]: dateDebut };
         else if (dateFin) where.date = { [Op.lte]: dateFin };
-        if (req.query.pointVente) where.point_de_vente = req.query.pointVente;
+        // Express rend un TABLEAU pour ?pointVente=a&pointVente=b, et un objet
+        // pour ?pointVente[x]=1. Passes tels quels a Sequelize, le premier
+        // devient un IN non voulu et le second est lu comme des operateurs.
+        // On n'accepte donc qu'une chaine.
+        if (req.query.pointVente !== undefined) {
+            if (typeof req.query.pointVente !== 'string') {
+                return res.status(400).json({ success: false, message: 'pointVente doit etre une valeur unique' });
+            }
+            const pv = req.query.pointVente.trim();
+            if (pv) where.point_de_vente = pv;
+        }
         // Par defaut on ne montre que la DERNIERE cloture de chaque jour et
         // point de vente: les rectifications successives d'une meme journee
         // interessent le detail du jour, pas la vue d'ensemble.

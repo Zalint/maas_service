@@ -3683,7 +3683,10 @@ function preparerArchivesClotures() {
     // erreur, assez etroit pour ne pas rapatrier l'annee entiere a l'ouverture.
     const fin = new Date();
     const debut = new Date(fin.getTime() - 30 * 24 * 3600 * 1000);
-    const iso = (d) => d.toISOString().slice(0, 10);
+    // Date du calendrier LOCAL, pas UTC. toISOString() convertit en UTC: a
+    // l'est de Greenwich, une ouverture en debut de nuit rendait la veille, et
+    // la periode par defaut partait donc un jour trop tot.
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const elD = document.getElementById('clotureArchivesDebut');
     const elF = document.getElementById('clotureArchivesFin');
     if (elD && !elD.value) elD.value = iso(debut);

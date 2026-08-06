@@ -2010,6 +2010,13 @@
                ces produits restent au prix de vente :
                ${detailBorne('stock matin', plMatinSansPrix)}${detailBorne('stock soir', plSoirSansPrix)}</small>`
             : `<small class="text-muted">Valorisé au <strong>prix d'achat fournisseur</strong>.</small>`;
+        // Pourquoi tel prix a ete retenu. Un repli sur le catalogue faute de
+        // reponse de DATA change le chiffre de plusieurs pour cent: le taire
+        // laisse croire a une erreur de calcul.
+        const plAvertPrix = (stock.avertissements || []).length
+            ? `<div class="alert alert-warning py-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle"></i>
+               ${(stock.avertissements || []).map((a) => esc(a)).join('<br>')}</div>`
+            : '';
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
@@ -2105,6 +2112,7 @@
                     </tbody>
                 </table>
                 ${plLegendePrix}
+                ${plAvertPrix}
             </div>
 
             <!-- Detail charges -->
