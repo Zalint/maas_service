@@ -7,6 +7,10 @@
  */
 const { calculerParage } = require('../lib/parage');
 const { calculerMarge, repartirMontantPack } = require('../lib/marge-parage');
+// La MEME constante que la production, et non une variante recopiee: une regex
+// non ancree ici resterait verte quoi que fasse le vrai resolveur, et les deux
+// divergent deja sur "Tete de Boeuf", produit reel du catalogue.
+const { FAMILLE_BOEUF } = require('../lib/prix-achat-date');
 
 const categorieDe = (n) => (/boeuf|veau|foie|jarret/i.test(n) ? 'bovin'
     : (/agneau|mouton/i.test(n) ? 'ovin' : null));
@@ -136,7 +140,7 @@ describe('le veau est un boeuf vendu plus cher', () => {
             parage: parage.M, ventes, packs: {}, categorieDe,
             prixVente: (p) => CATALOGUE[p] || null,
             // La route resout Veau -> prix du Boeuf.
-            prixAchat: (p) => (/veau|boeuf/i.test(p) ? 3835 : (ACHAT_PRODUIT[p] || null)),
+            prixAchat: (p) => (FAMILLE_BOEUF.test(p) ? 3835 : (ACHAT_PRODUIT[p] || null)),
             prixAchatDefaut: DEFAUT
         }).bovin;
         expect(r.prix_achat_moyen).toBe(3835);
@@ -219,11 +223,27 @@ describe('produits sans prix d achat', () => {
 
 describe('cas limites', () => {
     test('aucune vente: prix moyen null, jamais zero', () => {
-        const r = marge({ bovin: { theorique: 10, vendu: 0, perte: 1, parProduit: { Boeuf: { theorique: 10 } } },
-                          ovin: { theorique: 0, vendu: 0, perte: null, parProduit: {} } }, []).bovin;
+        const r = marge({ bovin: { theorique: 10, vendu: 0, ratio: 0, perte: 1, parProduit: { Boeuf: { theorique: 10 } } },
+                          ovin: { theorique: 0, vendu: 0, ratio: null, perte: null, parProduit: {} } }, []).bovin;
         expect(r.prix_vente_moyen).toBeNull();
         expect(r.ca_vendu).toBe(0);
+        // Stock sorti sans vente: le cout EST connu, la marge vaut donc -cout.
         expect(r.marge).toBe(-10 * 3835);
+        expect(r.cout_connu).toBe(true);
+    });
+
+    // Defaut trouve en revue: sans stock theorique, la boucle de cout ne coute
+    // rien et `ca - 0` publiait 100% de marge. Le mois rendait deja null; le
+    // jour ne le faisait pas, et la meme reponse portait deux verdicts opposes.
+    test('des ventes sans stock theorique: marge inconnue, pas 100%', () => {
+        const ventes = [{ pointVente: 'M', produit: 'Boeuf en détail', nombre: 18.25, montant: 88734 }];
+        const r = marge({ bovin: { theorique: 0, vendu: 18.25, ratio: null, perte: null, parProduit: {} },
+                          ovin: { theorique: 0, vendu: 0, ratio: null, perte: null, parProduit: {} } }, ventes).bovin;
+        expect(r.ca_vendu).toBe(88734);      // le chiffre d'affaires reste visible
+        expect(r.cout_theorique).toBe(0);
+        expect(r.marge).toBeNull();          // et surtout pas 88734
+        expect(r.marge).not.toBe(88734);
+        expect(r.cout_connu).toBe(false);
     });
 
     test('des kilos infimes ne produisent pas un prix au kilo absurde', () => {

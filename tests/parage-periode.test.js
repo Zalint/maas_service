@@ -179,6 +179,59 @@ describe('cumul de la marge', () => {
         expect(t.bovin.marge).toBe(500000 - 390000);
     });
 
+    // Defaut trouve en revue: le mois rendait marge:0 sur des ventes reelles.
+    // En aout, aucun stock du matin n'ayant ete saisi, le parage n'etait
+    // mesurable AUCUN jour - et la marge ecartait les journees entieres, leur
+    // chiffre d'affaires compris. Le gerant lisait "marge du mois : 0 F" sur
+    // 258 693 F encaisses.
+    test('une journee ecartee garde son chiffre d affaires visible', () => {
+        const parages = [
+            jour({ theorique: 0, vendu: 34.75, ratio: null }),
+            jour({ theorique: 0, vendu: 18.25, ratio: null })
+        ];
+        const marges = [
+            m({ vendu_kg: 34.75, ca_vendu: 169958.96, theorique_kg: 0 }),
+            m({ vendu_kg: 18.25, ca_vendu: 88734.38, theorique_kg: 0 })
+        ];
+        const t = cumulerMarge(marges, parages).bovin;
+        expect(t.jours_ignores).toBe(2);
+        expect(t.ca_ignore).toBeCloseTo(169958.96 + 88734.38, 2);
+        expect(t.vendu_kg_ignore).toBeCloseTo(53, 6);
+        // La marge est INCONNUE, pas nulle: le cout n'a pas pu etre calcule.
+        expect(t.marge).toBeNull();
+        expect(t.marge).not.toBe(0);
+        // Et rien n'a fui dans les totaux mesures.
+        expect(t.vendu_kg).toBe(0);
+        expect(t.ca_vendu).toBe(0);
+    });
+
+    test('des journees mesurables ET ecartees: les deux sont rendues', () => {
+        const parages = [
+            jour({ theorique: 100, vendu: 95, ratio: 0.95 }),
+            jour({ theorique: 0, vendu: 10, ratio: null })
+        ];
+        const marges = [
+            m({ vendu_kg: 95, ca_vendu: 475000, cout_theorique: 383500, theorique_kg: 100,
+                details: { hors_pack: { vendu_kg: 95, ca_vendu: 475000 }, pack: { vendu_kg: 0, ca_vendu: 0 } } }),
+            m({ vendu_kg: 10, ca_vendu: 50000, theorique_kg: 0 })
+        ];
+        const t = cumulerMarge(marges, parages).bovin;
+        expect(t.vendu_kg).toBe(95);
+        expect(t.ca_vendu).toBe(475000);
+        expect(t.marge).toBe(475000 - 383500);
+        expect(t.jours_ignores).toBe(1);
+        expect(t.ca_ignore).toBe(50000);
+    });
+
+    test('aucune journee ecartee: les compteurs restent a zero', () => {
+        const parages = [jour({ theorique: 100, vendu: 95, ratio: 0.95 })];
+        const marges = [m({ vendu_kg: 95, ca_vendu: 475000, cout_theorique: 383500, theorique_kg: 100 })];
+        const t = cumulerMarge(marges, parages).bovin;
+        expect(t.jours_ignores).toBe(0);
+        expect(t.ca_ignore).toBe(0);
+        expect(t.marge).toBe(475000 - 383500);
+    });
+
     test('les hypotheses de prix sont dedoublonnees', () => {
         const parages = [jour({ theorique: 10, vendu: 10, ratio: 1 }), jour({ theorique: 10, vendu: 10, ratio: 1 })];
         const h = { produit: 'Foie', prix_vente: 4000, prix_achat_estime: 3600, methode: 'deduit' };

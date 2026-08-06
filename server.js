@@ -3941,6 +3941,24 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
         const filtrePv = typeof req.query.pointVente === 'string' && req.query.pointVente.trim()
             ? req.query.pointVente.trim() : null;
 
+        // Un point de vente inconnu ne doit PAS rendre 200 avec des zeros.
+        // L'appelant saisit ce nom a la main (registre des partenaires cote
+        // DATA): une faute de frappe rendait "0 kg vendus, 0 F de marge", que
+        // rien ne distinguait d'une journee sans activite.
+        if (filtrePv) {
+            const connus = await sequelize.query(
+                'SELECT nom FROM points_vente ORDER BY nom',
+                { type: sequelize.QueryTypes.SELECT }
+            );
+            const noms = connus.map((r) => r.nom);
+            if (!noms.includes(filtrePv)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `point de vente inconnu: "${filtrePv}". Connus: ${noms.join(', ')}`
+                });
+            }
+        }
+
         const avertissements = [];
 
         // --- Perimetre de dates ------------------------------------------
@@ -3979,9 +3997,13 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
         const prixVente = (produit) => parPrixVente.get(normaliser(produit)) || null;
 
         // --- Prix d'achat: catalogue fournisseur, a la date -----------------
-        const { prixAchatALaDate } = require('./lib/prix-achat-date');
-        const achat = await prixAchatALaDate(dateIso);
-        avertissements.push(...achat.avertissements);
+        // Resolveur charge UNE fois, interroge JOUR PAR JOUR. Le prix du boeuf
+        // varie dans le mois (3735 a 4435 F/kg sur juillet 2026): le figer a la
+        // date demandee valorisait les 31 journees au prix du dernier jour,
+        // jusqu'a 40% d'ecart sur la marge du mois. routes/finance-creances.js
+        // resout deja par date de vente; cette route s'en ecartait.
+        const { creerResolveurPrixAchat } = require('./lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateIso);
 
         const PACK_COMPOSITIONS = await lirePackCompositions();
 
@@ -4034,13 +4056,19 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
             });
         }
         const ventesDe = (iso) => ventesParJour[iso] || [];
-        const optionsMarge = {
-            packs: PACK_COMPOSITIONS, categorieDe, prixVente,
-            prixAchat: achat.prixAchat, prixAchatDefaut: achat.prixAchatDefaut, exclusions
-        };
-        const margeParJour = jours.map((iso, i) => calculerMarge({
-            parage: parageParJour[i], ventes: ventesDe(iso), ...optionsMarge
-        }));
+        const margeParJour = jours.map((iso, i) => {
+            const prix = resolveurPrix.pourDate(iso);
+            return calculerMarge({
+                parage: parageParJour[i], ventes: ventesDe(iso),
+                packs: PACK_COMPOSITIONS, categorieDe, prixVente,
+                prixAchat: prix.prixAchat, prixAchatDefaut: prix.prixAchatDefaut,
+                exclusions
+            });
+        });
+        // Les avertissements du resolveur ne sont connus qu'apres usage: il ne
+        // signale un lot manquant que lorsqu'une journee le rencontre.
+        avertissements.push(...resolveurPrix.avertissements);
+        const origineBoeuf = resolveurPrix.pourDate(dateIso).origineBoeuf;
         const margeJour = margeParJour[margeParJour.length - 1];
         const margeMois = cumulerMarge(margeParJour, parageParJour);
 
@@ -4061,7 +4089,7 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
                     prix_vente_moyen: m.prix_vente_moyen == null ? null : arrondi(m.prix_vente_moyen),
                     cout_theorique: arrondi(m.cout_theorique),
                     prix_achat_moyen: m.prix_achat_moyen == null ? null : arrondi(m.prix_achat_moyen),
-                    marge: arrondi(m.marge),
+                    marge: m.marge === null || m.marge === undefined ? null : arrondi(m.marge),
                     details: {
                         hors_pack: {
                             vendu_kg: arrondi(m.details && m.details.hors_pack.vendu_kg),
@@ -4076,12 +4104,28 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
                                 ? null : arrondi(m.details.pack.prix_vente_moyen)
                         }
                     },
+                    ...(m.jours_ignores
+                        ? {
+                            // Journees ou le cout etait inconnu (aucun stock
+                            // saisi): leur CA existe, il n'entre simplement pas
+                            // dans la marge.
+                            jours_ignores: m.jours_ignores,
+                            ca_ignore: arrondi(m.ca_ignore),
+                            vendu_kg_ignore: arrondi(m.vendu_kg_ignore)
+                        }
+                        : {}),
                     ...(extra ? extra(cat, p) : {})
                 };
                 // Hypotheses de prix remontees au niveau global.
                 for (const h of (m.hypotheses || [])) {
                     const msg = `Prix d'achat de "${h.produit}" ${h.methode} `
                         + `(prix de vente ${h.prix_vente} -> ${Math.round(h.prix_achat_estime)}).`;
+                    if (!avertissements.includes(msg)) avertissements.push(msg);
+                }
+                if (m.ca_ignore > 0) {
+                    const msg = `${cat}: ${m.jours_ignores} journee(s) ecartee(s) du calcul de marge `
+                        + `faute de stock theorique - ${Math.round(m.ca_ignore).toLocaleString('fr-FR')} F `
+                        + `de ventes n'y figurent pas.`;
                     if (!avertissements.includes(msg)) avertissements.push(msg);
                 }
                 for (const nom of (m.produits_sans_prix_achat || [])) {
@@ -4097,6 +4141,7 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
             success: true,
             date: dateIso,
             point_de_vente: filtrePv || 'tous',
+            source_prix_achat: origineBoeuf,
             jour: bloc(parageJour, margeJour),
             mois: {
                 periode: dateIso.slice(0, 7),
