@@ -3144,6 +3144,110 @@ app.post('/api/admin/stock-reset/:type', checkAuth, checkWriteAccess, async (req
     }
 });
 
+// ATTENTION A L'ORDRE: '/api/stock/copy' doit rester AVANT
+// '/api/stock/:type', sinon 'copy' est lu comme un :type. Le handler
+// generique ne fait aucun next(): il repondait 400 'La date est requise'
+// et la copie de stock etait injoignable.
+// Route pour exécuter la copie automatique du stock
+app.post('/api/stock/copy', checkAuth, checkWriteAccess, async (req, res) => {
+    try {
+        const { date, dryRun = false } = req.body;
+        
+        // Validation des paramètres.
+        //
+        // La FORME ne suffit pas: '2026-02-31', '2026-13-01' et '2026-00-10' la
+        // respectent tous. On verifie donc que la date existe au calendrier, en
+        // repassant par sa representation ISO - `new Date(annee, mois, jour)`
+        // serait interprete en heure LOCALE et decalerait la journee.
+        const dateValide = (s) => {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+            const d = new Date(`${s}T00:00:00Z`);
+            return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+        };
+        if (date && !dateValide(date)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Format de date invalide. Utilisez YYYY-MM-DD'
+            });
+        }
+
+        console.log(`Exécution de la copie du stock via API. Date: ${date || 'auto'}, Dry-run: ${dryRun}`);
+
+        // Construire les arguments pour le script
+        const args = ['scripts/copy-stock-cron.js'];
+        if (dryRun) {
+            args.push('--dry-run');
+        }
+        if (date) {
+            args.push(`--date=${date}`);
+        }
+
+        // Exécuter le script
+        const childProcess = spawn('node', args, {
+            cwd: __dirname,
+            stdio: ['inherit', 'pipe', 'pipe']
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        childProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        childProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        // 'error' et 'close' peuvent se declencher TOUS LES DEUX: un spawn qui
+        // echoue emet 'error', puis 'close' suit. Deux reponses partaient alors
+        // pour une requete, et la seconde levait ERR_HTTP_HEADERS_SENT. Un seul
+        // point de sortie, garde.
+        let repondu = false;
+        const repondreUneFois = (statut, corps) => {
+            if (repondu) return;
+            repondu = true;
+            res.status(statut).json(corps);
+        };
+
+        childProcess.on('close', (code) => {
+            if (code === 0) {
+                repondreUneFois(200, {
+                    success: true,
+                    message: dryRun ? 'Simulation terminée avec succès' : 'Copie terminée avec succès',
+                    output: stdout,
+                    dryRun: dryRun
+                });
+            } else {
+                repondreUneFois(500, {
+                    success: false,
+                    error: 'Erreur lors de l\'exécution du script',
+                    output: stdout,
+                    errorOutput: stderr,
+                    exitCode: code
+                });
+            }
+        });
+
+        childProcess.on('error', (error) => {
+            console.error('Erreur lors du lancement du script:', error);
+            repondreUneFois(500, {
+                success: false,
+                error: 'Erreur lors du lancement du script',
+                details: error.message
+            });
+        });
+
+    } catch (error) {
+        console.error('Erreur dans l\'API de copie du stock:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur interne du serveur',
+            details: error.message
+        });
+    }
+});
+
 // Route pour sauvegarder les données de stock
 app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrictionsMiddleware, async (req, res) => {
     try {
@@ -3627,84 +3731,6 @@ app.delete('/api/transferts', checkAuth, checkWriteAccess, async (req, res) => {
     }
 });
 
-// Route pour exécuter la copie automatique du stock
-app.post('/api/stock/copy', checkAuth, checkWriteAccess, async (req, res) => {
-    try {
-        const { date, dryRun = false } = req.body;
-        
-        // Validation des paramètres
-        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Format de date invalide. Utilisez YYYY-MM-DD'
-            });
-        }
-
-        console.log(`Exécution de la copie du stock via API. Date: ${date || 'auto'}, Dry-run: ${dryRun}`);
-
-        // Construire les arguments pour le script
-        const args = ['scripts/copy-stock-cron.js'];
-        if (dryRun) {
-            args.push('--dry-run');
-        }
-        if (date) {
-            args.push(`--date=${date}`);
-        }
-
-        // Exécuter le script
-        const childProcess = spawn('node', args, {
-            cwd: __dirname,
-            stdio: ['inherit', 'pipe', 'pipe']
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        childProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        childProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        childProcess.on('close', (code) => {
-            if (code === 0) {
-                res.json({
-                    success: true,
-                    message: dryRun ? 'Simulation terminée avec succès' : 'Copie terminée avec succès',
-                    output: stdout,
-                    dryRun: dryRun
-                });
-            } else {
-                res.status(500).json({
-                    success: false,
-                    error: 'Erreur lors de l\'exécution du script',
-                    output: stdout,
-                    errorOutput: stderr,
-                    exitCode: code
-                });
-            }
-        });
-
-        childProcess.on('error', (error) => {
-            console.error('Erreur lors du lancement du script:', error);
-            res.status(500).json({
-                success: false,
-                error: 'Erreur lors du lancement du script',
-                details: error.message
-            });
-        });
-
-    } catch (error) {
-        console.error('Erreur dans l\'API de copie du stock:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erreur interne du serveur',
-            details: error.message
-        });
-    }
-});
 
 // External API endpoint to trigger stock copy automation
 app.post('/api/external/stock/copy', validateApiKey, async (req, res) => {
@@ -5344,6 +5370,10 @@ app.post('/api/precommandes/:id/convert-to-order', checkAuth, checkWriteAccess, 
     }
 });
 
+// La regle d'acces par point de vente vit dans lib/acces-point-vente.js:
+// elle etait recopiee a chaque route et les copies avaient diverge.
+const { aAccesAuPointVente, aAccesGlobal } = require('./lib/acces-point-vente');
+
 // Endpoint pour modifier une pré-commande (seulement si statut = 'ouvert')
 app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) => {
     try {
@@ -5356,15 +5386,88 @@ app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) =
         
         // Vérifier que la pré-commande est ouverte
         if (precommande.statut !== 'ouvert') {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Seules les pré-commandes ouvertes peuvent être modifiées' 
+            return res.status(400).json({
+                success: false,
+                message: 'Seules les pré-commandes ouvertes peuvent être modifiées'
             });
         }
-        
-        // Mettre à jour la pré-commande
-        await precommande.update(req.body);
-        
+
+        // Cloisonnement par point de vente. checkWriteAccess ne verifie que le
+        // droit d'ecrire (middlewares/auth.js#checkWriteAccess), jamais SUR QUOI:
+        // sans ce controle, un utilisateur rattache a un point de vente peut
+        // modifier la precommande d'un autre.
+        //
+        // cf aAccesAuPointVente: user.pointVente est 'tous' OU un tableau.
+        const userPointVente = req.session.user.pointVente;
+        const accesGlobal = aAccesGlobal(userPointVente);
+        if (!aAccesAuPointVente(userPointVente, precommande.pointVente)) {
+            return res.status(403).json({
+                success: false,
+                message: 'Accès non autorisé pour ce point de vente'
+            });
+        }
+
+        // Liste BLANCHE. `precommande.update(req.body)` assignait en masse
+        // n'importe quelle colonne du modele - statut, dateArchivage, l'identite
+        // du createur - a partir du corps de la requete. Les champs listes ici
+        // sont exactement ceux que l'ecran de modification envoie
+        // (script.js#soumettreModificationPrecommande).
+        const maj = req.body || {};
+        const siFourni = (valeur, actuel) => (valeur !== undefined ? valeur : actuel);
+
+        // Les trois champs numeriques passaient par parseFloat, qui accepte des
+        // conversions PARTIELLES et rend NaN sur une chaine vide. Deux degats:
+        // une saisie vide ecrivait NaN dans une colonne numerique - Postgres
+        // accepte 'NaN' en float8, la ligne devient donc irrecuperable - et
+        // "15,50", la virgule decimale francaise, valait 15. Les centimes
+        // disparaissaient sans un mot.
+        //
+        // Un champ ABSENT garde la valeur actuelle; un champ FOURNI doit etre
+        // un nombre fini, sinon la requete est refusee.
+        const nombreFourni = {};
+        for (const champ of ['prixUnit', 'nombre', 'montant']) {
+            if (maj[champ] === undefined) continue;
+            const brut = maj[champ];
+            const valeur = typeof brut === 'number' ? brut : Number(String(brut).trim());
+            if (!Number.isFinite(valeur) || String(brut).trim() === '') {
+                return res.status(400).json({
+                    success: false,
+                    message: `Valeur numérique invalide pour "${champ}": ${JSON.stringify(brut)}`
+                });
+            }
+            nombreFourni[champ] = valeur;
+        }
+        const dataToUpdate = {
+            mois: maj.mois || precommande.mois,
+            dateEnregistrement: maj.dateEnregistrement
+                ? standardiserDateFormat(maj.dateEnregistrement) : precommande.dateEnregistrement,
+            dateReception: maj.dateReception
+                ? standardiserDateFormat(maj.dateReception) : precommande.dateReception,
+            semaine: maj.semaine || precommande.semaine,
+            pointVente: maj.pointVente || precommande.pointVente,
+            preparation: maj.preparation || precommande.preparation,
+            categorie: maj.categorie || precommande.categorie,
+            produit: maj.produit || precommande.produit,
+            prixUnit: nombreFourni.prixUnit !== undefined ? nombreFourni.prixUnit : precommande.prixUnit,
+            nombre: nombreFourni.nombre !== undefined ? nombreFourni.nombre : precommande.nombre,
+            montant: nombreFourni.montant !== undefined ? nombreFourni.montant : precommande.montant,
+            nomClient: siFourni(maj.nomClient, precommande.nomClient),
+            numeroClient: siFourni(maj.numeroClient, precommande.numeroClient),
+            adresseClient: siFourni(maj.adresseClient, precommande.adresseClient),
+            commentaire: siFourni(maj.commentaire, precommande.commentaire),
+            label: siFourni(maj.label, precommande.label)
+        };
+
+        // Un utilisateur cloisonne ne peut pas non plus DEPLACER la precommande
+        // vers un point de vente auquel il n'a pas acces: le champ est dans la
+        // liste blanche, et sans ce garde le controle ci-dessus se contournerait
+        // en un aller-retour. Un acces global, lui, garde le droit de deplacer.
+        if (!accesGlobal && !aAccesAuPointVente(userPointVente, dataToUpdate.pointVente)) {
+            dataToUpdate.pointVente = precommande.pointVente;
+        }
+
+        await precommande.update(dataToUpdate);
+
         res.json({ success: true, message: 'Pré-commande modifiée avec succès', precommande });
     } catch (error) {
         console.error('Erreur lors de la modification:', error);
@@ -5469,14 +5572,17 @@ app.delete('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res
         }
         
         // Vérifier l'accès par point de vente si nécessaire
+        // Meme faute que le PUT, et pre-existante ici: la comparaison directe
+        // renvoyait 403 a TOUT utilisateur cloisonne, y compris sur son propre
+        // point de vente. Les permissions par statut, plus bas, restent intactes.
         const userPointVente = user.pointVente;
-        if (userPointVente !== 'tous' && precommande.pointVente !== userPointVente) {
+        if (!aAccesAuPointVente(userPointVente, precommande.pointVente)) {
             return res.status(403).json({
-                success: false, 
+                success: false,
                 message: 'Accès non autorisé pour ce point de vente'
             });
         }
-        
+
         // Vérifier les permissions de suppression selon le statut
         const isSuperviseur = user.role === 'superviseur' || user.role === 'admin';
         
@@ -5513,99 +5619,6 @@ app.delete('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res
         res.status(500).json({ 
             success: false, 
             message: 'Erreur lors de la suppression de la pré-commande',
-            error: error.message
-        });
-    }
-});
-
-// Route pour mettre à jour une pré-commande
-app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) => {
-    try {
-        const precommandeId = req.params.id;
-        const updatedPrecommande = req.body;
-        
-        // Trouver la pré-commande à mettre à jour
-        const precommande = await Precommande.findByPk(precommandeId);
-        
-        if (!precommande) {
-            return res.status(404).json({
-                success: false,
-                message: 'Pré-commande non trouvée'
-            });
-        }
-        
-        // Vérifier l'accès par point de vente si nécessaire
-        const userPointVente = req.session.user.pointVente;
-        if (userPointVente !== 'tous' && precommande.pointVente !== userPointVente) {
-            return res.status(403).json({
-                success: false,
-                message: 'Accès non autorisé pour ce point de vente'
-            });
-        }
-        
-        // Préparer les données mises à jour
-        const dataToUpdate = {
-            mois: updatedPrecommande.mois || precommande.mois,
-            dateEnregistrement: updatedPrecommande.dateEnregistrement ? 
-                standardiserDateFormat(updatedPrecommande.dateEnregistrement) : precommande.dateEnregistrement,
-            dateReception: updatedPrecommande.dateReception ? 
-                standardiserDateFormat(updatedPrecommande.dateReception) : precommande.dateReception,
-            semaine: updatedPrecommande.semaine || precommande.semaine,
-            pointVente: updatedPrecommande.pointVente || precommande.pointVente,
-            preparation: updatedPrecommande.preparation || precommande.preparation,
-            categorie: updatedPrecommande.categorie || precommande.categorie,
-            produit: updatedPrecommande.produit || precommande.produit,
-            prixUnit: updatedPrecommande.prixUnit !== undefined ? 
-                parseFloat(updatedPrecommande.prixUnit) : precommande.prixUnit,
-            nombre: updatedPrecommande.nombre !== undefined ? 
-                parseFloat(updatedPrecommande.nombre) : precommande.nombre,
-            montant: updatedPrecommande.montant !== undefined ? 
-                parseFloat(updatedPrecommande.montant) : precommande.montant,
-            nomClient: updatedPrecommande.nomClient !== undefined ? 
-                updatedPrecommande.nomClient : precommande.nomClient,
-            numeroClient: updatedPrecommande.numeroClient !== undefined ? 
-                updatedPrecommande.numeroClient : precommande.numeroClient,
-            adresseClient: updatedPrecommande.adresseClient !== undefined ? 
-                updatedPrecommande.adresseClient : precommande.adresseClient,
-            commentaire: updatedPrecommande.commentaire !== undefined ? 
-                updatedPrecommande.commentaire : precommande.commentaire,
-            label: updatedPrecommande.label !== undefined ? 
-                updatedPrecommande.label : precommande.label
-        };
-        
-        // Mettre à jour la pré-commande
-        await precommande.update(dataToUpdate);
-        
-        console.log(`Pré-commande ${precommandeId} mise à jour avec succès`);
-        
-            res.json({ 
-                success: true, 
-            message: 'Pré-commande mise à jour avec succès',
-            precommande: {
-                id: precommande.id,
-                Mois: precommande.mois,
-                'Date Enregistrement': precommande.dateEnregistrement,
-                'Date Réception': precommande.dateReception,
-                Semaine: precommande.semaine,
-                'Point de Vente': precommande.pointVente,
-                Preparation: precommande.preparation,
-                Catégorie: precommande.categorie,
-                Produit: precommande.produit,
-                PU: precommande.prixUnit,
-                Nombre: precommande.nombre,
-                Montant: precommande.montant,
-                nomClient: precommande.nomClient,
-                numeroClient: precommande.numeroClient,
-                adresseClient: precommande.adresseClient,
-                commentaire: precommande.commentaire,
-                label: precommande.label
-            }
-        });
-    } catch (error) {
-        console.error('Erreur lors de la mise à jour de la pré-commande:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Erreur lors de la mise à jour de la pré-commande',
             error: error.message
         });
     }
@@ -8844,7 +8857,13 @@ app.post('/api/weight-params', checkAuth, checkWriteAccess, async (req, res) => 
 });
 
 // Routes pour les estimations
-app.get('/api/stock/:date/:type/:pointVente/:categorie', async (req, res) => {
+//
+// checkAuth + checkReadAccess etaient ABSENTS ici, et cette route capte les
+// trois routes de meme arite declarees plus bas ('/:date/matin/...',
+// '/:date/soir/...', '/:date/transfert/...') qui, elles, les portaient. Express
+// retient la premiere qui correspond: les gardes ne s'executaient jamais et le
+// stock de n'importe quel point de vente etait lisible sans session.
+app.get('/api/stock/:date/:type/:pointVente/:categorie', checkAuth, checkReadAccess, async (req, res) => {
     console.log('=== ESTIMATION STOCK API REQUEST START ===');
     console.log('Request params:', req.params);
     
@@ -9067,7 +9086,12 @@ app.get('/api/stock/:date/soir/:pointVente/:produit', checkAuth, checkReadAccess
 });
         
 // Route pour calculer les transferts par produit
-app.get('/api/stock/:date/transfert/:pointVente/:produit', async (req, res) => {
+// Cette route est aujourd'hui inatteignable - la route generique quatre
+// segments declaree plus haut la capte - mais elle etait la SEULE des trois a
+// n'avoir aucune garde. La laisser nue rendrait sa remontee dangereuse a la
+// premiere reorganisation. Un test exige les deux middlewares sur toutes les
+// routes '/api/stock/:date/...'.
+app.get('/api/stock/:date/transfert/:pointVente/:produit', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date, pointVente, produit } = req.params;
         

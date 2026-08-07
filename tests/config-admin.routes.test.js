@@ -34,7 +34,7 @@ const mockPrixPointVente = { upsert: jest.fn() };
 const mockPrixHistorique = { create: jest.fn(), bulkCreate: jest.fn() };
 const mockUser = {};
 
-const mockConfigService = { invalidateCache: jest.fn() };
+const mockConfigService = { invalidateCache: jest.fn(), createProduit: jest.fn() };
 
 jest.mock('../db', () => ({
     sequelize: { query: jest.fn(), QueryTypes: { SELECT: 'SELECT' } }
@@ -669,5 +669,61 @@ describe('POST /api/admin/config/produits/:nom/reattach', () => {
             .post('/api/admin/config/produits/X/reattach');
         expect(res.status).toBe(200);
         expect(mockPrixHistorique.create).not.toHaveBeenCalled();
+    });
+});
+
+// =============== POST /produits/creer (creation unitaire) ===============
+//
+// Ce handler partageait le chemin '/produits' avec la sauvegarde en masse.
+// Express retient la premiere declaration: il n'etait jamais atteint, et
+// l'ecran Configuration recevait 400 'Configuration produits invalide' a
+// chaque creation. Le chemin distinct le rend joignable; ces tests
+// verrouillent le fait qu'il le reste.
+describe('POST /api/admin/config/produits/creer', () => {
+    test('transmet les champs du produit a configService.createProduit', async () => {
+        mockConfigService.createProduit.mockResolvedValueOnce({ id: 42, nom: 'Gigot' });
+
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits/creer')
+            .send({
+                nom: 'Gigot',
+                type_catalogue: 'vente',
+                categorie_id: 3,
+                prix_defaut: 7500,
+                prix_alternatifs: [7000, 7500]
+            });
+
+        expect(res.status).toBe(200);
+        expect(res.body.data).toEqual({ id: 42, nom: 'Gigot' });
+        expect(mockConfigService.createProduit).toHaveBeenCalledWith({
+            nom: 'Gigot',
+            categorieId: 3,
+            typeCatalogue: 'vente',
+            prixDefaut: 7500,
+            prixAlternatifs: [7000, 7500]
+        }, 'TESTADMIN');
+    });
+
+    test('400 si le nom ou le type_catalogue manque', async () => {
+        const sansNom = await request(makeApp())
+            .post('/api/admin/config/produits/creer')
+            .send({ type_catalogue: 'vente' });
+        expect(sansNom.status).toBe(400);
+
+        const sansType = await request(makeApp())
+            .post('/api/admin/config/produits/creer')
+            .send({ nom: 'Gigot' });
+        expect(sansType.status).toBe(400);
+        expect(mockConfigService.createProduit).not.toHaveBeenCalled();
+    });
+
+    // La regression exacte: le corps unitaire NE DOIT PAS tomber sur le
+    // handler de sauvegarde en masse, qui exige une cle `produits`.
+    test("l'endpoint en masse reste distinct et refuse un corps unitaire", async () => {
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits')
+            .send({ nom: 'Gigot', type_catalogue: 'vente' });
+        expect(res.status).toBe(400);
+        expect(mockConfigService.createProduit).not.toHaveBeenCalled();
     });
 });
