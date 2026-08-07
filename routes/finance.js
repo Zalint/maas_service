@@ -230,6 +230,30 @@ async function produitsAStockSoirNegatif(dateMax) {
     return set;
 }
 
+// Produits suivis par l'onglet Simulation, dans l'ordre d'affichage.
+//
+// Liste FERMEE et ecrite en dur: la simulation ne repond qu'a une question
+// precise - de combien bouge le resultat si on touche au prix de ces
+// produits-la. La deduire des ventes ferait apparaitre et disparaitre des
+// lignes d'un mois a l'autre, et un tableau dont les lignes changent ne se
+// compare pas.
+//
+// Chaque nom est compare APRES normalisation (casse et accents ignores):
+// "Poulet en détail" et "Poulet En Détail" sont deux graphies du meme produit
+// dans les ventes de juillet, 77 et 31 unites. Les traiter separement
+// sous-estimerait la sensibilite de 29%.
+const PRODUITS_SIMULATION = [
+    'Boeuf en détail',
+    'Boeuf en gros',
+    'Poulet en détail',
+    'Poulet en gros',
+    'Agneau'
+];
+
+// Produit dont on cherche le prix d'equilibre (PL = 0). Un seul: faire varier
+// plusieurs prix pour annuler le resultat admet une infinite de solutions.
+const PRODUIT_EQUILIBRE = 'Boeuf en détail';
+
 const router = express.Router();
 
 // ============================================================
@@ -253,7 +277,10 @@ const ADVANCED_FINANCE_PREFIXES = [
     '/config',
     '/paiements',
     '/pl',
-    '/cash-stock'
+    '/cash-stock',
+    // La simulation expose les memes chiffres que le PL, sous un autre angle:
+    // elle merite la meme garde.
+    '/simulation'
 ];
 ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
 // DELETE /depenses/:id reste admin via inline check (cf le handler).
@@ -1212,6 +1239,116 @@ router.delete('/charges/:nom', async (req, res) => {
 // Si pas de saisie stock pile aux dates demandees, on prend la date
 // la plus proche <= demandee (fallback).
 //
+/**
+ * GET /api/finance/simulation?dateDebut=&dateFin=
+ *
+ * Volumes vendus, par produit suivi, sur la periode. C'est TOUT ce que cette
+ * route calcule.
+ *
+ * Elle ne recalcule PAS le resultat: le client lit le PL par /api/finance/pl,
+ * la seule route qui l'etablit. Deux chemins qui calculent le meme nombre
+ * finissent toujours par en rendre deux differents - ce depot l'a paye
+ * plusieurs fois.
+ *
+ * Le reste de la simulation est de l'arithmetique sur ces volumes, faite cote
+ * client pour rester instantanee quand on change le montant du bump:
+ *
+ *   sensibilite(X) = X x quantite vendue        (quantites inchangees)
+ *   PL apres bump  = PL actuel + sensibilite(X)
+ *   prix d'equilibre = prix moyen - PL actuel / quantite
+ *
+ * Le coefficient "1 franc de chiffre d'affaires = 1 franc de resultat" a ete
+ * MESURE, pas suppose: en injectant une vente de 1 000 000 puis de 3 000 000 F
+ * sur juillet 2026, le PL bouge d'exactement le meme montant dans les deux cas.
+ * Aucun poste du resultat n'est proportionnel au chiffre d'affaires.
+ */
+router.get('/simulation', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        const toISO = (s) => {
+            if (!s) return null;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+        };
+        const today = new Date();
+        const rawDebut = req.query.dateDebut;
+        const rawFin = req.query.dateFin;
+        const dateDebut = rawDebut ? toISO(rawDebut)
+            : `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
+        const dateFin = rawFin ? toISO(rawFin) : today.toISOString().slice(0, 10);
+        if ((rawDebut && !dateDebut) || (rawFin && !dateFin)) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+
+        // Les ventes sont datees en YYYY-MM-DD, contrairement aux stocks et aux
+        // transferts qui stockent DD-MM-YYYY. La comparaison de chaines suffit
+        // donc ici, et seulement ici.
+        const lignes = await sequelize.query(
+            `SELECT produit,
+                    SUM(nombre::numeric)  AS quantite,
+                    SUM(montant::numeric) AS ca,
+                    COUNT(*)::int         AS nb_lignes
+             FROM ventes
+             WHERE date >= :dateDebut AND date <= :dateFin
+             GROUP BY produit`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut, dateFin } }
+        );
+
+        // Regroupement par nom normalise: plusieurs graphies d'un meme produit
+        // doivent additionner leurs volumes, pas se concurrencer.
+        const parCle = new Map();
+        for (const l of lignes) {
+            const cle = normaliserNomProduit(l.produit);
+            if (!parCle.has(cle)) parCle.set(cle, { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] });
+            const agg = parCle.get(cle);
+            agg.quantite += Number(l.quantite) || 0;
+            agg.ca += Number(l.ca) || 0;
+            agg.nb_lignes += Number(l.nb_lignes) || 0;
+            if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
+        }
+
+        const produits = PRODUITS_SIMULATION.map((nom) => {
+            const agg = parCle.get(normaliserNomProduit(nom))
+                || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
+            return {
+                nom,
+                quantite: round2(agg.quantite),
+                ca: round2(agg.ca),
+                // Prix MOYEN constate, et non prix de catalogue: c'est celui-la
+                // qui explique le chiffre d'affaires de la periode.
+                prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
+                nb_lignes: agg.nb_lignes,
+                graphies: agg.graphies.sort((a, b) => a.localeCompare(b, 'fr')),
+                // Un produit sans vente n'est pas une erreur, mais sa
+                // sensibilite vaut zero et l'ecran doit pouvoir le dire.
+                sans_vente: agg.quantite === 0
+            };
+        });
+
+        res.json({
+            success: true,
+            data: {
+                periode: { dateDebut, dateFin },
+                produits,
+                produit_equilibre: PRODUIT_EQUILIBRE,
+                // Mesure, cf le commentaire d'en-tete de cette route.
+                coefficient_pl_par_franc_vendu: 1
+            }
+        });
+    } catch (error) {
+        console.error('Erreur simulation:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
 router.get('/pl', async (req, res) => {
     try {
