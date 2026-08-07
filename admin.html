@@ -685,6 +685,14 @@
                                                 <button type="button" class="recherche-filter-item" data-recherche-fam="autres" aria-pressed="false">
                                                     <span aria-hidden="true">📦</span> Autres
                                                 </button>
+                                                <!-- Un produit sans categorie sort SILENCIEUSEMENT du parage, de la
+                                                     famille et du coefficient de decoupe. Rien ne le signalait: ce
+                                                     filtre rend la dette visible. -->
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="sans" aria-pressed="false"
+                                                        title="Produits sans catégorie : ils sortent du parage, de la famille et du coefficient de découpe sans que rien ne le signale.">
+                                                    <span aria-hidden="true">⚠️</span> Sans catégorie
+                                                    <span class="recherche-count" data-count="sans">0</span>
+                                                </button>
                                             </div>
                                         </div>
 
@@ -1521,7 +1529,8 @@
                             </div>
                             <div class="col-md-6">
                                 <label for="pum-cat-inv" class="form-label small fw-semibold">
-                                    <i class="bi bi-box-seam me-1"></i>Catégorie Inventaire
+                                    <i class="bi bi-box-seam me-1"></i>Catégorie / Alias
+                                    <span class="text-muted fw-normal" style="font-size:.85em;">(inventaire)</span>
                                 </label>
                                 <select id="pum-cat-inv" class="form-select"></select>
                             </div>
@@ -1701,6 +1710,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260805-parage-mois"></script>
+    <script src="admin.js?v=20260807-alias2"></script>
 </body>
 </html> 

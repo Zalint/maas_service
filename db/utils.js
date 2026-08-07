@@ -285,19 +285,36 @@ async function computeStockSoirAutoValues(dateInput) {
     where: { mode_stock: 'automatique', type_catalogue: 'inventaire', archived: false },
     attributes: ['nom', 'prix_defaut']
   });
-  const autoSet = new Set(autoProduits.map((p) => p.nom));
+  // Comparaison INSENSIBLE A LA CASSE ET AUX ACCENTS, comme partout ailleurs
+  // pour les noms de produits. Le catalogue et les saisies n'ecrivent pas de
+  // la meme facon - "Boeuf en detail" contre "Boeuf En Detail" - et une
+  // egalite stricte faisait sauter le produit SANS RIEN DIRE: le calcul ne
+  // trouvait ni son stock ni ses ventes, et rendait zero.
+  const { normaliserNom } = require('../lib/parage');
+  const autoSet = new Set(autoProduits.map((p) => normaliserNom(p.nom)));
   const prixByProduit = new Map(
-    autoProduits.map((p) => [p.nom, parseFloat(p.prix_defaut) || 0])
+    autoProduits.map((p) => [normaliserNom(p.nom), parseFloat(p.prix_defaut) || 0])
   );
 
   if (autoSet.size === 0) {
     return { dateBdd, autoSet, prixByProduit, calcByKey: new Map() };
   }
 
+  // Les VENTES ne sont pas datees comme les stocks. stocks et transferts
+  // stockent 'DD-MM-YYYY', ventes stocke 'YYYY-MM-DD'. Interroger ventes avec
+  // dateBdd ne remontait donc JAMAIS rien: agg.ventes valait toujours 0 et la
+  // formule se reduisait a matin + transferts. Le terme le plus important
+  // etait muet, en silence - un stock a zero se lit comme "rien en rayon", pas
+  // comme une erreur. Mesure: 7 500 lignes automatiques totalisant 90 unites,
+  // alors que la Carotte seule compte 95 ventes sur juillet.
+  const dateIso = `${parsed.getFullYear()}-`
+    + `${String(parsed.getMonth() + 1).padStart(2, '0')}-`
+    + `${String(parsed.getDate()).padStart(2, '0')}`;
+
   const [allMatin, allTransferts, allVentes] = await Promise.all([
     Stock.findAll({ where: { date: dateBdd, typeStock: 'matin' } }),
     Transfert.findAll({ where: { date: dateBdd } }),
-    Vente.findAll({ where: { date: dateBdd } })
+    Vente.findAll({ where: { date: dateIso } })
   ]);
 
   const aggregate = new Map();
@@ -306,17 +323,17 @@ async function computeStockSoirAutoValues(dateInput) {
     return aggregate.get(key);
   };
   for (const m of allMatin) {
-    if (!autoSet.has(m.produit)) continue;
+    if (!autoSet.has(normaliserNom(m.produit))) continue;
     ensure(`${m.pointVente}|${m.produit}`).matin = parseFloat(m.quantite) || 0;
   }
   for (const t of allTransferts) {
-    if (!autoSet.has(t.produit)) continue;
+    if (!autoSet.has(normaliserNom(t.produit))) continue;
     const impact = parseInt(t.impact, 10);
     const signedQte = (Number.isFinite(impact) ? impact : 1) * (parseFloat(t.quantite) || 0);
     ensure(`${t.pointVente}|${t.produit}`).transferts += signedQte;
   }
   for (const v of allVentes) {
-    if (!autoSet.has(v.produit)) continue;
+    if (!autoSet.has(normaliserNom(v.produit))) continue;
     ensure(`${v.pointVente}|${v.produit}`).ventes += parseFloat(v.nombre) || 0;
   }
 
@@ -348,6 +365,7 @@ async function computeStockSoirAutoValues(dateInput) {
  * @returns {Promise<{updated: number, created: number, skippedOverride: number}>}
  */
 async function recomputeStockSoirForAuto(dateInput) {
+  const { normaliserNom } = require('../lib/parage');
   const { dateBdd, calcByKey, prixByProduit } = await computeStockSoirAutoValues(dateInput);
   if (calcByKey.size === 0) {
     return { updated: 0, created: 0, skippedOverride: 0 };
@@ -384,8 +402,8 @@ async function recomputeStockSoirForAuto(dateInput) {
       }
 
       const prixUnitaire = existing
-        ? parseFloat(existing.prixUnitaire) || prixByProduit.get(produit) || 0
-        : (prixByProduit.get(produit) || 0);
+        ? parseFloat(existing.prixUnitaire) || prixByProduit.get(normaliserNom(produit)) || 0
+        : (prixByProduit.get(normaliserNom(produit)) || 0);
       const total = calc * prixUnitaire;
 
       if (existing) {

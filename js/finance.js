@@ -2002,7 +2002,13 @@
 
         const postes = [
             { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
-              libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes' },
+              libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes'
+                + (d.ventes_hors_boucherie_pct !== null && d.ventes_hors_boucherie_pct !== undefined
+                    ? ` <span class="badge bg-light text-dark border ms-2"
+                          title="Part du chiffre d'affaires qui ne vient pas de la boucherie (famille Épicerie ou Autres).">
+                          dont hors boucherie ${esc(fmtMoney(d.ventes_hors_boucherie || 0))}
+                          · ${esc(d.ventes_hors_boucherie_pct)} %</span>`
+                    : '') },
             { cle: 'avances', signe: -1, montant: d.total_avances || 0, couleur: 'danger', neutralisable: false,
               libelle: '<i class="bi bi-bank text-danger"></i> Total avances (MataBanq)' },
             { cle: 'commission', signe: -1, montant: d.commission_maas || 0, couleur: 'warning', neutralisable: true,
@@ -2130,6 +2136,24 @@
         // Pourquoi tel prix a ete retenu. Un repli sur le catalogue faute de
         // reponse de DATA change le chiffre de plusieurs pour cent: le taire
         // laisse croire a une erreur de calcul.
+        // Deux regles a rendre visibles: le coefficient ne porte que sur la
+        // viande, et les stocks negatifs ne sont pas comptes. Sans le dire, un
+        // total qui ne correspond pas a la somme des lignes parait faux.
+        const ecartes = stock.produits_ecartes || [];
+        const plNoteStock = `<div class="small text-muted mt-1">
+            Le coefficient de pertes de découpe ne s'applique qu'à la
+            <strong>boucherie</strong> (${esc(fmtMoney(stock.variation_boucherie || 0))}) ;
+            le hors boucherie entre à sa valeur pleine
+            (${esc(fmtMoney(stock.variation_hors_boucherie || 0))}).
+            ${ecartes.length
+                ? `<br><span class="text-warning"><i class="bi bi-exclamation-triangle"></i>
+                   ${ecartes.length} produit(s) écarté(s) faute de stock fiable :
+                   ${esc(ecartes.slice(0, 6).join(', '))}${ecartes.length > 6 ? '…' : ''}.
+                   Leur stock du soir est négatif, signe d'entrées non saisies — leurs
+                   achats restent comptés dans les Dépenses.</span>`
+                : ''}
+        </div>`;
+
         const plAvertPrix = (stock.avertissements || []).length
             ? `<div class="alert alert-warning py-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle"></i>
                ${(stock.avertissements || []).map((a) => esc(a)).join('<br>')}</div>`
@@ -2234,6 +2258,7 @@
                     </tbody>
                 </table>
                 ${plLegendePrix}
+                ${plNoteStock}
                 ${plAvertPrix}
             </div>
 
@@ -2376,6 +2401,23 @@
                ${esc(auPrixVente.join(', '))} — sans prix d'achat renseigné, ces produits restent au prix de vente.</small></div>`
             : `<div class="mt-2"><small class="text-muted">Stock valorisé au <strong>prix d'achat fournisseur</strong>.</small></div>`;
 
+        // Le coefficient ne porte que sur la viande, et les stocks negatifs sont
+        // ecartes: les deux doivent se lire a l'ecran, sinon le "Stock soir net"
+        // ne se retrouve pas a partir du brut.
+        const ecartes = stock.produits_ecartes || [];
+        const noteStockCS = `<div class="small text-muted mt-1">
+            Coefficient appliqué à la <strong>boucherie</strong> seule
+            (${esc(fmtMoney(stock.soir_boucherie || 0))}) ; hors boucherie à valeur pleine
+            (${esc(fmtMoney(stock.soir_hors_boucherie || 0))}).
+            ${ecartes.length
+                ? `<br><span class="text-warning"><i class="bi bi-exclamation-triangle"></i>
+                   ${ecartes.length} produit(s) écarté(s) faute de stock fiable :
+                   ${esc(ecartes.slice(0, 6).join(', '))}${ecartes.length > 6 ? '…' : ''}.
+                   Leur stock du soir est négatif, signe d'entrées non saisies — leurs
+                   achats restent comptés dans les Dépenses.</span>`
+                : ''}
+        </div>`;
+
         // "—" veut dire NON RENSEIGNE, "0 FCFA" veut dire aucun depot. Le pied
         // du tableau se decidait sur la valeur (0 -> "—"), les lignes sur la
         // nullite: le meme ecran disait "on ne sait pas" et "zero" du meme
@@ -2425,7 +2467,7 @@
                                 <td class="text-end">${esc(fmtMoney(stock.soir_brut))}</td>
                             </tr>
                             <tr>
-                                <td>× coefficient <span class="text-muted">(1 − ${esc(stock.pertes_decoupe_pct)}% pertes découpe)</span></td>
+                                <td>× coefficient <span class="text-muted">(1 − ${esc(stock.pertes_decoupe_pct)}% pertes découpe, <strong>boucherie seule</strong>)</span></td>
                                 <td class="text-end">× ${esc(stock.coeff)}</td>
                             </tr>
                             <tr style="background:#f8fafc">
@@ -2451,6 +2493,7 @@
                         </tbody>
                     </table>
                     ${legendePrix}
+                    ${noteStockCS}
                     ${stockSnapshotInfo ? `<div class="mt-2">${stockSnapshotInfo}</div>` : ''}
                 </div>
             </div>

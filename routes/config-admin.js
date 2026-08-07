@@ -588,9 +588,16 @@ router.get('/produits-inventaire', requireAuthenticated, async (req, res) => {
         ventes: Array.isArray(produit.ventes) ? produit.ventes : [],
         ventilation_poids: !!produit.ventilation_poids,
         // Soft-delete flag pour la transition (cf. GET /produits ci-dessus).
-        archived: !!produit.archived
+        archived: !!produit.archived,
+        // La categorie voyage DANS la config du produit, et non plus seulement
+        // comme cle d'imbrication. Un produit et une categorie pouvaient porter
+        // le meme nom - il existe un produit "Autres" et une categorie "Autres" -
+        // et l'imbrication seule les ecrasait l'un l'autre: le client tranchait
+        // "c'est un produit" et les 74 produits de la categorie disparaissaient
+        // de l'ecran. Le champ explicite leve l'ambiguite.
+        categorie_affichage: produit.categorie_affichage || null
       };
-      
+
       if (produit.prixParPointVente) {
         for (const prix of produit.prixParPointVente) {
           if (prix.pointVente) {

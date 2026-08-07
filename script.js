@@ -7367,7 +7367,12 @@ document.getElementById('calculer-reconciliation').addEventListener('click', fun
 async function calculerReconciliation(date) {
     try {
         console.log('Calcul de réconciliation pour la date:', date);
-        
+
+        // Bloc d'information stock calcule / stock negatif. Charge a part et
+        // sans await: c'est une information de controle, elle ne doit ni
+        // retarder ni faire echouer la reconciliation elle-meme.
+        chargerInfoStockAuto(date);
+
         // Effacer le tableau des résultats précédents
         const tbody = document.querySelector('#reconciliation-table tbody');
         tbody.innerHTML = '';
@@ -10998,6 +11003,112 @@ async function exportVisualisationToExcel() {
 }
 
 // Function to export monthly reconciliation data to Excel
+/** Charge le detail stock calcule / stock negatif d'une journee, sans bloquer. */
+async function chargerInfoStockAuto(date) {
+    const bloc = document.getElementById('rec-info-stock-auto');
+    if (bloc) bloc.style.display = 'none';
+    try {
+        const rep = await fetch('/api/reconciliation/parage?date=' + encodeURIComponent(date), {
+            method: 'GET', credentials: 'include'
+        });
+        if (!rep.ok) return;
+        const json = await rep.json();
+        if (json && json.success) renderInfoStockAuto(json);
+    } catch (e) {
+        // Silencieux: un bloc d'information absent vaut mieux qu'une
+        // reconciliation qui echoue pour lui.
+        console.warn('Info stock calcule indisponible:', e && e.message);
+    }
+}
+
+/**
+ * Bloc d'information sous le tableau de reconciliation: produits a stock
+ * DERIVE (mode automatique) et produits a stock NEGATIF.
+ *
+ * Ces deux populations n'entrent pas dans les chiffres de gestion - les
+ * premiers sont hors parage par construction, les seconds sont ecartes du PL
+ * et de Cash et Stock - mais les taire reviendrait a les rendre invisibles.
+ * D'ou un bloc replie: present pour qui le cherche, absent du regard courant.
+ */
+function renderInfoStockAuto(parage) {
+    const bloc = document.getElementById('rec-info-stock-auto');
+    if (!bloc) return;
+    const derives = (parage && parage.stock_derive) || [];
+    const negatifs = (parage && parage.stock_negatif) || [];
+
+    if (!derives.length && !negatifs.length) {
+        bloc.style.display = 'none';
+        return;
+    }
+    bloc.style.display = 'block';
+
+    const nb = (v) => (v === null || v === undefined
+        ? '—'
+        : Number(v).toLocaleString('fr-FR', { maximumFractionDigits: 2 }));
+
+    const resume = [];
+    if (derives.length) resume.push(derives.length + ' produit(s) a stock calcule');
+    if (negatifs.length) resume.push(negatifs.length + ' a stock negatif');
+    const el = document.getElementById('rec-info-stock-auto-resume');
+    if (el) el.textContent = resume.join(' · ');
+
+    let html = '';
+
+    if (derives.length) {
+        const incoherents = derives.filter((d) => !d.coherent).length;
+        html += `<div class="fw-semibold mb-1">Produits a stock calcule (mode automatique)</div>
+            <div class="text-muted mb-2">
+                Leur stock du soir est deduit : <code>matin + transferts − ventes</code>.
+                Leur theorique vaut donc toujours leurs ventes, et leur parage serait nul
+                par construction — ils sont volontairement hors du calcul de parage.
+                ${incoherents > 0
+                    ? `<span class="text-warning"><br><i class="bi bi-exclamation-triangle"></i>
+                       ${incoherents} ligne(s) ne correspondent pas au calcul : recalcul non
+                       passe, ou saisie manuelle qui l'a remplace.</span>`
+                    : ''}
+            </div>
+            <div class="table-responsive"><table class="table table-sm mb-0">
+                <thead><tr>
+                    <th>Point de vente</th><th>Produit</th>
+                    <th class="text-end">Matin</th><th class="text-end">Transferts</th>
+                    <th class="text-end">Ventes</th><th class="text-end">Soir</th>
+                    <th class="text-end">Attendu</th>
+                </tr></thead><tbody>` +
+            derives.map((d) => `<tr${d.coherent ? '' : ' class="table-warning"'}>
+                    <td>${escapeHtml(d.point_de_vente || '')}</td>
+                    <td>${escapeHtml(d.produit || '')}</td>
+                    <td class="text-end">${nb(d.matin)}</td>
+                    <td class="text-end">${nb(d.transferts)}</td>
+                    <td class="text-end">${nb(d.ventes)}</td>
+                    <td class="text-end">${nb(d.soir)}</td>
+                    <td class="text-end text-muted">${nb(d.theorique_attendu)}</td>
+                </tr>`).join('') +
+            '</tbody></table></div>';
+    }
+
+    if (negatifs.length) {
+        html += `<div class="fw-semibold mb-1 ${derives.length ? 'mt-3' : ''}">Stock du soir negatif</div>
+            <div class="text-muted mb-2">
+                Un stock negatif vient d'entrees non saisies : la marchandise a ete
+                achetee — et passee en charge dans Depenses — mais jamais enregistree
+                en stock. Ces produits sont <strong>ecartes</strong> du PL et de
+                Cash et Stock, des deux bornes, faute de donnee fiable.
+            </div>
+            <div class="table-responsive"><table class="table table-sm mb-0">
+                <thead><tr><th>Point de vente</th><th>Produit</th>
+                    <th class="text-end">Quantite</th></tr></thead><tbody>` +
+            negatifs.map((n) => `<tr>
+                    <td>${escapeHtml(n.point_de_vente || '')}</td>
+                    <td>${escapeHtml(n.produit || '')}</td>
+                    <td class="text-end text-danger">${nb(n.quantite)}</td>
+                </tr>`).join('') +
+            '</tbody></table></div>';
+    }
+
+    const corps = document.getElementById('rec-info-stock-auto-corps');
+    if (corps) corps.innerHTML = html;
+}
+
 /**
  * Export "detail parage": bovin et ovin uniquement, EN KILOS, jour par jour.
  *

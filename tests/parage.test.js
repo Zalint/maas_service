@@ -464,3 +464,63 @@ describe('exclusions insensibles a la casse et aux accents', () => {
         expect(r.M).toBeUndefined();
     });
 });
+
+describe('stock derive: exclusion asymetrique', () => {
+    const cat = (n) => (/boeuf/i.test(n) ? 'bovin' : null);
+
+    // Le stock entre sous "Boeuf" (la carcasse) et sort sous "Boeuf en detail"
+    // (les decoupes). Le stock des decoupes est CALCULE a partir de leurs
+    // ventes: le compter au denominateur ajouterait ces ventes au theorique
+    // alors qu'elles sont deja au numerateur.
+    test('le stock derive sort du theorique, ses ventes restent au numerateur', () => {
+        const args = {
+            stocksMatin: [{ pointVente: 'M', produit: 'Boeuf', quantite: 100 }],
+            stocksSoir: [
+                { pointVente: 'M', produit: 'Boeuf', quantite: 20 },
+                // Stock calcule: 0 + 0 - 60 ventes = -60
+                { pointVente: 'M', produit: 'Boeuf en détail', quantite: -60 }
+            ],
+            transferts: [],
+            ventes: [{ pointVente: 'M', produit: 'Boeuf en détail', nombre: 60 }],
+            categorieDe: cat,
+            stockDerive: new Set(['Boeuf en détail'])
+        };
+        const r = calculerParage(args).M.bovin;
+        // Theorique = 100 - 20 = 80, uniquement la carcasse reellement comptee.
+        expect(r.theorique).toBe(80);
+        expect(r.vendu).toBe(60);
+        expect(r.perte).toBeCloseTo(1 - 60 / 80, 10);   // 25% de parage
+    });
+
+    // Sans l'exclusion, le -60 du stock derive AJOUTE 60 au theorique et le
+    // parage passe de 25% a 57%: c'est le defaut que l'exclusion corrige.
+    test('sans exclusion, le theorique double-compte les ventes', () => {
+        const base = {
+            stocksMatin: [{ pointVente: 'M', produit: 'Boeuf', quantite: 100 }],
+            stocksSoir: [
+                { pointVente: 'M', produit: 'Boeuf', quantite: 20 },
+                { pointVente: 'M', produit: 'Boeuf en détail', quantite: -60 }
+            ],
+            transferts: [],
+            ventes: [{ pointVente: 'M', produit: 'Boeuf en détail', nombre: 60 }],
+            categorieDe: cat
+        };
+        const r = calculerParage(base).M.bovin;
+        expect(r.theorique).toBe(140);                  // 100 - 20 - (-60)
+        expect(r.perte).toBeCloseTo(1 - 60 / 140, 10);  // ~57%, fausse
+    });
+
+    test('un produit a stock derive garde sa categorie et ses ventes', () => {
+        const r = calculerParage({
+            stocksMatin: [],
+            stocksSoir: [{ pointVente: 'M', produit: 'Boeuf en détail', quantite: -10 }],
+            transferts: [],
+            ventes: [{ pointVente: 'M', produit: 'Boeuf en détail', nombre: 10 }],
+            categorieDe: cat,
+            stockDerive: new Set(['Boeuf en détail'])
+        }).M.bovin;
+        expect(r.vendu).toBe(10);
+        expect(r.theorique).toBe(0);
+        expect(r.ratio).toBeNull();   // rien de mesurable: pas de stock reel
+    });
+});
