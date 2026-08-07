@@ -1442,7 +1442,9 @@
                     await apiCall(`/api/admin/config/produits/${id}`, 'PUT', data);
                     showToast('Produit mis à jour', 'success');
                 } else {
-                    await apiCall('/api/admin/config/produits', 'POST', data);
+                    // '/produits/creer' et non '/produits': ce dernier attend une
+                    // configuration en masse { produits: {...} } et repondait 400.
+                    await apiCall('/api/admin/config/produits/creer', 'POST', data);
                     showToast('Produit créé', 'success');
                 }
                 closeModal('produit-modal');

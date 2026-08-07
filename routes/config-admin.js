@@ -1430,10 +1430,20 @@ router.get('/produits/:id', requireAdmin, async (req, res) => {
  * POST /api/admin/produits
  * Crée un nouveau produit
  */
-router.post('/produits', requireAdmin, async (req, res) => {
+/**
+ * POST /api/admin/config/produits/creer
+ * Cree UN produit. A ne pas confondre avec POST /produits, qui enregistre une
+ * configuration en masse et attend un corps { produits: {...} }.
+ *
+ * Les deux partageaient le chemin '/produits'. Express retient la premiere
+ * declaration: celle-ci n'etait jamais atteinte, et l'ecran Configuration
+ * recevait 400 'Configuration produits invalide' a chaque creation - son corps
+ * ne portait pas de cle `produits`. Creer un produit y etait impossible.
+ */
+router.post('/produits/creer', requireAdmin, async (req, res) => {
   try {
     const { nom, categorie_id, type_catalogue, prix_defaut, prix_alternatifs } = req.body;
-    
+
     if (!nom || !type_catalogue) {
       return res.status(400).json({ success: false, error: 'Nom et type_catalogue requis' });
     }
