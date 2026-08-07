@@ -254,6 +254,45 @@ const PRODUITS_SIMULATION = [
 // plusieurs prix pour annuler le resultat admet une infinite de solutions.
 const PRODUIT_EQUILIBRE = 'Boeuf en détail';
 
+/**
+ * Normalise une date saisie vers YYYY-MM-DD, ou null si la forme est inconnue.
+ * Ecrite UNE fois: elle existait en trois exemplaires identiques dans ce
+ * fichier, et trois copies d'une regle de format finissent par accepter trois
+ * jeux de formats differents sur la meme page.
+ */
+function parseDateVersISO(s) {
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m = String(s).match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
+/**
+ * Toutes les graphies de date couvrant [dateDebut, dateFin], jour par jour.
+ *
+ * Vente.date est un TEXTE de format mixte selon l'epoque d'insertion:
+ * YYYY-MM-DD pour les lignes recentes, DD-MM-YYYY pour les anciennes. Un
+ * BETWEEN sur des bornes ISO compare lexicographiquement et rate en silence
+ * toutes les lignes historiques - "13-05-2026" commence par '1', la borne
+ * "2026-05-01" par '2'. L'ecart avait ete mesure a 277 924 FCFA sur mai 2026.
+ *
+ * Les tenants actuels ne portent plus aucune date hors ISO, mais deux routes
+ * qui interrogent la meme table par deux chemins differents finiront par rendre
+ * deux chiffres differents. Le PL et la simulation partagent donc ce filtre.
+ */
+function graphiesDeDatesPourPeriode(dateDebut, dateFin) {
+    const dates = [];
+    const cursor = new Date(dateDebut + 'T00:00:00Z');
+    const fin = new Date(dateFin + 'T00:00:00Z');
+    while (cursor <= fin) {
+        const iso = cursor.toISOString().slice(0, 10);
+        dates.push(iso);
+        dates.push(`${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return dates;
+}
+
 const router = express.Router();
 
 // ============================================================
@@ -1272,34 +1311,33 @@ router.get('/simulation', async (req, res) => {
             });
         }
 
-        const toISO = (s) => {
-            if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-        };
         const today = new Date();
         const rawDebut = req.query.dateDebut;
         const rawFin = req.query.dateFin;
-        const dateDebut = rawDebut ? toISO(rawDebut)
+        const dateDebut = rawDebut ? parseDateVersISO(rawDebut)
             : `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
-        const dateFin = rawFin ? toISO(rawFin) : today.toISOString().slice(0, 10);
+        const dateFin = rawFin ? parseDateVersISO(rawFin) : today.toISOString().slice(0, 10);
         if ((rawDebut && !dateDebut) || (rawFin && !dateFin)) {
             return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
         }
 
-        // Les ventes sont datees en YYYY-MM-DD, contrairement aux stocks et aux
-        // transferts qui stockent DD-MM-YYYY. La comparaison de chaines suffit
-        // donc ici, et seulement ici.
+        // MEME filtre de date que le PL, via le meme helper. J'avais d'abord
+        // ecrit `date >= :debut AND date <= :fin`, en supposant que ventes.date
+        // etait toujours en ISO. C'est vrai des tenants d'aujourd'hui - verifie,
+        // zero ligne hors format sur les cinq schemas - mais la colonne est un
+        // TEXTE de format mixte, et le PL enumere deja les deux graphies pour
+        // cette raison. Deux routes qui interrogent la meme table par deux
+        // chemins differents finissent par rendre deux chiffres differents.
+        const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
         const lignes = await sequelize.query(
             `SELECT produit,
                     SUM(nombre::numeric)  AS quantite,
                     SUM(montant::numeric) AS ca,
                     COUNT(*)::int         AS nb_lignes
              FROM ventes
-             WHERE date >= :dateDebut AND date <= :dateFin
+             WHERE date IN (:dateList)
              GROUP BY produit`,
-            { type: sequelize.QueryTypes.SELECT, replacements: { dateDebut, dateFin } }
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
         );
 
         // Regroupement par nom normalise: plusieurs graphies d'un meme produit
@@ -1333,11 +1371,25 @@ router.get('/simulation', async (req, res) => {
             };
         });
 
+        // Somme de TOUTES les lignes de vente de la periode, tous produits
+        // confondus. Le client s'en sert pour verifier que le denominateur des
+        // pourcentages - le total_ventes du PL - se rapporte bien au meme
+        // perimetre que les numerateurs calcules ici.
+        //
+        // Les deux coincident aujourd'hui au franc pres. Mais le numerateur
+        // vient de cette route et le denominateur du PL: le jour ou le PL
+        // filtrera quelque chose que cette requete ne filtre pas, les
+        // pourcentages deviendront faux SANS RIEN DIRE. Renvoyer le total
+        // permet a l'ecran de s'en apercevoir plutot que d'afficher des parts
+        // qui ne somment plus.
+        const totalToutesLignes = lignes.reduce((a, l) => a + (Number(l.ca) || 0), 0);
+
         res.json({
             success: true,
             data: {
                 periode: { dateDebut, dateFin },
                 produits,
+                total_ventes_toutes_lignes: round2(totalToutesLignes),
                 produit_equilibre: PRODUIT_EQUILIBRE,
                 // Mesure, cf le commentaire d'en-tete de cette route.
                 coefficient_pl_par_franc_vendu: 1
@@ -1365,17 +1417,11 @@ router.get('/pl', async (req, res) => {
         const today = new Date();
         const defaultDebut = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
         const defaultFin = today.toISOString().slice(0, 10);
-        const toISO = (s) => {
-            if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-        };
         // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
         const rawDebut = req.query.dateDebut;
         const rawFin = req.query.dateFin;
-        const dateDebut = rawDebut ? toISO(rawDebut) : defaultDebut;
-        const dateFin = rawFin ? toISO(rawFin) : defaultFin;
+        const dateDebut = rawDebut ? parseDateVersISO(rawDebut) : defaultDebut;
+        const dateFin = rawFin ? parseDateVersISO(rawFin) : defaultFin;
         if (rawDebut && !dateDebut) {
             return res.status(400).json({ success: false, error: 'invalid dateDebut' });
         }
@@ -1423,18 +1469,7 @@ router.get('/pl', async (req, res) => {
         // GET /api/ventes contourne en filtrant cote JS apres normalisation
         // — on reproduit cette tolerance ici via Op.in enumerant les jours
         // dans les 2 formats. Indexable + correct.
-        const dateList = [];
-        {
-            const cursor = new Date(dateDebut + 'T00:00:00Z');
-            const endCursor = new Date(dateFin + 'T00:00:00Z');
-            while (cursor <= endCursor) {
-                const iso = cursor.toISOString().slice(0, 10); // YYYY-MM-DD
-                dateList.push(iso);
-                // DD-MM-YYYY (format historique).
-                dateList.push(`${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`);
-                cursor.setUTCDate(cursor.getUTCDate() + 1);
-            }
-        }
+        const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
         const ventes = await Vente.findAll({
             where: { date: { [SeqOp.in]: dateList } },
             // 'produit' est indispensable a la ventilation par famille. Une
@@ -1858,14 +1893,8 @@ router.get('/cash-stock', async (req, res) => {
         // Date (defaut: aujourd'hui).
         const today = new Date();
         const todayISO = today.toISOString().slice(0, 10);
-        const toISO = (s) => {
-            if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-        };
         const rawDate = req.query.date;
-        const dateD = rawDate ? toISO(rawDate) : todayISO;
+        const dateD = rawDate ? parseDateVersISO(rawDate) : todayISO;
         if (rawDate && !dateD) {
             return res.status(400).json({ success: false, error: 'invalid date' });
         }

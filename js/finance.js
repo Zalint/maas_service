@@ -2330,15 +2330,21 @@
         const resultEl = document.getElementById('fin-sim-result');
         if (!resultEl) return;
 
-        // La periode par defaut est celle du PL: les deux onglets parlent du
-        // meme resultat, ils doivent parler de la meme periode.
+        // La periode par DEFAUT est celle du PL - les deux onglets parlent du
+        // meme resultat - mais elle reste modifiable.
+        //
+        // Ces deux affectations etaient inconditionnelles: on ecrasait la saisie
+        // de l'utilisateur a chaque clic sur Calculer, et la requete partait sur
+        // la periode du PL. Les champs paraissaient editables, leurs valeurs
+        // revenaient toutes seules, et rien ne le signalait. Le garde `!value`
+        // est celui qu'utilise deja ensureDefaultDates juste au-dessus.
         ensureDefaultDates();
         const debutEl = document.getElementById('fin-sim-date-debut');
         const finEl = document.getElementById('fin-sim-date-fin');
         const plDebut = document.getElementById('fin-pl-date-debut');
         const plFin = document.getElementById('fin-pl-date-fin');
-        if (debutEl && plDebut && plDebut.value) debutEl.value = plDebut.value;
-        if (finEl && plFin && plFin.value) finEl.value = plFin.value;
+        if (debutEl && !debutEl.value && plDebut && plDebut.value) debutEl.value = plDebut.value;
+        if (finEl && !finEl.value && plFin && plFin.value) finEl.value = plFin.value;
 
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
@@ -2397,6 +2403,26 @@
         }), { ca: 0, cfa100: 0, effetBump: 0 });
         const partTotale = totalVentes > 0 ? (totaux.ca / totalVentes) * 100 : null;
         const fmtPct = (v) => (v === null ? '—' : v.toFixed(1) + ' %');
+        // Les quantites ne sont pas des montants, mais elles restent des
+        // nombres francais: 715,8 et non 715.8, comme partout ailleurs.
+        const fmtQte = (v) => Number(v || 0).toLocaleString('fr-FR');
+
+        // Le numerateur des pourcentages vient de /simulation, le denominateur
+        // du PL. Ils se rapportent au meme perimetre aujourd'hui - verifie au
+        // franc pres - mais rien ne le garantit demain. Si l'ecart apparait,
+        // l'ecran le dit plutot que d'afficher des parts qui ne somment plus.
+        const totalSim = Number(sim.total_ventes_toutes_lignes);
+        const ecartPerimetre = Number.isFinite(totalSim) ? Math.abs(totalSim - totalVentes) : 0;
+        const alertePerimetre = ecartPerimetre > 1
+            ? `<div class="alert alert-warning py-2 small mb-3">
+                 <i class="bi bi-exclamation-triangle"></i>
+                 Les pourcentages rapportent des ventes par produit
+                 (${esc(fmtMoney(totalSim))}) au total du PL
+                 (${esc(fmtMoney(totalVentes))}). Ces deux totaux diffèrent de
+                 ${esc(fmtMoney(ecartPerimetre))} : les parts ci-dessous ne
+                 somment pas à 100 % et sont à lire avec prudence.
+               </div>`
+            : '';
 
         const signe = (v) => (v > 0 ? '+' : (v < 0 ? '−' : ''));
         const montantSigne = (v) => `${signe(v)}${fmtMoney(Math.abs(v))}`;
@@ -2423,7 +2449,7 @@
                 <td>${esc(l.nom)}${l.graphies.length > 1
                     ? ` <i class="bi bi-info-circle text-muted" style="font-size:.8rem"
                          title="${esc(l.graphies.join(' + '))}"></i>` : ''}</td>
-                <td class="text-end">${esc(String(l.quantite))}</td>
+                <td class="text-end">${esc(fmtQte(l.quantite))}</td>
                 <td class="text-end">${esc(fmtMoney(l.prix_moyen))}</td>
                 <td class="text-end">${esc(fmtMoney(l.ca))}</td>
                 <td class="text-end fw-medium">${esc(fmtPct(l.partVentes))}</td>
@@ -2466,7 +2492,7 @@
                                         <td class="text-end fw-medium ${plActuel >= 0 ? 'text-success' : 'text-danger'}">${
                                             esc(montantSigne(plActuel))}</td></tr>
                                     <tr><td>Quantité vendue</td>
-                                        <td class="text-end">${esc(String(cible.quantite))}</td></tr>
+                                        <td class="text-end">${esc(fmtQte(cible.quantite))}</td></tr>
                                     <tr><td>Prix moyen constaté</td>
                                         <td class="text-end">${esc(fmtMoney(cible.prix_moyen))}</td></tr>
                                     <tr class="table-light fw-bold">
@@ -2488,6 +2514,7 @@
         }
 
         resultEl.innerHTML = `
+            ${alertePerimetre}
             <h6 class="fin-subheading">Sensibilité au prix de vente</h6>
             <div class="table-responsive mb-3">
                 <table class="table table-sm mb-0">
