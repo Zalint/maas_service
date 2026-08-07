@@ -1224,40 +1224,26 @@
                     const inventaireData = response.produitsInventaire || {};
                     const categoriesPerso = response.categoriesPersonnalisees || [];
                     
-                    // Convertir l'objet en tableau
-                    for (const [key, value] of Object.entries(inventaireData)) {
-                        // Vérifier si c'est une catégorie personnalisée
-                        if (categoriesPerso.includes(key) || (typeof value === 'object' && !value.prixDefault)) {
-                            // C'est une catégorie, itérer ses produits
-                            for (const [produitNom, config] of Object.entries(value)) {
-                                if (typeof config === 'object' && config.prixDefault !== undefined) {
-                                    produits.push({
-                                        nom: produitNom,
-                                        prix_defaut: config.prixDefault,
-                                        prix_alternatifs: config.alternatives || [],
-                                        mode_stock: config.mode_stock || 'manuel',
-                                        unite_stock: config.unite_stock || 'unite',
-                                        categorie_affichage: key,
-                                        prixParPointVente: Object.entries(config)
-                                            .filter(([k, v]) => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(k))
-                                            .map(([pvNom, prix]) => ({ pointVente: { nom: pvNom }, prix }))
-                                    });
-                                }
-                            }
-                        } else if (typeof value === 'object' && value.prixDefault !== undefined) {
-                            // C'est un produit au niveau racine
-                            produits.push({
-                                nom: key,
-                                prix_defaut: value.prixDefault,
-                                prix_alternatifs: value.alternatives || [],
-                                mode_stock: value.mode_stock || 'manuel',
-                                unite_stock: value.unite_stock || 'unite',
-                                categorie_affichage: null,
-                                prixParPointVente: Object.entries(value)
-                                    .filter(([k, v]) => !['prixDefault', 'alternatives', 'mode_stock', 'unite_stock'].includes(k))
-                                    .map(([pvNom, prix]) => ({ pointVente: { nom: pvNom }, prix }))
-                            });
-                        }
+                    // Structure PLATE: une entree = un produit, sa categorie est
+                    // dans son config. L'ancien code tranchait sur la cle et sur
+                    // `!value.prixDefault` - deux tests faux: un produit nomme
+                    // comme une categorie ("Autres") passait pour une categorie,
+                    // et un produit a prix ZERO aussi (0 est falsy).
+                    const CLES_RESERVEES = ['prixDefault', 'alternatives', 'mode_stock',
+                        'unite_stock', 'ventes', 'ventilation_poids', 'archived', 'categorie_affichage'];
+                    for (const [nom, config] of Object.entries(inventaireData)) {
+                        if (!config || typeof config !== 'object' || config.prixDefault === undefined) continue;
+                        produits.push({
+                            nom: nom,
+                            prix_defaut: config.prixDefault,
+                            prix_alternatifs: config.alternatives || [],
+                            mode_stock: config.mode_stock || 'manuel',
+                            unite_stock: config.unite_stock || 'unite',
+                            categorie_affichage: config.categorie_affichage || null,
+                            prixParPointVente: Object.entries(config)
+                                .filter(([k]) => !CLES_RESERVEES.includes(k))
+                                .map(([pvNom, prix]) => ({ pointVente: { nom: pvNom }, prix }))
+                        });
                     }
                 } else {
                     // Pour vente et abonnement, utiliser la route standard

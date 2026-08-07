@@ -2596,7 +2596,16 @@ async function supprimerCategorieInventaire(categorie) {
             title: 'Supprimer catégorie', okLabel: 'Supprimer', okVariant: 'danger'
         });
         if (ok) {
-            delete currentInventaireConfig[categorie];
+            // La config est PLATE: il n'existe pas de cle de categorie a
+            // supprimer. On retire les produits qui portent cette categorie.
+            // Supprimer la cle "categorie" reviendrait ici a supprimer le
+            // PRODUIT homonyme s'il en existe un - et il en existe un: "Autres".
+            Object.keys(currentInventaireConfig).forEach((nom) => {
+                const cfg = currentInventaireConfig[nom];
+                if (cfg && cfg.prixDefault !== undefined && cfg.categorie_affichage === categorie) {
+                    delete currentInventaireConfig[nom];
+                }
+            });
 
             const index = categoriesPersonnalisees.indexOf(categorie);
             if (index > -1) {
@@ -3895,9 +3904,13 @@ async function sauvegarderConfigAbonnement() {
                 categoriesPersonnalisees.push(categoryName);
                 localStorage.setItem('inventaireCategoriesPersonnalisees', JSON.stringify(categoriesPersonnalisees));
                 
-                // Créer la catégorie dans la config
-                currentInventaireConfig[categoryName] = {};
-                
+                // Rien a creer dans la config: une categorie n'y a plus
+                // d'existence propre, elle n'est qu'une valeur portee par les
+                // produits. Ecrire une cle vide ici recreerait exactement
+                // l'ambiguite produit/categorie qu'on vient de supprimer.
+                // La categorie vit dans localStorage jusqu'a ce qu'un produit
+                // la porte, puis c'est le serveur qui la renvoie.
+
                 afficherInventaireConfig();
                 document.getElementById('newInventaireCategoryName').value = '';
                 
@@ -3925,38 +3938,27 @@ async function sauvegarderConfigAbonnement() {
             const alternativesStr = document.getElementById('newInventaireAlternatives').value.trim();
             
             if (productName) {
-                // Vérifier si c'est une catégorie personnalisée
-                const categoriesPersonnalisees = JSON.parse(localStorage.getItem('inventaireCategoriesPersonnalisees') || '[]');
-                const isCustomCategory = categoriesPersonnalisees.includes(category);
-                
+                // Un seul emplacement, quelle que soit la categorie: la config
+                // est plate et la categorie est un CHAMP du produit. Il n'y a
+                // donc plus de "categorie personnalisee" a distinguer d'une
+                // categorie logique - la distinction n'existait que pour savoir
+                // ou imbriquer.
                 const productConfig = {
                     prixDefault: defaultPrice,
-                    alternatives: alternativesStr ? 
-                        alternativesStr.split(',').map(p => parseFloat(p.trim())).filter(p => !isNaN(p)) : 
+                    alternatives: alternativesStr ?
+                        alternativesStr.split(',').map(p => parseFloat(p.trim())).filter(p => !isNaN(p)) :
                         [defaultPrice],
                     mode_stock: 'manuel',
-                    unite_stock: 'unite'
+                    unite_stock: 'unite',
+                    categorie_affichage: category || null
                 };
-                
-                if (isCustomCategory) {
-                    // Pour les catégories personnalisées, stocker dans la sous-structure
-                    if (!currentInventaireConfig[category]) {
-                        currentInventaireConfig[category] = {};
-                    }
-                    if (currentInventaireConfig[category][productName]) {
-                        showToast('Ce produit existe déjà dans cette catégorie');
-                        return;
-                    }
-                    currentInventaireConfig[category][productName] = productConfig;
-                } else {
-                    // Pour les catégories logiques, stocker au niveau racine
-                    if (currentInventaireConfig[productName]) {
-                        showToast('Ce produit existe déjà');
-                        return;
-                    }
-                    currentInventaireConfig[productName] = productConfig;
+
+                if (currentInventaireConfig[productName]) {
+                    showToast('Ce produit existe déjà');
+                    return;
                 }
-                
+                currentInventaireConfig[productName] = productConfig;
+
                 afficherInventaireConfig();
                 
                 // Réinitialiser le formulaire

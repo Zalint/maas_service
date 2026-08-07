@@ -606,19 +606,19 @@ router.get('/produits-inventaire', requireAuthenticated, async (req, res) => {
         }
       }
       
-      // Si le produit a une catégorie d'affichage personnalisée, le placer dedans
+      // Structure PLATE: une entree par produit, la categorie voyage dans le
+      // config (cf. categorie_affichage ci-dessus).
+      //
+      // L'imbrication par categorie a ete retiree parce qu'elle rendait le
+      // payload AMBIGU: une cle pouvait etre un nom de produit ou un nom de
+      // categorie, et ce depot contient les deux fois "Autres". Les configs se
+      // melangeaient en un objet hybride, et le POST - qui tranche sur la
+      // presence de prixDefault - traitait alors 52 produits sur 122: les 70
+      // ranges sous "Autres" etaient ignores a CHAQUE sauvegarde, sans erreur.
       if (produit.categorie_affichage) {
-        const catName = produit.categorie_affichage;
-        categoriesPersonnalisees.add(catName);
-        
-        if (!inventaireResult[catName]) {
-          inventaireResult[catName] = {};
-        }
-        inventaireResult[catName][produit.nom] = config;
-      } else {
-        // Produit sans catégorie personnalisée - au niveau racine
-        inventaireResult[produit.nom] = config;
+        categoriesPersonnalisees.add(produit.categorie_affichage);
       }
+      inventaireResult[produit.nom] = config;
     }
     
     console.log('📋 GET /api/admin/config/produits-inventaire - Produits:', produits.length, '- Catégories perso:', [...categoriesPersonnalisees]);
@@ -849,9 +849,26 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
     
     let propagated = 0;
 
-    // Fonction helper pour traiter un produit
-    async function traiterProduit(produitName, config, categorieAffichage = null) {
+    // Fonction helper pour traiter un produit.
+    //
+    // categorieCle est la categorie DEDUITE DE L'IMBRICATION (forme historique
+    // { Categorie: { Produit: config } }). Elle ne sert plus que de repli: la
+    // categorie est desormais portee par le produit lui-meme, dans son config.
+    //
+    // Cette distinction n'est pas cosmetique. Tant que la categorie ne venait
+    // que de la cle, un produit poste a la racine se voyait ecrire
+    // categorie_affichage = NULL en base (cf. updatePayload plus bas), en
+    // silence et avec success:true. Un client qui envoie une structure plate
+    // effacait donc la categorie de TOUS les produits d'un coup.
+    async function traiterProduit(produitName, config, categorieCle = null) {
       if (typeof config !== 'object' || config.prixDefault === undefined) return;
+
+      // Le champ present sur le produit fait autorite; s'il est absent (ancien
+      // client), on retombe sur la cle d'imbrication. Un champ present mais
+      // vide vaut "pas de categorie" et doit pouvoir en effacer une.
+      const categorieAffichage = Object.prototype.hasOwnProperty.call(config, 'categorie_affichage')
+        ? (config.categorie_affichage || null)
+        : categorieCle;
 
       const prixDefaut = config.prixDefault || 0;
       const alternatives = config.alternatives || [];
@@ -990,12 +1007,15 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       }
     }
     
+    // Le GET emet desormais une structure PLATE. Cette boucle accepte encore la
+    // forme imbriquee pour ne pas casser un onglet laisse ouvert avant le
+    // deploiement, ou un client tiers: la cle sert alors de repli de categorie.
     for (const [key, config] of Object.entries(produitsInventaire)) {
       if (typeof config !== 'object') continue;
-      
+
       // Vérifier si c'est un produit direct (a prixDefault) ou une catégorie personnalisée
       if (config.prixDefault !== undefined) {
-        // C'est un produit direct (catégorie logique)
+        // Produit: sa categorie est dans son config, pas dans la cle.
         await traiterProduit(key, config, null);
       } else {
         // C'est une catégorie personnalisée - traiter les sous-produits
