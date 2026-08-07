@@ -6290,6 +6290,172 @@ function initModalProduitUnifie() {
     if (addBtn) {
         addBtn.addEventListener('click', () => ouvrirModalProduitUnifie('add'));
     }
+
+    // Bouton "Détecter les doublons", juste a cote
+    const dblBtn = document.getElementById('recherche-doublons-btn');
+    if (dblBtn) {
+        dblBtn.addEventListener('click', ouvrirModalDoublons);
+    }
+}
+
+// ============================================================
+// DETECTION ET FUSION DES DOUBLONS
+// ============================================================
+//
+// Un doublon = le meme produit saisi deux fois dans le MEME catalogue sous
+// deux orthographes ("Citron Liquide" / "CITRON LIQUIDE"). Le meme nom present
+// en Generaux ET en Inventaire n'en est pas un: c'est le modele du catalogue.
+//
+// La fusion est destructive, donc rien n'est applique en masse: l'utilisateur
+// choisit la graphie a conserver, groupe par groupe, en voyant d'abord combien
+// de lignes chaque orthographe porte.
+
+let _doublonsCache = null;
+
+async function chargerDoublons() {
+    const resp = await fetch('/api/admin/config/produits/doublons', { credentials: 'include' });
+    const data = await resp.json();
+    if (!resp.ok || !data.success) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    _doublonsCache = data;
+    return data;
+}
+
+function renderDoublons() {
+    const zone = document.getElementById('doublons-contenu');
+    if (!zone || !_doublonsCache) return;
+    const groupes = _doublonsCache.groupes || [];
+
+    if (!groupes.length) {
+        zone.innerHTML = `
+            <div class="text-center py-4">
+                <i class="bi bi-check-circle text-success" style="font-size:2rem"></i>
+                <p class="mt-2 mb-0">Aucun doublon détecté dans les deux catalogues.</p>
+            </div>`;
+        return;
+    }
+
+    const libelleCatalogue = (c) => c === 'vente' ? 'Généraux'
+        : (c === 'inventaire' ? 'Inventaire' : c);
+
+    zone.innerHTML = groupes.map((g, i) => {
+        const lignes = g.variantes.map((v) => {
+            const detail = Object.entries(v.references)
+                .map(([t, n]) => `${n} ${t}`).join(', ') || 'aucune référence';
+            const extra = [];
+            if (v.prix_pv) extra.push(`${v.prix_pv} prix par PV`);
+            if (v.historique) extra.push(`${v.historique} historique`);
+            const suggere = v.nom === g.suggestion;
+            return `
+                <label class="list-group-item d-flex align-items-start gap-2">
+                    <input class="form-check-input mt-1 flex-shrink-0" type="radio"
+                           name="doublon-${i}" value="${escAttr(v.nom)}" ${suggere ? 'checked' : ''}>
+                    <span class="flex-grow-1">
+                        <span class="fw-semibold">${escAttr(v.nom)}</span>
+                        ${suggere ? '<span class="badge bg-success ms-1">suggérée</span>' : ''}
+                        ${v.categorie ? `<span class="badge bg-light text-dark ms-1">${escAttr(v.categorie)}</span>` : ''}
+                        <br><small class="text-muted">${escAttr(detail)}${extra.length ? ' · ' + escAttr(extra.join(', ')) : ''}</small>
+                    </span>
+                    <span class="badge bg-secondary flex-shrink-0">${v.total_references}</span>
+                </label>`;
+        }).join('');
+
+        return `
+            <div class="card mb-3" data-doublon-index="${i}">
+                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                    <span>
+                        <span class="fw-semibold">${escAttr(g.variantes[0].nom)}</span>
+                        <span class="badge bg-info text-dark ms-2">${libelleCatalogue(g.catalogue)}</span>
+                        ${g.categories_divergentes
+                            ? '<span class="badge bg-warning text-dark ms-1" title="Les deux lignes ne portent pas la même catégorie">catégories divergentes</span>'
+                            : ''}
+                    </span>
+                    <button type="button" class="btn btn-sm btn-danger"
+                            data-fusionner="${i}">Fusionner</button>
+                </div>
+                <div class="list-group list-group-flush">${lignes}</div>
+            </div>`;
+    }).join('');
+
+    zone.querySelectorAll('[data-fusionner]').forEach((btn) => {
+        btn.addEventListener('click', () => fusionnerDoublon(Number(btn.dataset.fusionner), btn));
+    });
+}
+
+async function ouvrirModalDoublons() {
+    const el = document.getElementById('doublonsModal');
+    if (!el) return;
+    const zone = document.getElementById('doublons-contenu');
+    if (zone) {
+        zone.innerHTML = `
+            <div class="text-center text-muted py-4">
+                <div class="spinner-border spinner-border-sm" role="status"></div>
+                Analyse du catalogue…
+            </div>`;
+    }
+    new bootstrap.Modal(el).show();
+    try {
+        await chargerDoublons();
+        renderDoublons();
+        majBadgeDoublons();
+    } catch (e) {
+        if (zone) {
+            zone.innerHTML = `<div class="alert alert-danger mb-0">Analyse impossible : ${escAttr(e.message)}</div>`;
+        }
+    }
+}
+
+async function fusionnerDoublon(index, bouton) {
+    const g = (_doublonsCache && _doublonsCache.groupes || [])[index];
+    if (!g) return;
+    const carte = document.querySelector(`[data-doublon-index="${index}"]`);
+    const choisi = carte && carte.querySelector('input[type="radio"]:checked');
+    if (!choisi) { showToast('Choisissez la graphie à conserver'); return; }
+    const canonique = choisi.value;
+    const perdues = g.variantes.filter((v) => v.nom !== canonique);
+    const aDeplacer = perdues.reduce((a, v) => a + v.total_references, 0);
+
+    const ok = await showConfirmModal(
+        `Conserver « ${canonique} » et y rattacher ${perdues.map((v) => `« ${v.nom} »`).join(', ')} ?\n\n`
+        + `${aDeplacer} ligne(s) de stock, ventes et transferts seront renommées, `
+        + `puis ${perdues.length} ligne(s) produit supprimée(s). Cette action est définitive.`,
+        { title: 'Fusionner les doublons', okLabel: 'Fusionner', okVariant: 'danger' });
+    if (!ok) return;
+
+    bouton.disabled = true;
+    try {
+        const resp = await fetch('/api/admin/config/produits/doublons/fusionner', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cle: g.cle, catalogue: g.catalogue, canonique })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || `HTTP ${resp.status}`);
+
+        const detail = Object.entries(data.deplacements || {})
+            .map(([t, n]) => `${n} ${t}`).join(', ');
+        showToast(`« ${canonique} » conservé${detail ? ' — ' + detail : ''}`);
+
+        await chargerDoublons();
+        renderDoublons();
+        majBadgeDoublons();
+        // Le catalogue a change: on recharge les deux configs et la grille.
+        await Promise.all([chargerConfigProduits(), chargerConfigInventaire()]);
+        if (typeof reconstruireFlatRecherche === 'function') reconstruireFlatRecherche();
+        if (typeof renderRechercheGrid === 'function') renderRechercheGrid();
+    } catch (e) {
+        showToast(`Fusion impossible : ${e.message}`);
+        bouton.disabled = false;
+    }
+}
+
+function majBadgeDoublons() {
+    const badge = document.getElementById('recherche-doublons-badge');
+    if (!badge) return;
+    const n = (_doublonsCache && _doublonsCache.groupes || []).length;
+    badge.textContent = String(n);
+    badge.style.display = n > 0 ? '' : 'none';
 }
 
 if (document.readyState === 'loading') {

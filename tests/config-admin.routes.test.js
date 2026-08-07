@@ -555,6 +555,58 @@ describe('Contrat produitsInventaire (structure plate)', () => {
     });
 });
 
+// =============== Detection des doublons ===============
+//
+// Le risque principal ici n'est pas le calcul, c'est l'ORDRE DE DECLARATION:
+// '/produits/doublons' matche '/produits/:id', et Express retient la premiere
+// route qui correspond. Declaree apres, la detection renverrait silencieusement
+// la reponse de "recupere le produit d'id 'doublons'". Ce test echoue si
+// quelqu'un remonte /produits/:id au-dessus.
+describe('GET /api/admin/config/produits/doublons', () => {
+    const { sequelize } = require('../db');
+
+    beforeEach(() => { sequelize.query.mockReset(); });
+
+    test("n'est pas captee par la route /produits/:id", async () => {
+        sequelize.query
+            .mockResolvedValueOnce([])   // SELECT sur produits: catalogue vide
+            .mockResolvedValueOnce([]);  // information_schema: tables presentes
+
+        const res = await request(makeApp()).get('/api/admin/config/produits/doublons');
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ success: true, groupes: [], tables: [] });
+        // La route /produits/:id passe par Produit.findByPk; si elle avait
+        // repondu, ce mock aurait ete sollicite.
+        expect(mockProduit.findByPk).not.toHaveBeenCalled();
+    });
+
+    test('catalogue sans doublon: groupes vide, jamais une erreur', async () => {
+        sequelize.query
+            .mockResolvedValueOnce([
+                { id: 1, nom: 'Boeuf', type_catalogue: 'inventaire', categorie_affichage: 'Bovin', archived: false, prix_defaut: 4000 },
+                { id: 2, nom: 'Boeuf', type_catalogue: 'vente', categorie_affichage: null, archived: false, prix_defaut: 4200 }
+            ])
+            .mockResolvedValueOnce([{ table_name: 'stocks' }]);
+
+        const res = await request(makeApp()).get('/api/admin/config/produits/doublons');
+
+        expect(res.status).toBe(200);
+        // Meme nom dans DEUX catalogues: c'est le modele normal, pas un doublon.
+        expect(res.body.groupes).toEqual([]);
+    });
+});
+
+describe('POST /api/admin/config/produits/doublons/fusionner', () => {
+    test('400 quand le corps est incomplet', async () => {
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits/doublons/fusionner')
+            .send({ cle: 'citron liquide' });   // ni catalogue ni canonique
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+    });
+});
+
 // =============== POST /produits/:nom/reattach ===============
 describe('POST /api/admin/config/produits/:nom/reattach', () => {
     const { sequelize } = require('../db');
