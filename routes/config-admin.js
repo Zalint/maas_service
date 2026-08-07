@@ -15,6 +15,34 @@ const configService = require('../db/config-service');
 const { sequelize } = require('../db');
 const { User, PointVente, Category, InventaireCategory, Produit, PrixPointVente, PrixHistorique } = require('../db/models');
 const { Op } = require('sequelize');
+// La MEME normalisation que le parage, importee et non recopiee.
+const { normaliserNom } = require('../lib/parage');
+
+// Tables qui designent un produit par son NOM, sans cle etrangere. Rien
+// n'empeche donc de supprimer ou renommer un produit en laissant ces lignes
+// pointer dans le vide - c'est ainsi qu'un "OIGNON BLANC" traine 30 lignes de
+// stock sans produit au catalogue. Toute fusion doit les renommer TOUTES.
+//
+// Liste fermee et ecrite en dur: ces noms partent dans du SQL, ils ne doivent
+// jamais venir d'une entree utilisateur. Ils sont recoupes avec
+// information_schema au moment de l'appel, les tenants n'ayant pas tous le
+// meme schema.
+const TABLES_PRODUIT_PAR_NOM = [
+    'stocks', 'transferts', 'ventes', 'pack_compositions', 'precommandes',
+    'fournisseur_prix', 'prix_achat_history', 'prix_vente_history',
+    'prix_vente_cdc_history'
+];
+
+async function tablesProduitPresentes() {
+    const rows = await sequelize.query(
+        `SELECT table_name FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND column_name = 'produit'
+           AND table_name IN (:tables)`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { tables: TABLES_PRODUIT_PAR_NOM } }
+    );
+    return rows.map((r) => r.table_name);
+}
 
 // Cles "reservees" du config produit inventaire qui ne doivent jamais
 // etre traitees comme un prix par point de vente. Le filtre est applique
@@ -588,9 +616,16 @@ router.get('/produits-inventaire', requireAuthenticated, async (req, res) => {
         ventes: Array.isArray(produit.ventes) ? produit.ventes : [],
         ventilation_poids: !!produit.ventilation_poids,
         // Soft-delete flag pour la transition (cf. GET /produits ci-dessus).
-        archived: !!produit.archived
+        archived: !!produit.archived,
+        // La categorie voyage DANS la config du produit, et non plus seulement
+        // comme cle d'imbrication. Un produit et une categorie pouvaient porter
+        // le meme nom - il existe un produit "Autres" et une categorie "Autres" -
+        // et l'imbrication seule les ecrasait l'un l'autre: le client tranchait
+        // "c'est un produit" et les 74 produits de la categorie disparaissaient
+        // de l'ecran. Le champ explicite leve l'ambiguite.
+        categorie_affichage: produit.categorie_affichage || null
       };
-      
+
       if (produit.prixParPointVente) {
         for (const prix of produit.prixParPointVente) {
           if (prix.pointVente) {
@@ -599,19 +634,19 @@ router.get('/produits-inventaire', requireAuthenticated, async (req, res) => {
         }
       }
       
-      // Si le produit a une catégorie d'affichage personnalisée, le placer dedans
+      // Structure PLATE: une entree par produit, la categorie voyage dans le
+      // config (cf. categorie_affichage ci-dessus).
+      //
+      // L'imbrication par categorie a ete retiree parce qu'elle rendait le
+      // payload AMBIGU: une cle pouvait etre un nom de produit ou un nom de
+      // categorie, et ce depot contient les deux fois "Autres". Les configs se
+      // melangeaient en un objet hybride, et le POST - qui tranche sur la
+      // presence de prixDefault - traitait alors 52 produits sur 122: les 70
+      // ranges sous "Autres" etaient ignores a CHAQUE sauvegarde, sans erreur.
       if (produit.categorie_affichage) {
-        const catName = produit.categorie_affichage;
-        categoriesPersonnalisees.add(catName);
-        
-        if (!inventaireResult[catName]) {
-          inventaireResult[catName] = {};
-        }
-        inventaireResult[catName][produit.nom] = config;
-      } else {
-        // Produit sans catégorie personnalisée - au niveau racine
-        inventaireResult[produit.nom] = config;
+        categoriesPersonnalisees.add(produit.categorie_affichage);
       }
+      inventaireResult[produit.nom] = config;
     }
     
     console.log('📋 GET /api/admin/config/produits-inventaire - Produits:', produits.length, '- Catégories perso:', [...categoriesPersonnalisees]);
@@ -842,9 +877,26 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
     
     let propagated = 0;
 
-    // Fonction helper pour traiter un produit
-    async function traiterProduit(produitName, config, categorieAffichage = null) {
+    // Fonction helper pour traiter un produit.
+    //
+    // categorieCle est la categorie DEDUITE DE L'IMBRICATION (forme historique
+    // { Categorie: { Produit: config } }). Elle ne sert plus que de repli: la
+    // categorie est desormais portee par le produit lui-meme, dans son config.
+    //
+    // Cette distinction n'est pas cosmetique. Tant que la categorie ne venait
+    // que de la cle, un produit poste a la racine se voyait ecrire
+    // categorie_affichage = NULL en base (cf. updatePayload plus bas), en
+    // silence et avec success:true. Un client qui envoie une structure plate
+    // effacait donc la categorie de TOUS les produits d'un coup.
+    async function traiterProduit(produitName, config, categorieCle = null) {
       if (typeof config !== 'object' || config.prixDefault === undefined) return;
+
+      // Le champ present sur le produit fait autorite; s'il est absent (ancien
+      // client), on retombe sur la cle d'imbrication. Un champ present mais
+      // vide vaut "pas de categorie" et doit pouvoir en effacer une.
+      const categorieAffichage = Object.prototype.hasOwnProperty.call(config, 'categorie_affichage')
+        ? (config.categorie_affichage || null)
+        : categorieCle;
 
       const prixDefaut = config.prixDefault || 0;
       const alternatives = config.alternatives || [];
@@ -983,12 +1035,15 @@ router.post('/produits-inventaire', requireAdmin, async (req, res) => {
       }
     }
     
+    // Le GET emet desormais une structure PLATE. Cette boucle accepte encore la
+    // forme imbriquee pour ne pas casser un onglet laisse ouvert avant le
+    // deploiement, ou un client tiers: la cle sert alors de repli de categorie.
     for (const [key, config] of Object.entries(produitsInventaire)) {
       if (typeof config !== 'object') continue;
-      
+
       // Vérifier si c'est un produit direct (a prixDefault) ou une catégorie personnalisée
       if (config.prixDefault !== undefined) {
-        // C'est un produit direct (catégorie logique)
+        // Produit: sa categorie est dans son config, pas dans la cle.
         await traiterProduit(key, config, null);
       } else {
         // C'est une catégorie personnalisée - traiter les sous-produits
@@ -1165,6 +1220,175 @@ router.post('/produits-abonnement', requireAdmin, async (req, res) => {
   }
 });
 
+// ATTENTION A L'ORDRE. GET '/produits/doublons' doit rester AVANT
+// router.get('/produits/:id'): Express retient la premiere route qui
+// correspond, et '/produits/doublons' matche '/produits/:id' avec
+// id = 'doublons'. Declaree apres, elle ne serait jamais atteinte - c'est
+// deja le sort de GET '/produits/by-name', declaree bien plus bas.
+//
+// Le POST '/produits/doublons/fusionner' n'a pas ce probleme: la seule route
+// POST a trois segments declaree avant lui est '/produits/:nom/reattach', et
+// son troisieme segment est le litteral 'reattach'. Il est reste plus bas
+// dans le fichier, apres les routes /produits/:id.
+/**
+ * GET /api/admin/config/produits/doublons
+ *
+ * Detecte les produits en double: meme nom a la normalisation pres (casse et
+ * accents ignores) DANS LE MEME catalogue. Lecture seule.
+ *
+ * Attention a ce qui n'est PAS un doublon: un meme nom present en 'vente' ET
+ * en 'inventaire' est le modele normal de ce catalogue - le produit vendu et
+ * la matiere stockee portent le meme nom. Les confondre proposerait de
+ * fusionner 117 paires parfaitement saines.
+ */
+router.get('/produits/doublons', requireAdmin, async (req, res) => {
+  try {
+    const produits = await sequelize.query(
+      `SELECT id, nom, type_catalogue, categorie_affichage, archived,
+              COALESCE(prix_defaut, 0) AS prix_defaut
+       FROM produits ORDER BY id`,
+      { type: sequelize.QueryTypes.SELECT }
+    );
+
+    // Regroupement par nom normalise PUIS par catalogue. Deux niveaux de Map
+    // plutot qu'une cle composite: pas de separateur a choisir, donc pas de
+    // caractere a redouter dans un nom de produit.
+    const parNom = new Map();
+    for (const p of produits) {
+      if (p.archived) continue;
+      const cle = normaliserNom(p.nom);
+      if (!parNom.has(cle)) parNom.set(cle, new Map());
+      const parCatalogue = parNom.get(cle);
+      if (!parCatalogue.has(p.type_catalogue)) parCatalogue.set(p.type_catalogue, []);
+      parCatalogue.get(p.type_catalogue).push(p);
+    }
+    const enDouble = [];
+    for (const parCatalogue of parNom.values()) {
+      for (const rows of parCatalogue.values()) {
+        if (rows.length > 1) enDouble.push(rows);
+      }
+    }
+
+    if (!enDouble.length) {
+      return res.json({ success: true, groupes: [], tables: await tablesProduitPresentes() });
+    }
+
+    // Les graphies distinctes concernees, tous groupes confondus. Le comptage
+    // des references se fait par GRAPHIE et non par ligne produit: les tables
+    // ci-dessous ne connaissent que le nom, pas le catalogue.
+    const graphies = [...new Set(enDouble.flatMap((rows) => rows.map((r) => r.nom)))];
+
+    const tables = await tablesProduitPresentes();
+    const refs = new Map();   // graphie -> { table: n }
+    for (const table of tables) {
+      const rows = await sequelize.query(
+        `SELECT produit, COUNT(*)::int AS n FROM "${table}"
+         WHERE produit IN (:graphies) GROUP BY produit`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { graphies } }
+      );
+      for (const r of rows) {
+        if (!refs.has(r.produit)) refs.set(r.produit, {});
+        if (r.n > 0) refs.get(r.produit)[table] = r.n;
+      }
+    }
+
+    // Liens portes par la colonne ventes (TEXT[]) des produits d'inventaire.
+    const liens = await sequelize.query(
+      `SELECT v AS graphie, COUNT(*)::int AS n
+       FROM produits p, unnest(p.ventes) AS v
+       WHERE v IN (:graphies) GROUP BY v`,
+      { type: sequelize.QueryTypes.SELECT, replacements: { graphies } }
+    );
+    for (const l of liens) {
+      if (!refs.has(l.graphie)) refs.set(l.graphie, {});
+      refs.get(l.graphie)['liens ventes'] = l.n;
+    }
+
+    // Prix par point de vente et historique: rattaches par produit_id.
+    const parId = await sequelize.query(
+      `SELECT p.id,
+              (SELECT COUNT(*)::int FROM prix_point_vente pv WHERE pv.produit_id = p.id) AS prix_pv,
+              (SELECT COUNT(*)::int FROM prix_historique ph WHERE ph.produit_id = p.id) AS historique
+       FROM produits p WHERE p.id IN (:ids)`,
+      {
+        type: sequelize.QueryTypes.SELECT,
+        replacements: { ids: enDouble.flatMap((rows) => rows.map((r) => r.id)) }
+      }
+    );
+    const parIdMap = new Map(parId.map((r) => [r.id, r]));
+
+    const resultat = enDouble.map((rows) => {
+      const catalogue = rows[0].type_catalogue;
+      const variantes = rows.map((r) => {
+        const ref = refs.get(r.nom) || {};
+        const idInfo = parIdMap.get(r.id) || { prix_pv: 0, historique: 0 };
+        return {
+          id: r.id,
+          nom: r.nom,
+          categorie: r.categorie_affichage || null,
+          prix: Number(r.prix_defaut) || 0,
+          references: ref,
+          total_references: Object.values(ref).reduce((a, b) => a + b, 0),
+          prix_pv: idInfo.prix_pv,
+          historique: idInfo.historique
+        };
+      });
+      // Suggestion: la graphie la plus referencee. A egalite, la plus ancienne
+      // (id le plus petit), qui est celle que les saisies historiques ont
+      // utilisee. C'est une SUGGESTION - le choix reste a l'utilisateur.
+      const suggestion = variantes.slice().sort((a, b) =>
+        (b.total_references - a.total_references) || (a.id - b.id))[0].nom;
+      return {
+        cle: normaliserNom(rows[0].nom),
+        catalogue,
+        variantes,
+        suggestion,
+        categories_divergentes:
+          new Set(variantes.map((v) => v.categorie || '')).size > 1
+      };
+    }).sort((a, b) => a.cle.localeCompare(b.cle) || a.catalogue.localeCompare(b.catalogue));
+
+    res.json({ success: true, groupes: resultat, tables });
+  } catch (error) {
+    console.error('Erreur detection doublons:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/config/produits/by-name
+ * Récupère un produit par nom et type_catalogue
+ */
+router.get('/produits/by-name', requireAdmin, async (req, res) => {
+  try {
+    const { nom, type_catalogue } = req.query;
+    
+    if (!nom || !type_catalogue) {
+      return res.status(400).json({ success: false, error: 'Nom et type_catalogue requis' });
+    }
+    
+    const produit = await Produit.findOne({
+      where: { nom, type_catalogue },
+      include: [
+        { model: Category, as: 'categorie' },
+        {
+          model: PrixPointVente,
+          as: 'prixParPointVente',
+          include: [{ model: PointVente, as: 'pointVente' }]
+        }
+      ]
+    });
+    
+    if (!produit) {
+      return res.status(404).json({ success: false, error: 'Produit non trouvé' });
+    }
+    
+    res.json({ success: true, data: produit });
+  } catch (error) {
+    console.error('Erreur récupération produit par nom:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 /**
  * GET /api/admin/produits/:id
  * Récupère un produit avec son historique de prix
@@ -1281,6 +1505,132 @@ router.put('/produits/:id', requireAdmin, async (req, res) => {
  * Accepte les paramètres via query string OU body
  * ⚠️ IMPORTANT: Cette route DOIT être AVANT /produits/:id pour éviter le conflit de paramètres
  */
+/**
+ * POST /api/admin/config/produits/doublons/fusionner
+ * Body: { cle, catalogue, canonique }
+ *
+ * Fusionne un groupe vers la graphie canonique. Destructif et transactionnel:
+ * soit tout passe, soit rien. La reponse detaille CE QUI A ETE DEPLACE, ligne
+ * par table - une fusion qui ne dit pas ce qu'elle a bouge est invérifiable.
+ */
+router.post('/produits/doublons/fusionner', requireAdmin, async (req, res) => {
+  const { cle, catalogue, canonique } = req.body || {};
+  if (!cle || !catalogue || !canonique) {
+    return res.status(400).json({ success: false, error: 'cle, catalogue et canonique requis' });
+  }
+
+  const t = await sequelize.transaction();
+  try {
+    const rows = await sequelize.query(
+      `SELECT id, nom FROM produits
+       WHERE type_catalogue = :catalogue AND archived = false ORDER BY id`,
+      { type: sequelize.QueryTypes.SELECT, replacements: { catalogue }, transaction: t }
+    );
+    const groupe = rows.filter((r) => normaliserNom(r.nom) === normaliserNom(cle));
+
+    if (groupe.length < 2) {
+      await t.rollback();
+      return res.status(404).json({ success: false, error: 'Groupe introuvable ou deja fusionne' });
+    }
+    if (!groupe.some((r) => r.nom === canonique)) {
+      await t.rollback();
+      return res.status(400).json({
+        success: false,
+        error: `"${canonique}" n'est pas une des graphies du groupe`
+      });
+    }
+
+    const aFusionner = groupe.filter((r) => r.nom !== canonique);
+    const autresGraphies = [...new Set(aFusionner.map((r) => r.nom))];
+    const deplacements = {};
+
+    // 1. Les tables qui referencent par NOM. Elles ignorent le catalogue: si
+    //    la meme graphie existe aussi dans un autre catalogue, ce renommage la
+    //    sert aussi, et c'est voulu - le nom est la seule cle qu'elles ont.
+    if (autresGraphies.length) {
+      for (const table of await tablesProduitPresentes()) {
+        const [, meta] = await sequelize.query(
+          `UPDATE "${table}" SET produit = :canonique WHERE produit IN (:autres)`,
+          { replacements: { canonique, autres: autresGraphies }, transaction: t }
+        );
+        const n = (meta && meta.rowCount) || 0;
+        if (n) deplacements[table] = n;
+      }
+
+      // 2. Les liens ventes portes par les produits d'inventaire.
+      //
+      // La colonne est character varying(255)[], pas text[]: sans cast explicite
+      // des DEUX cotes, l'operateur && ne trouve aucune signature et Postgres
+      // rejette la requete ("operator does not exist: character varying[] && text[]").
+      const [, metaLiens] = await sequelize.query(
+        `UPDATE produits SET ventes = (
+            SELECT ARRAY(SELECT DISTINCT CASE WHEN v = ANY(ARRAY[:autres]::text[])
+                                              THEN :canonique ELSE v END
+                         FROM unnest(ventes) AS v))::character varying(255)[]
+         WHERE ventes::text[] && ARRAY[:autres]::text[]`,
+        { replacements: { canonique, autres: autresGraphies }, transaction: t }
+      );
+      const nLiens = (metaLiens && metaLiens.rowCount) || 0;
+      if (nLiens) deplacements['liens ventes'] = nLiens;
+    }
+
+    // 3. Les lignes produits redondantes. On rattache d'abord leurs prix par
+    //    point de vente et leur historique a la ligne conservee, sinon la
+    //    suppression les emporterait en silence.
+    const garde = groupe.find((r) => r.nom === canonique);
+    let supprimees = 0;
+    for (const r of aFusionner) {
+      const [, mPv] = await sequelize.query(
+        `UPDATE prix_point_vente pv SET produit_id = :garde
+         WHERE pv.produit_id = :perdu
+           AND NOT EXISTS (SELECT 1 FROM prix_point_vente x
+                            WHERE x.produit_id = :garde
+                              AND x.point_vente_id = pv.point_vente_id)`,
+        { replacements: { garde: garde.id, perdu: r.id }, transaction: t }
+      );
+      if (mPv && mPv.rowCount) deplacements['prix par point de vente'] =
+        (deplacements['prix par point de vente'] || 0) + mPv.rowCount;
+
+      await sequelize.query(
+        `UPDATE prix_historique SET produit_id = :garde WHERE produit_id = :perdu`,
+        { replacements: { garde: garde.id, perdu: r.id }, transaction: t }
+      );
+      // Ce qui n'a pas pu etre rattache (meme point de vente des deux cotes)
+      // disparait avec la ligne: on le dit plutot que de le taire.
+      const [{ n: pvPerdus }] = await sequelize.query(
+        `SELECT COUNT(*)::int AS n FROM prix_point_vente WHERE produit_id = :perdu`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { perdu: r.id }, transaction: t }
+      );
+      if (pvPerdus) deplacements['prix par PV abandonnes (doublon exact)'] =
+        (deplacements['prix par PV abandonnes (doublon exact)'] || 0) + pvPerdus;
+
+      await sequelize.query('DELETE FROM prix_point_vente WHERE produit_id = :perdu',
+        { replacements: { perdu: r.id }, transaction: t });
+      await sequelize.query('DELETE FROM produits WHERE id = :perdu',
+        { replacements: { perdu: r.id }, transaction: t });
+      supprimees++;
+    }
+
+    await t.commit();
+    configService.invalidateCache();
+    console.log(`Fusion doublons: ${cle} (${catalogue}) -> "${canonique}", `
+      + `${supprimees} ligne(s) produit supprimee(s), `
+      + `${JSON.stringify(deplacements)} par ${req.session.user?.username}`);
+
+    res.json({
+      success: true,
+      canonique,
+      graphies_fusionnees: autresGraphies,
+      lignes_produits_supprimees: supprimees,
+      deplacements
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error('Erreur fusion doublons:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.delete('/produits/by-name', requireAdmin, async (req, res) => {
   try {
     // Accepter les paramètres via query string ou body
@@ -1405,40 +1755,6 @@ router.delete('/produits/:id/prix/:pointVenteId', requireAdmin, async (req, res)
   }
 });
 
-/**
- * GET /api/admin/config/produits/by-name
- * Récupère un produit par nom et type_catalogue
- */
-router.get('/produits/by-name', requireAdmin, async (req, res) => {
-  try {
-    const { nom, type_catalogue } = req.query;
-    
-    if (!nom || !type_catalogue) {
-      return res.status(400).json({ success: false, error: 'Nom et type_catalogue requis' });
-    }
-    
-    const produit = await Produit.findOne({
-      where: { nom, type_catalogue },
-      include: [
-        { model: Category, as: 'categorie' },
-        {
-          model: PrixPointVente,
-          as: 'prixParPointVente',
-          include: [{ model: PointVente, as: 'pointVente' }]
-        }
-      ]
-    });
-    
-    if (!produit) {
-      return res.status(404).json({ success: false, error: 'Produit non trouvé' });
-    }
-    
-    res.json({ success: true, data: produit });
-  } catch (error) {
-    console.error('Erreur récupération produit par nom:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 // =====================================================
 // HISTORIQUE

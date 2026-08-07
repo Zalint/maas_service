@@ -285,20 +285,50 @@ async function computeStockSoirAutoValues(dateInput) {
     where: { mode_stock: 'automatique', type_catalogue: 'inventaire', archived: false },
     attributes: ['nom', 'prix_defaut']
   });
-  const autoSet = new Set(autoProduits.map((p) => p.nom));
+  // Comparaison INSENSIBLE A LA CASSE ET AUX ACCENTS, comme partout ailleurs
+  // pour les noms de produits. Le catalogue et les saisies n'ecrivent pas de
+  // la meme facon - "Boeuf en detail" contre "Boeuf En Detail" - et une
+  // egalite stricte faisait sauter le produit SANS RIEN DIRE: le calcul ne
+  // trouvait ni son stock ni ses ventes, et rendait zero.
+  const { normaliserNom } = require('../lib/parage');
+  const autoSet = new Set(autoProduits.map((p) => normaliserNom(p.nom)));
   const prixByProduit = new Map(
-    autoProduits.map((p) => [p.nom, parseFloat(p.prix_defaut) || 0])
+    autoProduits.map((p) => [normaliserNom(p.nom), parseFloat(p.prix_defaut) || 0])
   );
+  // Nom de reference, tel qu'ecrit au CATALOGUE. Les saisies n'emploient pas
+  // toutes la meme graphie; la ligne ecrite doit en porter une seule, et c'est
+  // celle du catalogue qui fait foi.
+  const nomCanonique = new Map(autoProduits.map((p) => [normaliserNom(p.nom), p.nom]));
 
   if (autoSet.size === 0) {
-    return { dateBdd, autoSet, prixByProduit, calcByKey: new Map() };
+    return { dateBdd, autoSet, prixByProduit, nomCanonique, calcByKey: new Map() };
   }
+
+  // Les VENTES ne sont pas datees comme les stocks. stocks et transferts
+  // stockent 'DD-MM-YYYY', ventes stocke 'YYYY-MM-DD'. Interroger ventes avec
+  // dateBdd ne remontait donc JAMAIS rien: agg.ventes valait toujours 0 et la
+  // formule se reduisait a matin + transferts. Le terme le plus important
+  // etait muet, en silence - un stock a zero se lit comme "rien en rayon", pas
+  // comme une erreur. Mesure: 7 500 lignes automatiques totalisant 90 unites,
+  // alors que la Carotte seule compte 95 ventes sur juillet.
+  const dateIso = `${parsed.getFullYear()}-`
+    + `${String(parsed.getMonth() + 1).padStart(2, '0')}-`
+    + `${String(parsed.getDate()).padStart(2, '0')}`;
 
   const [allMatin, allTransferts, allVentes] = await Promise.all([
     Stock.findAll({ where: { date: dateBdd, typeStock: 'matin' } }),
     Transfert.findAll({ where: { date: dateBdd } }),
-    Vente.findAll({ where: { date: dateBdd } })
+    Vente.findAll({ where: { date: dateIso } })
   ]);
+
+  // La cle d'agregation est NORMALISEE, comme le test d'appartenance juste
+  // au-dessus. Les garder desynchronises - filtre normalise, cle brute - faisait
+  // passer les deux graphies puis les rangeait dans DEUX seaux distincts: le
+  // matin sous "Poulet", les ventes sous "POULET". On obtenait alors deux lignes
+  // de stock soir pour un seul produit, l'une a +50 et l'autre a -30, la seconde
+  // etant lue en aval comme un stock negatif - donc comme une donnee non fiable
+  // qui fait ecarter du PL le comptage legitime du matin.
+  const cleDe = (pointVente, produit) => `${pointVente}|${normaliserNom(produit)}`;
 
   const aggregate = new Map();
   const ensure = (key) => {
@@ -306,25 +336,30 @@ async function computeStockSoirAutoValues(dateInput) {
     return aggregate.get(key);
   };
   for (const m of allMatin) {
-    if (!autoSet.has(m.produit)) continue;
-    ensure(`${m.pointVente}|${m.produit}`).matin = parseFloat(m.quantite) || 0;
+    if (!autoSet.has(normaliserNom(m.produit))) continue;
+    // Somme et non affectation. Depuis que la cle est normalisee, deux graphies
+    // du meme produit tombent dans le meme seau: affecter ferait gagner la
+    // derniere lue et perdrait l'autre. La table ne contient aucun doublon
+    // EXACT (meme graphie, meme jour, meme point de vente) - verifie -, donc
+    // sommer ne peut pas compter deux fois la meme ligne.
+    ensure(cleDe(m.pointVente, m.produit)).matin += parseFloat(m.quantite) || 0;
   }
   for (const t of allTransferts) {
-    if (!autoSet.has(t.produit)) continue;
+    if (!autoSet.has(normaliserNom(t.produit))) continue;
     const impact = parseInt(t.impact, 10);
     const signedQte = (Number.isFinite(impact) ? impact : 1) * (parseFloat(t.quantite) || 0);
-    ensure(`${t.pointVente}|${t.produit}`).transferts += signedQte;
+    ensure(cleDe(t.pointVente, t.produit)).transferts += signedQte;
   }
   for (const v of allVentes) {
-    if (!autoSet.has(v.produit)) continue;
-    ensure(`${v.pointVente}|${v.produit}`).ventes += parseFloat(v.nombre) || 0;
+    if (!autoSet.has(normaliserNom(v.produit))) continue;
+    ensure(cleDe(v.pointVente, v.produit)).ventes += parseFloat(v.nombre) || 0;
   }
 
   const calcByKey = new Map();
   for (const [key, agg] of aggregate) {
     calcByKey.set(key, agg.matin + agg.transferts - agg.ventes);
   }
-  return { dateBdd, autoSet, prixByProduit, calcByKey };
+  return { dateBdd, autoSet, prixByProduit, nomCanonique, calcByKey };
 }
 
 /**
@@ -348,7 +383,9 @@ async function computeStockSoirAutoValues(dateInput) {
  * @returns {Promise<{updated: number, created: number, skippedOverride: number}>}
  */
 async function recomputeStockSoirForAuto(dateInput) {
-  const { dateBdd, calcByKey, prixByProduit } = await computeStockSoirAutoValues(dateInput);
+  const { normaliserNom } = require('../lib/parage');
+  const { dateBdd, calcByKey, prixByProduit, nomCanonique } =
+    await computeStockSoirAutoValues(dateInput);
   if (calcByKey.size === 0) {
     return { updated: 0, created: 0, skippedOverride: 0 };
   }
@@ -365,37 +402,65 @@ async function recomputeStockSoirForAuto(dateInput) {
       lock: t.LOCK.UPDATE,
       transaction: t
     });
+    // Indexation NORMALISEE, alignee sur celle de calcByKey. Plusieurs lignes
+    // peuvent repondre a une meme cle - c'est precisement ce que les executions
+    // precedentes ont fabrique en indexant sur le nom brut. On les regroupe
+    // pour pouvoir en conserver une seule.
     const soirByKey = new Map();
     for (const s of allSoir) {
-      soirByKey.set(`${s.pointVente}|${s.produit}`, s);
+      const key = `${s.pointVente}|${normaliserNom(s.produit)}`;
+      if (!soirByKey.has(key)) soirByKey.set(key, []);
+      soirByKey.get(key).push(s);
     }
 
     let updated = 0;
     let created = 0;
     let skippedOverride = 0;
+    let supprimeesDoublons = 0;
 
     for (const [key, calc] of calcByKey) {
-      const [pv, produit] = key.split('|');
+      const sep = key.lastIndexOf('|');
+      const pv = key.slice(0, sep);
+      const cleProduit = key.slice(sep + 1);
+      // Le nom ECRIT est celui du catalogue, pas celui de la derniere saisie.
+      const produit = nomCanonique.get(cleProduit) || cleProduit;
 
-      const existing = soirByKey.get(key);
-      if (existing && existing.is_auto_calculated === false) {
+      const candidats = soirByKey.get(key) || [];
+      // Une saisie manuelle prime, quelle que soit sa graphie.
+      if (candidats.some((s) => s.is_auto_calculated === false)) {
         skippedOverride++;
-        continue; // override utilisateur: respecter
+        continue;
       }
 
+      // On garde la ligne qui porte deja le nom canonique, sinon la premiere.
+      const existing = candidats.find((s) => s.produit === produit) || candidats[0] || null;
+
       const prixUnitaire = existing
-        ? parseFloat(existing.prixUnitaire) || prixByProduit.get(produit) || 0
-        : (prixByProduit.get(produit) || 0);
+        ? parseFloat(existing.prixUnitaire) || prixByProduit.get(cleProduit) || 0
+        : (prixByProduit.get(cleProduit) || 0);
       const total = calc * prixUnitaire;
 
       if (existing) {
         await existing.update({
+          produit,
           quantite: calc,
           prixUnitaire,
           total,
           is_auto_calculated: true
         }, { transaction: t });
         updated++;
+
+        // Les autres lignes du meme produit sont des doublons de graphie laisses
+        // par l'ancienne indexation. Elles sont entierement DERIVEES, donc
+        // regenerables: les garder laisserait trainer une quantite negative que
+        // le PL lit ensuite comme un stock non fiable, et qui fait ecarter le
+        // comptage legitime du matin. Aucune saisie manuelle n'est touchee, le
+        // cas est traite plus haut.
+        for (const doublon of candidats) {
+          if (doublon === existing) continue;
+          await doublon.destroy({ transaction: t });
+          supprimeesDoublons++;
+        }
       } else {
         await Stock.create({
           date: dateBdd,
@@ -412,7 +477,7 @@ async function recomputeStockSoirForAuto(dateInput) {
       }
     }
 
-    return { updated, created, skippedOverride };
+    return { updated, created, skippedOverride, supprimeesDoublons };
   });
 }
 

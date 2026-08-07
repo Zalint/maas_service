@@ -6,6 +6,11 @@ require('dotenv').config({
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+// Normalisation des noms de produits, PARTAGEE avec lib/parage.js: casse et
+// accents ignores. Le catalogue et les saisies n'ecrivent pas de la meme
+// facon ("Boeuf en detail" contre "Boeuf En Detail"), et une egalite stricte
+// faisait sauter le produit sans rien dire.
+const { normaliserNom: normaliserNomProduit } = require('./lib/parage');
 const fs = require('fs');
 const { parse } = require('csv-parse');
 const { stringify } = require('csv-stringify');
@@ -3190,8 +3195,12 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
             if (type === 'soir') {
                 const { autoSet, calcByKey } = await computeStockSoirAutoValues(date);
                 classify = (pv, produit, valeur) => {
-                    if (!autoSet.has(produit)) return false;
-                    const calc = calcByKey.get(`${pv}|${produit}`);
+                    if (!autoSet.has(normaliserNomProduit(produit))) return false;
+                    // La cle de calcByKey est NORMALISEE, comme le test juste
+                    // au-dessus. Avec le nom brut, une graphie divergente rendait
+                    // calc indefini et la ligne etait classee en saisie manuelle
+                    // alors qu'elle etait bel et bien derivee.
+                    const calc = calcByKey.get(`${pv}|${normaliserNomProduit(produit)}`);
                     if (calc === undefined) return false;
                     return Math.abs(calc - valeur) < 0.001;
                 };
@@ -4040,7 +4049,8 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
                 stocksSoir: (parJourSoir[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
                 transferts: (parJourTransferts[iso] || []).map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
                 ventes: (parJourVentes[iso] || []).map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
-                categorieDe, exclusions, packs: PACK_COMPOSITIONS
+                categorieDe, exclusions, stockDerive: contexte.stockDerive,
+                packs: PACK_COMPOSITIONS
             });
             return agregerPointsDeVente(parPv, filtrePv);
         };
@@ -5906,7 +5916,7 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
         // Ces deux routes doivent partir des memes categories et des memes
         // exclusions, sinon elles rendent deux chiffres pour la meme journee.
         const { chargerContexteParage } = require('./lib/parage-contexte');
-        const { categorieDe, exclusions, avertissements: avertContexte } =
+        const { categorieDe, exclusions, stockDerive, avertissements: avertContexte } =
             await chargerContexteParage(sequelize);
         avertContexte.forEach((a) => console.warn('parage:', a));
 
@@ -5932,14 +5942,90 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
             ventes: ventes.map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
             categorieDe,
             exclusions,
+            // Le stock CALCULE a partir des ventes n'entre pas au denominateur:
+            // on comparerait les ventes a elles-memes. Cf lib/parage.js.
+            stockDerive,
             packs: PACK_COMPOSITIONS
         });
+
+        // Produits a stock DERIVE (mode automatique) presents ce jour-la.
+        //
+        // Ils sont volontairement hors du parage - leur theorique vaudrait
+        // exactement leurs ventes, on comparerait les ventes a elles-memes -
+        // mais leurs mouvements doivent rester VISIBLES: c'est la seule facon
+        // de verifier que le calcul soir = matin + transferts - ventes tourne.
+        const mouvementsDerives = [];
+        // Comparaison insensible a la casse et aux accents, comme partout
+        // ailleurs pour les noms de produits.
+        const derivesNorm = new Set(
+            Array.from(stockDerive || []).map(normaliserNomProduit)
+        );
+        if (stockDerive && stockDerive.size) {
+            const parCle = new Map();
+            const cle = (pv, prod) => `${pv}|||${prod}`;
+            const ligne = (pv, prod) => {
+                const k = cle(pv, prod);
+                if (!parCle.has(k)) {
+                    parCle.set(k, {
+                        point_de_vente: pv, produit: prod,
+                        matin: 0, transferts: 0, ventes: 0, soir: null
+                    });
+                }
+                return parCle.get(k);
+            };
+            for (const m of stocksMatin) {
+                if (derivesNorm.has(normaliserNomProduit(m.produit))) ligne(m.pointVente, m.produit).matin += parseFloat(m.quantite) || 0;
+            }
+            for (const t of transferts) {
+                if (!derivesNorm.has(normaliserNomProduit(t.produit))) continue;
+                const imp = parseInt(t.impact, 10);
+                ligne(t.pointVente, t.produit).transferts
+                    += (Number.isFinite(imp) ? imp : 1) * (parseFloat(t.quantite) || 0);
+            }
+            for (const v of ventes) {
+                if (derivesNorm.has(normaliserNomProduit(v.produit))) ligne(v.pointVente, v.produit).ventes += parseFloat(v.nombre) || 0;
+            }
+            for (const so of stocksSoir) {
+                if (!derivesNorm.has(normaliserNomProduit(so.produit))) continue;
+                const l = ligne(so.pointVente, so.produit);
+                l.soir = (l.soir || 0) + (parseFloat(so.quantite) || 0);
+            }
+            for (const l of parCle.values()) {
+                // On n'affiche que ce qui a bouge: des centaines de lignes a zero
+                // noieraient les quelques-unes qui disent quelque chose.
+                if (l.matin === 0 && l.transferts === 0 && l.ventes === 0 && !l.soir) continue;
+                const attendu = l.matin + l.transferts - l.ventes;
+                mouvementsDerives.push({
+                    ...l,
+                    theorique_attendu: Math.round(attendu * 1000) / 1000,
+                    // Le calcul a-t-il bien tourne ? Un ecart signale que le
+                    // recalcul n'est pas passe, ou qu'une saisie manuelle l'a
+                    // remplace (override).
+                    coherent: l.soir !== null && Math.abs((l.soir || 0) - attendu) < 0.001
+                });
+            }
+            mouvementsDerives.sort((a, b) => (a.produit || '').localeCompare(b.produit || ''));
+        }
+
+        // Produits dont le stock du soir est NEGATIF: signature d'entrees non
+        // saisies. Ils sont ecartes du PL et de Cash et Stock, on le dit ici.
+        const stockNegatif = stocksSoir
+            .filter((so) => (parseFloat(so.quantite) || 0) < 0)
+            .map((so) => ({
+                point_de_vente: so.pointVente,
+                produit: so.produit,
+                quantite: parseFloat(so.quantite) || 0
+            }))
+            .sort((a, b) => a.quantite - b.quantite);
 
         res.json({
             success: true,
             date: dateFr,
             exclusions: [...exclusions],
-            data: parPv
+            data: parPv,
+            // Pour information: hors parage par construction.
+            stock_derive: mouvementsDerives,
+            stock_negatif: stockNegatif
         });
     } catch (error) {
         console.error('GET /api/reconciliation/parage:', error);

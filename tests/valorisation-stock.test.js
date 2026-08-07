@@ -110,3 +110,47 @@ describe('valorisation du stock', () => {
         expect(r.lignes_incoherentes).toEqual([]);
     });
 });
+
+describe('stock negatif et ventilation boucherie', () => {
+    // Un stock derive (matin + transferts - ventes) devient negatif des que les
+    // entrees ne sont pas saisies. Le sommer retrancherait de la valeur du
+    // point de vente une marchandise qui n'existe pas.
+    test('une ligne negative est ecartee, pas soustraite', () => {
+        const r = valoriserLignes({
+            lignes: [
+                { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                { produit: 'Carotte', quantite: -95, total: -28500, prix_unitaire: 300 }
+            ],
+            prixAchat
+        });
+        expect(r.valeur).toBe(38350);              // 10 x 3835, la carotte est ignoree
+        expect(r.valeur_negative_ignoree).toBe(-28500);
+        expect(r.lignes_negatives).toEqual([{ produit: 'Carotte', quantite: -95, total: -28500 }]);
+    });
+
+    test('sans estBoucherie, tout est compte comme boucherie', () => {
+        const r = valoriserLignes({
+            lignes: [{ produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 }],
+            prixAchat
+        });
+        expect(r.valeur_boucherie).toBe(38350);
+        expect(r.valeur_hors_boucherie).toBe(0);
+    });
+
+    // Le coefficient de pertes de decoupe ne doit porter que sur la viande:
+    // on ne pare pas un sachet d'epicerie.
+    test('la ventilation separe la viande du reste', () => {
+        const r = valoriserLignes({
+            lignes: [
+                { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                { produit: 'Spaghetti', quantite: 4, total: 1200, prix_unitaire: 300 }
+            ],
+            prixAchat,
+            estBoucherie: (p) => p === 'Boeuf'
+        });
+        expect(r.valeur_boucherie).toBe(38350);    // au prix d'achat
+        expect(r.valeur_hors_boucherie).toBe(1200); // sans prix d'achat: valeur saisie
+        expect(r.valeur).toBe(39550);
+        expect(r.valeur_boucherie + r.valeur_hors_boucherie).toBe(r.valeur);
+    });
+});

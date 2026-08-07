@@ -1745,14 +1745,17 @@ function reorganiserInventaireParCategories() {
     // Categories logiques: ordre = ordre d'affichage. "Autres" supprime au
     // profit de "Superette" (epicerie generique). Tous les produits qui ne
     // matchent aucun pattern boucherie tombent dans Superette.
-    const inventaireParCategories = {
-        "Viandes": {},
-        "Abats et Sous-produits": {},
-        "Produits sur Pieds": {},
-        "Œufs et Produits Laitiers": {},
-        "Superette": {},
-        "Déchets": {}
-    };
+    // Un seul groupe pose d'avance: celui des produits SANS categorie.
+    //
+    // Les six anciens buckets - Viandes, Abats et Sous-produits, Produits sur
+    // Pieds, Oeufs et Produits Laitiers, Superette, Dechets - etaient remplis
+    // par une heuristique de nom, dans un vocabulaire etranger a celui de la
+    // table categories (Bovin, Ovin, Volaille...). Un produit paraissait donc
+    // range alors qu'il n'avait aucune categorie, et le parage - qui lit la
+    // vraie donnee - n'en trouvait pas. La categorie est maintenant stockee
+    // sur le produit: on l'affiche telle quelle, et on NOMME ce qui manque.
+    const SANS_CATEGORIE = 'Sans catégorie';
+    const inventaireParCategories = { [SANS_CATEGORIE]: {} };
     
     // Liste des catégories personnalisées (stockées dans localStorage ou ajoutées manuellement)
     const categoriesPersonnalisees = JSON.parse(localStorage.getItem('inventaireCategoriesPersonnalisees') || '[]');
@@ -1803,40 +1806,29 @@ function reorganiserInventaireParCategories() {
             // saisis sont fins ('Bovin', 'Conserve'...) mais les buckets sont
             // grossiers ('Viandes', 'Superette'...) — il faut mapper avant le
             // lookup, sinon la selection explicite est perdue.
-            const mapped = mapCategorieAffichageVersBucket(config.categorie_affichage);
-            const explicitCat = normaliserCategorieAvecDefaut(mapped, DEFAULT_CATEGORIE_INVENTAIRE);
-            if (config.categorie_affichage && explicitCat && inventaireParCategories[explicitCat]) {
-                inventaireParCategories[explicitCat][produit] = config;
+            // La categorie vient du produit lui-meme, telle qu'elle est
+            // stockee. Plus de traduction vers un bucket d'affichage: les deux
+            // vocabulaires sont alignes.
+            const cat = config.categorie_affichage && String(config.categorie_affichage).trim();
+            if (cat) {
+                if (!inventaireParCategories[cat]) inventaireParCategories[cat] = {};
+                inventaireParCategories[cat][produit] = config;
                 return;
             }
 
-            // Priorite 2: classification par nom (heuristique boucherie).
-            // Fallback final = "Superette" (anciennement "Autres").
-            if (produit.includes('Boeuf') || produit.includes('Veau') || produit.includes('Poulet') || produit.includes('Agneau')) {
-                inventaireParCategories["Viandes"][produit] = config;
-            } else if (produit.includes('Tablette') || produit.includes('Oeuf')) {
-                inventaireParCategories["Œufs et Produits Laitiers"][produit] = config;
-            } else if (produit.includes('Foie') || produit.includes('Yell') || produit.includes('Abats') || produit.includes('Tete')) {
-                inventaireParCategories["Abats et Sous-produits"][produit] = config;
-            } else if (produit.includes('sur pieds') || produit.includes('sur pied')) {
-                inventaireParCategories["Produits sur Pieds"][produit] = config;
-            } else if (produit.includes('Déchet') || produit.includes('Dechet')) {
-                inventaireParCategories["Déchets"][produit] = config;
-            } else {
-                inventaireParCategories["Superette"][produit] = config;
-            }
+            // Aucune categorie: on le DIT. Deviner d'apres le nom donnait un
+            // rangement plausible et faux - le produit avait l'air classe alors
+            // que rien ne le rattachait, et il sortait silencieusement du
+            // parage, de la famille et du coefficient de decoupe.
+            inventaireParCategories[SANS_CATEGORIE][produit] = config;
         }
     });
 
-    // Supprimer les catégories LOGIQUES vides (mais garder les personnalisées)
-    const categoriesLogiques = ["Viandes", "Œufs et Produits Laitiers", "Abats et Sous-produits", "Produits sur Pieds", "Superette", "Déchets"];
-    
-    Object.keys(inventaireParCategories).forEach(categorie => {
-        // Ne supprimer que les catégories logiques vides, garder les personnalisées
-        if (Object.keys(inventaireParCategories[categorie]).length === 0 && categoriesLogiques.includes(categorie)) {
-            delete inventaireParCategories[categorie];
-        }
-    });
+    // "Sans catégorie" ne s'affiche que s'il a du contenu: un groupe vide en
+    // permanence serait du bruit.
+    if (Object.keys(inventaireParCategories[SANS_CATEGORIE]).length === 0) {
+        delete inventaireParCategories[SANS_CATEGORIE];
+    }
     
     return inventaireParCategories;
 }
@@ -2604,7 +2596,16 @@ async function supprimerCategorieInventaire(categorie) {
             title: 'Supprimer catégorie', okLabel: 'Supprimer', okVariant: 'danger'
         });
         if (ok) {
-            delete currentInventaireConfig[categorie];
+            // La config est PLATE: il n'existe pas de cle de categorie a
+            // supprimer. On retire les produits qui portent cette categorie.
+            // Supprimer la cle "categorie" reviendrait ici a supprimer le
+            // PRODUIT homonyme s'il en existe un - et il en existe un: "Autres".
+            Object.keys(currentInventaireConfig).forEach((nom) => {
+                const cfg = currentInventaireConfig[nom];
+                if (cfg && cfg.prixDefault !== undefined && cfg.categorie_affichage === categorie) {
+                    delete currentInventaireConfig[nom];
+                }
+            });
 
             const index = categoriesPersonnalisees.indexOf(categorie);
             if (index > -1) {
@@ -3903,9 +3904,13 @@ async function sauvegarderConfigAbonnement() {
                 categoriesPersonnalisees.push(categoryName);
                 localStorage.setItem('inventaireCategoriesPersonnalisees', JSON.stringify(categoriesPersonnalisees));
                 
-                // Créer la catégorie dans la config
-                currentInventaireConfig[categoryName] = {};
-                
+                // Rien a creer dans la config: une categorie n'y a plus
+                // d'existence propre, elle n'est qu'une valeur portee par les
+                // produits. Ecrire une cle vide ici recreerait exactement
+                // l'ambiguite produit/categorie qu'on vient de supprimer.
+                // La categorie vit dans localStorage jusqu'a ce qu'un produit
+                // la porte, puis c'est le serveur qui la renvoie.
+
                 afficherInventaireConfig();
                 document.getElementById('newInventaireCategoryName').value = '';
                 
@@ -3933,38 +3938,27 @@ async function sauvegarderConfigAbonnement() {
             const alternativesStr = document.getElementById('newInventaireAlternatives').value.trim();
             
             if (productName) {
-                // Vérifier si c'est une catégorie personnalisée
-                const categoriesPersonnalisees = JSON.parse(localStorage.getItem('inventaireCategoriesPersonnalisees') || '[]');
-                const isCustomCategory = categoriesPersonnalisees.includes(category);
-                
+                // Un seul emplacement, quelle que soit la categorie: la config
+                // est plate et la categorie est un CHAMP du produit. Il n'y a
+                // donc plus de "categorie personnalisee" a distinguer d'une
+                // categorie logique - la distinction n'existait que pour savoir
+                // ou imbriquer.
                 const productConfig = {
                     prixDefault: defaultPrice,
-                    alternatives: alternativesStr ? 
-                        alternativesStr.split(',').map(p => parseFloat(p.trim())).filter(p => !isNaN(p)) : 
+                    alternatives: alternativesStr ?
+                        alternativesStr.split(',').map(p => parseFloat(p.trim())).filter(p => !isNaN(p)) :
                         [defaultPrice],
                     mode_stock: 'manuel',
-                    unite_stock: 'unite'
+                    unite_stock: 'unite',
+                    categorie_affichage: category || null
                 };
-                
-                if (isCustomCategory) {
-                    // Pour les catégories personnalisées, stocker dans la sous-structure
-                    if (!currentInventaireConfig[category]) {
-                        currentInventaireConfig[category] = {};
-                    }
-                    if (currentInventaireConfig[category][productName]) {
-                        showToast('Ce produit existe déjà dans cette catégorie');
-                        return;
-                    }
-                    currentInventaireConfig[category][productName] = productConfig;
-                } else {
-                    // Pour les catégories logiques, stocker au niveau racine
-                    if (currentInventaireConfig[productName]) {
-                        showToast('Ce produit existe déjà');
-                        return;
-                    }
-                    currentInventaireConfig[productName] = productConfig;
+
+                if (currentInventaireConfig[productName]) {
+                    showToast('Ce produit existe déjà');
+                    return;
                 }
-                
+                currentInventaireConfig[productName] = productConfig;
+
                 afficherInventaireConfig();
                 
                 // Réinitialiser le formulaire
@@ -4530,7 +4524,13 @@ function reconstruireFlatRecherche() {
                     cat: catName,
                     famille: familleDeCatInventaire(catName),
                     prix: config.prixDefault,
-                    archived: !!config.archived
+                    archived: !!config.archived,
+                    // catName est la categorie AFFICHEE, jamais vide: quand le
+                    // produit n'en a pas, reorganiserInventaireParCategories en
+                    // devine une par heuristique de nom, avec "Superette" en
+                    // dernier recours. Filtrer dessus ne trouve donc jamais
+                    // rien. Le vrai signal est l'absence de categorie_affichage.
+                    sansCategorie: catName === 'Sans catégorie'
                 });
             }
         }
@@ -4549,7 +4549,15 @@ function appliquerFiltresRecherche() {
     // on les inclut (mais visuellement differents — cf. renderRechercheGrid).
     if (!showArchived) matches = matches.filter(p => !p.archived);
     if (src !== 'all') matches = matches.filter(p => p.src === src);
-    if (famille !== 'all') matches = matches.filter(p => p.famille === famille);
+    if (famille === 'sans') {
+        // "Sans categorie" n'est pas une famille de plus: c'est l'ABSENCE de
+        // rattachement. Un tel produit sort silencieusement du parage, de la
+        // famille et du coefficient de decoupe - d'ou ce filtre, qui rend
+        // visible ce que rien ne signalait.
+        matches = matches.filter((p) => p.sansCategorie === true);
+    } else if (famille !== 'all') {
+        matches = matches.filter(p => p.famille === famille);
+    }
     if (cat !== 'all') matches = matches.filter(p => p.cat === cat);
     if (q) matches = matches.filter(p => p.name.toLowerCase().includes(q));
 
@@ -4873,9 +4881,18 @@ function updateRechercheCompteurs() {
         const el = document.querySelector(`[data-count="${sel}"]`);
         if (el) el.textContent = String(n);
     };
+    // Produits sans rattachement. Le compteur est le seul endroit ou cette
+    // dette est chiffree: sans lui, personne ne sait qu'elle existe.
+    const sans = scope.filter((p) => p.sansCategorie === true).length;
     setCount('all', total);
     setCount('pg', pg);
     setCount('inv', inv);
+    setCount('sans', sans);
+
+    // Le filtre ne s'affiche que s'il y a quelque chose a montrer: un "Sans
+    // categorie · 0" permanent serait du bruit.
+    const btnSans = document.querySelector('[data-recherche-fam="sans"]');
+    if (btnSans) btnSans.style.display = sans > 0 ? '' : 'none';
 }
 
 // Re-render la liste des categories visibles dans la sidebar.
@@ -4891,7 +4908,14 @@ function renderRechercheCategoriesFilter() {
     let scope = flat;
     if (!showArchived) scope = scope.filter(p => !p.archived);
     if (src !== 'all') scope = scope.filter(p => p.src === src);
-    if (famille !== 'all') scope = scope.filter(p => p.famille === famille);
+    // MEME regle que appliquerFiltresRecherche: 'sans' n'est pas une famille,
+    // c'est l'absence de rattachement. Comparer p.famille a 'sans' ne trouvait
+    // rien et la facette Categorie tombait a zero.
+    if (famille === 'sans') {
+        scope = scope.filter((p) => p.sansCategorie === true);
+    } else if (famille !== 'all') {
+        scope = scope.filter(p => p.famille === famille);
+    }
 
     // Dedup + count par categorie
     const countByCat = new Map();
@@ -5204,7 +5228,15 @@ function pumPopulerSelect(selectEl, categoriesParFamille, selected) {
     for (const cats of Object.values(categoriesParFamille)) {
         cats.forEach((c) => standardCats.add(c));
     }
-    let html = '';
+    // Choix explicite "aucune categorie", toujours disponible et pre-selectionne
+    // quand le produit n'existe pas dans ce catalogue.
+    //
+    // Sans lui, le select affichait la premiere categorie de la liste pour un
+    // produit qui n'a AUCUNE categorie dans ce catalogue - "Boeuf" apparaissait
+    // en Superette cote Produits Generaux alors qu'il n'y figure meme pas. Une
+    // valeur inventee par l'interface, que l'admin risquait d'enregistrer sans
+    // l'avoir voulue.
+    let html = `<option value=""${!selected ? ' selected' : ''}>—</option>`;
     // Optgroup legacy en premier si la valeur selectionnee n'est pas standard
     if (selected && !standardCats.has(selected)) {
         const escLeg = escAttr(selected);
@@ -5631,6 +5663,27 @@ async function pumSave() {
     }
     if (!targetPG && !targetInv) {
         showToast('Choisis au moins un catalogue', 'warning');
+        return;
+    }
+
+    // La categorie est OBLIGATOIRE pour chaque catalogue coche.
+    //
+    // C'est ce controle qui manquait: 54 produits d'inventaire n'en ont
+    // aucune, dont ceux qui portent 27 M F de stock. Un produit sans
+    // categorie sort silencieusement du parage, de la famille et du
+    // coefficient de decoupe - il ne provoque aucune erreur, il disparait
+    // simplement des calculs.
+    //
+    // La contrainte porte sur la CASE, pas sur le produit: modifier le seul
+    // cote vente n'oblige pas a categoriser l'inventaire.
+    if (targetPG && !catPG) {
+        showToast('Choisis une catégorie Produits Généraux : sans elle, le produit sort des calculs', 'warning');
+        document.getElementById('pum-cat-pg').focus();
+        return;
+    }
+    if (targetInv && !catInv) {
+        showToast('Choisis une catégorie Inventaire : sans elle, le produit sort du parage et du coefficient de découpe', 'warning');
+        document.getElementById('pum-cat-inv').focus();
         return;
     }
 
@@ -6237,6 +6290,172 @@ function initModalProduitUnifie() {
     if (addBtn) {
         addBtn.addEventListener('click', () => ouvrirModalProduitUnifie('add'));
     }
+
+    // Bouton "Détecter les doublons", juste a cote
+    const dblBtn = document.getElementById('recherche-doublons-btn');
+    if (dblBtn) {
+        dblBtn.addEventListener('click', ouvrirModalDoublons);
+    }
+}
+
+// ============================================================
+// DETECTION ET FUSION DES DOUBLONS
+// ============================================================
+//
+// Un doublon = le meme produit saisi deux fois dans le MEME catalogue sous
+// deux orthographes ("Citron Liquide" / "CITRON LIQUIDE"). Le meme nom present
+// en Generaux ET en Inventaire n'en est pas un: c'est le modele du catalogue.
+//
+// La fusion est destructive, donc rien n'est applique en masse: l'utilisateur
+// choisit la graphie a conserver, groupe par groupe, en voyant d'abord combien
+// de lignes chaque orthographe porte.
+
+let _doublonsCache = null;
+
+async function chargerDoublons() {
+    const resp = await fetch('/api/admin/config/produits/doublons', { credentials: 'include' });
+    const data = await resp.json();
+    if (!resp.ok || !data.success) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+    _doublonsCache = data;
+    return data;
+}
+
+function renderDoublons() {
+    const zone = document.getElementById('doublons-contenu');
+    if (!zone || !_doublonsCache) return;
+    const groupes = _doublonsCache.groupes || [];
+
+    if (!groupes.length) {
+        zone.innerHTML = `
+            <div class="text-center py-4">
+                <i class="bi bi-check-circle text-success" style="font-size:2rem"></i>
+                <p class="mt-2 mb-0">Aucun doublon détecté dans les deux catalogues.</p>
+            </div>`;
+        return;
+    }
+
+    const libelleCatalogue = (c) => c === 'vente' ? 'Généraux'
+        : (c === 'inventaire' ? 'Inventaire' : c);
+
+    zone.innerHTML = groupes.map((g, i) => {
+        const lignes = g.variantes.map((v) => {
+            const detail = Object.entries(v.references)
+                .map(([t, n]) => `${n} ${t}`).join(', ') || 'aucune référence';
+            const extra = [];
+            if (v.prix_pv) extra.push(`${v.prix_pv} prix par PV`);
+            if (v.historique) extra.push(`${v.historique} historique`);
+            const suggere = v.nom === g.suggestion;
+            return `
+                <label class="list-group-item d-flex align-items-start gap-2">
+                    <input class="form-check-input mt-1 flex-shrink-0" type="radio"
+                           name="doublon-${i}" value="${escAttr(v.nom)}" ${suggere ? 'checked' : ''}>
+                    <span class="flex-grow-1">
+                        <span class="fw-semibold">${escAttr(v.nom)}</span>
+                        ${suggere ? '<span class="badge bg-success ms-1">suggérée</span>' : ''}
+                        ${v.categorie ? `<span class="badge bg-light text-dark ms-1">${escAttr(v.categorie)}</span>` : ''}
+                        <br><small class="text-muted">${escAttr(detail)}${extra.length ? ' · ' + escAttr(extra.join(', ')) : ''}</small>
+                    </span>
+                    <span class="badge bg-secondary flex-shrink-0">${v.total_references}</span>
+                </label>`;
+        }).join('');
+
+        return `
+            <div class="card mb-3" data-doublon-index="${i}">
+                <div class="card-header d-flex justify-content-between align-items-center py-2">
+                    <span>
+                        <span class="fw-semibold">${escAttr(g.variantes[0].nom)}</span>
+                        <span class="badge bg-info text-dark ms-2">${libelleCatalogue(g.catalogue)}</span>
+                        ${g.categories_divergentes
+                            ? '<span class="badge bg-warning text-dark ms-1" title="Les deux lignes ne portent pas la même catégorie">catégories divergentes</span>'
+                            : ''}
+                    </span>
+                    <button type="button" class="btn btn-sm btn-danger"
+                            data-fusionner="${i}">Fusionner</button>
+                </div>
+                <div class="list-group list-group-flush">${lignes}</div>
+            </div>`;
+    }).join('');
+
+    zone.querySelectorAll('[data-fusionner]').forEach((btn) => {
+        btn.addEventListener('click', () => fusionnerDoublon(Number(btn.dataset.fusionner), btn));
+    });
+}
+
+async function ouvrirModalDoublons() {
+    const el = document.getElementById('doublonsModal');
+    if (!el) return;
+    const zone = document.getElementById('doublons-contenu');
+    if (zone) {
+        zone.innerHTML = `
+            <div class="text-center text-muted py-4">
+                <div class="spinner-border spinner-border-sm" role="status"></div>
+                Analyse du catalogue…
+            </div>`;
+    }
+    new bootstrap.Modal(el).show();
+    try {
+        await chargerDoublons();
+        renderDoublons();
+        majBadgeDoublons();
+    } catch (e) {
+        if (zone) {
+            zone.innerHTML = `<div class="alert alert-danger mb-0">Analyse impossible : ${escAttr(e.message)}</div>`;
+        }
+    }
+}
+
+async function fusionnerDoublon(index, bouton) {
+    const g = (_doublonsCache && _doublonsCache.groupes || [])[index];
+    if (!g) return;
+    const carte = document.querySelector(`[data-doublon-index="${index}"]`);
+    const choisi = carte && carte.querySelector('input[type="radio"]:checked');
+    if (!choisi) { showToast('Choisissez la graphie à conserver'); return; }
+    const canonique = choisi.value;
+    const perdues = g.variantes.filter((v) => v.nom !== canonique);
+    const aDeplacer = perdues.reduce((a, v) => a + v.total_references, 0);
+
+    const ok = await showConfirmModal(
+        `Conserver « ${canonique} » et y rattacher ${perdues.map((v) => `« ${v.nom} »`).join(', ')} ?\n\n`
+        + `${aDeplacer} ligne(s) de stock, ventes et transferts seront renommées, `
+        + `puis ${perdues.length} ligne(s) produit supprimée(s). Cette action est définitive.`,
+        { title: 'Fusionner les doublons', okLabel: 'Fusionner', okVariant: 'danger' });
+    if (!ok) return;
+
+    bouton.disabled = true;
+    try {
+        const resp = await fetch('/api/admin/config/produits/doublons/fusionner', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cle: g.cle, catalogue: g.catalogue, canonique })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) throw new Error(data.error || `HTTP ${resp.status}`);
+
+        const detail = Object.entries(data.deplacements || {})
+            .map(([t, n]) => `${n} ${t}`).join(', ');
+        showToast(`« ${canonique} » conservé${detail ? ' — ' + detail : ''}`);
+
+        await chargerDoublons();
+        renderDoublons();
+        majBadgeDoublons();
+        // Le catalogue a change: on recharge les deux configs et la grille.
+        await Promise.all([chargerConfigProduits(), chargerConfigInventaire()]);
+        if (typeof reconstruireFlatRecherche === 'function') reconstruireFlatRecherche();
+        if (typeof renderRechercheGrid === 'function') renderRechercheGrid();
+    } catch (e) {
+        showToast(`Fusion impossible : ${e.message}`);
+        bouton.disabled = false;
+    }
+}
+
+function majBadgeDoublons() {
+    const badge = document.getElementById('recherche-doublons-badge');
+    if (!badge) return;
+    const n = (_doublonsCache && _doublonsCache.groupes || []).length;
+    badge.textContent = String(n);
+    badge.style.display = n > 0 ? '' : 'none';
 }
 
 if (document.readyState === 'loading') {

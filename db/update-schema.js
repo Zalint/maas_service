@@ -869,6 +869,68 @@ async function updateSchema() {
             console.log('Colonne clotures_caisse.depot_precedent_date verifiee');
         }
 
+        // ----------------------------------------------------------------
+        // Categorie des produits d'INVENTAIRE (produits.categorie_affichage)
+        //
+        // Le rattachement d'un produit de stock a sa categorie se faisait par
+        // trois mecanismes empiles: jointure sur categorie_id, puis le fichier
+        // config/parage-categories.json, puis une heuristique de nom cote
+        // ecran. Desormais la categorie est STOCKEE sur le produit, resolue a
+        // l'ecriture. Cette migration cree cette donnee pour l'existant.
+        //
+        // SANS ELLE, LE PARAGE TOMBE. Mesure sur les donnees de juillet: le
+        // theorique bovin passe de 1268 kg a 64 kg et le taux affiche -1352%,
+        // parce que "Boeuf" - qui porte la moitie du stock - n'est plus
+        // rattache a rien. Les deux etapes ci-dessous sont donc obligatoires,
+        // pas cosmetiques.
+        //
+        // Idempotent: on ne remplit que ce qui est vide, jamais on n'ecrase.
+        const tableProduitsPresente = await checkTableExists('produits');
+        if (tableProduitsPresente) {
+            // 1. Heritage: un produit d'inventaire reprend la categorie du
+            //    produit de VENTE portant le meme nom, compare sans casse ni
+            //    accents (unaccent n'etant pas garanti, on se limite a la
+            //    casse - les accents sont identiques entre les deux catalogues
+            //    dans les donnees observees).
+            const [, metaHeritage] = await sequelize.query(`
+                UPDATE produits inv
+                SET categorie_affichage = c.nom
+                FROM produits v
+                JOIN categories c ON c.id = v.categorie_id
+                WHERE inv.type_catalogue = 'inventaire'
+                  AND v.type_catalogue = 'vente'
+                  AND LOWER(TRIM(inv.nom)) = LOWER(TRIM(v.nom))
+                  AND (inv.categorie_affichage IS NULL OR TRIM(inv.categorie_affichage) = '')
+            `);
+            console.log(`Categories d'inventaire heritees de la vente: ${metaHeritage ? metaHeritage.rowCount : '?'}`);
+
+            // 2. Les produits PUREMENT stock, qui n'ont aucun homonyme en
+            //    vente. Ce sont exactement les quatre entrees de l'ancien
+            //    config/parage-categories.json, plus les deux dechets que le
+            //    metier rattache au bovin. Sans eux, le denominateur du parage
+            //    perd la carcasse.
+            const ALIAS_STOCK = {
+                'Boeuf': 'Bovin',
+                'Veau': 'Bovin',
+                'Agneau': 'Ovin',
+                'Mouton': 'Ovin',
+                'Déchet 400': 'Bovin',
+                'Déchet 2000': 'Bovin'
+            };
+            let poses = 0;
+            for (const [nom, categorie] of Object.entries(ALIAS_STOCK)) {
+                const [, meta] = await sequelize.query(`
+                    UPDATE produits
+                    SET categorie_affichage = :categorie
+                    WHERE type_catalogue = 'inventaire'
+                      AND LOWER(TRIM(nom)) = LOWER(TRIM(:nom))
+                      AND (categorie_affichage IS NULL OR TRIM(categorie_affichage) = '')
+                `, { replacements: { categorie, nom } });
+                poses += meta ? meta.rowCount : 0;
+            }
+            console.log(`Categories d'inventaire posees pour les produits purement stock: ${poses}`);
+        }
+
         // adresse_client en TEXT (et non VARCHAR(255)).
         // Les adresses issues des commandes web peuvent depasser 255 caracteres
         // (le parsing e-mail y colle parfois du texte parasite): l'insert

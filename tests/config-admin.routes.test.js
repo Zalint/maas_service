@@ -422,6 +422,191 @@ describe('POST /api/admin/config/produits-inventaire', () => {
     });
 });
 
+// =============== Contrat produitsInventaire: structure PLATE ===============
+//
+// Ce bloc verrouille l'invariant qui a coute le plus cher sur cet ecran: une
+// cle du dictionnaire produitsInventaire designe UN PRODUIT, jamais une
+// categorie. Tant que les deux cohabitaient, un produit et une categorie
+// portant le meme nom - il en existe: "Autres" - fusionnaient en un objet
+// hybride, et le POST n'enregistrait plus que 52 produits sur 122.
+describe('Contrat produitsInventaire (structure plate)', () => {
+    function produitStub(overrides = {}) {
+        return {
+            id: 1, nom: 'X', prix_defaut: 0, prix_alternatifs: [], mode_stock: 'manuel',
+            unite_stock: 'unite', ventes: [], ventilation_poids: false, archived: false,
+            categorie_affichage: null, prixParPointVente: [], ...overrides
+        };
+    }
+
+    test('GET: aucune cle ne porte a la fois un produit et des produits imbriques', async () => {
+        // Le cas exact du terrain: un produit "Autres" ET une categorie "Autres".
+        mockProduit.findAll.mockResolvedValueOnce([
+            produitStub({ id: 1, nom: 'Autres', prix_defaut: 500, categorie_affichage: null }),
+            produitStub({ id: 2, nom: 'BRIDEL 50 Cl', prix_defaut: 1200, categorie_affichage: 'Autres' }),
+            produitStub({ id: 3, nom: 'Boeuf', prix_defaut: 4000, categorie_affichage: 'Bovin' })
+        ]);
+
+        const res = await request(makeApp()).get('/api/admin/config/produits-inventaire');
+        expect(res.status).toBe(200);
+        const inv = res.body.produitsInventaire;
+
+        // Les trois produits sont presents, chacun a sa propre cle.
+        expect(Object.keys(inv).sort()).toEqual(['Autres', 'BRIDEL 50 Cl', 'Boeuf']);
+
+        // Aucune entree n'est un conteneur: chacune est un config de produit.
+        for (const [nom, config] of Object.entries(inv)) {
+            expect(config.prixDefault).toBeDefined();
+            const enfants = Object.values(config).filter(
+                (v) => v && typeof v === 'object' && v.prixDefault !== undefined
+            );
+            expect({ nom, enfantsImbriques: enfants.length }).toEqual({ nom, enfantsImbriques: 0 });
+        }
+
+        // La categorie survit, portee par le produit et non par la cle.
+        expect(inv['Autres'].categorie_affichage).toBeNull();
+        expect(inv['BRIDEL 50 Cl'].categorie_affichage).toBe('Autres');
+        expect(inv['Boeuf'].categorie_affichage).toBe('Bovin');
+    });
+
+    test('POST: un produit poste a plat conserve sa categorie', async () => {
+        mockPointVente.findAll.mockResolvedValueOnce([]);
+        mockProduit.findAll.mockResolvedValueOnce([]);
+        const existant = {
+            id: 100, prix_defaut: 1200, prix_alternatifs: [1200], mode_stock: 'manuel',
+            unite_stock: 'unite', categorie_affichage: 'Autres', ventes: [],
+            ventilation_poids: false, archived: false, update: jest.fn().mockResolvedValue(true)
+        };
+        mockProduit.findOrCreate.mockResolvedValueOnce([existant, false]);
+
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits-inventaire')
+            .send({
+                produitsInventaire: {
+                    'BRIDEL 50 Cl': {
+                        prixDefault: 1500, alternatives: [1500], mode_stock: 'manuel',
+                        unite_stock: 'unite', ventes: [], categorie_affichage: 'Autres'
+                    }
+                }
+            });
+
+        expect(res.status).toBe(200);
+        // Le prix change, la categorie NON. Avant, la categorie ne pouvait venir
+        // que de la cle d'imbrication: un envoi a plat ecrivait NULL en base.
+        expect(existant.update).toHaveBeenCalledWith(expect.objectContaining({
+            prix_defaut: 1500,
+            categorie_affichage: 'Autres'
+        }));
+    });
+
+    test('POST: la forme imbriquee reste acceptee (onglet ouvert avant deploiement)', async () => {
+        mockPointVente.findAll.mockResolvedValueOnce([]);
+        mockProduit.findAll.mockResolvedValueOnce([]);
+        const existant = {
+            id: 101, prix_defaut: 1200, prix_alternatifs: [1200], mode_stock: 'manuel',
+            unite_stock: 'unite', categorie_affichage: null, ventes: [],
+            ventilation_poids: false, archived: false, update: jest.fn().mockResolvedValue(true)
+        };
+        mockProduit.findOrCreate.mockResolvedValueOnce([existant, false]);
+
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits-inventaire')
+            .send({
+                produitsInventaire: {
+                    Autres: {
+                        'BRIDEL 50 Cl': {
+                            prixDefault: 1200, alternatives: [1200], mode_stock: 'manuel',
+                            unite_stock: 'unite', ventes: []
+                        }
+                    }
+                }
+            });
+
+        expect(res.status).toBe(200);
+        expect(existant.update).toHaveBeenCalledWith(expect.objectContaining({
+            categorie_affichage: 'Autres'
+        }));
+    });
+
+    test('POST: un categorie_affichage vide efface la categorie', async () => {
+        mockPointVente.findAll.mockResolvedValueOnce([]);
+        mockProduit.findAll.mockResolvedValueOnce([]);
+        const existant = {
+            id: 102, prix_defaut: 500, prix_alternatifs: [500], mode_stock: 'manuel',
+            unite_stock: 'unite', categorie_affichage: 'Bovin', ventes: [],
+            ventilation_poids: false, archived: false, update: jest.fn().mockResolvedValue(true)
+        };
+        mockProduit.findOrCreate.mockResolvedValueOnce([existant, false]);
+
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits-inventaire')
+            .send({
+                produitsInventaire: {
+                    Divers: {
+                        prixDefault: 500, alternatives: [500], mode_stock: 'manuel',
+                        unite_stock: 'unite', ventes: [], categorie_affichage: null
+                    }
+                }
+            });
+
+        expect(res.status).toBe(200);
+        expect(existant.update).toHaveBeenCalledWith(expect.objectContaining({
+            categorie_affichage: null
+        }));
+    });
+});
+
+// =============== Detection des doublons ===============
+//
+// Le risque principal ici n'est pas le calcul, c'est l'ORDRE DE DECLARATION:
+// '/produits/doublons' matche '/produits/:id', et Express retient la premiere
+// route qui correspond. Declaree apres, la detection renverrait silencieusement
+// la reponse de "recupere le produit d'id 'doublons'". Ce test echoue si
+// quelqu'un remonte /produits/:id au-dessus.
+describe('GET /api/admin/config/produits/doublons', () => {
+    const { sequelize } = require('../db');
+
+    beforeEach(() => { sequelize.query.mockReset(); });
+
+    test("n'est pas captee par la route /produits/:id", async () => {
+        sequelize.query
+            .mockResolvedValueOnce([])   // SELECT sur produits: catalogue vide
+            .mockResolvedValueOnce([]);  // information_schema: tables presentes
+
+        const res = await request(makeApp()).get('/api/admin/config/produits/doublons');
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ success: true, groupes: [], tables: [] });
+        // La route /produits/:id passe par Produit.findByPk; si elle avait
+        // repondu, ce mock aurait ete sollicite.
+        expect(mockProduit.findByPk).not.toHaveBeenCalled();
+    });
+
+    test('catalogue sans doublon: groupes vide, jamais une erreur', async () => {
+        sequelize.query
+            .mockResolvedValueOnce([
+                { id: 1, nom: 'Boeuf', type_catalogue: 'inventaire', categorie_affichage: 'Bovin', archived: false, prix_defaut: 4000 },
+                { id: 2, nom: 'Boeuf', type_catalogue: 'vente', categorie_affichage: null, archived: false, prix_defaut: 4200 }
+            ])
+            .mockResolvedValueOnce([{ table_name: 'stocks' }]);
+
+        const res = await request(makeApp()).get('/api/admin/config/produits/doublons');
+
+        expect(res.status).toBe(200);
+        // Meme nom dans DEUX catalogues: c'est le modele normal, pas un doublon.
+        expect(res.body.groupes).toEqual([]);
+    });
+});
+
+describe('POST /api/admin/config/produits/doublons/fusionner', () => {
+    test('400 quand le corps est incomplet', async () => {
+        const res = await request(makeApp())
+            .post('/api/admin/config/produits/doublons/fusionner')
+            .send({ cle: 'citron liquide' });   // ni catalogue ni canonique
+        expect(res.status).toBe(400);
+        expect(res.body.success).toBe(false);
+    });
+});
+
 // =============== POST /produits/:nom/reattach ===============
 describe('POST /api/admin/config/produits/:nom/reattach', () => {
     const { sequelize } = require('../db');

@@ -186,25 +186,19 @@ async function loadExistingProducts() {
         const invData = await invResponse.json();
         
         if (invData.success && invData.produitsInventaire) {
-            const processInventaire = (obj, prefix = '') => {
-                Object.entries(obj).forEach(([key, value]) => {
-                    if (value && typeof value === 'object' && value.prixDefault !== undefined) {
-                        // C'est un produit
-                        const produitNom = prefix ? `${prefix}.${key}` : key;
-                        if (!existingProducts.find(p => p.nom.toLowerCase() === produitNom.toLowerCase())) {
-                            existingProducts.push({
-                                nom: produitNom,
-                                categorie: prefix || 'Inventaire',
-                                type: 'inventaire'
-                            });
-                        }
-                    } else if (value && typeof value === 'object') {
-                        // C'est une catégorie
-                        processInventaire(value, key);
-                    }
+            // Structure PLATE: une entree = un produit, sa categorie est un
+            // champ. L'ancienne version descendait dans les categories et
+            // construisait le nom en `Categorie.Produit` - le rapprochement OCR
+            // cherchait donc "Bovin.Boeuf" et ne retrouvait jamais "Boeuf".
+            Object.entries(invData.produitsInventaire).forEach(([nom, config]) => {
+                if (!config || typeof config !== 'object' || config.prixDefault === undefined) return;
+                if (existingProducts.find(p => p.nom.toLowerCase() === nom.toLowerCase())) return;
+                existingProducts.push({
+                    nom: nom,
+                    categorie: config.categorie_affichage || 'Inventaire',
+                    type: 'inventaire'
                 });
-            };
-            processInventaire(invData.produitsInventaire);
+            });
         }
         
         // Trier par nom

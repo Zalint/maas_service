@@ -2169,7 +2169,25 @@
                                         </tbody>
                                     </table>
                                 </div>
-                                
+
+                                <!-- Produits a stock DERIVE et stock NEGATIF.
+                                     Discret et replie: ce sont des informations de
+                                     controle, pas des chiffres de gestion. Rempli par
+                                     script.js#renderInfoStockAuto. -->
+                                <div id="rec-info-stock-auto" class="mt-2" style="display:none;">
+                                    <button class="btn btn-sm btn-link text-muted p-0 text-decoration-none"
+                                            type="button" data-bs-toggle="collapse"
+                                            data-bs-target="#rec-info-stock-auto-detail">
+                                        <i class="bi bi-info-circle"></i>
+                                        <span id="rec-info-stock-auto-resume"></span>
+                                    </button>
+                                    <div class="collapse mt-2" id="rec-info-stock-auto-detail">
+                                        <div class="card card-body py-2 bg-light border-0">
+                                            <div id="rec-info-stock-auto-corps" class="small"></div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <!-- Conteneur pour les détails -->
                                 <div id="debug-container" class="mt-4" style="display: none;">
                                     <h5>Détails de la réconciliation</h5>
@@ -3931,11 +3949,11 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260806-boot2"></script>
+    <script src="script.js?v=20260807-infostock"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260807-cr2"></script>
+    <script src="js/finance.js?v=20260807-famille"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

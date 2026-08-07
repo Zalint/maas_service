@@ -685,6 +685,14 @@
                                                 <button type="button" class="recherche-filter-item" data-recherche-fam="autres" aria-pressed="false">
                                                     <span aria-hidden="true">📦</span> Autres
                                                 </button>
+                                                <!-- Un produit sans categorie sort SILENCIEUSEMENT du parage, de la
+                                                     famille et du coefficient de decoupe. Rien ne le signalait: ce
+                                                     filtre rend la dette visible. -->
+                                                <button type="button" class="recherche-filter-item" data-recherche-fam="sans" aria-pressed="false"
+                                                        title="Produits sans catégorie : ils sortent du parage, de la famille et du coefficient de découpe sans que rien ne le signale.">
+                                                    <span aria-hidden="true">⚠️</span> Sans catégorie
+                                                    <span class="recherche-count" data-count="sans">0</span>
+                                                </button>
                                             </div>
                                         </div>
 
@@ -725,6 +733,11 @@
                                                     <option value="price-asc">Prix (croissant)</option>
                                                     <option value="price-desc">Prix (décroissant)</option>
                                                 </select>
+                                                <button type="button" class="btn btn-outline-secondary btn-sm" id="recherche-doublons-btn"
+                                                        title="Chercher les produits saisis deux fois sous des orthographes differentes">
+                                                    <i class="bi bi-files" aria-hidden="true"></i> Détecter les doublons
+                                                    <span class="badge bg-danger ms-1" id="recherche-doublons-badge" style="display:none">0</span>
+                                                </button>
                                                 <button type="button" class="btn btn-primary btn-sm" id="recherche-add-btn">
                                                     <i class="bi bi-plus-lg" aria-hidden="true"></i> Ajouter un produit
                                                 </button>
@@ -1430,6 +1443,38 @@
         </div>
     </div>
 
+    <!-- Modal de detection des doublons -->
+    <div class="modal fade" id="doublonsModal" tabindex="-1" aria-labelledby="doublonsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="doublonsModalLabel">
+                        <i class="bi bi-files" aria-hidden="true"></i> Produits en double
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-secondary py-2 small mb-3">
+                        Un doublon, c'est le <strong>même produit saisi deux fois</strong> dans le même
+                        catalogue sous des orthographes différentes — « Citron Liquide » et
+                        « CITRON LIQUIDE ». Un produit présent à la fois dans <em>Généraux</em> et dans
+                        <em>Inventaire</em> n'est <strong>pas</strong> un doublon : c'est le fonctionnement
+                        normal, le produit vendu et la matière stockée portent le même nom.
+                    </div>
+                    <div id="doublons-contenu">
+                        <div class="text-center text-muted py-4">
+                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                            Analyse du catalogue…
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal pour ajouter une catégorie -->
     <div class="modal fade" id="addCategoryModal" tabindex="-1" aria-labelledby="addCategoryModalLabel" aria-hidden="true">
         <div class="modal-dialog">
@@ -1521,7 +1566,8 @@
                             </div>
                             <div class="col-md-6">
                                 <label for="pum-cat-inv" class="form-label small fw-semibold">
-                                    <i class="bi bi-box-seam me-1"></i>Catégorie Inventaire
+                                    <i class="bi bi-box-seam me-1"></i>Catégorie / Alias
+                                    <span class="text-muted fw-normal" style="font-size:.85em;">(inventaire)</span>
                                 </label>
                                 <select id="pum-cat-inv" class="form-select"></select>
                             </div>
@@ -1701,6 +1747,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260805-parage-mois"></script>
+    <script src="admin.js?v=20260807-doublons"></script>
 </body>
 </html> 

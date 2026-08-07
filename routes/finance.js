@@ -94,10 +94,27 @@ const { checkAdvancedAccess } = require('../middlewares/auth');
 // (cf db/update-schema.js). Doit rester strictement identique a
 // l'expression utilisee dans la definition de l'index, sinon Postgres
 // n'utilisera pas l'index pour les requetes.
+// Normalisation partagee des noms de produits: casse et accents ignores.
+const { normaliserNom: normaliserNomProduit } = require('../lib/parage');
+
 const STOCKS_DATE_AS_ISO_SQL =
     "(substring(date FROM 7 FOR 4) || '-' || " +
     "substring(date FROM 4 FOR 2) || '-' || " +
     "substring(date FROM 1 FOR 2))";
+
+// Filtre "cette ligne porte bien une date DD-MM-YYYY". Constante PARTAGEE, et
+// non recopiee dans chaque requete.
+//
+// Il etait ecrit deux fois, et les deux copies ne disaient pas la meme chose:
+// valoriserSnapshotStock avait '^\\d{2}...' (correct), produitsAStockSoirNegatif
+// avait '^\d{2}...'. Dans un litteral de gabarit, \d vaut d: la seconde
+// envoyait '^d{2}-d{2}-d{4}$' a Postgres, ne correspondait a AUCUNE date, et la
+// sous-requete rendait NULL. produitsAStockSoirNegatif retournait donc TOUJOURS
+// un ensemble vide, et l'exclusion des produits a stock douteux n'a jamais eu
+// lieu - alors qu'un commentaire affirmait "STRICTEMENT le meme filtre".
+//
+// Une chaine ordinaire, pas un gabarit: aucun echappement a doubler.
+const STOCKS_DATE_VALIDE_SQL = "date ~ '^\\d{2}-\\d{2}-\\d{4}$'";
 
 // Valorisation d'un snapshot de stock, au prix d'ACHAT quand il est connu.
 //
@@ -119,7 +136,11 @@ const STOCKS_DATE_AS_ISO_SQL =
 // @param {'matin'|'soir'} typeStock
 // @param {string} dateMax    ISO YYYY-MM-DD, borne haute du snapshot cherche
 // @param {Function} pourDate (isoDate) => { prixAchat, ... }
-async function valoriserSnapshotStock(typeStock, dateMax, pourDate) {
+// @param {Set} [produitsExclus] noms de produits a ecarter ENTIEREMENT du
+//   snapshot. Sert a sortir des DEUX bornes un produit dont le stock du soir
+//   est negatif: sa donnee de stock n'est pas fiable, et ses achats sont deja
+//   passes en charge par ailleurs (onglet Depenses).
+async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie, produitsExclus) {
     // La date du snapshot vient des lignes elles-memes: toutes celles d'un
     // meme snapshot la partagent, donc une seule requete suffit.
     const lignes = await sequelize.query(
@@ -129,8 +150,15 @@ async function valoriserSnapshotStock(typeStock, dateMax, pourDate) {
            AND date = (
              SELECT date FROM stocks
              WHERE type_stock = :typeStock
-               AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+               AND ${STOCKS_DATE_VALIDE_SQL}
                AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateMax
+               -- La date retenue doit porter au moins un COMPTAGE reel. Le
+               -- recalcul automatique cree des lignes de stock soir sur des
+               -- journees ou personne n'a compte: sans ce filtre, une date qui
+               -- ne contient que des lignes derivees - souvent negatives -
+               -- supplante le dernier vrai inventaire, et la valeur du point
+               -- de vente tombe a zero.
+               AND is_auto_calculated IS NOT TRUE
              ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
              LIMIT 1
            )`,
@@ -143,8 +171,63 @@ async function valoriserSnapshotStock(typeStock, dateMax, pourDate) {
 
     const { valoriserLignes } = require('../lib/valorisation-stock');
     const prixAchat = pourDate ? pourDate(isoSnapshot).prixAchat : null;
-    const r = valoriserLignes({ lignes, prixAchat });
+    const retenues = produitsExclus && produitsExclus.size
+        ? lignes.filter((l) => !produitsExclus.has(normaliserNomProduit(l.produit)))
+        : lignes;
+    const r = valoriserLignes({ lignes: retenues, prixAchat, estBoucherie });
     return { ...r, date_utilisee: dateUtilisee };
+}
+
+// Produits dont le stock du soir est NEGATIF a la date consideree.
+//
+// Un stock negatif est la signature d'entrees non saisies: la marchandise a
+// ete achetee - et passee en charge dans l'onglet Depenses - mais jamais
+// enregistree en stock. Sa donnee de stock n'est donc pas fiable.
+//
+// On l'ecarte des DEUX bornes de la variation, pas seulement de celle qui est
+// negative. N'en retirer qu'une compare deux perimetres et fabrique une
+// consommation: un produit passant de 10 a -15 verrait sa variation ramenee a
+// -10, soit le stock du matin entierement consomme. Et le compter tel quel
+// (-25) ajouterait au PL un cout deja porte par les Depenses.
+async function produitsAStockSoirNegatif(dateMax) {
+    const rows = await sequelize.query(
+        `SELECT DISTINCT produit FROM stocks
+         WHERE type_stock = 'soir'
+           AND quantite::numeric < 0
+           AND date = (
+             SELECT date FROM stocks
+             WHERE type_stock = 'soir'
+               AND ${STOCKS_DATE_VALIDE_SQL}
+               AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateMax
+               -- STRICTEMENT le meme filtre que valoriserSnapshotStock, sinon
+               -- les deux designent des journees differentes et l'exclusion
+               -- porte sur des produits qui ne sont pas dans le snapshot
+               -- valorise.
+               AND is_auto_calculated IS NOT TRUE
+             ORDER BY ${STOCKS_DATE_AS_ISO_SQL} DESC
+             LIMIT 1
+           )`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { dateMax } }
+    );
+    // Deux vues du meme ensemble, et c'est deliberé. Le FILTRAGE compare des
+    // noms normalises - il doit rapprocher "Boeuf en detail" de "Boeuf En
+    // Detail". L'AFFICHAGE, lui, doit rendre le nom tel qu'il est ecrit: un
+    // avertissement disant "boeuf en detail" envoie l'utilisateur chercher dans
+    // son catalogue un produit qui n'y figure pas sous cette forme.
+    // La liste d'affichage doit compter comme le Set. Le SELECT DISTINCT
+    // distingue les graphies BRUTES la ou le Set les fusionne: sans
+    // deduplication, "Poulet en détail" et "Poulet En Détail" s'affichent cote
+    // a cote comme deux produits, et le compteur annonce 5 ecartes quand le
+    // calcul n'en a ecarte que 4. Cas reel sur 3 des 80 dates de snapshot.
+    const set = new Set();
+    const parCle = new Map();
+    for (const r of rows) {
+        const cle = normaliserNomProduit(r.produit);
+        set.add(cle);
+        if (!parCle.has(cle)) parCle.set(cle, r.produit);   // premiere graphie vue
+    }
+    set.pourAffichage = [...parCle.values()].sort((a, b) => a.localeCompare(b, 'fr'));
+    return set;
 }
 
 const router = express.Router();
@@ -1217,7 +1300,11 @@ router.get('/pl', async (req, res) => {
         }
         const ventes = await Vente.findAll({
             where: { date: { [SeqOp.in]: dateList } },
-            attributes: ['montant']
+            // 'produit' est indispensable a la ventilation par famille. Une
+            // liste d'attributs explicite ne remonte QUE ce qu'elle nomme, sans
+            // erreur: sans lui, estBoucherie recevait undefined et classait
+            // 100% du chiffre d'affaires hors boucherie.
+            attributes: ['montant', 'produit']
         });
         // totalVentes = somme des Vente.montant REELLES uniquement.
         // Les commandes envoyees au CDC sont prises en compte ailleurs dans
@@ -1348,9 +1435,30 @@ router.get('/pl', async (req, res) => {
         const resolveurPrix = await creerResolveurPrixAchat(dateFin);
         // Les deux bornes sont independantes: elles partent ensemble plutot
         // qu'en serie, le resolveur de prix etant deja charge.
+        // La famille (Boucherie / Epicerie / Autres) vient de categories.famille,
+        // partagee avec le parage: c'est la notion metier qui separe la viande
+        // du reste, et elle range la Volaille et le Caprin AVEC le bovin.
+        const { chargerContexteParage } = require('../lib/parage-contexte');
+        const ctxFamille = await chargerContexteParage(sequelize);
+        const estBoucherie = ctxFamille.estBoucherie;
+        // Ventilation des ventes par famille, pour information: savoir quelle
+        // part du chiffre d'affaires ne vient pas de la viande. Meme resolveur
+        // que le stock, donc les deux se lisent avec la meme definition.
+        let ventesBoucherie = 0;
+        let ventesHorsBoucherie = 0;
+        for (const v of ventes) {
+            const m = parseFloat(v.montant) || 0;
+            if (estBoucherie(v.produit)) ventesBoucherie += m;
+            else ventesHorsBoucherie += m;
+        }
+
+        // Le MEME jeu de produits est ecarte des deux bornes, sinon la variation
+        // compare deux perimetres. Il est determine sur le stock du soir, la ou
+        // le negatif apparait.
+        const produitsNonFiables = await produitsAStockSoirNegatif(dateFin);
         const [stockMatinVal, stockSoirVal] = await Promise.all([
-            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate),
-            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate)
+            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate, estBoucherie, produitsNonFiables),
+            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate, estBoucherie, produitsNonFiables)
         ]);
 
         const stockMatinDebut = stockMatinVal.valeur;
@@ -1384,7 +1492,13 @@ router.get('/pl', async (req, res) => {
             ? pertesPct
             : 5;
         const coeffStock = (100 - safePertesPct) / 100;
-        const variationStockNette = coeffStock * variationStockBrute;
+        // Le coefficient de pertes de DECOUPE ne s'applique qu'a la viande.
+        // Applique a toute la variation, il retranchait 5% a des sachets
+        // d'epicerie qu'on ne pare pas - et comme le stock des produits
+        // automatiques vaut leurs ventes, il en rognait 5% sans raison.
+        const variationBoucherie = stockSoirVal.valeur_boucherie - stockMatinVal.valeur_boucherie;
+        const variationHorsBoucherie = stockSoirVal.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
+        const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
         // 7. PL final
         const pl = totalVentes
@@ -1401,6 +1515,14 @@ router.get('/pl', async (req, res) => {
             data: {
                 periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
                 total_ventes: round2(totalVentes),
+                // Part non-boucherie du chiffre d'affaires, pour information.
+                // Un produit sans famille connue compte comme hors boucherie:
+                // mieux vaut le signaler que le ranger d'office dans la viande.
+                ventes_boucherie: round2(ventesBoucherie),
+                ventes_hors_boucherie: round2(ventesHorsBoucherie),
+                ventes_hors_boucherie_pct: totalVentes > 0
+                    ? round2((ventesHorsBoucherie / totalVentes) * 100)
+                    : null,
                 total_avances: round2(totalAvances),
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
@@ -1435,6 +1557,21 @@ router.get('/pl', async (req, res) => {
                     // par borne: elles n'ont aucune raison d'etre identiques.
                     matin_au_prix_de_vente: stockMatinAuPrixDeVente,
                     soir_au_prix_de_vente: stockSoirAuPrixDeVente,
+                    // Le coefficient ne porte que sur la boucherie: l'ecran doit
+                    // pouvoir le dire plutot que laisser croire a un 5% global.
+                    variation_boucherie: round2(variationBoucherie),
+                    variation_hors_boucherie: round2(variationHorsBoucherie),
+                    // Stocks negatifs ecartes de la somme (produits a stock
+                    // calcule dont les entrees ne sont pas saisies).
+                    negatifs_ignores: round2(
+                        (stockMatinVal.valeur_negative_ignoree || 0)
+                        + (stockSoirVal.valeur_negative_ignoree || 0)
+                    ),
+                    nb_lignes_negatives:
+                        (stockMatinVal.lignes_negatives || []).length
+                        + (stockSoirVal.lignes_negatives || []).length,
+                    // Produits ecartes des DEUX bornes faute de stock fiable.
+                    produits_ecartes: produitsNonFiables.pourAffichage || [],
                     // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
                     // lot pour la journee, historique illisible. Sans cela, un
                     // repli sur le catalogue fournisseur reste invisible et le
@@ -1630,7 +1767,14 @@ router.get('/cash-stock', async (req, res) => {
         // la MEME fonction, pour que les deux ecrans ne puissent pas diverger.
         const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
         const resolveurPrix = await creerResolveurPrixAchat(dateD);
-        const stockSoirVal = await valoriserSnapshotStock('soir', dateD, resolveurPrix.pourDate);
+        // La famille (Boucherie / Epicerie / Autres) vient de categories.famille,
+        // partagee avec le parage: c'est la notion metier qui separe la viande
+        // du reste, et elle range la Volaille et le Caprin AVEC le bovin.
+        const { chargerContexteParage } = require('../lib/parage-contexte');
+        const ctxFamille = await chargerContexteParage(sequelize);
+        const estBoucherie = ctxFamille.estBoucherie;
+        const produitsNonFiables = await produitsAStockSoirNegatif(dateD);
+        const stockSoirVal = await valoriserSnapshotStock('soir', dateD, resolveurPrix.pourDate, estBoucherie, produitsNonFiables);
         const stockSoirBrut = stockSoirVal.valeur;
         const stockSoirDateUtilisee = stockSoirVal.date_utilisee;
         const stockAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
@@ -1646,7 +1790,10 @@ router.get('/cash-stock', async (req, res) => {
             ? pertesPct
             : 5;
         const coeff = (100 - safePertesPct) / 100;
-        const stockSoirNet = coeff * stockSoirBrut;
+        // Meme regle qu'au PL: le coefficient de decoupe ne porte que sur la
+        // viande. L'epicerie entre a sa valeur pleine.
+        const stockSoirNet = coeff * stockSoirVal.valeur_boucherie
+            + stockSoirVal.valeur_hors_boucherie;
 
         // 3) Cash en caisse = somme montant_total_caisse pour la derniere
         //    cloture (is_latest) de chaque PV a la date D. NULL ignore.
@@ -1734,7 +1881,12 @@ router.get('/cash-stock', async (req, res) => {
                     soir_net: round2(stockSoirNet),
                     // Produits restes au prix de vente, faute de prix d'achat
                     // fournisseur: l'ecran les marque d'un asterisque.
-                    produits_au_prix_de_vente: stockAuPrixDeVente
+                    produits_au_prix_de_vente: stockAuPrixDeVente,
+                    soir_boucherie: round2(stockSoirVal.valeur_boucherie || 0),
+                    soir_hors_boucherie: round2(stockSoirVal.valeur_hors_boucherie || 0),
+                    negatifs_ignores: round2(stockSoirVal.valeur_negative_ignoree || 0),
+                    nb_lignes_negatives: (stockSoirVal.lignes_negatives || []).length,
+                    produits_ecartes: produitsNonFiables.pourAffichage || []
                 },
                 depot_mata: round2(depotMataTotal),
                 cash: {
