@@ -2333,18 +2333,24 @@
         // La periode par DEFAUT est celle du PL - les deux onglets parlent du
         // meme resultat - mais elle reste modifiable.
         //
-        // Ces deux affectations etaient inconditionnelles: on ecrasait la saisie
-        // de l'utilisateur a chaque clic sur Calculer, et la requete partait sur
-        // la periode du PL. Les champs paraissaient editables, leurs valeurs
-        // revenaient toutes seules, et rien ne le signalait. Le garde `!value`
-        // est celui qu'utilise deja ensureDefaultDates juste au-dessus.
-        ensureDefaultDates();
+        // L'ORDRE compte. ensureDefaultDates remplit desormais aussi les deux
+        // champs de la simulation (1er du mois -> aujourd'hui): l'appeler AVANT
+        // rendait la reprise de la periode du PL inatteignable, puisque le garde
+        // `!value` ne trouvait plus de champ vide. Le code etait mort, et mon
+        // test a l'ecran ne l'a pas vu parce que les deux chemins donnaient la
+        // meme date ce jour-la. Avec un PL cale sur juillet, la simulation
+        // serait partie sur aout.
+        //
+        // On herite donc d'abord du PL, puis ensureDefaultDates ne comble que
+        // ce qui reste vide. Une saisie de l'utilisateur, elle, n'est jamais
+        // ecrasee: les deux etapes testent `!value`.
         const debutEl = document.getElementById('fin-sim-date-debut');
         const finEl = document.getElementById('fin-sim-date-fin');
         const plDebut = document.getElementById('fin-pl-date-debut');
         const plFin = document.getElementById('fin-pl-date-fin');
         if (debutEl && !debutEl.value && plDebut && plDebut.value) debutEl.value = plDebut.value;
         if (finEl && !finEl.value && plFin && plFin.value) finEl.value = plFin.value;
+        ensureDefaultDates();
 
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {

@@ -1321,6 +1321,30 @@ router.get('/simulation', async (req, res) => {
             return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
         }
 
+        // Memes bornes que le PL, aux memes mots. Les deux routes sont appelees
+        // ENSEMBLE par l'ecran: si l'une refuse et l'autre accepte, l'utilisateur
+        // recoit deux verdicts contradictoires pour une seule question.
+        //
+        // Sans ces gardes, une periode inversee rendait un IN () vide et donc un
+        // 500 avec le message d'erreur SQL brut a l'ecran, et une periode de dix
+        // ans construisait une liste de 7 308 dates la ou le PL refusait net.
+        const startD = new Date(dateDebut + 'T00:00:00Z');
+        const endD = new Date(dateFin + 'T00:00:00Z');
+        if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+        if (startD > endD) {
+            return res.status(400).json({ success: false, error: 'dateDebut must be <= dateFin' });
+        }
+        const nbJours = Math.floor((endD - startD) / 86400000) + 1;
+        const MAX_JOURS = 366;
+        if (nbJours > MAX_JOURS) {
+            return res.status(400).json({
+                success: false,
+                error: `periode trop longue (${nbJours} jours, max ${MAX_JOURS})`
+            });
+        }
+
         // MEME filtre de date que le PL, via le meme helper. J'avais d'abord
         // ecrit `date >= :debut AND date <= :fin`, en supposant que ventes.date
         // etait toujours en ISO. C'est vrai des tenants d'aujourd'hui - verifie,
