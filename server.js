@@ -3196,7 +3196,11 @@ app.post('/api/stock/:type', checkAuth, checkWriteAccess, checkStockTimeRestrict
                 const { autoSet, calcByKey } = await computeStockSoirAutoValues(date);
                 classify = (pv, produit, valeur) => {
                     if (!autoSet.has(normaliserNomProduit(produit))) return false;
-                    const calc = calcByKey.get(`${pv}|${produit}`);
+                    // La cle de calcByKey est NORMALISEE, comme le test juste
+                    // au-dessus. Avec le nom brut, une graphie divergente rendait
+                    // calc indefini et la ligne etait classee en saisie manuelle
+                    // alors qu'elle etait bel et bien derivee.
+                    const calc = calcByKey.get(`${pv}|${normaliserNomProduit(produit)}`);
                     if (calc === undefined) return false;
                     return Math.abs(calc - valeur) < 0.001;
                 };

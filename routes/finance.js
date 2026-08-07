@@ -209,7 +209,14 @@ async function produitsAStockSoirNegatif(dateMax) {
            )`,
         { type: sequelize.QueryTypes.SELECT, replacements: { dateMax } }
     );
-    return new Set(rows.map((r) => normaliserNomProduit(r.produit)));
+    // Deux vues du meme ensemble, et c'est deliberé. Le FILTRAGE compare des
+    // noms normalises - il doit rapprocher "Boeuf en detail" de "Boeuf En
+    // Detail". L'AFFICHAGE, lui, doit rendre le nom tel qu'il est ecrit: un
+    // avertissement disant "boeuf en detail" envoie l'utilisateur chercher dans
+    // son catalogue un produit qui n'y figure pas sous cette forme.
+    const set = new Set(rows.map((r) => normaliserNomProduit(r.produit)));
+    set.pourAffichage = rows.map((r) => r.produit).sort((a, b) => a.localeCompare(b, 'fr'));
+    return set;
 }
 
 const router = express.Router();
@@ -1553,7 +1560,7 @@ router.get('/pl', async (req, res) => {
                         (stockMatinVal.lignes_negatives || []).length
                         + (stockSoirVal.lignes_negatives || []).length,
                     // Produits ecartes des DEUX bornes faute de stock fiable.
-                    produits_ecartes: Array.from(produitsNonFiables).sort(),
+                    produits_ecartes: produitsNonFiables.pourAffichage || [],
                     // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
                     // lot pour la journee, historique illisible. Sans cela, un
                     // repli sur le catalogue fournisseur reste invisible et le
@@ -1868,7 +1875,7 @@ router.get('/cash-stock', async (req, res) => {
                     soir_hors_boucherie: round2(stockSoirVal.valeur_hors_boucherie || 0),
                     negatifs_ignores: round2(stockSoirVal.valeur_negative_ignoree || 0),
                     nb_lignes_negatives: (stockSoirVal.lignes_negatives || []).length,
-                    produits_ecartes: Array.from(produitsNonFiables).sort()
+                    produits_ecartes: produitsNonFiables.pourAffichage || []
                 },
                 depot_mata: round2(depotMataTotal),
                 cash: {
