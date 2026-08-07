@@ -929,6 +929,97 @@ async function updateSchema() {
                 poses += meta ? meta.rowCount : 0;
             }
             console.log(`Categories d'inventaire posees pour les produits purement stock: ${poses}`);
+
+            // La BOUCHERIE se compte a la main, jamais par derivation.
+            //
+            // Le stock du soir en mode automatique vaut matin + transferts -
+            // ventes. Pour une DECOUPE - "Boeuf en detail", "Boeuf en gros",
+            // "Veau en detail", "Poulet en gros" - le stock n'est pas tenu sous
+            // ce nom: la marchandise entre en stock sous "Boeuf", la carcasse,
+            // et ressort sous le nom des decoupes. Leur matin et leurs
+            // transferts valent donc zero, et la formule rend -ventes.
+            //
+            // Ce n'etait pas visible jusqu'ici: la requete des ventes
+            // interrogeait la table avec un format de date qu'elle n'utilise
+            // pas, agg.ventes valait toujours 0, et le calcul rendait
+            // paisiblement zero. Corriger ce defaut REVEILLE les negatifs -
+            // mesure sur les donnees de production: Boeuf en detail passe de 0
+            // a -51,75 au 06-08. Le PL lit alors ces produits comme "stock non
+            // fiable" et les ecarte des DEUX bornes de sa variation.
+            //
+            // On bascule donc la boucherie en manuel. Les lignes deja derivees
+            // pour ces produits sont des artefacts du mode automatique: elles
+            // ne se regenereront plus, et les laisser figerait un negatif que
+            // rien ne viendrait corriger.
+            const tableCategoriesPresente = await checkTableExists('categories');
+            if (tableCategoriesPresente) {
+                // Avant de trier par famille, il faut que la categorie EXISTE.
+                //
+                // L'import OCR a laisse "Import OCR" comme categorie_affichage
+                // sur une trentaine de produits. Ce n'est pas une categorie: la
+                // table categories ne la connait pas, donc ces produits n'ont
+                // aucune famille et echappent au partage boucherie / epicerie.
+                // La migration precedente ne remplissait que les categories
+                // VIDES, elle ne les a donc pas touches.
+                //
+                // On leur pose la categorie de leur homonyme au catalogue de
+                // vente, qui est la source de verite - c'est la meme regle
+                // d'heritage que pour les categories vides. Jarret, Sans Os,
+                // Viande Hachee, Tete Agneau et les Poulet en detail
+                // redeviennent ainsi de la boucherie.
+                const [, metaOrphelines] = await sequelize.query(`
+                    UPDATE produits p
+                    SET categorie_affichage = v.categorie
+                    FROM (
+                        SELECT DISTINCT ON (LOWER(TRIM(pv.nom)))
+                               LOWER(TRIM(pv.nom)) AS cle, c.nom AS categorie
+                        FROM produits pv
+                        JOIN categories c ON c.id = pv.categorie_id
+                        WHERE pv.type_catalogue = 'vente'
+                        ORDER BY LOWER(TRIM(pv.nom)), pv.id
+                    ) v
+                    WHERE p.type_catalogue = 'inventaire'
+                      AND LOWER(TRIM(p.nom)) = v.cle
+                      AND NOT EXISTS (
+                          SELECT 1 FROM categories c2
+                          WHERE LOWER(TRIM(c2.nom)) = LOWER(TRIM(p.categorie_affichage))
+                      )
+                `);
+                const orphelinesRattachees = metaOrphelines ? metaOrphelines.rowCount : 0;
+                if (orphelinesRattachees) {
+                    console.log(`Categories d'inventaire inconnues remplacees par celle du `
+                        + `catalogue de vente: ${orphelinesRattachees}`);
+                }
+
+                const [, metaMode] = await sequelize.query(`
+                    UPDATE produits p
+                    SET mode_stock = 'manuel'
+                    FROM categories c
+                    WHERE p.type_catalogue = 'inventaire'
+                      AND p.mode_stock = 'automatique'
+                      AND LOWER(TRIM(c.nom)) = LOWER(TRIM(p.categorie_affichage))
+                      AND c.famille = 'Boucherie'
+                `);
+                const bascules = metaMode ? metaMode.rowCount : 0;
+
+                let lignesSupprimees = 0;
+                if (bascules > 0 && await checkTableExists('stocks')) {
+                    const [, metaStock] = await sequelize.query(`
+                        DELETE FROM stocks s
+                        USING produits p, categories c
+                        WHERE s.is_auto_calculated IS TRUE
+                          AND LOWER(TRIM(s.produit)) = LOWER(TRIM(p.nom))
+                          AND p.type_catalogue = 'inventaire'
+                          AND LOWER(TRIM(c.nom)) = LOWER(TRIM(p.categorie_affichage))
+                          AND c.famille = 'Boucherie'
+                    `);
+                    lignesSupprimees = metaStock ? metaStock.rowCount : 0;
+                }
+                if (bascules || lignesSupprimees) {
+                    console.log(`Boucherie repassee en stock manuel: ${bascules} produit(s), `
+                        + `${lignesSupprimees} ligne(s) de stock derivee(s) supprimee(s)`);
+                }
+            }
         }
 
         // adresse_client en TEXT (et non VARCHAR(255)).
