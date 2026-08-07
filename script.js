@@ -964,6 +964,9 @@ async function checkAuth() {
         const cashStockTabItem = document.getElementById('fin-cashstock-tab-item');
         if (plTabItem) plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
         if (cashStockTabItem) cashStockTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+        // Simulation: memes chiffres que le PL, donc meme visibilite.
+        const simulationTabItem = document.getElementById('fin-simulation-tab-item');
+        if (simulationTabItem) simulationTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
 
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         

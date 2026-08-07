@@ -2711,6 +2711,10 @@
                             <li class="nav-item" id="fin-cashstock-tab-item" style="display:none">
                                 <a class="nav-link" href="#" data-fin-tab="cashstock">Cash et Stock</a>
                             </li>
+                            <!-- Simulation: meme visibilite que PL -->
+                            <li class="nav-item" id="fin-simulation-tab-item" style="display:none">
+                                <a class="nav-link" href="#" data-fin-tab="simulation">Simulation</a>
+                            </li>
                         </ul>
                     </div>
                     <div class="card-body">
@@ -3159,6 +3163,38 @@
                                 </div>
                             </div>
                             <div id="fin-pl-result"></div>
+                        </div>
+
+                        <!-- Pane: Simulation - meme visibilite que le PL -->
+                        <div data-fin-pane="simulation" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Sensibilité du résultat au prix de vente.</strong>
+                                Les quantités sont supposées <strong>inchangées</strong> : on mesure l'effet
+                                d'une hausse de prix, pas la réaction des clients. Le résultat suit alors
+                                franc pour franc le chiffre d'affaires.
+                            </div>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-sim-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-sim-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Hausse simulée (FCFA)</label>
+                                    <input type="number" id="fin-sim-bump" class="form-control form-control-sm"
+                                           value="50" min="0" step="50">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-sim-refresh">
+                                        <i class="bi bi-calculator"></i> Calculer
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="fin-sim-result"></div>
                         </div>
 
                         <!-- Pane: Cash et Stock - admin/superviseur uniquement -->
@@ -3953,7 +3989,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260807-famille"></script>
+    <script src="js/finance.js?v=20260808-simulation7"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

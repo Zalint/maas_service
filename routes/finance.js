@@ -230,6 +230,69 @@ async function produitsAStockSoirNegatif(dateMax) {
     return set;
 }
 
+// Produits suivis par l'onglet Simulation, dans l'ordre d'affichage.
+//
+// Liste FERMEE et ecrite en dur: la simulation ne repond qu'a une question
+// precise - de combien bouge le resultat si on touche au prix de ces
+// produits-la. La deduire des ventes ferait apparaitre et disparaitre des
+// lignes d'un mois a l'autre, et un tableau dont les lignes changent ne se
+// compare pas.
+//
+// Chaque nom est compare APRES normalisation (casse et accents ignores):
+// "Poulet en détail" et "Poulet En Détail" sont deux graphies du meme produit
+// dans les ventes de juillet, 77 et 31 unites. Les traiter separement
+// sous-estimerait la sensibilite de 29%.
+const PRODUITS_SIMULATION = [
+    'Boeuf en détail',
+    'Boeuf en gros',
+    'Poulet en détail',
+    'Poulet en gros',
+    'Agneau'
+];
+
+// Produit dont on cherche le prix d'equilibre (PL = 0). Un seul: faire varier
+// plusieurs prix pour annuler le resultat admet une infinite de solutions.
+const PRODUIT_EQUILIBRE = 'Boeuf en détail';
+
+/**
+ * Normalise une date saisie vers YYYY-MM-DD, ou null si la forme est inconnue.
+ * Ecrite UNE fois: elle existait en trois exemplaires identiques dans ce
+ * fichier, et trois copies d'une regle de format finissent par accepter trois
+ * jeux de formats differents sur la meme page.
+ */
+function parseDateVersISO(s) {
+    if (!s) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m = String(s).match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
+/**
+ * Toutes les graphies de date couvrant [dateDebut, dateFin], jour par jour.
+ *
+ * Vente.date est un TEXTE de format mixte selon l'epoque d'insertion:
+ * YYYY-MM-DD pour les lignes recentes, DD-MM-YYYY pour les anciennes. Un
+ * BETWEEN sur des bornes ISO compare lexicographiquement et rate en silence
+ * toutes les lignes historiques - "13-05-2026" commence par '1', la borne
+ * "2026-05-01" par '2'. L'ecart avait ete mesure a 277 924 FCFA sur mai 2026.
+ *
+ * Les tenants actuels ne portent plus aucune date hors ISO, mais deux routes
+ * qui interrogent la meme table par deux chemins differents finiront par rendre
+ * deux chiffres differents. Le PL et la simulation partagent donc ce filtre.
+ */
+function graphiesDeDatesPourPeriode(dateDebut, dateFin) {
+    const dates = [];
+    const cursor = new Date(dateDebut + 'T00:00:00Z');
+    const fin = new Date(dateFin + 'T00:00:00Z');
+    while (cursor <= fin) {
+        const iso = cursor.toISOString().slice(0, 10);
+        dates.push(iso);
+        dates.push(`${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`);
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return dates;
+}
+
 const router = express.Router();
 
 // ============================================================
@@ -253,7 +316,10 @@ const ADVANCED_FINANCE_PREFIXES = [
     '/config',
     '/paiements',
     '/pl',
-    '/cash-stock'
+    '/cash-stock',
+    // La simulation expose les memes chiffres que le PL, sous un autre angle:
+    // elle merite la meme garde.
+    '/simulation'
 ];
 ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
 // DELETE /depenses/:id reste admin via inline check (cf le handler).
@@ -1212,6 +1278,153 @@ router.delete('/charges/:nom', async (req, res) => {
 // Si pas de saisie stock pile aux dates demandees, on prend la date
 // la plus proche <= demandee (fallback).
 //
+/**
+ * GET /api/finance/simulation?dateDebut=&dateFin=
+ *
+ * Volumes vendus, par produit suivi, sur la periode. C'est TOUT ce que cette
+ * route calcule.
+ *
+ * Elle ne recalcule PAS le resultat: le client lit le PL par /api/finance/pl,
+ * la seule route qui l'etablit. Deux chemins qui calculent le meme nombre
+ * finissent toujours par en rendre deux differents - ce depot l'a paye
+ * plusieurs fois.
+ *
+ * Le reste de la simulation est de l'arithmetique sur ces volumes, faite cote
+ * client pour rester instantanee quand on change le montant du bump:
+ *
+ *   sensibilite(X) = X x quantite vendue        (quantites inchangees)
+ *   PL apres bump  = PL actuel + sensibilite(X)
+ *   prix d'equilibre = prix moyen - PL actuel / quantite
+ *
+ * Le coefficient "1 franc de chiffre d'affaires = 1 franc de resultat" a ete
+ * MESURE, pas suppose: en injectant une vente de 1 000 000 puis de 3 000 000 F
+ * sur juillet 2026, le PL bouge d'exactement le meme montant dans les deux cas.
+ * Aucun poste du resultat n'est proportionnel au chiffre d'affaires.
+ */
+router.get('/simulation', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        const today = new Date();
+        const rawDebut = req.query.dateDebut;
+        const rawFin = req.query.dateFin;
+        const dateDebut = rawDebut ? parseDateVersISO(rawDebut)
+            : `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
+        const dateFin = rawFin ? parseDateVersISO(rawFin) : today.toISOString().slice(0, 10);
+        if ((rawDebut && !dateDebut) || (rawFin && !dateFin)) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+
+        // Memes bornes que le PL, aux memes mots. Les deux routes sont appelees
+        // ENSEMBLE par l'ecran: si l'une refuse et l'autre accepte, l'utilisateur
+        // recoit deux verdicts contradictoires pour une seule question.
+        //
+        // Sans ces gardes, une periode inversee rendait un IN () vide et donc un
+        // 500 avec le message d'erreur SQL brut a l'ecran, et une periode de dix
+        // ans construisait une liste de 7 308 dates la ou le PL refusait net.
+        const startD = new Date(dateDebut + 'T00:00:00Z');
+        const endD = new Date(dateFin + 'T00:00:00Z');
+        if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+        }
+        if (startD > endD) {
+            return res.status(400).json({ success: false, error: 'dateDebut must be <= dateFin' });
+        }
+        const nbJours = Math.floor((endD - startD) / 86400000) + 1;
+        const MAX_JOURS = 366;
+        if (nbJours > MAX_JOURS) {
+            return res.status(400).json({
+                success: false,
+                error: `periode trop longue (${nbJours} jours, max ${MAX_JOURS})`
+            });
+        }
+
+        // MEME filtre de date que le PL, via le meme helper. J'avais d'abord
+        // ecrit `date >= :debut AND date <= :fin`, en supposant que ventes.date
+        // etait toujours en ISO. C'est vrai des tenants d'aujourd'hui - verifie,
+        // zero ligne hors format sur les cinq schemas - mais la colonne est un
+        // TEXTE de format mixte, et le PL enumere deja les deux graphies pour
+        // cette raison. Deux routes qui interrogent la meme table par deux
+        // chemins differents finissent par rendre deux chiffres differents.
+        const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
+        const lignes = await sequelize.query(
+            `SELECT produit,
+                    SUM(nombre::numeric)  AS quantite,
+                    SUM(montant::numeric) AS ca,
+                    COUNT(*)::int         AS nb_lignes
+             FROM ventes
+             WHERE date IN (:dateList)
+             GROUP BY produit`,
+            { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
+        );
+
+        // Regroupement par nom normalise: plusieurs graphies d'un meme produit
+        // doivent additionner leurs volumes, pas se concurrencer.
+        const parCle = new Map();
+        for (const l of lignes) {
+            const cle = normaliserNomProduit(l.produit);
+            if (!parCle.has(cle)) parCle.set(cle, { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] });
+            const agg = parCle.get(cle);
+            agg.quantite += Number(l.quantite) || 0;
+            agg.ca += Number(l.ca) || 0;
+            agg.nb_lignes += Number(l.nb_lignes) || 0;
+            if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
+        }
+
+        const produits = PRODUITS_SIMULATION.map((nom) => {
+            const agg = parCle.get(normaliserNomProduit(nom))
+                || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
+            return {
+                nom,
+                quantite: round2(agg.quantite),
+                ca: round2(agg.ca),
+                // Prix MOYEN constate, et non prix de catalogue: c'est celui-la
+                // qui explique le chiffre d'affaires de la periode.
+                prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
+                nb_lignes: agg.nb_lignes,
+                graphies: agg.graphies.sort((a, b) => a.localeCompare(b, 'fr')),
+                // Un produit sans vente n'est pas une erreur, mais sa
+                // sensibilite vaut zero et l'ecran doit pouvoir le dire.
+                sans_vente: agg.quantite === 0
+            };
+        });
+
+        // Somme de TOUTES les lignes de vente de la periode, tous produits
+        // confondus. Le client s'en sert pour verifier que le denominateur des
+        // pourcentages - le total_ventes du PL - se rapporte bien au meme
+        // perimetre que les numerateurs calcules ici.
+        //
+        // Les deux coincident aujourd'hui au franc pres. Mais le numerateur
+        // vient de cette route et le denominateur du PL: le jour ou le PL
+        // filtrera quelque chose que cette requete ne filtre pas, les
+        // pourcentages deviendront faux SANS RIEN DIRE. Renvoyer le total
+        // permet a l'ecran de s'en apercevoir plutot que d'afficher des parts
+        // qui ne somment plus.
+        const totalToutesLignes = lignes.reduce((a, l) => a + (Number(l.ca) || 0), 0);
+
+        res.json({
+            success: true,
+            data: {
+                periode: { dateDebut, dateFin },
+                produits,
+                total_ventes_toutes_lignes: round2(totalToutesLignes),
+                produit_equilibre: PRODUIT_EQUILIBRE,
+                // Mesure, cf le commentaire d'en-tete de cette route.
+                coefficient_pl_par_franc_vendu: 1
+            }
+        });
+    } catch (error) {
+        console.error('Erreur simulation:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
 router.get('/pl', async (req, res) => {
     try {
@@ -1228,17 +1441,11 @@ router.get('/pl', async (req, res) => {
         const today = new Date();
         const defaultDebut = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
         const defaultFin = today.toISOString().slice(0, 10);
-        const toISO = (s) => {
-            if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-        };
         // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
         const rawDebut = req.query.dateDebut;
         const rawFin = req.query.dateFin;
-        const dateDebut = rawDebut ? toISO(rawDebut) : defaultDebut;
-        const dateFin = rawFin ? toISO(rawFin) : defaultFin;
+        const dateDebut = rawDebut ? parseDateVersISO(rawDebut) : defaultDebut;
+        const dateFin = rawFin ? parseDateVersISO(rawFin) : defaultFin;
         if (rawDebut && !dateDebut) {
             return res.status(400).json({ success: false, error: 'invalid dateDebut' });
         }
@@ -1286,18 +1493,7 @@ router.get('/pl', async (req, res) => {
         // GET /api/ventes contourne en filtrant cote JS apres normalisation
         // — on reproduit cette tolerance ici via Op.in enumerant les jours
         // dans les 2 formats. Indexable + correct.
-        const dateList = [];
-        {
-            const cursor = new Date(dateDebut + 'T00:00:00Z');
-            const endCursor = new Date(dateFin + 'T00:00:00Z');
-            while (cursor <= endCursor) {
-                const iso = cursor.toISOString().slice(0, 10); // YYYY-MM-DD
-                dateList.push(iso);
-                // DD-MM-YYYY (format historique).
-                dateList.push(`${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`);
-                cursor.setUTCDate(cursor.getUTCDate() + 1);
-            }
-        }
+        const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
         const ventes = await Vente.findAll({
             where: { date: { [SeqOp.in]: dateList } },
             // 'produit' est indispensable a la ventilation par famille. Une
@@ -1721,14 +1917,8 @@ router.get('/cash-stock', async (req, res) => {
         // Date (defaut: aujourd'hui).
         const today = new Date();
         const todayISO = today.toISOString().slice(0, 10);
-        const toISO = (s) => {
-            if (!s) return null;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-            const m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
-        };
         const rawDate = req.query.date;
-        const dateD = rawDate ? toISO(rawDate) : todayISO;
+        const dateD = rawDate ? parseDateVersISO(rawDate) : todayISO;
         if (rawDate && !dateD) {
             return res.status(400).json({ success: false, error: 'invalid date' });
         }

@@ -82,6 +82,7 @@
                 if (target === 'charges') loadCharges();
                 if (target === 'pl') loadPl();
                 if (target === 'cashstock') loadCashStock();
+                if (target === 'simulation') loadSimulation();
             });
         });
 
@@ -101,6 +102,14 @@
         if (plRefresh) plRefresh.addEventListener('click', loadPl);
         const cashStockRefresh = document.getElementById('fin-cashstock-refresh');
         if (cashStockRefresh) cashStockRefresh.addEventListener('click', loadCashStock);
+        const simRefresh = document.getElementById('fin-sim-refresh');
+        if (simRefresh) simRefresh.addEventListener('click', loadSimulation);
+        // Changer le montant simule ne doit rien retelecharger: tout le calcul
+        // est de l'arithmetique sur des donnees deja en memoire.
+        const simBump = document.getElementById('fin-sim-bump');
+        if (simBump) simBump.addEventListener('input', () => {
+            if (simDernieresDonnees) renderSimulation(simDernieresDonnees);
+        });
         const stockPertesSave = document.getElementById('fin-stock-pertes-save');
         if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
         const stockPertesInput = document.getElementById('fin-stock-pertes-pct');
@@ -176,11 +185,11 @@
         const dd = String(now.getDate()).padStart(2, '0');
         const todayISO = `${yyyy}-${mm}-${dd}`;
         const firstISO = `${yyyy}-${mm}-01`;
-        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-pl-date-debut']) {
+        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-pl-date-debut', 'fin-sim-date-debut']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = firstISO;
         }
-        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-pl-date-fin']) {
+        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-pl-date-fin', 'fin-sim-date-fin']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = todayISO;
         }
@@ -2309,6 +2318,264 @@
     }
 
     // ===== Cash et Stock =====
+
+    // ================= Simulation =================
+    //
+    // Deux appels, jamais un seul: /simulation rend les VOLUMES vendus, /pl rend
+    // le RESULTAT. Recalculer le resultat ici en aurait fait une seconde source,
+    // et deux sources finissent toujours par diverger.
+    let simDernieresDonnees = null;
+
+    async function loadSimulation() {
+        const resultEl = document.getElementById('fin-sim-result');
+        if (!resultEl) return;
+
+        // La periode par DEFAUT est celle du PL - les deux onglets parlent du
+        // meme resultat - mais elle reste modifiable.
+        //
+        // L'ORDRE compte. ensureDefaultDates remplit desormais aussi les deux
+        // champs de la simulation (1er du mois -> aujourd'hui): l'appeler AVANT
+        // rendait la reprise de la periode du PL inatteignable, puisque le garde
+        // `!value` ne trouvait plus de champ vide. Le code etait mort, et mon
+        // test a l'ecran ne l'a pas vu parce que les deux chemins donnaient la
+        // meme date ce jour-la. Avec un PL cale sur juillet, la simulation
+        // serait partie sur aout.
+        //
+        // On herite donc d'abord du PL, puis ensureDefaultDates ne comble que
+        // ce qui reste vide. Une saisie de l'utilisateur, elle, n'est jamais
+        // ecrasee: les deux etapes testent `!value`.
+        const debutEl = document.getElementById('fin-sim-date-debut');
+        const finEl = document.getElementById('fin-sim-date-fin');
+        const plDebut = document.getElementById('fin-pl-date-debut');
+        const plFin = document.getElementById('fin-pl-date-fin');
+        if (debutEl && !debutEl.value && plDebut && plDebut.value) debutEl.value = plDebut.value;
+        if (finEl && !finEl.value && plFin && plFin.value) finEl.value = plFin.value;
+        ensureDefaultDates();
+
+        resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
+        try {
+            const qs = new URLSearchParams();
+            if (debutEl && debutEl.value) qs.set('dateDebut', debutEl.value);
+            if (finEl && finEl.value) qs.set('dateFin', finEl.value);
+
+            const [resSim, resPl] = await Promise.all([
+                fetch('/api/finance/simulation?' + qs.toString(), { credentials: 'include' }),
+                fetch('/api/finance/pl?' + qs.toString(), { credentials: 'include' })
+            ]);
+            if (resSim.status === 403 || resPl.status === 403) {
+                resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
+                return;
+            }
+            const jsonSim = await resSim.json();
+            const jsonPl = await resPl.json();
+            if (!jsonSim.success || !jsonPl.success) {
+                resultEl.innerHTML = `<div class="alert alert-danger">${esc(jsonSim.error || jsonPl.error || 'Erreur')}</div>`;
+                return;
+            }
+            simDernieresDonnees = { sim: jsonSim.data, pl: jsonPl.data };
+            renderSimulation(simDernieresDonnees);
+        } catch (e) {
+            resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    function renderSimulation({ sim, pl }) {
+        const resultEl = document.getElementById('fin-sim-result');
+        if (!resultEl) return;
+
+        const plActuel = Number(pl.pl) || 0;
+        const bumpEl = document.getElementById('fin-sim-bump');
+        const bump = Math.max(0, Number(bumpEl && bumpEl.value) || 0);
+        const produits = sim.produits || [];
+
+        // --- Sensibilites a 100 F. Quantites inchangees, donc l'effet sur le
+        // chiffre d'affaires vaut 100 x quantite vendue.
+        const totalVentes = Number(pl.total_ventes) || 0;
+        const lignes = produits.map((p) => {
+            const cfa100 = 100 * p.quantite;
+            const effetBump = bump * p.quantite;
+            // Poids du produit dans le chiffre d'affaires de la periode. C'est
+            // ce qui dit si une sensibilite pese vraiment: 71 580 F sur le
+            // boeuf en detail n'a pas le meme sens selon qu'il fait 5% ou 66%
+            // des ventes.
+            const partVentes = totalVentes > 0 ? (p.ca / totalVentes) * 100 : null;
+            return { ...p, cfa100, effetBump, partVentes, plApres: plActuel + effetBump };
+        });
+
+        const totaux = lignes.reduce((acc, l) => ({
+            ca: acc.ca + l.ca,
+            cfa100: acc.cfa100 + l.cfa100,
+            effetBump: acc.effetBump + l.effetBump
+        }), { ca: 0, cfa100: 0, effetBump: 0 });
+        const partTotale = totalVentes > 0 ? (totaux.ca / totalVentes) * 100 : null;
+        const fmtPct = (v) => (v === null ? '—' : v.toFixed(1) + ' %');
+        // Les quantites ne sont pas des montants, mais elles restent des
+        // nombres francais: 715,8 et non 715.8, comme partout ailleurs.
+        const fmtQte = (v) => Number(v || 0).toLocaleString('fr-FR');
+
+        // Le numerateur des pourcentages vient de /simulation, le denominateur
+        // du PL. Ils se rapportent au meme perimetre aujourd'hui - verifie au
+        // franc pres - mais rien ne le garantit demain. Si l'ecart apparait,
+        // l'ecran le dit plutot que d'afficher des parts qui ne somment plus.
+        const totalSim = Number(sim.total_ventes_toutes_lignes);
+        const ecartPerimetre = Number.isFinite(totalSim) ? Math.abs(totalSim - totalVentes) : 0;
+        const alertePerimetre = ecartPerimetre > 1
+            ? `<div class="alert alert-warning py-2 small mb-3">
+                 <i class="bi bi-exclamation-triangle"></i>
+                 Les pourcentages rapportent des ventes par produit
+                 (${esc(fmtMoney(totalSim))}) au total du PL
+                 (${esc(fmtMoney(totalVentes))}). Ces deux totaux diffèrent de
+                 ${esc(fmtMoney(ecartPerimetre))} : les parts ci-dessous ne
+                 somment pas à 100 % et sont à lire avec prudence.
+               </div>`
+            : '';
+
+        const signe = (v) => (v > 0 ? '+' : (v < 0 ? '−' : ''));
+        const montantSigne = (v) => `${signe(v)}${fmtMoney(Math.abs(v))}`;
+
+        const lignesHtml = lignes.map((l) => {
+            // Sans vente, la sensibilite vaut zero et le resultat ne bouge pas.
+            // La colonne "PL apres" doit donc porter le PL INCHANGE, et non la
+            // note: une colonne de montants qui contient parfois du texte ne se
+            // lit plus en diagonale.
+            if (l.sans_vente) {
+                return `<tr class="text-muted">
+                    <td>${esc(l.nom)}
+                        <span class="small">— aucune vente sur la période</span></td>
+                    <td class="text-end">0</td>
+                    <td class="text-end">—</td>
+                    <td class="text-end">${esc(fmtMoney(0))}</td>
+                    <td class="text-end">${esc(fmtPct(0))}</td>
+                    <td class="text-end">${esc(fmtMoney(0))}</td>
+                    <td class="text-end">${esc(fmtMoney(0))}</td>
+                    <td class="text-end">${esc(montantSigne(plActuel))}</td>
+                </tr>`;
+            }
+            return `<tr>
+                <td>${esc(l.nom)}${l.graphies.length > 1
+                    ? ` <i class="bi bi-info-circle text-muted" style="font-size:.8rem"
+                         title="${esc(l.graphies.join(' + '))}"></i>` : ''}</td>
+                <td class="text-end">${esc(fmtQte(l.quantite))}</td>
+                <td class="text-end">${esc(fmtMoney(l.prix_moyen))}</td>
+                <td class="text-end">${esc(fmtMoney(l.ca))}</td>
+                <td class="text-end fw-medium">${esc(fmtPct(l.partVentes))}</td>
+                <td class="text-end fw-medium text-success">${esc(fmtMoney(l.cfa100))}</td>
+                <td class="text-end fw-medium text-success">${esc(fmtMoney(l.effetBump))}</td>
+                <td class="text-end fw-medium ${l.plApres >= 0 ? 'text-success' : 'text-danger'}">${
+                    esc(montantSigne(l.plApres))}</td>
+            </tr>`;
+        }).join('');
+
+        // --- Prix d'equilibre, sur un seul produit.
+        const cible = lignes.find((l) => l.nom === sim.produit_equilibre);
+        let equilibreHtml;
+        if (!cible || cible.sans_vente) {
+            equilibreHtml = `<div class="alert alert-secondary py-2 small mb-0">
+                Pas de vente de <strong>${esc(sim.produit_equilibre)}</strong> sur la période :
+                aucun prix ne peut ramener le résultat à zéro par ce seul levier.</div>`;
+        } else {
+            // PL + hausse x quantite = 0  =>  hausse = -PL / quantite
+            const hausse = -plActuel / cible.quantite;
+            const prixEq = cible.prix_moyen + hausse;
+            const pct = cible.prix_moyen > 0 ? (hausse / cible.prix_moyen) * 100 : null;
+            const enBaisse = hausse < 0;
+            equilibreHtml = `
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <div class="card border-${enBaisse ? 'success' : 'danger'} h-100">
+                            <div class="card-body text-center">
+                                <h6 class="card-subtitle mb-2 text-muted">Prix d'équilibre</h6>
+                                <h2 class="text-${enBaisse ? 'success' : 'danger'} mb-0">${esc(fmtMoney(prixEq))}</h2>
+                                <div class="small text-muted mt-2">par unité de ${esc(cible.nom)}</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-8">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <tbody>
+                                    <tr><td>Résultat actuel sur la période</td>
+                                        <td class="text-end fw-medium ${plActuel >= 0 ? 'text-success' : 'text-danger'}">${
+                                            esc(montantSigne(plActuel))}</td></tr>
+                                    <tr><td>Quantité vendue</td>
+                                        <td class="text-end">${esc(fmtQte(cible.quantite))}</td></tr>
+                                    <tr><td>Prix moyen constaté</td>
+                                        <td class="text-end">${esc(fmtMoney(cible.prix_moyen))}</td></tr>
+                                    <tr class="table-light fw-bold">
+                                        <td>${enBaisse ? 'Baisse possible' : 'Hausse nécessaire'} par unité</td>
+                                        <td class="text-end">${esc(montantSigne(hausse))}</td></tr>
+                                </tbody>
+                            </table>
+                            <div class="small text-muted mt-1">
+                                ${enBaisse
+                                    ? `Le résultat est <strong>positif</strong> : c'est la marge de baisse
+                                       avant de passer sous zéro.`
+                                    : `Le résultat est <strong>négatif</strong> : c'est la hausse qu'il faudrait
+                                       appliquer pour l'annuler.`}
+                                ${pct !== null ? ` Soit ${esc(Math.abs(pct).toFixed(1))} % du prix actuel.` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        resultEl.innerHTML = `
+            ${alertePerimetre}
+            <h6 class="fin-subheading">Sensibilité au prix de vente</h6>
+            <div class="table-responsive mb-3">
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr>
+                            <th>Produit</th>
+                            <th class="text-end">Quantité</th>
+                            <th class="text-end">Prix moyen</th>
+                            <th class="text-end">Ventes</th>
+                            <th class="text-end">% des ventes</th>
+                            <th class="text-end">CFA 100</th>
+                            <th class="text-end">Effet ${esc(signe(bump))}${esc(fmtMoney(bump))}</th>
+                            <th class="text-end">PL après</th>
+                        </tr>
+                    </thead>
+                    <tbody>${lignesHtml}</tbody>
+                    <tfoot>
+                        <tr>
+                            <th style="background:#f8fafc">Total des produits suivis</th>
+                            <th colspan="2" style="background:#f8fafc"></th>
+                            <th class="text-end" style="background:#f8fafc">${esc(fmtMoney(totaux.ca))}</th>
+                            <th class="text-end" style="background:#f8fafc">${esc(fmtPct(partTotale))}</th>
+                            <th class="text-end text-success" style="background:#f8fafc">${esc(fmtMoney(totaux.cfa100))}</th>
+                            <th class="text-end text-success" style="background:#f8fafc">${esc(fmtMoney(totaux.effetBump))}</th>
+                            <th class="text-end ${(plActuel + totaux.effetBump) >= 0 ? 'text-success' : 'text-danger'}"
+                                style="background:#f8fafc">${esc(montantSigne(plActuel + totaux.effetBump))}</th>
+                        </tr>
+                        <tr>
+                            <th style="background:#f8fafc">Résultat actuel</th>
+                            <th colspan="6" style="background:#f8fafc"></th>
+                            <th class="text-end ${plActuel >= 0 ? 'text-success' : 'text-danger'}"
+                                style="background:#f8fafc">${esc(montantSigne(plActuel))}</th>
+                        </tr>
+                    </tfoot>
+                </table>
+                <div class="small text-muted mt-1">
+                    <strong>CFA 100</strong> : ce que rapporterait 100 FCFA de plus sur le prix unitaire,
+                    à quantités inchangées. Un franc de chiffre d'affaires fait un franc de résultat —
+                    aucun poste du PL n'est proportionnel aux ventes.
+                    Les packs ne sont pas touchés : ils se vendent à leur propre prix.
+                    <br>
+                    Sur chaque ligne, <strong>PL après</strong> suppose que ce produit
+                    <em>seul</em> augmente. La ligne de total suppose au contraire que
+                    <em>tous</em> augmentent en même temps.
+                </div>
+            </div>
+
+            <h6 class="fin-subheading">Prix d'équilibre — ${esc(sim.produit_equilibre)}</h6>
+            ${equilibreHtml}
+
+            <div class="small text-muted mt-3">
+                Période du ${esc(sim.periode.dateDebut)} au ${esc(sim.periode.dateFin)}.
+                Chiffre d'affaires total : ${esc(fmtMoney(Number(pl.total_ventes) || 0))}.
+            </div>`;
+    }
 
     async function loadCashStock() {
         const resultEl = document.getElementById('fin-cashstock-result');
