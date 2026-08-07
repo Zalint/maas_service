@@ -1356,6 +1356,40 @@ router.get('/produits/doublons', requireAdmin, async (req, res) => {
 });
 
 /**
+ * GET /api/admin/config/produits/by-name
+ * Récupère un produit par nom et type_catalogue
+ */
+router.get('/produits/by-name', requireAdmin, async (req, res) => {
+  try {
+    const { nom, type_catalogue } = req.query;
+    
+    if (!nom || !type_catalogue) {
+      return res.status(400).json({ success: false, error: 'Nom et type_catalogue requis' });
+    }
+    
+    const produit = await Produit.findOne({
+      where: { nom, type_catalogue },
+      include: [
+        { model: Category, as: 'categorie' },
+        {
+          model: PrixPointVente,
+          as: 'prixParPointVente',
+          include: [{ model: PointVente, as: 'pointVente' }]
+        }
+      ]
+    });
+    
+    if (!produit) {
+      return res.status(404).json({ success: false, error: 'Produit non trouvé' });
+    }
+    
+    res.json({ success: true, data: produit });
+  } catch (error) {
+    console.error('Erreur récupération produit par nom:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+/**
  * GET /api/admin/produits/:id
  * Récupère un produit avec son historique de prix
  */
@@ -1721,40 +1755,6 @@ router.delete('/produits/:id/prix/:pointVenteId', requireAdmin, async (req, res)
   }
 });
 
-/**
- * GET /api/admin/config/produits/by-name
- * Récupère un produit par nom et type_catalogue
- */
-router.get('/produits/by-name', requireAdmin, async (req, res) => {
-  try {
-    const { nom, type_catalogue } = req.query;
-    
-    if (!nom || !type_catalogue) {
-      return res.status(400).json({ success: false, error: 'Nom et type_catalogue requis' });
-    }
-    
-    const produit = await Produit.findOne({
-      where: { nom, type_catalogue },
-      include: [
-        { model: Category, as: 'categorie' },
-        {
-          model: PrixPointVente,
-          as: 'prixParPointVente',
-          include: [{ model: PointVente, as: 'pointVente' }]
-        }
-      ]
-    });
-    
-    if (!produit) {
-      return res.status(404).json({ success: false, error: 'Produit non trouvé' });
-    }
-    
-    res.json({ success: true, data: produit });
-  } catch (error) {
-    console.error('Erreur récupération produit par nom:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
 
 // =====================================================
 // HISTORIQUE

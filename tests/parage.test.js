@@ -524,3 +524,32 @@ describe('stock derive: exclusion asymetrique', () => {
         expect(r.ratio).toBeNull();   // rien de mesurable: pas de stock reel
     });
 });
+
+describe('composition de pack et casse', () => {
+    const { compositionDuPack } = require('../lib/parage');
+    const packs = { 'Pack25000': [{ produit: 'Boeuf', quantite: 3 }] };
+
+    // C'etait le SEUL rapprochement de nom du module a passer par une cle brute.
+    // Une vente de pack non reconnue n'est pas eclatee en ses composants: elle
+    // sort du numerateur du parage sans qu'aucun message ne le signale.
+    test('la composition se trouve quelle que soit la casse', () => {
+        expect(compositionDuPack({ produit: 'Pack25000' }, packs)).toHaveLength(1);
+        expect(compositionDuPack({ produit: 'PACK25000' }, packs)).toHaveLength(1);
+        expect(compositionDuPack({ produit: 'pack25000' }, packs)).toHaveLength(1);
+    });
+
+    test('un pack inconnu rend toujours null', () => {
+        expect(compositionDuPack({ produit: 'Pack99999' }, packs)).toBeNull();
+        expect(compositionDuPack({ produit: 'Boeuf' }, packs)).toBeNull();
+    });
+
+    test('la composition portee par la vente prime sur celle du catalogue', () => {
+        const vente = { produit: 'PACK25000', extension: { composition: [{ produit: 'X', quantite: 1 }] } };
+        expect(compositionDuPack(vente, packs)).toEqual([{ produit: 'X', quantite: 1 }]);
+    });
+
+    test('sans catalogue de packs, rien n explose', () => {
+        expect(compositionDuPack({ produit: 'Pack25000' }, null)).toBeNull();
+        expect(compositionDuPack({ produit: 'Pack25000' }, {})).toBeNull();
+    });
+});

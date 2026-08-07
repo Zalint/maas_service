@@ -214,8 +214,19 @@ async function produitsAStockSoirNegatif(dateMax) {
     // Detail". L'AFFICHAGE, lui, doit rendre le nom tel qu'il est ecrit: un
     // avertissement disant "boeuf en detail" envoie l'utilisateur chercher dans
     // son catalogue un produit qui n'y figure pas sous cette forme.
-    const set = new Set(rows.map((r) => normaliserNomProduit(r.produit)));
-    set.pourAffichage = rows.map((r) => r.produit).sort((a, b) => a.localeCompare(b, 'fr'));
+    // La liste d'affichage doit compter comme le Set. Le SELECT DISTINCT
+    // distingue les graphies BRUTES la ou le Set les fusionne: sans
+    // deduplication, "Poulet en détail" et "Poulet En Détail" s'affichent cote
+    // a cote comme deux produits, et le compteur annonce 5 ecartes quand le
+    // calcul n'en a ecarte que 4. Cas reel sur 3 des 80 dates de snapshot.
+    const set = new Set();
+    const parCle = new Map();
+    for (const r of rows) {
+        const cle = normaliserNomProduit(r.produit);
+        set.add(cle);
+        if (!parCle.has(cle)) parCle.set(cle, r.produit);   // premiere graphie vue
+    }
+    set.pourAffichage = [...parCle.values()].sort((a, b) => a.localeCompare(b, 'fr'));
     return set;
 }
 
