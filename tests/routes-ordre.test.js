@@ -27,8 +27,11 @@ function routesDe(fichier, prefixe = 'router', dossier = 'routes') {
         : path.join(__dirname, '..', fichier);
     const src = fs.readFileSync(chemin, 'utf8');
     const routes = [];
+    // On capture aussi ce qui suit le chemin jusqu'au handler: c'est la liste
+    // des middlewares, et une route peut etre au bon endroit tout en ayant
+    // perdu sa garde d'acces.
     const motif = new RegExp(
-        `^${prefixe}\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]`, 'gm');
+        `^${prefixe}\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]([^\\n]*)`, 'gm');
     let m;
     while ((m = motif.exec(src)) !== null) {
         const avant = src.slice(0, m.index);
@@ -36,7 +39,11 @@ function routesDe(fichier, prefixe = 'router', dossier = 'routes') {
             methode: m[1],
             chemin: m[2],
             ligne: avant.split('\n').length,
-            segments: m[2].split('/').filter(Boolean)
+            segments: m[2].split('/').filter(Boolean),
+            middlewares: (m[3] || '')
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => /^[A-Za-z_$][\w$]*$/.test(s))
         });
     }
     return routes;
@@ -98,6 +105,25 @@ describe('ordre de declaration des routes', () => {
             }
         });
         expect(mortes).toEqual([]);
+    });
+
+    // Etre au bon endroit ne suffit pas. Cette route sert le stock de tous les
+    // points de vente; sans checkAuth ni checkReadAccess elle repondait 200 a
+    // une requete sans session. Un simple controle d'ordre ne verrait pas leur
+    // disparition.
+    test('la route de stock garde checkAuth et checkReadAccess', () => {
+        const routes = routesDe('server.js', 'app', null);
+        const stock = routes.filter((r) => r.methode === 'get'
+            && r.chemin.startsWith('/api/stock/:date/'));
+
+        expect(stock.length).toBeGreaterThan(0);
+        for (const route of stock) {
+            expect({ chemin: route.chemin, middlewares: route.middlewares })
+                .toEqual({
+                    chemin: route.chemin,
+                    middlewares: expect.arrayContaining(['checkAuth', 'checkReadAccess'])
+                });
+        }
     });
 
     // Deux handlers sur le meme chemin: le second est mort, en silence. C'est

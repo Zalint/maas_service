@@ -1427,10 +1427,6 @@ router.get('/produits/:id', requireAdmin, async (req, res) => {
 });
 
 /**
- * POST /api/admin/produits
- * Crée un nouveau produit
- */
-/**
  * POST /api/admin/config/produits/creer
  * Cree UN produit. A ne pas confondre avec POST /produits, qui enregistre une
  * configuration en masse et attend un corps { produits: {...} }.

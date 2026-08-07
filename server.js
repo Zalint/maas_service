@@ -3153,8 +3153,18 @@ app.post('/api/stock/copy', checkAuth, checkWriteAccess, async (req, res) => {
     try {
         const { date, dryRun = false } = req.body;
         
-        // Validation des paramètres
-        if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        // Validation des paramètres.
+        //
+        // La FORME ne suffit pas: '2026-02-31', '2026-13-01' et '2026-00-10' la
+        // respectent tous. On verifie donc que la date existe au calendrier, en
+        // repassant par sa representation ISO - `new Date(annee, mois, jour)`
+        // serait interprete en heure LOCALE et decalerait la journee.
+        const dateValide = (s) => {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+            const d = new Date(`${s}T00:00:00Z`);
+            return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+        };
+        if (date && !dateValide(date)) {
             return res.status(400).json({
                 success: false,
                 error: 'Format de date invalide. Utilisez YYYY-MM-DD'
@@ -3189,16 +3199,27 @@ app.post('/api/stock/copy', checkAuth, checkWriteAccess, async (req, res) => {
             stderr += data.toString();
         });
 
+        // 'error' et 'close' peuvent se declencher TOUS LES DEUX: un spawn qui
+        // echoue emet 'error', puis 'close' suit. Deux reponses partaient alors
+        // pour une requete, et la seconde levait ERR_HTTP_HEADERS_SENT. Un seul
+        // point de sortie, garde.
+        let repondu = false;
+        const repondreUneFois = (statut, corps) => {
+            if (repondu) return;
+            repondu = true;
+            res.status(statut).json(corps);
+        };
+
         childProcess.on('close', (code) => {
             if (code === 0) {
-                res.json({
+                repondreUneFois(200, {
                     success: true,
                     message: dryRun ? 'Simulation terminée avec succès' : 'Copie terminée avec succès',
                     output: stdout,
                     dryRun: dryRun
                 });
             } else {
-                res.status(500).json({
+                repondreUneFois(500, {
                     success: false,
                     error: 'Erreur lors de l\'exécution du script',
                     output: stdout,
@@ -3210,7 +3231,7 @@ app.post('/api/stock/copy', checkAuth, checkWriteAccess, async (req, res) => {
 
         childProcess.on('error', (error) => {
             console.error('Erreur lors du lancement du script:', error);
-            res.status(500).json({
+            repondreUneFois(500, {
                 success: false,
                 error: 'Erreur lors du lancement du script',
                 details: error.message
@@ -5393,6 +5414,29 @@ app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) =
         // (script.js#soumettreModificationPrecommande).
         const maj = req.body || {};
         const siFourni = (valeur, actuel) => (valeur !== undefined ? valeur : actuel);
+
+        // Les trois champs numeriques passaient par parseFloat, qui accepte des
+        // conversions PARTIELLES et rend NaN sur une chaine vide. Deux degats:
+        // une saisie vide ecrivait NaN dans une colonne numerique - Postgres
+        // accepte 'NaN' en float8, la ligne devient donc irrecuperable - et
+        // "15,50", la virgule decimale francaise, valait 15. Les centimes
+        // disparaissaient sans un mot.
+        //
+        // Un champ ABSENT garde la valeur actuelle; un champ FOURNI doit etre
+        // un nombre fini, sinon la requete est refusee.
+        const nombreFourni = {};
+        for (const champ of ['prixUnit', 'nombre', 'montant']) {
+            if (maj[champ] === undefined) continue;
+            const brut = maj[champ];
+            const valeur = typeof brut === 'number' ? brut : Number(String(brut).trim());
+            if (!Number.isFinite(valeur) || String(brut).trim() === '') {
+                return res.status(400).json({
+                    success: false,
+                    message: `Valeur numérique invalide pour "${champ}": ${JSON.stringify(brut)}`
+                });
+            }
+            nombreFourni[champ] = valeur;
+        }
         const dataToUpdate = {
             mois: maj.mois || precommande.mois,
             dateEnregistrement: maj.dateEnregistrement
@@ -5404,9 +5448,9 @@ app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) =
             preparation: maj.preparation || precommande.preparation,
             categorie: maj.categorie || precommande.categorie,
             produit: maj.produit || precommande.produit,
-            prixUnit: maj.prixUnit !== undefined ? parseFloat(maj.prixUnit) : precommande.prixUnit,
-            nombre: maj.nombre !== undefined ? parseFloat(maj.nombre) : precommande.nombre,
-            montant: maj.montant !== undefined ? parseFloat(maj.montant) : precommande.montant,
+            prixUnit: nombreFourni.prixUnit !== undefined ? nombreFourni.prixUnit : precommande.prixUnit,
+            nombre: nombreFourni.nombre !== undefined ? nombreFourni.nombre : precommande.nombre,
+            montant: nombreFourni.montant !== undefined ? nombreFourni.montant : precommande.montant,
             nomClient: siFourni(maj.nomClient, precommande.nomClient),
             numeroClient: siFourni(maj.numeroClient, precommande.numeroClient),
             adresseClient: siFourni(maj.adresseClient, precommande.adresseClient),
@@ -9042,7 +9086,12 @@ app.get('/api/stock/:date/soir/:pointVente/:produit', checkAuth, checkReadAccess
 });
         
 // Route pour calculer les transferts par produit
-app.get('/api/stock/:date/transfert/:pointVente/:produit', async (req, res) => {
+// Cette route est aujourd'hui inatteignable - la route generique quatre
+// segments declaree plus haut la capte - mais elle etait la SEULE des trois a
+// n'avoir aucune garde. La laisser nue rendrait sa remontee dangereuse a la
+// premiere reorganisation. Un test exige les deux middlewares sur toutes les
+// routes '/api/stock/:date/...'.
+app.get('/api/stock/:date/transfert/:pointVente/:produit', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date, pointVente, produit } = req.params;
         
