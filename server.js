@@ -5349,6 +5349,10 @@ app.post('/api/precommandes/:id/convert-to-order', checkAuth, checkWriteAccess, 
     }
 });
 
+// La regle d'acces par point de vente vit dans lib/acces-point-vente.js:
+// elle etait recopiee a chaque route et les copies avaient diverge.
+const { aAccesAuPointVente, aAccesGlobal } = require('./lib/acces-point-vente');
+
 // Endpoint pour modifier une pré-commande (seulement si statut = 'ouvert')
 app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) => {
     try {
@@ -5371,8 +5375,11 @@ app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) =
         // droit d'ecrire (middlewares/auth.js#checkWriteAccess), jamais SUR QUOI:
         // sans ce controle, un utilisateur rattache a un point de vente peut
         // modifier la precommande d'un autre.
+        //
+        // cf aAccesAuPointVente: user.pointVente est 'tous' OU un tableau.
         const userPointVente = req.session.user.pointVente;
-        if (userPointVente !== 'tous' && precommande.pointVente !== userPointVente) {
+        const accesGlobal = aAccesGlobal(userPointVente);
+        if (!aAccesAuPointVente(userPointVente, precommande.pointVente)) {
             return res.status(403).json({
                 success: false,
                 message: 'Accès non autorisé pour ce point de vente'
@@ -5408,9 +5415,10 @@ app.put('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res) =
         };
 
         // Un utilisateur cloisonne ne peut pas non plus DEPLACER la precommande
-        // vers un autre point de vente: le champ est dans la liste blanche, et
-        // sans ce garde le controle ci-dessus se contournerait en un aller-retour.
-        if (userPointVente !== 'tous') {
+        // vers un point de vente auquel il n'a pas acces: le champ est dans la
+        // liste blanche, et sans ce garde le controle ci-dessus se contournerait
+        // en un aller-retour. Un acces global, lui, garde le droit de deplacer.
+        if (!accesGlobal && !aAccesAuPointVente(userPointVente, dataToUpdate.pointVente)) {
             dataToUpdate.pointVente = precommande.pointVente;
         }
 
@@ -5520,14 +5528,17 @@ app.delete('/api/precommandes/:id', checkAuth, checkWriteAccess, async (req, res
         }
         
         // Vérifier l'accès par point de vente si nécessaire
+        // Meme faute que le PUT, et pre-existante ici: la comparaison directe
+        // renvoyait 403 a TOUT utilisateur cloisonne, y compris sur son propre
+        // point de vente. Les permissions par statut, plus bas, restent intactes.
         const userPointVente = user.pointVente;
-        if (userPointVente !== 'tous' && precommande.pointVente !== userPointVente) {
+        if (!aAccesAuPointVente(userPointVente, precommande.pointVente)) {
             return res.status(403).json({
-                success: false, 
+                success: false,
                 message: 'Accès non autorisé pour ce point de vente'
             });
         }
-        
+
         // Vérifier les permissions de suppression selon le statut
         const isSuperviseur = user.role === 'superviseur' || user.role === 'admin';
         
