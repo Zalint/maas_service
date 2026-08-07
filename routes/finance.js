@@ -102,6 +102,20 @@ const STOCKS_DATE_AS_ISO_SQL =
     "substring(date FROM 4 FOR 2) || '-' || " +
     "substring(date FROM 1 FOR 2))";
 
+// Filtre "cette ligne porte bien une date DD-MM-YYYY". Constante PARTAGEE, et
+// non recopiee dans chaque requete.
+//
+// Il etait ecrit deux fois, et les deux copies ne disaient pas la meme chose:
+// valoriserSnapshotStock avait '^\\d{2}...' (correct), produitsAStockSoirNegatif
+// avait '^\d{2}...'. Dans un litteral de gabarit, \d vaut d: la seconde
+// envoyait '^d{2}-d{2}-d{4}$' a Postgres, ne correspondait a AUCUNE date, et la
+// sous-requete rendait NULL. produitsAStockSoirNegatif retournait donc TOUJOURS
+// un ensemble vide, et l'exclusion des produits a stock douteux n'a jamais eu
+// lieu - alors qu'un commentaire affirmait "STRICTEMENT le meme filtre".
+//
+// Une chaine ordinaire, pas un gabarit: aucun echappement a doubler.
+const STOCKS_DATE_VALIDE_SQL = "date ~ '^\\d{2}-\\d{2}-\\d{4}$'";
+
 // Valorisation d'un snapshot de stock, au prix d'ACHAT quand il est connu.
 //
 // Cette fonction remplace trois blocs SQL identiques au parametre pres (stock
@@ -136,7 +150,7 @@ async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie
            AND date = (
              SELECT date FROM stocks
              WHERE type_stock = :typeStock
-               AND date ~ '^\\d{2}-\\d{2}-\\d{4}$'
+               AND ${STOCKS_DATE_VALIDE_SQL}
                AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateMax
                -- La date retenue doit porter au moins un COMPTAGE reel. Le
                -- recalcul automatique cree des lignes de stock soir sur des
@@ -183,7 +197,7 @@ async function produitsAStockSoirNegatif(dateMax) {
            AND date = (
              SELECT date FROM stocks
              WHERE type_stock = 'soir'
-               AND date ~ '^\d{2}-\d{2}-\d{4}$'
+               AND ${STOCKS_DATE_VALIDE_SQL}
                AND ${STOCKS_DATE_AS_ISO_SQL} <= :dateMax
                -- STRICTEMENT le meme filtre que valoriserSnapshotStock, sinon
                -- les deux designent des journees differentes et l'exclusion
