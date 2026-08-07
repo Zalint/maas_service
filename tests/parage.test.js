@@ -553,3 +553,78 @@ describe('composition de pack et casse', () => {
         expect(compositionDuPack({ produit: 'Pack25000' }, {})).toBeNull();
     });
 });
+
+describe('exclusions par prefixe', () => {
+    const base = {
+        categorieDe: (p) => (/boeuf|dechet|déchet/i.test(p) ? 'bovin' : null),
+        stockDerive: new Set()
+    };
+
+    // Le cas reel: la liste disait "Dechet", et il existe un produit qui porte
+    // exactement ce nom. "Déchet 400" et "Déchet 2000", crees plus tard, ne
+    // correspondaient a rien. 446 kg de parage pese entraient donc dans le
+    // stock du soir - donc SORTAIENT du theorique - et le taux tombait de
+    // 3,8% a 2,0% sur la journee du 06-08.
+    test('une exclusion ecarte aussi les produits qui la prolongent', () => {
+        const r = calculerParage({
+            ...base,
+            exclusions: new Set(['Dechet']),
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 20.5 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3 }
+            ],
+            transferts: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 78, impact: 1 }],
+            stocksSoir: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 39.5 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 4.1 }
+            ],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', quantite: 0, nombre: 56.75 }]
+        });
+        // Sans le Déchet 400: 20,5 + 78 - 39,5 = 59, et non 57,9.
+        expect(r.Mbao.bovin.theorique).toBeCloseTo(59, 2);
+        expect(r.Mbao.bovin.perte).toBeCloseTo(0.0381, 3);
+    });
+
+    test('le produit qui porte exactement le nom exclu l est aussi', () => {
+        const r = calculerParage({
+            ...base,
+            exclusions: new Set(['Dechet']),
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 10 },
+                { pointVente: 'Mbao', produit: 'Dechet', quantite: 5 }
+            ],
+            transferts: [],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 4 }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 6 }]
+        });
+        expect(r.Mbao.bovin.theorique).toBeCloseTo(6, 2);
+    });
+
+    // La limite de mot evite qu'un prefixe morde sur un nom qui commence pareil
+    // sans etre de la meme famille.
+    test('un prefixe ne mord pas sur un nom collé', () => {
+        const r = calculerParage({
+            ...base,
+            categorieDe: () => 'bovin',
+            exclusions: new Set(['Boeuf']),
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeufsteak', quantite: 10 }],
+            transferts: [],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeufsteak', quantite: 4 }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeufsteak', nombre: 6 }]
+        });
+        // 'Boeufsteak' n'est pas 'Boeuf ...': il reste dans le calcul.
+        expect(r.Mbao.bovin.theorique).toBeCloseTo(6, 2);
+    });
+
+    test('une liste vide n exclut rien', () => {
+        const r = calculerParage({
+            ...base,
+            exclusions: new Set(),
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3 }],
+            transferts: [],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 4.1 }],
+            ventes: []
+        });
+        expect(r.Mbao.bovin.theorique).toBeCloseTo(-1.1, 2);
+    });
+});
