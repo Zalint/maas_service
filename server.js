@@ -3391,15 +3391,45 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
         for (const transfert of transferts) {
             const ext = transfert.extension;
             if (ext === undefined || ext === null) continue;
-            if (typeof ext !== 'object' || !Array.isArray(ext.calibres)) {
+            if (typeof ext !== 'object') {
+                return res.status(400).json({
+                    success: false,
+                    message: `extension invalide pour ${transfert.produit || '?'}: objet attendu`
+                });
+            }
+
+            // dechet_jete: pesee du dechet mis a la poubelle (case "Jete" de
+            // l'ecran des transferts). C'est un drapeau independant de la
+            // ventilation par calibres - il peut arriver seul, et la
+            // validation d'origine, qui exigeait { calibres } pour toute
+            // extension, le rejetait en bloc. Un jete est une SORTIE: on
+            // refuse la contradiction plutot que de la corriger en silence.
+            const jete = ext.dechet_jete === true;
+            if (jete) {
+                const imp = parseInt(transfert.impact, 10);
+                if (imp !== -1) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Pour ${transfert.produit || '?'}: un déchet jeté est une sortie, impact -1 requis`
+                    });
+                }
+            }
+
+            if (!Array.isArray(ext.calibres)) {
+                if (jete) {
+                    // Drapeau seul, sans ventilation: forme normalisee.
+                    transfert.extension = { dechet_jete: true };
+                    continue;
+                }
                 return res.status(400).json({
                     success: false,
                     message: `extension invalide pour ${transfert.produit || '?'}: attendu { calibres: [...] }`
                 });
             }
             if (ext.calibres.length === 0) {
-                // Tableau vide = pas de ventilation. Normaliser à null.
-                transfert.extension = null;
+                // Tableau vide = pas de ventilation. Le drapeau jete, lui,
+                // survit a la normalisation.
+                transfert.extension = jete ? { dechet_jete: true } : null;
                 continue;
             }
             let sumQte = 0;
@@ -3452,7 +3482,11 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
                     message: `Pour ${transfert.produit}: Σ calibres = ${sumQte}, ne correspond pas à la quantité totale ${qtetotal}`
                 });
             }
-            transfert.extension = { calibres: cleanCalibres };
+            // Le drapeau jete survit a la normalisation des calibres: les deux
+            // notions cohabitent sur une meme ligne.
+            transfert.extension = jete
+                ? { calibres: cleanCalibres, dechet_jete: true }
+                : { calibres: cleanCalibres };
         }
 
         // Grouper les transferts par date
