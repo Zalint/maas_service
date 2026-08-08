@@ -628,3 +628,189 @@ describe('exclusions par prefixe', () => {
         expect(r.Mbao.bovin.theorique).toBeCloseTo(-1.1, 2);
     });
 });
+
+describe('bilan de la famille dechet', () => {
+    const base = {
+        categorieDe: (p) => 'bovin',
+        exclusions: new Set(),
+        familleDechet: new Set(['Dechet', 'Déchet 400', 'Déchet 2000']),
+        stockDerive: new Set()
+    };
+    const bilan = (r) => r.Mbao.bovin.dechet;
+
+    // Les trois cas qui ont motive le changement, tels que decrits par le
+    // patron: l'ancienne lecture matin + transferts - soir rendait des ventes
+    // negatives des que le dechet produit depassait le dechet sorti.
+    test('cas 1: rien le matin, 3 kg le soir -> 3 kg produits', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [], transferts: [], ventes: [],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3 }] });
+        expect(bilan(r).produit).toBeCloseTo(3, 6);
+    });
+
+    test('cas 2: 5 kg le matin, 2 vendus, 1,5 jetes, 1,5 le soir -> 0 produit', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 5 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 1.5, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Dechet', nombre: 2 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 1.5 }] });
+        expect(bilan(r).produit).toBeCloseTo(0, 6);
+    });
+
+    test('cas 3: 8 kg le matin, 3 jetes, 7 le soir -> 2 kg produits', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 8 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 7 }] });
+        expect(bilan(r).produit).toBeCloseTo(2, 6);
+    });
+
+    // Le stock du dechet est tenu sous "Déchet 400" et la vente sous "Dechet":
+    // le bilan agrege TOUTE la famille, l'attribution par grade n'existe pas.
+    test('stock et vente sous des noms differents se rejoignent dans le bilan', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 4 },
+                { pointVente: 'Mbao', produit: 'Déchet 2000', quantite: 1 }
+            ],
+            transferts: [], ventes: [{ pointVente: 'Mbao', produit: 'Dechet', nombre: 2 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3.5 }] });
+        // 3,5 + 2 + 0 - 5 - 0 = 0,5
+        expect(bilan(r).produit).toBeCloseTo(0.5, 6);
+    });
+
+    test('la famille ne pollue jamais le rapport principal', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 20 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3 }
+            ],
+            transferts: [], ventes: [
+                { pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 12 },
+                { pointVente: 'Mbao', produit: 'Dechet', nombre: 2 }
+            ],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 4 }] });
+        const d = r.Mbao.bovin;
+        // Theorique et vendu ne voient que la viande: 20 - 4 = 16, et 12.
+        expect(d.theorique).toBeCloseTo(16, 6);
+        expect(d.vendu).toBeCloseTo(12, 6);
+    });
+
+    // global = dechet + deperdition, exactement, parce que les trois taux
+    // partagent le meme denominateur. C'est ce qui rend le survol verifiable.
+    test('la decomposition s additionne au taux global', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 100 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 2.5, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 92 }],
+            stocksSoir: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 4 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 1 }
+            ] });
+        const d = r.Mbao.bovin;
+        // theorique 96, vendu 92 -> perte 4/96. Dechet produit: 1 + 2,5 = 3,5.
+        expect(d.perte).toBeCloseTo(4 / 96, 10);
+        expect(d.taux_dechet).toBeCloseTo(3.5 / 96, 10);
+        expect(d.taux_deperdition).toBeCloseTo(d.perte - d.taux_dechet, 10);
+    });
+
+    // De la viande pesee puis jetee: la perte reste VISIBLE dans le global
+    // (le theorique ne baisse pas), mais elle passe du cote explique.
+    test('un jete de viande ne fait pas disparaitre la perte, il l explique', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 10 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 3, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 6 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 1 }] });
+        const d = r.Mbao.bovin;
+        // Sans le drapeau, le transfert -3 aurait reduit le theorique a 6 et
+        // la perte aurait disparu. Avec: theorique 9, perte 3 kg, dont 3
+        // expliques par la pesee du jete.
+        expect(d.theorique).toBeCloseTo(9, 6);
+        expect(d.dechet.jete).toBeCloseTo(3, 6);
+        expect(d.taux_deperdition).toBeCloseTo(0, 10);
+    });
+
+    // Une deperdition negative doit SORTIR negative: c'est le signal qu'une
+    // pesee est decalee ou qu'un mouvement manque, pas une valeur a raboter.
+    test('la deperdition negative reste visible', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 10 }],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 5, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 9 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 0 }] });
+        const d = r.Mbao.bovin;
+        // perte globale 1 kg, dechet pese 5 kg -> deperdition -4/10.
+        expect(d.taux_deperdition).toBeLessThan(0);
+        expect(d.taux_deperdition).toBeCloseTo((1 - 5) / 10, 10);
+    });
+
+    test('sans famille configuree, rien ne change', () => {
+        const r = calculerParage({
+            ...base, familleDechet: new Set(),
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 10 }],
+            transferts: [], ventes: [{ pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 9 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 1 }] });
+        const d = r.Mbao.bovin;
+        expect(d.dechet.produit).toBe(0);
+        expect(d.taux_dechet).toBeCloseTo(0, 10);
+        expect(d.perte).toBeCloseTo(d.taux_deperdition, 10);
+    });
+
+    // Chaque kilo de dechet traverse le calcul EXACTEMENT une fois: au
+    // theorique viande le jour de sa production, puis dans le livre dechet
+    // jusqu'a sa sortie. Evacuer du vieux dechet n'est donc pas en produire.
+    test('du dechet herite puis evacue ne compte pas comme produit', () => {
+        // 5 kg de dechet herites d'avant. Aujourd'hui on en jette 3 et on en
+        // vend 2: le stock dechet tombe a zero, rien n'a ete produit.
+        const r = calculerParage({ ...base,
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 50 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 5 }
+            ],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [
+                { pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 48 },
+                { pointVente: 'Mbao', produit: 'Dechet', nombre: 2 }
+            ],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 2 }] });
+        const d = r.Mbao.bovin;
+        // soir 0 + vendu 2 + jete 3 - matin 5 = 0: rien produit aujourd'hui.
+        expect(d.dechet.produit).toBeCloseTo(0, 6);
+        // Et le theorique viande n'a pas vu passer ces 5 kg une seconde fois:
+        // 50 - 2 = 48, perte globale nulle, deperdition nulle.
+        expect(d.theorique).toBeCloseTo(48, 6);
+        expect(d.perte).toBeCloseTo(0, 10);
+        expect(d.taux_deperdition).toBeCloseTo(0, 10);
+    });
+});
+
+describe('produits verrouilles', () => {
+    const { estProduitVerrouille } = require('../lib/parage');
+
+    // "Boeuf" est la carcasse: c'est sous ce nom que le stock entre, il porte
+    // le denominateur. L'exclure - ou le mettre en famille dechet - viderait
+    // le parage d'un clic, et le prefixe aggraverait tout: "Boeuf" exclurait
+    // aussi "Boeuf en detail" et "Boeuf en gros".
+    test('la carcasse est verrouillee, quelle que soit la casse', () => {
+        expect(estProduitVerrouille('Boeuf')).toBe(true);
+        expect(estProduitVerrouille('BOEUF')).toBe(true);
+        expect(estProduitVerrouille('  boeuf  ')).toBe(true);
+    });
+
+    // Le verrou est EXACT, pas un prefixe: les exclusions legitimes qui
+    // commencent par "Boeuf" restent possibles - "Boeuf sur pied" est deja
+    // exclu sur les quatre tenants.
+    test('le verrou ne mord pas sur les noms qui prolongent', () => {
+        expect(estProduitVerrouille('Boeuf sur pied')).toBe(false);
+        expect(estProduitVerrouille('Boeuf en détail')).toBe(false);
+        expect(estProduitVerrouille('Boeuf en gros')).toBe(false);
+    });
+});

@@ -3391,15 +3391,45 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
         for (const transfert of transferts) {
             const ext = transfert.extension;
             if (ext === undefined || ext === null) continue;
-            if (typeof ext !== 'object' || !Array.isArray(ext.calibres)) {
+            if (typeof ext !== 'object') {
+                return res.status(400).json({
+                    success: false,
+                    message: `extension invalide pour ${transfert.produit || '?'}: objet attendu`
+                });
+            }
+
+            // dechet_jete: pesee du dechet mis a la poubelle (case "Jete" de
+            // l'ecran des transferts). C'est un drapeau independant de la
+            // ventilation par calibres - il peut arriver seul, et la
+            // validation d'origine, qui exigeait { calibres } pour toute
+            // extension, le rejetait en bloc. Un jete est une SORTIE: on
+            // refuse la contradiction plutot que de la corriger en silence.
+            const jete = ext.dechet_jete === true;
+            if (jete) {
+                const imp = parseInt(transfert.impact, 10);
+                if (imp !== -1) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Pour ${transfert.produit || '?'}: un déchet jeté est une sortie, impact -1 requis`
+                    });
+                }
+            }
+
+            if (!Array.isArray(ext.calibres)) {
+                if (jete) {
+                    // Drapeau seul, sans ventilation: forme normalisee.
+                    transfert.extension = { dechet_jete: true };
+                    continue;
+                }
                 return res.status(400).json({
                     success: false,
                     message: `extension invalide pour ${transfert.produit || '?'}: attendu { calibres: [...] }`
                 });
             }
             if (ext.calibres.length === 0) {
-                // Tableau vide = pas de ventilation. Normaliser à null.
-                transfert.extension = null;
+                // Tableau vide = pas de ventilation. Le drapeau jete, lui,
+                // survit a la normalisation.
+                transfert.extension = jete ? { dechet_jete: true } : null;
                 continue;
             }
             let sumQte = 0;
@@ -3452,7 +3482,11 @@ app.post('/api/transferts', checkAuth, checkWriteAccess, checkTimeRestrictions, 
                     message: `Pour ${transfert.produit}: Σ calibres = ${sumQte}, ne correspond pas à la quantité totale ${qtetotal}`
                 });
             }
-            transfert.extension = { calibres: cleanCalibres };
+            // Le drapeau jete survit a la normalisation des calibres: les deux
+            // notions cohabitent sur une meme ligne.
+            transfert.extension = jete
+                ? { calibres: cleanCalibres, dechet_jete: true }
+                : { calibres: cleanCalibres };
         }
 
         // Grouper les transferts par date
@@ -4073,9 +4107,13 @@ app.get('/api/external/parage', validateMaasKeyApi, async (req, res) => {
             const parPv = calculerParage({
                 stocksMatin: (parJourMatin[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
                 stocksSoir: (parJourSoir[iso] || []).map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
-                transferts: (parJourTransferts[iso] || []).map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+                // extension porte le drapeau dechet_jete: sans lui, une pesee
+                // de jete redeviendrait un transfert de marchandise et
+                // ecraserait le theorique.
+                transferts: (parJourTransferts[iso] || []).map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact, extension: t.extension })),
                 ventes: (parJourVentes[iso] || []).map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
                 categorieDe, exclusions, stockDerive: contexte.stockDerive,
+                familleDechet: contexte.familleDechet,
                 packs: PACK_COMPOSITIONS
             });
             return agregerPointsDeVente(parPv, filtrePv);
@@ -5879,22 +5917,43 @@ app.put('/api/admin/pack-compositions', checkAuth, checkAdmin, async (req, res) 
     }
 });
 
-// Produits Bovin et Ovin, pour l'ecran ADMIN des exclusions du parage.
-// Renvoie aussi les exclusions courantes, pour eviter un second appel.
+// Produits Bovin et Ovin, pour l'ecran ADMIN des exclusions du parage et de
+// la famille dechet. Renvoie aussi les reglages courants, pour eviter un
+// second appel.
 app.get('/api/parage/produits', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { FinanceConfig } = require('./db/models');
+        // Categorie EFFECTIVE - celle ecrite sur le produit, sinon celle de
+        // categorie_id - exactement la resolution du calcul (parage-contexte).
+        // La jointure seule cachait "Boeuf", "Déchet 400" et "Déchet 2000",
+        // qui ne portent qu'un categorie_affichage: l'ecran ne montrait pas
+        // les produits que le calcul voyait, et la famille dechet aurait ete
+        // impossible a cocher.
         const produits = await sequelize.query(
-            `SELECT DISTINCT p.nom, LOWER(c.nom) AS categorie
-             FROM produits p JOIN categories c ON c.id = p.categorie_id
-             WHERE LOWER(c.nom) IN ('bovin', 'ovin')
-             ORDER BY LOWER(c.nom), p.nom`,
+            `SELECT DISTINCT p.nom,
+                    LOWER(COALESCE(NULLIF(TRIM(p.categorie_affichage), ''), c.nom)) AS categorie
+             FROM produits p
+             LEFT JOIN categories c ON c.id = p.categorie_id
+             WHERE p.archived = false
+               AND LOWER(COALESCE(NULLIF(TRIM(p.categorie_affichage), ''), c.nom))
+                   IN ('bovin', 'ovin')
+             ORDER BY 2, p.nom`,
             { type: sequelize.QueryTypes.SELECT }
         );
-        const cfg = await FinanceConfig.findOne({ where: { key: 'parage_exclusions' } });
-        const exclusions = String((cfg && cfg.value) || '')
-            .split(',').map((x) => x.trim()).filter(Boolean);
-        res.json({ success: true, produits, exclusions });
+        const lireListe = async (key) => {
+            const cfg = await FinanceConfig.findOne({ where: { key } });
+            return String((cfg && cfg.value) || '')
+                .split(',').map((x) => x.trim()).filter(Boolean);
+        };
+        res.json({
+            success: true,
+            produits,
+            exclusions: await lireListe('parage_exclusions'),
+            dechets: await lireListe('parage_dechets'),
+            // Produits que l'ecran doit rendre NON COCHABLES (cf lib/parage.js:
+            // la carcasse porte le denominateur). Le PUT les refuse aussi.
+            verrouilles: require('./lib/parage').PRODUITS_VERROUILLES
+        });
     } catch (error) {
         console.error('GET /api/parage/produits:', error);
         res.status(500).json({ success: false, message: error.message });
@@ -5929,7 +5988,7 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
         // Ces deux routes doivent partir des memes categories et des memes
         // exclusions, sinon elles rendent deux chiffres pour la meme journee.
         const { chargerContexteParage } = require('./lib/parage-contexte');
-        const { categorieDe, exclusions, stockDerive, avertissements: avertContexte } =
+        const { categorieDe, exclusions, stockDerive, familleDechet, avertissements: avertContexte } =
             await chargerContexteParage(sequelize);
         avertContexte.forEach((a) => console.warn('parage:', a));
 
@@ -5951,13 +6010,16 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
         const parPv = calculerParage({
             stocksMatin: stocksMatin.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
             stocksSoir: stocksSoir.map((s) => ({ pointVente: s.pointVente, produit: s.produit, quantite: s.quantite })),
-            transferts: transferts.map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact })),
+            // extension porte le drapeau dechet_jete (pesee du jete): sans
+            // lui, le jete redeviendrait un transfert de marchandise.
+            transferts: transferts.map((t) => ({ pointVente: t.pointVente, produit: t.produit, quantite: t.quantite, impact: t.impact, extension: t.extension })),
             ventes: ventes.map((v) => ({ pointVente: v.pointVente, produit: v.produit, nombre: v.nombre, extension: v.extension })),
             categorieDe,
             exclusions,
             // Le stock CALCULE a partir des ventes n'entre pas au denominateur:
             // on comparerait les ventes a elles-memes. Cf lib/parage.js.
             stockDerive,
+            familleDechet,
             packs: PACK_COMPOSITIONS
         });
 

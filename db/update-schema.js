@@ -1002,8 +1002,20 @@ async function updateSchema() {
                 `);
                 const bascules = metaMode ? metaMode.rowCount : 0;
 
+                // Le nettoyage ne depend PAS d'une bascule dans cette execution.
+                //
+                // Des lignes derivees survivent a des produits deja passes en
+                // manuel: "Boeuf En Détail" et "Patte de mouton" en portent 174
+                // a eux deux, heritees d'une periode ou ils etaient
+                // automatiques. Les conditionner a bascules > 0 les nettoyait
+                // par accident - parce qu'une AUTRE bascule avait lieu au meme
+                // moment - et jamais sur un tenant deja entierement manuel, ni
+                // sur une reprise apres echec entre les deux etapes.
+                //
+                // Le DELETE est idempotent par construction: il vise des lignes
+                // par leur nature, pas par ce que la migration vient de faire.
                 let lignesSupprimees = 0;
-                if (bascules > 0 && await checkTableExists('stocks')) {
+                if (await checkTableExists('stocks')) {
                     const [, metaStock] = await sequelize.query(`
                         DELETE FROM stocks s
                         USING produits p, categories c
@@ -1018,6 +1030,40 @@ async function updateSchema() {
                 if (bascules || lignesSupprimees) {
                     console.log(`Boucherie repassee en stock manuel: ${bascules} produit(s), `
                         + `${lignesSupprimees} ligne(s) de stock derivee(s) supprimee(s)`);
+                }
+            }
+
+            // Graine de la FAMILLE DECHET (finance_config.parage_dechets), la
+            // liste des produits dont le bilan mesure le dechet produit par la
+            // decoupe. Elle se gere ensuite dans l'ecran admin du parage; la
+            // graine ne fait que retrouver les produits dechet deja presents
+            // au catalogue du tenant - noms exacts, pas de devinette.
+            //
+            // UNIQUEMENT si la cle n'existe pas: une famille videe ou remaniee
+            // par l'admin ne doit jamais etre re-remplie par un redemarrage.
+            if (await checkTableExists('finance_config')) {
+                const [dejaLa] = await sequelize.query(
+                    `SELECT 1 FROM finance_config WHERE key = 'parage_dechets' LIMIT 1`,
+                    { type: sequelize.QueryTypes.SELECT }
+                );
+                if (!dejaLa) {
+                    const membres = await sequelize.query(`
+                        SELECT DISTINCT nom FROM produits
+                        WHERE archived = false
+                          AND (LOWER(TRIM(nom)) = 'dechet'
+                               OR LOWER(TRIM(nom)) LIKE 'dechet %'
+                               OR LOWER(TRIM(nom)) = 'déchet'
+                               OR LOWER(TRIM(nom)) LIKE 'déchet %')
+                        ORDER BY nom
+                    `, { type: sequelize.QueryTypes.SELECT });
+                    if (membres.length) {
+                        await sequelize.query(
+                            `INSERT INTO finance_config (key, value, updated_at)
+                             VALUES ('parage_dechets', :valeur, NOW())`,
+                            { replacements: { valeur: membres.map((m) => m.nom).join(',') } }
+                        );
+                        console.log(`Famille dechet initialisee: ${membres.map((m) => m.nom).join(', ')}`);
+                    }
                 }
             }
         }

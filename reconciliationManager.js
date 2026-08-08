@@ -1334,6 +1334,7 @@ const ReconciliationManager = (function() {
                 </div>
                 
                 <h6 class="mt-4">Détails des composantes</h6>
+                <div id="debug-parage-dechet" class="mt-3"></div>
                 <div id="debug-stock-section" class="mt-3"></div>
                 <div id="debug-ventes-section" class="mt-3"></div>
             `;
@@ -1458,7 +1459,12 @@ const ReconciliationManager = (function() {
             } else {
                 ventesSection.innerHTML = '<div class="alert alert-info">Aucune vente saisie pour ce point de vente à cette date.</div>';
             }
-            
+
+            // Répartition de la perte (kg): chargée à part pour que les détails
+            // FCFA s'affichent sans attendre le réseau, et qu'un échec ici ne
+            // remplace pas toute la vue par l'alerte d'erreur ci-dessous.
+            afficherRepartitionPerte(pointVente);
+
         } catch (error) {
             console.error('Erreur lors de l\'affichage des détails de débogage:', error);
             document.getElementById('debug-container').innerHTML = `
@@ -1471,6 +1477,87 @@ const ReconciliationManager = (function() {
         }
     }
     
+    // Écrit, juste avant « Détails des calculs par produit », la formule du
+    // bilan déchet et de la déperdition avec les termes du jour. Aucun chiffre
+    // n'est recalculé ici: tout vient de /api/reconciliation/parage, le MÊME
+    // calcul que les cartes parage — la carte ne peut donc pas diverger d'elles.
+    async function afficherRepartitionPerte(pointVente) {
+        const conteneur = document.getElementById('debug-parage-dechet');
+        if (!conteneur) return;
+        try {
+            const date = getCurrentDate();
+            if (!date) return;
+            const rep = await fetch('/api/reconciliation/parage?date=' + encodeURIComponent(date), {
+                method: 'GET', credentials: 'include'
+            });
+            const json = rep.ok ? await rep.json() : null;
+            const parage = json && json.success && json.data ? json.data[pointVente] : null;
+            if (!parage) return;
+
+            // La vue a pu être re-rendue pour un autre point de vente pendant
+            // le fetch: on n'écrit que si NOTRE conteneur est encore en place.
+            if (document.getElementById('debug-parage-dechet') !== conteneur) return;
+
+            const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
+            const pct = (t) => `${(t * 100).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`;
+
+            const blocs = [
+                { cle: 'bovin', libelle: 'Bovin' },
+                { cle: 'ovin', libelle: 'Ovin' }
+            ].map(({ cle, libelle }) => {
+                const d = parage[cle];
+                // Rien à expliquer: journée non mesurable, ou famille déchet
+                // non configurée (taux_dechet null dans les deux cas).
+                if (!d || d.taux_dechet === null || d.taux_dechet === undefined || !d.dechet) return '';
+                const b = d.dechet;
+                const perteKg = (parseFloat(d.theorique) || 0) - (parseFloat(d.vendu) || 0);
+                const deperditionKg = perteKg - (parseFloat(b.produit) || 0);
+                return `
+                    <h6 class="mb-2">${libelle}</h6>
+                    <div class="text-muted small mb-2">
+                        Perte globale : Théorique (${kg(d.theorique)}) − Vendu (${kg(d.vendu)}) = ${kg(perteKg)}
+                    </div>
+                    <div><strong>Formule Déchet produit :</strong></div>
+                    <div class="mt-1 mb-2">
+                        Stock soir déchet (${kg(b.soir)}) + Vendu (${kg(b.vendu)}) + Jeté (${kg(b.jete)})
+                        − Stock matin déchet (${kg(b.matin)})${b.transferts ? `
+                        − Transferts déchet (${kg(b.transferts)})` : ''} = <strong>${kg(b.produit)}</strong>
+                    </div>
+                    <div><strong>Formule Déperdition :</strong></div>
+                    <div class="mt-1">
+                        Perte globale (${kg(perteKg)}) − Déchet produit (${kg(b.produit)}) = <strong>${kg(deperditionKg)}</strong>
+                        &nbsp;&nbsp;soit ${pct(d.taux_dechet)} + ${pct(d.taux_deperdition)} = ${pct(d.perte)}
+                    </div>
+                    ${(parseFloat(b.produit) || 0) < 0 ? `
+                    <div class="mt-2 text-danger">
+                        ⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis
+                        — sortie de déchet non tracée.
+                    </div>` : ''}
+                    ${d.taux_deperdition < 0 ? `
+                    <div class="mt-2 text-danger">
+                        ⚠ Déperdition négative : plus de déchet pesé que de perte globale
+                        (pesée décalée d'un jour ou mouvement manquant).
+                    </div>` : ''}
+                `;
+            }).filter(Boolean);
+
+            if (!blocs.length) return;
+            conteneur.innerHTML = `
+                <div class="card bg-warning">
+                    <div class="card-header">
+                        <h5 class="mb-0 text-dark">Répartition de la perte</h5>
+                    </div>
+                    <div class="card-body bg-light text-dark">
+                        ${blocs.join('<hr class="my-3">')}
+                    </div>
+                </div>
+            `;
+        } catch (error) {
+            // Carte annexe: en cas de pépin on la laisse simplement vide.
+            console.warn('Répartition de la perte indisponible:', error);
+        }
+    }
+
     // Fonction pour récupérer la date courante au format d/m/Y
     function getCurrentDate() {
         const dateElement = document.getElementById('date-reconciliation');
