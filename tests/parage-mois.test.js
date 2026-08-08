@@ -144,6 +144,25 @@ describe('repartition de la perte du mois', () => {
         expect(lire('bovin').titre).toContain('⚠ Déperdition négative');
     });
 
+    test('un dechet produit negatif est signale — sortie de dechet non tracee', () => {
+        // Le stock dechet a fondu sans vente ni jete saisis (le cas reel
+        // d'aout a Mbao): produit −3,4 kg. Le modele ne connait que deux
+        // portes de sortie pour le dechet; quand le stock baisse sans passer
+        // par l'une d'elles, on le dit, on ne rabote pas a zero.
+        afficher({
+            bovin: {
+                vendu: 275.5, theorique: 286.9,
+                dechet: { matin: 19.4, transferts: 0, soir: 16, vendu: 0, jete: 0, produit: -3.4 }
+            },
+            ovin: { vendu: 0, theorique: 0 }
+        });
+        const det = lire('bovin').detail;
+        expect(det).toContain('⚠ Déchet produit : -3,4 kg');
+        // La deperdition, elle, est positive ici: pas de second avertissement.
+        expect(det).not.toContain('⚠ Déperdition');
+        expect(lire('bovin').titre).toContain('⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis');
+    });
+
     test('sans bilan dechet (cache d avant cette version), affichage d origine', () => {
         afficher({ bovin: { vendu: 95.5, theorique: 100 }, ovin: { vendu: 0, theorique: 0 } });
         expect(lire('bovin').detail).toBe('95,5 kg vendus / 100 kg théoriques');

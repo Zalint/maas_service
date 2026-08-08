@@ -10401,8 +10401,15 @@ function afficherParageMois(parageMois) {
         const tauxDechet = produitKg / theorique;
         const tauxDeperdition = perte - tauxDechet;
         if (elDetail) {
+            // Un dechet produit NEGATIF veut dire que le stock dechet a fondu
+            // sans vente ni jete saisis: du dechet est sorti sans etre trace.
+            // Miroir du signal sur la deperdition, meme traitement: on
+            // l'affiche en alerte, on ne le rabote pas.
             elDetail.innerHTML = `${kg(vendu)} vendus / ${kg(theorique)} théoriques<br>`
-                + `Déchet produit : ${kg(produitKg)} (${(tauxDechet * 100).toFixed(1)} %)<br>`
+                + (produitKg < 0 ? '<span class="text-danger">⚠ ' : '')
+                + `Déchet produit : ${kg(produitKg)} (${(tauxDechet * 100).toFixed(1)} %)`
+                + (produitKg < 0 ? '</span>' : '')
+                + '<br>'
                 + (tauxDeperdition < 0 ? '<span class="text-danger">⚠ ' : '')
                 + `Déperdition inexpliquée : ${kg(deperditionKg)} (${(tauxDeperdition * 100).toFixed(1)} %)`
                 + (tauxDeperdition < 0 ? '</span>' : '');
@@ -10415,6 +10422,10 @@ function afficherParageMois(parageMois) {
             + `) : ${kg(produitKg)} soit ${(tauxDechet * 100).toFixed(1)} %
 `
             + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(tauxDeperdition * 100).toFixed(1)} %`
+            + (produitKg < 0
+                ? `
+⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis — sortie de déchet non tracée.`
+                : '')
             + (tauxDeperdition < 0
                 ? `
 ⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`
@@ -10496,6 +10507,10 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
                         + `) : ${kg(b.produit)} soit ${(det.taux_dechet * 100).toFixed(1)} %
 `
                         + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(det.taux_deperdition * 100).toFixed(1)} %`
+                        + ((parseFloat(b.produit) || 0) < 0
+                            ? `
+⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis — sortie de déchet non tracée.`
+                            : '')
                         + (det.taux_deperdition < 0
                             ? `
 ⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`

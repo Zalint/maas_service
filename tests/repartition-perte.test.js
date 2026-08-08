@@ -120,6 +120,20 @@ describe('carte du jour: les formules avec les termes du jour', () => {
         const afficher = charger(fetchOk(jour), () => '06/08/2026');
         await afficher('Mbao');
         expect(lireHtml()).toContain('⚠ Déperdition négative');
+        expect(lireHtml()).not.toContain('⚠ Déchet produit négatif');
+    });
+
+    test('un dechet produit negatif du jour est signale', async () => {
+        // Le 01/08 reel de Mbao: 5,3 kg de dechet le matin, 3 le soir, rien
+        // vendu ni jete → −2,3 kg "produits". Du dechet est sorti sans trace.
+        const jour = jourNominal();
+        jour.data.Mbao.bovin.dechet = { matin: 5.3, transferts: 0, soir: 3, vendu: 0, jete: 0, produit: -2.3 };
+        jour.data.Mbao.bovin.taux_dechet = -0.04;
+        jour.data.Mbao.bovin.taux_deperdition = 0.078;
+        const afficher = charger(fetchOk(jour), () => '01/08/2026');
+        await afficher('Mbao');
+        expect(lireHtml()).toContain('⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis');
+        expect(lireHtml()).not.toContain('⚠ Déperdition négative');
     });
 });
 

@@ -1528,6 +1528,11 @@ const ReconciliationManager = (function() {
                         Perte globale (${kg(perteKg)}) − Déchet produit (${kg(b.produit)}) = <strong>${kg(deperditionKg)}</strong>
                         &nbsp;&nbsp;soit ${pct(d.taux_dechet)} + ${pct(d.taux_deperdition)} = ${pct(d.perte)}
                     </div>
+                    ${(parseFloat(b.produit) || 0) < 0 ? `
+                    <div class="mt-2 text-danger">
+                        ⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis
+                        — sortie de déchet non tracée.
+                    </div>` : ''}
                     ${d.taux_deperdition < 0 ? `
                     <div class="mt-2 text-danger">
                         ⚠ Déperdition négative : plus de déchet pesé que de perte globale
