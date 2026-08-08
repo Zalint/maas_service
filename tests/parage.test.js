@@ -763,3 +763,26 @@ describe('bilan de la famille dechet', () => {
         expect(d.perte).toBeCloseTo(d.taux_deperdition, 10);
     });
 });
+
+describe('produits verrouilles', () => {
+    const { estProduitVerrouille } = require('../lib/parage');
+
+    // "Boeuf" est la carcasse: c'est sous ce nom que le stock entre, il porte
+    // le denominateur. L'exclure - ou le mettre en famille dechet - viderait
+    // le parage d'un clic, et le prefixe aggraverait tout: "Boeuf" exclurait
+    // aussi "Boeuf en detail" et "Boeuf en gros".
+    test('la carcasse est verrouillee, quelle que soit la casse', () => {
+        expect(estProduitVerrouille('Boeuf')).toBe(true);
+        expect(estProduitVerrouille('BOEUF')).toBe(true);
+        expect(estProduitVerrouille('  boeuf  ')).toBe(true);
+    });
+
+    // Le verrou est EXACT, pas un prefixe: les exclusions legitimes qui
+    // commencent par "Boeuf" restent possibles - "Boeuf sur pied" est deja
+    // exclu sur les quatre tenants.
+    test('le verrou ne mord pas sur les noms qui prolongent', () => {
+        expect(estProduitVerrouille('Boeuf sur pied')).toBe(false);
+        expect(estProduitVerrouille('Boeuf en détail')).toBe(false);
+        expect(estProduitVerrouille('Boeuf en gros')).toBe(false);
+    });
+});

@@ -2174,6 +2174,22 @@ router.put('/config', async (req, res) => {
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
                 const value = String(req.body[key]);
+                // Produits verrouilles (lib/parage.js): "Boeuf" est la
+                // carcasse, l'exclure ou le mettre en famille dechet
+                // effondrerait le denominateur du parage. L'ecran desactive la
+                // case, mais une regle qui ne vit que dans l'ecran se
+                // contourne - ici comme pour le jete a impact positif.
+                if (key === 'parage_exclusions' || key === 'parage_dechets') {
+                    const { estProduitVerrouille } = require('../lib/parage');
+                    const interdits = value.split(',').map((s) => s.trim())
+                        .filter((s) => s && estProduitVerrouille(s));
+                    if (interdits.length) {
+                        return res.status(400).json({
+                            success: false,
+                            error: `${interdits.join(', ')} : produit verrouillé, il porte le stock du parage et ne peut être ni exclu ni mis en famille déchet`
+                        });
+                    }
+                }
                 // Validations numeriques (commission_pct, stock_pertes_decoupe_pct):
                 // doivent etre entre 0 et 100 inclus.
                 if ((key === 'commission_pct' || key === 'stock_pertes_decoupe_pct')

@@ -7001,14 +7001,27 @@ async function chargerParageExclusions() {
             if (parCategorie[p.categorie]) parCategorie[p.categorie].push(p.nom);
         });
 
+        // Produits verrouilles (serveur, cf lib/parage.js): la carcasse porte
+        // le denominateur du parage, la cocher l'effondrerait. La case est
+        // desactivee - sauf si le nom figure DEJA dans une liste enregistree,
+        // pour qu'on puisse au moins le decocher.
+        const verrous = new Set((j.verrouilles || []).map((n) => n.trim().toLowerCase()));
+        const estVerrouille = (nom) => verrous.has(String(nom).trim().toLowerCase());
+
         const colonne = (titre, produits) => {
             const cases = produits.map((nom) => {
                 const id = 'px_' + nom.replace(/[^a-zA-Z0-9]/g, '_');
                 const coche = exclus.has(nom) ? ' checked' : '';
+                const verrouille = estVerrouille(nom) && !exclus.has(nom);
                 return '<div class="form-check">'
                     + '<input class="form-check-input px-item" type="checkbox" id="' + id + '"'
-                    + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche + '>'
-                    + '<label class="form-check-label" for="' + id + '">' + escapeHtmlDc(nom) + '</label>'
+                    + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche
+                    + (verrouille ? ' disabled title="Produit verrouillé : il porte le stock du parage (la carcasse). L\'exclure effondrerait le calcul."' : '')
+                    + '>'
+                    + '<label class="form-check-label' + (verrouille ? ' text-muted' : '') + '" for="' + id + '">'
+                    + escapeHtmlDc(nom)
+                    + (verrouille ? ' <i class="bi bi-lock-fill small" title="Non excluable"></i>' : '')
+                    + '</label>'
                     + '</div>';
             }).join('');
             return '<div class="col-md-6">'
@@ -7051,14 +7064,24 @@ function rendreParageDechets(j, parCategorie) {
     if (!conteneur) return;
 
     const membres = new Set(j.dechets || []);
+    // Meme verrou que pour les exclusions: mettre la carcasse en famille
+    // dechet la retirerait tout autant du theorique.
+    const verrous = new Set((j.verrouilles || []).map((n) => n.trim().toLowerCase()));
+    const estVerrouille = (nom) => verrous.has(String(nom).trim().toLowerCase());
     const colonne = (titre, produits) => {
         const cases = produits.map((nom) => {
             const id = 'pxd_' + nom.replace(/[^a-zA-Z0-9]/g, '_');
             const coche = membres.has(nom) ? ' checked' : '';
+            const verrouille = estVerrouille(nom) && !membres.has(nom);
             return '<div class="form-check">'
                 + '<input class="form-check-input px-dechet-item" type="checkbox" id="' + id + '"'
-                + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche + '>'
-                + '<label class="form-check-label" for="' + id + '">' + escapeHtmlDc(nom) + '</label>'
+                + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche
+                + (verrouille ? ' disabled title="Produit verrouillé : il porte le stock du parage (la carcasse). Le mettre en famille déchet le retirerait du calcul."' : '')
+                + '>'
+                + '<label class="form-check-label' + (verrouille ? ' text-muted' : '') + '" for="' + id + '">'
+                + escapeHtmlDc(nom)
+                + (verrouille ? ' <i class="bi bi-lock-fill small" title="Non cochable"></i>' : '')
+                + '</label>'
                 + '</div>';
         }).join('');
         return '<div class="col-md-6">'

@@ -5949,7 +5949,10 @@ app.get('/api/parage/produits', checkAuth, checkReadAccess, async (req, res) => 
             success: true,
             produits,
             exclusions: await lireListe('parage_exclusions'),
-            dechets: await lireListe('parage_dechets')
+            dechets: await lireListe('parage_dechets'),
+            // Produits que l'ecran doit rendre NON COCHABLES (cf lib/parage.js:
+            // la carcasse porte le denominateur). Le PUT les refuse aussi.
+            verrouilles: require('./lib/parage').PRODUITS_VERROUILLES
         });
     } catch (error) {
         console.error('GET /api/parage/produits:', error);
