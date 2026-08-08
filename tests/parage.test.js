@@ -762,6 +762,34 @@ describe('bilan de la famille dechet', () => {
         expect(d.taux_dechet).toBeCloseTo(0, 10);
         expect(d.perte).toBeCloseTo(d.taux_deperdition, 10);
     });
+
+    // Chaque kilo de dechet traverse le calcul EXACTEMENT une fois: au
+    // theorique viande le jour de sa production, puis dans le livre dechet
+    // jusqu'a sa sortie. Evacuer du vieux dechet n'est donc pas en produire.
+    test('du dechet herite puis evacue ne compte pas comme produit', () => {
+        // 5 kg de dechet herites d'avant. Aujourd'hui on en jette 3 et on en
+        // vend 2: le stock dechet tombe a zero, rien n'a ete produit.
+        const r = calculerParage({ ...base,
+            stocksMatin: [
+                { pointVente: 'Mbao', produit: 'Boeuf', quantite: 50 },
+                { pointVente: 'Mbao', produit: 'Déchet 400', quantite: 5 }
+            ],
+            transferts: [{ pointVente: 'Mbao', produit: 'Déchet 400', quantite: 3, impact: -1,
+                extension: { dechet_jete: true } }],
+            ventes: [
+                { pointVente: 'Mbao', produit: 'Boeuf en détail', nombre: 48 },
+                { pointVente: 'Mbao', produit: 'Dechet', nombre: 2 }
+            ],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 2 }] });
+        const d = r.Mbao.bovin;
+        // soir 0 + vendu 2 + jete 3 - matin 5 = 0: rien produit aujourd'hui.
+        expect(d.dechet.produit).toBeCloseTo(0, 6);
+        // Et le theorique viande n'a pas vu passer ces 5 kg une seconde fois:
+        // 50 - 2 = 48, perte globale nulle, deperdition nulle.
+        expect(d.theorique).toBeCloseTo(48, 6);
+        expect(d.perte).toBeCloseTo(0, 10);
+        expect(d.taux_deperdition).toBeCloseTo(0, 10);
+    });
 });
 
 describe('produits verrouilles', () => {
