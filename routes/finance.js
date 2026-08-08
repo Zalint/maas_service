@@ -1377,13 +1377,33 @@ router.get('/simulation', async (req, res) => {
             if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
         }
 
+        // Prix d'ACHAT a la fin de la periode. Il sert au levier VOLUME, pas au
+        // levier prix: augmenter le prix ne coute rien de plus, mais vendre un
+        // kilo de plus oblige a l'acheter. Seule la MARGE tombe dans le
+        // resultat. Sur le boeuf en juillet, 4 715 F de prix moyen contre
+        // 3 835 F d'achat: rapporter le resultat au prix de vente surestimait
+        // le volume necessaire d'un facteur cinq.
+        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateFin);
+        const prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
+
         const produits = PRODUITS_SIMULATION.map((nom) => {
             const agg = parCle.get(normaliserNomProduit(nom))
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
+            const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
+            const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
+            const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+            // Marge nulle ou negative: vendre plus n'approche pas de
+            // l'equilibre, ca l'eloigne. Le cas doit rester visible, donc on
+            // renvoie la valeur telle quelle plutot que de la masquer.
+            const marge = (prixMoyen !== null && prixAchat !== null)
+                ? round2(prixMoyen - prixAchat) : null;
             return {
                 nom,
                 quantite: round2(agg.quantite),
                 ca: round2(agg.ca),
+                prix_achat: prixAchat,
+                marge_unitaire: marge,
                 // Prix MOYEN constate, et non prix de catalogue: c'est celui-la
                 // qui explique le chiffre d'affaires de la periode.
                 prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
