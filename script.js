@@ -10279,10 +10279,11 @@ function filtrerTableauReconciliationMensuelle() {
  * un tiret: il n'y avait rien a mesurer.
  */
 function afficherParageMois(parageMois) {
-    // Meme seuil qu'en lib/parage.js: un gramme. En dessous, il n'y a rien a
-    // mesurer, et un residu de virgule flottante s'affichait "0 kg" tout en
-    // produisant un parage de 100%.
-    const SEUIL_KG = 0.001;
+    // LA definition du taux vit dans lib/parage.js, charge par index.html et
+    // expose en window.parageLib. Ce fichier en recopiait la formule ET le
+    // seuil - c'est ainsi que les cartes du mois pouvaient contredire le
+    // tableau du jour.
+    const { tauxDePerte } = window.parageLib;
     const cartes = [
         { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
         { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
@@ -10297,22 +10298,22 @@ function afficherParageMois(parageMois) {
         const vendu = d ? (parseFloat(d.vendu) || 0) : 0;
 
         if (!elValeur) return;
-        if (theorique <= SEUIL_KG) {
+        const { ratio, perte } = tauxDePerte(vendu, theorique);
+        if (perte === null) {
             elValeur.textContent = '—';
             if (elDetail) elDetail.textContent = vendu > 0 ? `${kg(vendu)} vendus, théorique inconnu` : '';
             elValeur.title = 'Aucun stock théorique sur le mois : rien à mesurer.';
             return;
         }
-        const perte = 1 - (vendu / theorique);
         elValeur.textContent = `${(perte * 100).toFixed(1)} %`;
         if (elDetail) elDetail.textContent = `${kg(vendu)} vendus / ${kg(theorique)} théoriques`;
         elValeur.title = `Vendu (packs inclus) : ${kg(vendu)}
 `
             + `Stock théorique (matin + transferts − soir) : ${kg(theorique)}
 `
-            + `Rendement : ${(vendu / theorique * 100).toFixed(1)} %
+            + `Rendement : ${(ratio * 100).toFixed(1)} %
 `
-            + `Parage : 100 − ${(vendu / theorique * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
+            + `Parage : 100 − ${(ratio * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
     });
 }
 
@@ -11256,9 +11257,13 @@ async function exportParageDetailsToExcel() {
                 'Stock soir (kg)': arrondi(t.soir),
                 'Theorique (kg)': arrondi(t.theorique),
                 'Ventes saisies (kg)': arrondi(t.vendu),
-                // Meme seuil qu'en lib/parage.js: sous un gramme, rien a mesurer.
-                'Parage (%)': t.theorique > 0.001
-                    ? Math.round((1 - t.vendu / t.theorique) * 1000) / 10 : ''
+                // LA definition du taux, lue de window.parageLib et non
+                // recopiee: la ligne TOTAL MOIS de l'Excel doit etre calculee
+                // exactement comme les cartes et le tableau.
+                'Parage (%)': (function () {
+                    const perte = window.parageLib.tauxDePerte(t.vendu, t.theorique).perte;
+                    return perte === null ? '' : Math.round(perte * 1000) / 10;
+                })()
             });
         });
 

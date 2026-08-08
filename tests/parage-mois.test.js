@@ -10,6 +10,12 @@
 const fs = require('fs');
 const path = require('path');
 
+// La fonction lit desormais window.parageLib - la formule du taux, ecrite une
+// seule fois dans lib/parage.js et servie au navigateur par index.html. En
+// jsdom, `window` existe: requerir le module pose le meme global que la
+// balise <script> en production. C'est le cablage reel, pas un bouchon.
+require('../lib/parage');
+
 function charger() {
     const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
     const debut = source.indexOf('function afficherParageMois(parageMois)');
