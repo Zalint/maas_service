@@ -1208,7 +1208,8 @@
                     row.prix_vente == null ? '' : row.prix_vente,
                     row.prix_achat == null ? '' : row.prix_achat,
                     readOnly,
-                    row.prix_achat_dynamique === true
+                    row.prix_achat_dynamique === true,
+                    row.hors_mata === true
                 );
             }
         } catch (e) {
@@ -1216,7 +1217,7 @@
         }
     }
 
-    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn) {
+    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn, horsMata) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
 
@@ -1306,6 +1307,26 @@
             tdDyn.appendChild(dash);
         }
 
+        // Colonne "Hors Mata": produit achete hors circuit Mata. Coche, ses
+        // livraisons ne generent aucune commission fournisseur; son prix
+        // d'achat continue de valoriser le stock (cash-stock, PL).
+        const tdHors = document.createElement('td');
+        tdHors.className = 'text-center align-middle';
+        const chkHors = document.createElement('input');
+        chkHors.type = 'checkbox';
+        chkHors.className = 'form-check-input';
+        chkHors.dataset.col = 'hors_mata';
+        chkHors.checked = horsMata === true;
+        if (readOnly) chkHors.disabled = true;
+        const syncHors = () => {
+            chkHors.title = chkHors.checked
+                ? 'Hors circuit Mata : aucune commission fournisseur sur ses livraisons. Son prix d\'achat valorise toujours le stock.'
+                : 'Dans le circuit Mata : ses livraisons génèrent la commission fournisseur. Cochez pour l\'exclure de la commission.';
+        };
+        chkHors.addEventListener('change', syncHors);
+        syncHors();
+        tdHors.appendChild(chkHors);
+
         // Bouton supprimer. Si la ligne vient de la BDD (produit existant),
         // on appelle DELETE /api/finance/prix/:produit. Sinon (ligne ajoutee
         // localement via "+ Ajouter une ligne"), on retire juste du DOM.
@@ -1354,7 +1375,7 @@
         tdDel.appendChild(btnDel);
         }
 
-        tr.append(tdP, tdV, tdA, tdDyn, tdDel);
+        tr.append(tdP, tdV, tdA, tdDyn, tdHors, tdDel);
         tbody.appendChild(tr);
     }
 

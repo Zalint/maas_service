@@ -357,6 +357,11 @@ async function computeCreances(opts = {}) {
         if (qte <= 0) continue;
         const prix = lookupPrix(t.produit);
         if (!prix) continue; // produit non present dans le catalogue fournisseur
+        // "Hors Mata": produit achete hors circuit Mata (case cochee au
+        // catalogue). Aucune commission sur ses livraisons - il sort de la
+        // relation fournisseur - mais son prix d'achat reste au catalogue
+        // et continue de valoriser le stock (cash-stock, PL).
+        if (prix.hors_mata) continue;
 
         const tDateISO = transfertDateToISO(t.date);
         // Prix vente fournisseur effectif a la date du transfert (point-in-time).
