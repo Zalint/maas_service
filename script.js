@@ -10355,6 +10355,13 @@ function afficherParageMois(parageMois) {
     // expose en window.parageLib. Ce fichier en recopiait la formule ET le
     // seuil - c'est ainsi que les cartes du mois pouvaient contredire le
     // tableau du jour.
+    if (!window.parageLib) {
+        // lib/parage.js absent (cache d'un deploiement rate, 404): les cartes
+        // restent a leur tiret initial plutot que de casser tout le rendu du
+        // mois par un TypeError.
+        console.error('lib/parage.js non charge: cartes parage du mois non rendues.');
+        return;
+    }
     const { tauxDePerte } = window.parageLib;
     const cartes = [
         { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
@@ -11407,6 +11414,9 @@ async function exportParageDetailsToExcel() {
                 // recopiee: la ligne TOTAL MOIS de l'Excel doit etre calculee
                 // exactement comme les cartes et le tableau.
                 'Parage (%)': (function () {
+                    // Sans la lib (cache rate), cellule vide - comme une
+                    // journee non mesurable - plutot qu'un export avorte.
+                    if (!window.parageLib) return '';
                     const perte = window.parageLib.tauxDePerte(t.vendu, t.theorique).perte;
                     return perte === null ? '' : Math.round(perte * 1000) / 10;
                 })()

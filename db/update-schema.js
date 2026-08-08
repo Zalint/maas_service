@@ -1057,9 +1057,13 @@ async function updateSchema() {
                         ORDER BY nom
                     `, { type: sequelize.QueryTypes.SELECT });
                     if (membres.length) {
+                        // ON CONFLICT: deux instances peuvent migrer en meme
+                        // temps (deploiement qui chevauche); le perdant de la
+                        // course ne doit pas faire tomber le demarrage.
                         await sequelize.query(
                             `INSERT INTO finance_config (key, value, updated_at)
-                             VALUES ('parage_dechets', :valeur, NOW())`,
+                             VALUES ('parage_dechets', :valeur, NOW())
+                             ON CONFLICT (key) DO NOTHING`,
                             { replacements: { valeur: membres.map((m) => m.nom).join(',') } }
                         );
                         console.log(`Famille dechet initialisee: ${membres.map((m) => m.nom).join(', ')}`);

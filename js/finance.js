@@ -126,7 +126,17 @@
             } else {
                 return;
             }
-            if (simDernieresDonnees) renderSimulation(simDernieresDonnees);
+            if (simDernieresDonnees) {
+                // Le rendu detruit la case qui vient d'etre basculee. Sans
+                // remise du focus sur son equivalente re-rendue, la barre
+                // Espace au clavier ne fonctionne qu'une seule fois.
+                const cibleFocus = c.id === 'fin-sim-tout'
+                    ? '#fin-sim-tout'
+                    : `[data-sim-produit="${CSS.escape(c.dataset.simProduit)}"]`;
+                renderSimulation(simDernieresDonnees);
+                const caseRendue = simResultEl.querySelector(cibleFocus);
+                if (caseRendue) caseRendue.focus();
+            }
         });
         const stockPertesSave = document.getElementById('fin-stock-pertes-save');
         if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
@@ -2429,8 +2439,11 @@
             return { ...p, retenu, cfa100, effetBump, partVentes, plApres: plActuel + effetBump };
         });
 
-        // Le total ne cumule QUE les produits coches: c'est ce qui repond a
-        // "et si je n'augmentais que le boeuf ?".
+        // Deux perimetres dans le meme total, a dessein: ca et cfa100 cumulent
+        // TOUS les produits (des caracteristiques de la periode, pas des choix
+        // de simulation), tandis qu'effetBump - et donc le PL apres - ne
+        // cumule que les produits COCHES: c'est ce qui repond a "et si je
+        // n'augmentais que le boeuf ?".
         const totaux = lignes.reduce((acc, l) => ({
             ca: acc.ca + l.ca,
             cfa100: acc.cfa100 + l.cfa100,
@@ -2531,16 +2544,30 @@
             // volume necessaire par cinq: 4 715 F de prix moyen contre 880 F de
             // marge reelle sur le boeuf en juillet.
             const marge = cible.marge_unitaire;
+            // Une seule matrice de signes pour tous les messages volume:
+            //   marge > 0 et PL < 0  -> vendre PLUS rapproche de zero
+            //   marge > 0 et PL > 0  -> vendre MOINS ramene a zero
+            //   marge < 0            -> chaque unite vendue fait BAISSER le resultat
+            //   marge = 0            -> le volume ne change rien
+            //   PL = 0               -> rien a compenser
             let volumeHtml;
             if (marge === null || marge === undefined) {
                 volumeHtml = `<div class="small text-muted mt-2">
                     Volume d'équilibre non calculable : aucun prix d'achat renseigné
                     pour ${esc(cible.nom)}, donc pas de marge connue.</div>`;
-            } else if (marge <= 0) {
+            } else if (marge === 0) {
+                volumeHtml = `<div class="small text-muted mt-2">
+                    Marge unitaire nulle : vendre plus ou moins ne change pas le résultat.</div>`;
+            } else if (marge < 0) {
                 volumeHtml = `<div class="small text-warning mt-2">
                     <i class="bi bi-exclamation-triangle"></i>
-                    Marge unitaire ${esc(fmtMoney(marge))} : vendre davantage
-                    <strong>éloigne</strong> de l'équilibre au lieu de s'en rapprocher.</div>`;
+                    Marge unitaire ${esc(fmtMoney(marge))} : chaque unité vendue fait
+                    <strong>baisser</strong> le résultat${plActuel < 0
+                        ? ' — vendre davantage creuse la perte'
+                        : (plActuel > 0 ? ' — vendre davantage entame le bénéfice' : '')}.</div>`;
+            } else if (plActuel === 0) {
+                volumeHtml = `<div class="small text-muted mt-2">
+                    Résultat déjà à zéro : rien à compenser par le volume.</div>`;
             } else {
                 const kg = -plActuel / marge;
                 volumeHtml = enBaisse
@@ -2562,9 +2589,9 @@
                                 <h6 class="card-subtitle mb-2 text-muted">Prix d'équilibre</h6>
                                 <h2 class="text-${enBaisse ? 'success' : 'danger'} mb-0">${esc(fmtMoney(prixEq))}</h2>
                                 <div class="small text-muted mt-2">par unité de ${esc(cible.nom)}</div>
-                                ${(marge !== null && marge !== undefined && marge > 0)
+                                ${(marge !== null && marge !== undefined && marge > 0 && plActuel !== 0)
                                     ? `<hr class="my-2">
-                                       <h6 class="card-subtitle mb-2 text-muted">ou vendre en plus</h6>
+                                       <h6 class="card-subtitle mb-2 text-muted">ou vendre en ${enBaisse ? 'moins' : 'plus'}</h6>
                                        <h2 class="text-${enBaisse ? 'success' : 'danger'} mb-0">${
                                            esc(fmtQte(Math.round(Math.abs(-plActuel / marge) * 10) / 10))}</h2>
                                        <div class="small text-muted mt-2">à prix inchangé</div>`
@@ -2595,12 +2622,14 @@
                                 </tbody>
                             </table>
                             <div class="small text-muted mt-1">
-                                ${enBaisse
-                                    ? `Le résultat est <strong>positif</strong> : c'est la marge de baisse
-                                       avant de passer sous zéro.`
-                                    : `Le résultat est <strong>négatif</strong> : c'est la hausse qu'il faudrait
-                                       appliquer pour l'annuler.`}
-                                ${pct !== null ? ` Soit ${esc(Math.abs(pct).toFixed(1))} % du prix actuel.` : ''}
+                                ${plActuel === 0
+                                    ? `Le résultat est <strong>déjà à zéro</strong> : aucun ajustement nécessaire.`
+                                    : (enBaisse
+                                        ? `Le résultat est <strong>positif</strong> : c'est la marge de baisse
+                                           avant de passer sous zéro.`
+                                        : `Le résultat est <strong>négatif</strong> : c'est la hausse qu'il faudrait
+                                           appliquer pour l'annuler.`)}
+                                ${pct !== null && plActuel !== 0 ? ` Soit ${esc(Math.abs(pct).toFixed(1))} % du prix actuel.` : ''}
                             </div>
                             ${volumeHtml}
                         </div>
@@ -2617,7 +2646,7 @@
                         <tr>
                             <th class="text-center" style="width:2.5rem">
                                 <input type="checkbox" class="form-check-input" id="fin-sim-tout"
-                                       ${nbRetenus === lignes.length ? 'checked' : ''}
+                                       ${lignes.length > 0 && nbRetenus === lignes.length ? 'checked' : ''}
                                        aria-label="Tout cocher ou tout décocher">
                             </th>
                             <th>Produit</th>
@@ -2661,7 +2690,9 @@
                     <br>
                     Sur chaque ligne, <strong>PL après</strong> suppose que ce produit
                     <em>seul</em> augmente. La ligne de total suppose au contraire que
-                    <em>tous</em> augmentent en même temps.
+                    tous les produits <em>cochés</em> augmentent en même temps —
+                    ses colonnes Ventes et CFA 100 restent, elles, la somme de
+                    tous les produits suivis.
                 </div>
             </div>
 

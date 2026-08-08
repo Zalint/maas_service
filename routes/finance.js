@@ -2171,6 +2171,11 @@ router.put('/config', async (req, res) => {
             return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
         }
         const now = new Date();
+        // Deux passes: TOUT valider avant de RIEN ecrire, puis toutes les
+        // ecritures dans une transaction. En un seul passage, une requete
+        // multi-cles pouvait persister les premieres valeurs et echouer sur la
+        // suivante: etat partiel en base sous une reponse 400.
+        const aEcrire = [];
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
                 const value = String(req.body[key]);
@@ -2199,16 +2204,21 @@ router.put('/config', async (req, res) => {
                         error: `${key} doit etre entre 0 et 100`
                     });
                 }
+                aEcrire.push({ key, value });
+            }
+        }
+        await sequelize.transaction(async (t) => {
+            for (const { key, value } of aEcrire) {
                 // Avec un mois, le taux de pertes est DATE et l'ancrage
                 // n'est pas touche: sinon la nouvelle valeur deviendrait le
                 // repli des mois anterieurs et reecrirait le passe.
                 if (moisCible && key === 'stock_pertes_decoupe_pct') {
-                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now });
+                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now }, { transaction: t });
                 } else {
-                    await FinanceConfig.upsert({ key, value, updated_at: now });
+                    await FinanceConfig.upsert({ key, value, updated_at: now }, { transaction: t });
                 }
             }
-        }
+        });
         // commission_pct change -> les calculs derives (commission MaaS cumul
         // dans cash-stock) doivent etre recomputed. Invalider tous les caches
         // finance-derives pour rester safe.

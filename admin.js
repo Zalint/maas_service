@@ -6984,12 +6984,17 @@ let pxDechetsHorsListe = [];
 // effacerait le reglage, avec un message de succes. On refuse tant que la
 // liste n'est pas reellement chargee.
 let pxListeChargee = false;
+// Drapeau SEPARE pour la famille dechet: son rendu vient apres celui des
+// exclusions. Avec un drapeau commun, un echec entre les deux (ou un conteneur
+// absent) laisserait enregistrer une famille vide sous un toast de succes.
+let pxDechetsListeChargee = false;
 
 async function chargerParageExclusions() {
     const conteneur = document.getElementById('pxListe');
     if (!conteneur) return;
     conteneur.innerHTML = '<div class="col-12 text-center text-muted py-3">Chargement...</div>';
     pxListeChargee = false;
+    pxDechetsListeChargee = false;
     try {
         const res = await fetch('/api/parage/produits', { credentials: 'include' });
         const j = await res.json();
@@ -7108,6 +7113,7 @@ function rendreParageDechets(j, parCategorie) {
         c.addEventListener('change', majCompteurParageDechets);
     });
     majCompteurParageDechets();
+    pxDechetsListeChargee = true;
 }
 
 function majCompteurParageDechets() {
@@ -7117,9 +7123,9 @@ function majCompteurParageDechets() {
 }
 
 async function sauvegarderParageDechets() {
-    // Meme garde que les exclusions: sans liste chargee, il n'y a aucune case
-    // dans le DOM et on ecrirait une famille vide avec un message de succes.
-    if (!pxListeChargee) {
+    // Meme garde que les exclusions, mais sur SA liste a elle: sans cases dans
+    // le DOM on ecrirait une famille vide avec un message de succes.
+    if (!pxDechetsListeChargee) {
         showToast("Liste non chargée : rien n'a été enregistré.", "warning");
         return;
     }

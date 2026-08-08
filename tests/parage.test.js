@@ -699,6 +699,28 @@ describe('bilan de la famille dechet', () => {
         expect(d.vendu).toBeCloseTo(12, 6);
     });
 
+    // Un pack peut contenir un produit de la famille (l'admin la configure
+    // librement). Son kilo suit le MEME chemin que la vente directe - le
+    // bilan dechet - sinon il compterait comme viande vendue au numerateur
+    // alors que son stock n'est jamais entre dans le theorique.
+    test('un composant de pack en famille dechet nourrit le bilan, pas le numerateur', () => {
+        const r = calculerParage({ ...base,
+            stocksMatin: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 50 }],
+            transferts: [],
+            ventes: [{ pointVente: 'Mbao', produit: 'PackMixte', nombre: 2 }],
+            stocksSoir: [{ pointVente: 'Mbao', produit: 'Boeuf', quantite: 10 }],
+            packs: { PackMixte: [
+                { produit: 'Boeuf en détail', quantite: 3, unite: 'kg' },
+                { produit: 'Déchet 400', quantite: 1, unite: 'kg' }
+            ] } });
+        const d = r.Mbao.bovin;
+        // 2 packs x 3 kg de viande au numerateur, rien de plus.
+        expect(d.vendu).toBeCloseTo(6, 6);
+        // 2 packs x 1 kg de dechet au bilan, comme une vente directe.
+        expect(d.dechet.vendu).toBeCloseTo(2, 6);
+        expect(d.theorique).toBeCloseTo(40, 6);
+    });
+
     // global = dechet + deperdition, exactement, parce que les trois taux
     // partagent le meme denominateur. C'est ce qui rend le survol verifiable.
     test('la decomposition s additionne au taux global', () => {
