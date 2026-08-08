@@ -9933,8 +9933,8 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // Moyenner les taux journaliers donnerait le meme poids a une journee
         // de 2 kg qu'a une journee de 200 kg.
         const parageMois = {
-            bovin: { vendu: 0, theorique: 0 },
-            ovin: { vendu: 0, theorique: 0 }
+            bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } },
+            ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } }
         };
         // --- Fin initialisation totaux ---
 
@@ -10195,6 +10195,18 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                         if (!d || d.ratio === null || d.ratio === undefined) return;
                         parageMois[cat].vendu += parseFloat(d.vendu) || 0;
                         parageMois[cat].theorique += parseFloat(d.theorique) || 0;
+                        // Le bilan dechet suit les MEMES journees mesurables
+                        // que le taux: meme denominateur, donc au mois aussi
+                        // perte globale = dechet + deperdition, exactement.
+                        // On cumule chaque terme, pas seulement le produit:
+                        // la formule (soir + vendu + jete − matin − transferts)
+                        // reste vraie sur les sommes, et l'infobulle du mois
+                        // peut la montrer terme a terme comme celle du jour.
+                        if (d.dechet) {
+                            const t = parageMois[cat].dechet;
+                            ['matin', 'transferts', 'soir', 'vendu', 'jete', 'produit']
+                                .forEach((c) => { t[c] += parseFloat(d.dechet[c]) || 0; });
+                        }
                     });
                 });
             } else {
@@ -10374,6 +10386,39 @@ function afficherParageMois(parageMois) {
             + `Rendement : ${(ratio * 100).toFixed(1)} %
 `
             + `Parage : 100 − ${(ratio * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
+
+        // Repartition de la perte du mois. Presente seulement quand le cumul
+        // porte le bilan dechet: un mois relu depuis un cache d'avant cette
+        // version ne l'a pas, et la carte retombe alors sur l'affichage
+        // d'origine plutot que d'inventer des zeros.
+        const b = d && d.dechet;
+        if (!b) return;
+        const produitKg = parseFloat(b.produit) || 0;
+        const perteKg = theorique - vendu;
+        const deperditionKg = perteKg - produitKg;
+        // Meme denominateur que le taux du mois (theorique > 0 ici, sinon
+        // perte aurait ete null): les pourcentages s'additionnent exactement.
+        const tauxDechet = produitKg / theorique;
+        const tauxDeperdition = perte - tauxDechet;
+        if (elDetail) {
+            elDetail.innerHTML = `${kg(vendu)} vendus / ${kg(theorique)} théoriques<br>`
+                + `Déchet produit : ${kg(produitKg)} (${(tauxDechet * 100).toFixed(1)} %)<br>`
+                + (tauxDeperdition < 0 ? '<span class="text-danger">⚠ ' : '')
+                + `Déperdition inexpliquée : ${kg(deperditionKg)} (${(tauxDeperdition * 100).toFixed(1)} %)`
+                + (tauxDeperdition < 0 ? '</span>' : '');
+        }
+        elValeur.title += `
+— Répartition de la perte —
+`
+            + `Déchet produit (soir ${kg(b.soir)} + vendu ${kg(b.vendu)} + jeté ${kg(b.jete)} − matin ${kg(b.matin)}`
+            + (b.transferts ? ` − transferts ${kg(b.transferts)}` : '')
+            + `) : ${kg(produitKg)} soit ${(tauxDechet * 100).toFixed(1)} %
+`
+            + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(tauxDeperdition * 100).toFixed(1)} %`
+            + (tauxDeperdition < 0
+                ? `
+⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`
+                : '');
     });
 }
 
