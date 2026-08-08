@@ -1032,6 +1032,40 @@ async function updateSchema() {
                         + `${lignesSupprimees} ligne(s) de stock derivee(s) supprimee(s)`);
                 }
             }
+
+            // Graine de la FAMILLE DECHET (finance_config.parage_dechets), la
+            // liste des produits dont le bilan mesure le dechet produit par la
+            // decoupe. Elle se gere ensuite dans l'ecran admin du parage; la
+            // graine ne fait que retrouver les produits dechet deja presents
+            // au catalogue du tenant - noms exacts, pas de devinette.
+            //
+            // UNIQUEMENT si la cle n'existe pas: une famille videe ou remaniee
+            // par l'admin ne doit jamais etre re-remplie par un redemarrage.
+            if (await checkTableExists('finance_config')) {
+                const [dejaLa] = await sequelize.query(
+                    `SELECT 1 FROM finance_config WHERE key = 'parage_dechets' LIMIT 1`,
+                    { type: sequelize.QueryTypes.SELECT }
+                );
+                if (!dejaLa) {
+                    const membres = await sequelize.query(`
+                        SELECT DISTINCT nom FROM produits
+                        WHERE archived = false
+                          AND (LOWER(TRIM(nom)) = 'dechet'
+                               OR LOWER(TRIM(nom)) LIKE 'dechet %'
+                               OR LOWER(TRIM(nom)) = 'déchet'
+                               OR LOWER(TRIM(nom)) LIKE 'déchet %')
+                        ORDER BY nom
+                    `, { type: sequelize.QueryTypes.SELECT });
+                    if (membres.length) {
+                        await sequelize.query(
+                            `INSERT INTO finance_config (key, value, updated_at)
+                             VALUES ('parage_dechets', :valeur, NOW())`,
+                            { replacements: { valeur: membres.map((m) => m.nom).join(',') } }
+                        );
+                        console.log(`Famille dechet initialisee: ${membres.map((m) => m.nom).join(', ')}`);
+                    }
+                }
+            }
         }
 
         // adresse_client en TEXT (et non VARCHAR(255)).

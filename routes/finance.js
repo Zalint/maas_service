@@ -2159,7 +2159,11 @@ router.get('/config', async (req, res) => {
 // Body: { commission_pct?, categories_eligibles?, stock_pertes_decoupe_pct? }
 router.put('/config', async (req, res) => {
     try {
-        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions'];
+        // parage_dechets: la FAMILLE dechet - les produits dont le bilan
+        // (soir + vendu + jete - matin) mesure le dechet PRODUIT par la
+        // decoupe. Configuree dans le meme ecran admin que les exclusions,
+        // et stockee pareil: une liste CSV de noms, pas de table dediee.
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions', 'parage_dechets'];
         // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
         // parametre date a ce jour.
         const moisCible = req.body?.mois || null;

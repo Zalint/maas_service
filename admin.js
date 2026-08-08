@@ -6977,6 +6977,8 @@ function initParageExclusionsSection() {
 // categorie, ou un produit retire du catalogue). L'ecran ne montre que Bovin et
 // Ovin: sans cette memoire, enregistrer effacerait ces entrees sans le dire.
 let pxExclusionsHorsListe = [];
+// Meme memoire pour la famille dechet, qui partage la meme liste de produits.
+let pxDechetsHorsListe = [];
 // Tant que le chargement n'a pas abouti, il n'y a AUCUNE case dans le DOM et
 // pxExclusionsHorsListe est vide: enregistrer ecrirait une liste vide et
 // effacerait le reglage, avec un message de succes. On refuse tant que la
@@ -7034,8 +7036,86 @@ async function chargerParageExclusions() {
         });
         majCompteurParageExclusions();
         pxListeChargee = true;
+
+        // --- Famille dechet: MEME liste de produits, autre reglage. Les cases
+        // portent leur propre classe et leur propre prefixe d'id pour ne pas
+        // entrer en collision avec celles des exclusions juste au-dessus.
+        rendreParageDechets(j, parCategorie);
     } catch (e) {
         conteneur.innerHTML = '<div class="col-12 text-danger py-3">Erreur: ' + escapeHtmlDc(e.message) + '</div>';
+    }
+}
+
+function rendreParageDechets(j, parCategorie) {
+    const conteneur = document.getElementById('pxDechetsListe');
+    if (!conteneur) return;
+
+    const membres = new Set(j.dechets || []);
+    const colonne = (titre, produits) => {
+        const cases = produits.map((nom) => {
+            const id = 'pxd_' + nom.replace(/[^a-zA-Z0-9]/g, '_');
+            const coche = membres.has(nom) ? ' checked' : '';
+            return '<div class="form-check">'
+                + '<input class="form-check-input px-dechet-item" type="checkbox" id="' + id + '"'
+                + ' data-nom="' + escapeHtmlDc(nom) + '"' + coche + '>'
+                + '<label class="form-check-label" for="' + id + '">' + escapeHtmlDc(nom) + '</label>'
+                + '</div>';
+        }).join('');
+        return '<div class="col-md-6">'
+            + '<h6 class="text-uppercase text-muted small mb-2">' + titre
+            + ' <span class="badge bg-secondary">' + produits.length + '</span></h6>'
+            + (cases || '<div class="text-muted small">Aucun produit</div>')
+            + '</div>';
+    };
+
+    // Membres configures mais absents de la liste: conserves a l'enregistrement,
+    // comme pour les exclusions.
+    const affiches = new Set((j.produits || []).map((p) => p.nom));
+    pxDechetsHorsListe = [...membres].filter((nom) => !affiches.has(nom));
+    let note = '';
+    if (pxDechetsHorsListe.length) {
+        note = '<div class="col-12 mt-3"><div class="alert alert-secondary py-2 mb-0 small">'
+            + '<i class="bi bi-info-circle me-1"></i>Également dans la famille, hors catégories Bovin et Ovin : <b>'
+            + pxDechetsHorsListe.map(escapeHtmlDc).join(', ') + "</b>. Ces entrées sont conservées à l'enregistrement."
+            + '</div></div>';
+    }
+
+    conteneur.innerHTML = colonne('Bovin', parCategorie.bovin) + colonne('Ovin', parCategorie.ovin) + note;
+    conteneur.querySelectorAll('.px-dechet-item').forEach((c) => {
+        c.addEventListener('change', majCompteurParageDechets);
+    });
+    majCompteurParageDechets();
+}
+
+function majCompteurParageDechets() {
+    const n = document.querySelectorAll('.px-dechet-item:checked').length;
+    const el = document.getElementById('pxDechetsCount');
+    if (el) el.textContent = n;
+}
+
+async function sauvegarderParageDechets() {
+    // Meme garde que les exclusions: sans liste chargee, il n'y a aucune case
+    // dans le DOM et on ecrirait une famille vide avec un message de succes.
+    if (!pxListeChargee) {
+        showToast("Liste non chargée : rien n'a été enregistré.", "warning");
+        return;
+    }
+    const noms = Array.from(document.querySelectorAll('.px-dechet-item:checked'))
+        .map((c) => c.dataset.nom)
+        .concat(pxDechetsHorsListe);
+    try {
+        const res = await fetch('/api/finance/config', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parage_dechets: noms.join(',') })
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Erreur');
+        showToast(noms.length + ' produit(s) dans la famille déchet', 'success');
+        chargerParageExclusions();
+    } catch (e) {
+        showToast('Erreur: ' + e.message, 'danger');
     }
 }
 

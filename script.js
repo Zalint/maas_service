@@ -4737,7 +4737,24 @@ async function chargerTransferts(date) {
                         selectImpact.appendChild(option);
                     });
                     tdImpact.appendChild(selectImpact);
-                    
+
+                    // Jete: restaure depuis extension.dechet_jete (cf le
+                    // constructeur de ligne vide pour la semantique complete).
+                    const tdJete = document.createElement('td');
+                    tdJete.className = 'text-center';
+                    const checkJete = document.createElement('input');
+                    checkJete.type = 'checkbox';
+                    checkJete.className = 'form-check-input dechet-jete-check';
+                    checkJete.title = 'Déchet jeté (sortie sans recette)';
+                    checkJete.checked = !!(transfert.extension && transfert.extension.dechet_jete);
+                    checkJete.addEventListener('change', () => {
+                        if (checkJete.checked) {
+                            selectImpact.value = '-1';
+                            selectImpact.dispatchEvent(new Event('change'));
+                        }
+                    });
+                    tdJete.appendChild(checkJete);
+
                     // Quantité (+ affichage kg si ventilation)
                     const tdQuantite = document.createElement('td');
                     const inputQuantite = document.createElement('input');
@@ -4817,8 +4834,8 @@ async function chargerTransferts(date) {
                     });
                     tdActions.appendChild(btnSupprimer);
                     
-                    // Ajouter les cellules à la ligne (PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
-                    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+                    // Ajouter les cellules à la ligne (PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
+                    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
 
                     // Ajouter les écouteurs d'événements pour le calcul automatique du total
                     const calculateTotal = () => {
@@ -5189,7 +5206,26 @@ function ajouterLigneTransfert() {
         selectImpact.appendChild(option);
     });
     tdImpact.appendChild(selectImpact);
-    
+
+    // Jete: une sortie SANS recette - la pesee du dechet mis a la poubelle.
+    // Persiste dans extension.dechet_jete, jamais dans le commentaire: un
+    // texte libre ne se filtre pas ("jete", "jetté", "poubelle"...), un
+    // drapeau structure si. Cocher force l'impact a "-": un jet est une
+    // sortie, et un jete entrant ne voudrait rien dire.
+    const tdJete = document.createElement('td');
+    tdJete.className = 'text-center';
+    const checkJete = document.createElement('input');
+    checkJete.type = 'checkbox';
+    checkJete.className = 'form-check-input dechet-jete-check';
+    checkJete.title = 'Déchet jeté (sortie sans recette)';
+    checkJete.addEventListener('change', () => {
+        if (checkJete.checked) {
+            selectImpact.value = '-1';
+            selectImpact.dispatchEvent(new Event('change'));
+        }
+    });
+    tdJete.appendChild(checkJete);
+
     // Quantité (avec affichage kg pour les produits ventilés)
     const tdQuantite = document.createElement('td');
     const inputQuantite = document.createElement('input');
@@ -5245,8 +5281,8 @@ function ajouterLigneTransfert() {
     });
     tdActions.appendChild(btnSupprimer);
 
-    // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
-    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+    // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
+    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
 
     // Ajouter les écouteurs d'événements pour le calcul automatique du total
     const calculateTotal = () => {
@@ -5307,7 +5343,11 @@ async function sauvegarderTransfert() {
         // n'existe pas et on plante avec "reading 'value' of null").
         const rows = document.querySelectorAll('#transfertTable > tbody > tr');
         const transferts = [];
-        
+        // Erreurs de coherence collectees pendant le parcours: on les affiche
+        // UNE fois et on n'envoie rien - jeter depuis le forEach ferait
+        // doubler l'alerte par le catch generique plus bas.
+        const incoherences = [];
+
         rows.forEach(row => {
             const pointVente = row.querySelector('.point-vente-select').value;
             const produit = row.querySelector('.produit-select').value;
@@ -5342,6 +5382,21 @@ async function sauvegarderTransfert() {
                 }
             }
 
+            // Dechet jete: drapeau structure dans extension, jamais dans le
+            // commentaire. Peut cohabiter avec des calibres.
+            const checkJete = row.querySelector('.dechet-jete-check');
+            if (checkJete && checkJete.checked) {
+                if (impact !== -1) {
+                    // La case force l'impact a "-" au clic; si l'utilisateur a
+                    // rebascule l'impact ensuite, la ligne est contradictoire
+                    // et on refuse plutot que de deviner.
+                    incoherences.push(`"${produit}" : un déchet jeté est une sortie, l'impact doit être "-".`);
+                    return;
+                }
+                extension = extension || {};
+                extension.dechet_jete = true;
+            }
+
             // Vérifier que les données sont valides
             if (pointVente && produit && !isNaN(quantite) && !isNaN(prixUnitaire) && quantite > 0) {
                 const payload = {
@@ -5359,6 +5414,11 @@ async function sauvegarderTransfert() {
             }
         });
         
+        if (incoherences.length > 0) {
+            alert('Rien n\'a été enregistré :\n' + incoherences.join('\n'));
+            return;
+        }
+
         if (transferts.length === 0) {
             alert('Aucun transfert valide à sauvegarder');
             return;
@@ -10371,6 +10431,31 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
             const det = data ? data[columnInfo.detail] : null;
             const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
             if (det) {
+                // Decomposition de la perte globale, quand la famille dechet
+                // est configuree (admin parage). Les trois taux partagent le
+                // meme denominateur: global = dechet + deperdition, exactement.
+                // Une deperdition NEGATIVE est affichee telle quelle - plus de
+                // dechet pese que de perte globale, signe d'une pesee decalee
+                // ou d'un mouvement manquant.
+                let decomposition = '';
+                if (det.taux_dechet !== null && det.taux_dechet !== undefined && det.dechet) {
+                    const b = det.dechet;
+                    const perteKg = (parseFloat(det.theorique) || 0) - (parseFloat(det.vendu) || 0);
+                    const deperditionKg = perteKg - (parseFloat(b.produit) || 0);
+                    decomposition = `
+`
+                        + `— Répartition de la perte —
+`
+                        + `Déchet produit (soir ${kg(b.soir)} + vendu ${kg(b.vendu)} + jeté ${kg(b.jete)} − matin ${kg(b.matin)}`
+                        + (b.transferts ? ` − transferts ${kg(b.transferts)}` : '')
+                        + `) : ${kg(b.produit)} soit ${(det.taux_dechet * 100).toFixed(1)} %
+`
+                        + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(det.taux_deperdition * 100).toFixed(1)} %`
+                        + (det.taux_deperdition < 0
+                            ? `
+⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`
+                            : '');
+                }
                 cell.title = det.theorique > 0
                     ? `${columnInfo.libelle}
 `
@@ -10380,7 +10465,8 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
 `
                         + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
 `
-                        + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                        + `Perte globale : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                        + decomposition
                     : `${columnInfo.libelle}
 `
                         + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
