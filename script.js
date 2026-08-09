@@ -4737,7 +4737,24 @@ async function chargerTransferts(date) {
                         selectImpact.appendChild(option);
                     });
                     tdImpact.appendChild(selectImpact);
-                    
+
+                    // Jete: restaure depuis extension.dechet_jete (cf le
+                    // constructeur de ligne vide pour la semantique complete).
+                    const tdJete = document.createElement('td');
+                    tdJete.className = 'text-center';
+                    const checkJete = document.createElement('input');
+                    checkJete.type = 'checkbox';
+                    checkJete.className = 'form-check-input dechet-jete-check';
+                    checkJete.title = 'Déchet jeté (sortie sans recette)';
+                    checkJete.checked = !!(transfert.extension && transfert.extension.dechet_jete);
+                    checkJete.addEventListener('change', () => {
+                        if (checkJete.checked) {
+                            selectImpact.value = '-1';
+                            selectImpact.dispatchEvent(new Event('change'));
+                        }
+                    });
+                    tdJete.appendChild(checkJete);
+
                     // Quantité (+ affichage kg si ventilation)
                     const tdQuantite = document.createElement('td');
                     const inputQuantite = document.createElement('input');
@@ -4817,8 +4834,8 @@ async function chargerTransferts(date) {
                     });
                     tdActions.appendChild(btnSupprimer);
                     
-                    // Ajouter les cellules à la ligne (PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
-                    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+                    // Ajouter les cellules à la ligne (PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
+                    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
 
                     // Ajouter les écouteurs d'événements pour le calcul automatique du total
                     const calculateTotal = () => {
@@ -5189,7 +5206,26 @@ function ajouterLigneTransfert() {
         selectImpact.appendChild(option);
     });
     tdImpact.appendChild(selectImpact);
-    
+
+    // Jete: une sortie SANS recette - la pesee du dechet mis a la poubelle.
+    // Persiste dans extension.dechet_jete, jamais dans le commentaire: un
+    // texte libre ne se filtre pas ("jete", "jetté", "poubelle"...), un
+    // drapeau structure si. Cocher force l'impact a "-": un jet est une
+    // sortie, et un jete entrant ne voudrait rien dire.
+    const tdJete = document.createElement('td');
+    tdJete.className = 'text-center';
+    const checkJete = document.createElement('input');
+    checkJete.type = 'checkbox';
+    checkJete.className = 'form-check-input dechet-jete-check';
+    checkJete.title = 'Déchet jeté (sortie sans recette)';
+    checkJete.addEventListener('change', () => {
+        if (checkJete.checked) {
+            selectImpact.value = '-1';
+            selectImpact.dispatchEvent(new Event('change'));
+        }
+    });
+    tdJete.appendChild(checkJete);
+
     // Quantité (avec affichage kg pour les produits ventilés)
     const tdQuantite = document.createElement('td');
     const inputQuantite = document.createElement('input');
@@ -5245,8 +5281,8 @@ function ajouterLigneTransfert() {
     });
     tdActions.appendChild(btnSupprimer);
 
-    // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Quantité, Détails, Prix, Total, Commentaire, Actions)
-    row.append(tdPointVente, tdProduit, tdImpact, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+    // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
+    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
 
     // Ajouter les écouteurs d'événements pour le calcul automatique du total
     const calculateTotal = () => {
@@ -5307,7 +5343,11 @@ async function sauvegarderTransfert() {
         // n'existe pas et on plante avec "reading 'value' of null").
         const rows = document.querySelectorAll('#transfertTable > tbody > tr');
         const transferts = [];
-        
+        // Erreurs de coherence collectees pendant le parcours: on les affiche
+        // UNE fois et on n'envoie rien - jeter depuis le forEach ferait
+        // doubler l'alerte par le catch generique plus bas.
+        const incoherences = [];
+
         rows.forEach(row => {
             const pointVente = row.querySelector('.point-vente-select').value;
             const produit = row.querySelector('.produit-select').value;
@@ -5342,6 +5382,21 @@ async function sauvegarderTransfert() {
                 }
             }
 
+            // Dechet jete: drapeau structure dans extension, jamais dans le
+            // commentaire. Peut cohabiter avec des calibres.
+            const checkJete = row.querySelector('.dechet-jete-check');
+            if (checkJete && checkJete.checked) {
+                if (impact !== -1) {
+                    // La case force l'impact a "-" au clic; si l'utilisateur a
+                    // rebascule l'impact ensuite, la ligne est contradictoire
+                    // et on refuse plutot que de deviner.
+                    incoherences.push(`"${produit}" : un déchet jeté est une sortie, l'impact doit être "-".`);
+                    return;
+                }
+                extension = extension || {};
+                extension.dechet_jete = true;
+            }
+
             // Vérifier que les données sont valides
             if (pointVente && produit && !isNaN(quantite) && !isNaN(prixUnitaire) && quantite > 0) {
                 const payload = {
@@ -5359,6 +5414,11 @@ async function sauvegarderTransfert() {
             }
         });
         
+        if (incoherences.length > 0) {
+            alert('Rien n\'a été enregistré :\n' + incoherences.join('\n'));
+            return;
+        }
+
         if (transferts.length === 0) {
             alert('Aucun transfert valide à sauvegarder');
             return;
@@ -9873,8 +9933,8 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // Moyenner les taux journaliers donnerait le meme poids a une journee
         // de 2 kg qu'a une journee de 200 kg.
         const parageMois = {
-            bovin: { vendu: 0, theorique: 0 },
-            ovin: { vendu: 0, theorique: 0 }
+            bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } },
+            ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } }
         };
         // --- Fin initialisation totaux ---
 
@@ -10135,6 +10195,18 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                         if (!d || d.ratio === null || d.ratio === undefined) return;
                         parageMois[cat].vendu += parseFloat(d.vendu) || 0;
                         parageMois[cat].theorique += parseFloat(d.theorique) || 0;
+                        // Le bilan dechet suit les MEMES journees mesurables
+                        // que le taux: meme denominateur, donc au mois aussi
+                        // perte globale = dechet + deperdition, exactement.
+                        // On cumule chaque terme, pas seulement le produit:
+                        // la formule (soir + vendu + jete − matin − transferts)
+                        // reste vraie sur les sommes, et l'infobulle du mois
+                        // peut la montrer terme a terme comme celle du jour.
+                        if (d.dechet) {
+                            const t = parageMois[cat].dechet;
+                            ['matin', 'transferts', 'soir', 'vendu', 'jete', 'produit']
+                                .forEach((c) => { t[c] += parseFloat(d.dechet[c]) || 0; });
+                        }
                     });
                 });
             } else {
@@ -10279,10 +10351,18 @@ function filtrerTableauReconciliationMensuelle() {
  * un tiret: il n'y avait rien a mesurer.
  */
 function afficherParageMois(parageMois) {
-    // Meme seuil qu'en lib/parage.js: un gramme. En dessous, il n'y a rien a
-    // mesurer, et un residu de virgule flottante s'affichait "0 kg" tout en
-    // produisant un parage de 100%.
-    const SEUIL_KG = 0.001;
+    // LA definition du taux vit dans lib/parage.js, charge par index.html et
+    // expose en window.parageLib. Ce fichier en recopiait la formule ET le
+    // seuil - c'est ainsi que les cartes du mois pouvaient contredire le
+    // tableau du jour.
+    if (!window.parageLib) {
+        // lib/parage.js absent (cache d'un deploiement rate, 404): les cartes
+        // restent a leur tiret initial plutot que de casser tout le rendu du
+        // mois par un TypeError.
+        console.error('lib/parage.js non charge: cartes parage du mois non rendues.');
+        return;
+    }
+    const { tauxDePerte } = window.parageLib;
     const cartes = [
         { cat: 'bovin', valeur: 'parage-bovin-mois', detail: 'parage-bovin-mois-detail' },
         { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
@@ -10297,22 +10377,66 @@ function afficherParageMois(parageMois) {
         const vendu = d ? (parseFloat(d.vendu) || 0) : 0;
 
         if (!elValeur) return;
-        if (theorique <= SEUIL_KG) {
+        const { ratio, perte } = tauxDePerte(vendu, theorique);
+        if (perte === null) {
             elValeur.textContent = '—';
             if (elDetail) elDetail.textContent = vendu > 0 ? `${kg(vendu)} vendus, théorique inconnu` : '';
             elValeur.title = 'Aucun stock théorique sur le mois : rien à mesurer.';
             return;
         }
-        const perte = 1 - (vendu / theorique);
         elValeur.textContent = `${(perte * 100).toFixed(1)} %`;
         if (elDetail) elDetail.textContent = `${kg(vendu)} vendus / ${kg(theorique)} théoriques`;
         elValeur.title = `Vendu (packs inclus) : ${kg(vendu)}
 `
             + `Stock théorique (matin + transferts − soir) : ${kg(theorique)}
 `
-            + `Rendement : ${(vendu / theorique * 100).toFixed(1)} %
+            + `Rendement : ${(ratio * 100).toFixed(1)} %
 `
-            + `Parage : 100 − ${(vendu / theorique * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
+            + `Parage : 100 − ${(ratio * 100).toFixed(1)} = ${(perte * 100).toFixed(1)} %`;
+
+        // Repartition de la perte du mois. Presente seulement quand le cumul
+        // porte le bilan dechet: un mois relu depuis un cache d'avant cette
+        // version ne l'a pas, et la carte retombe alors sur l'affichage
+        // d'origine plutot que d'inventer des zeros.
+        const b = d && d.dechet;
+        if (!b) return;
+        const produitKg = parseFloat(b.produit) || 0;
+        const perteKg = theorique - vendu;
+        const deperditionKg = perteKg - produitKg;
+        // Meme denominateur que le taux du mois (theorique > 0 ici, sinon
+        // perte aurait ete null): les pourcentages s'additionnent exactement.
+        const tauxDechet = produitKg / theorique;
+        const tauxDeperdition = perte - tauxDechet;
+        if (elDetail) {
+            // Un dechet produit NEGATIF veut dire que le stock dechet a fondu
+            // sans vente ni jete saisis: du dechet est sorti sans etre trace.
+            // Miroir du signal sur la deperdition, meme traitement: on
+            // l'affiche en alerte, on ne le rabote pas.
+            elDetail.innerHTML = `${kg(vendu)} vendus / ${kg(theorique)} théoriques<br>`
+                + (produitKg < 0 ? '<span class="text-danger">⚠ ' : '')
+                + `Déchet produit : ${kg(produitKg)} (${(tauxDechet * 100).toFixed(1)} %)`
+                + (produitKg < 0 ? '</span>' : '')
+                + '<br>'
+                + (tauxDeperdition < 0 ? '<span class="text-danger">⚠ ' : '')
+                + `Déperdition inexpliquée : ${kg(deperditionKg)} (${(tauxDeperdition * 100).toFixed(1)} %)`
+                + (tauxDeperdition < 0 ? '</span>' : '');
+        }
+        elValeur.title += `
+— Répartition de la perte —
+`
+            + `Déchet produit (soir ${kg(b.soir)} + vendu ${kg(b.vendu)} + jeté ${kg(b.jete)} − matin ${kg(b.matin)}`
+            + (b.transferts ? ` − transferts ${kg(b.transferts)}` : '')
+            + `) : ${kg(produitKg)} soit ${(tauxDechet * 100).toFixed(1)} %
+`
+            + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(tauxDeperdition * 100).toFixed(1)} %`
+            + (produitKg < 0
+                ? `
+⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis — sortie de déchet non tracée.`
+                : '')
+            + (tauxDeperdition < 0
+                ? `
+⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`
+                : '');
     });
 }
 
@@ -10370,6 +10494,35 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
             const det = data ? data[columnInfo.detail] : null;
             const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} kg`;
             if (det) {
+                // Decomposition de la perte globale, quand la famille dechet
+                // est configuree (admin parage). Les trois taux partagent le
+                // meme denominateur: global = dechet + deperdition, exactement.
+                // Une deperdition NEGATIVE est affichee telle quelle - plus de
+                // dechet pese que de perte globale, signe d'une pesee decalee
+                // ou d'un mouvement manquant.
+                let decomposition = '';
+                if (det.taux_dechet !== null && det.taux_dechet !== undefined && det.dechet) {
+                    const b = det.dechet;
+                    const perteKg = (parseFloat(det.theorique) || 0) - (parseFloat(det.vendu) || 0);
+                    const deperditionKg = perteKg - (parseFloat(b.produit) || 0);
+                    decomposition = `
+`
+                        + `— Répartition de la perte —
+`
+                        + `Déchet produit (soir ${kg(b.soir)} + vendu ${kg(b.vendu)} + jeté ${kg(b.jete)} − matin ${kg(b.matin)}`
+                        + (b.transferts ? ` − transferts ${kg(b.transferts)}` : '')
+                        + `) : ${kg(b.produit)} soit ${(det.taux_dechet * 100).toFixed(1)} %
+`
+                        + `Déperdition inexpliquée : ${kg(deperditionKg)} soit ${(det.taux_deperdition * 100).toFixed(1)} %`
+                        + ((parseFloat(b.produit) || 0) < 0
+                            ? `
+⚠ Déchet produit négatif : le stock déchet a baissé sans vente ni jeté saisis — sortie de déchet non tracée.`
+                            : '')
+                        + (det.taux_deperdition < 0
+                            ? `
+⚠ Déperdition négative : plus de déchet pesé que de perte globale (pesée décalée d'un jour ou mouvement manquant).`
+                            : '');
+                }
                 cell.title = det.theorique > 0
                     ? `${columnInfo.libelle}
 `
@@ -10379,7 +10532,8 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
 `
                         + `Rendement : ${kg(det.vendu)} ÷ ${kg(det.theorique)} = ${(det.ratio * 100).toFixed(1)} %
 `
-                        + `Parage : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                        + `Perte globale : 100 − ${(det.ratio * 100).toFixed(1)} = ${((1 - det.ratio) * 100).toFixed(1)} %`
+                        + decomposition
                     : `${columnInfo.libelle}
 `
                         + `Stock théorique : ${kg(det.theorique)} — parage non calculable.
@@ -11256,9 +11410,16 @@ async function exportParageDetailsToExcel() {
                 'Stock soir (kg)': arrondi(t.soir),
                 'Theorique (kg)': arrondi(t.theorique),
                 'Ventes saisies (kg)': arrondi(t.vendu),
-                // Meme seuil qu'en lib/parage.js: sous un gramme, rien a mesurer.
-                'Parage (%)': t.theorique > 0.001
-                    ? Math.round((1 - t.vendu / t.theorique) * 1000) / 10 : ''
+                // LA definition du taux, lue de window.parageLib et non
+                // recopiee: la ligne TOTAL MOIS de l'Excel doit etre calculee
+                // exactement comme les cartes et le tableau.
+                'Parage (%)': (function () {
+                    // Sans la lib (cache rate), cellule vide - comme une
+                    // journee non mesurable - plutot qu'un export avorte.
+                    if (!window.parageLib) return '';
+                    const perte = window.parageLib.tauxDePerte(t.vendu, t.theorique).perte;
+                    return perte === null ? '' : Math.round(perte * 1000) / 10;
+                })()
             });
         });
 

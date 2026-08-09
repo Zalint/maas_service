@@ -1377,13 +1377,33 @@ router.get('/simulation', async (req, res) => {
             if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
         }
 
+        // Prix d'ACHAT a la fin de la periode. Il sert au levier VOLUME, pas au
+        // levier prix: augmenter le prix ne coute rien de plus, mais vendre un
+        // kilo de plus oblige a l'acheter. Seule la MARGE tombe dans le
+        // resultat. Sur le boeuf en juillet, 4 715 F de prix moyen contre
+        // 3 835 F d'achat: rapporter le resultat au prix de vente surestimait
+        // le volume necessaire d'un facteur cinq.
+        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+        const resolveurPrix = await creerResolveurPrixAchat(dateFin);
+        const prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
+
         const produits = PRODUITS_SIMULATION.map((nom) => {
             const agg = parCle.get(normaliserNomProduit(nom))
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
+            const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
+            const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
+            const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+            // Marge nulle ou negative: vendre plus n'approche pas de
+            // l'equilibre, ca l'eloigne. Le cas doit rester visible, donc on
+            // renvoie la valeur telle quelle plutot que de la masquer.
+            const marge = (prixMoyen !== null && prixAchat !== null)
+                ? round2(prixMoyen - prixAchat) : null;
             return {
                 nom,
                 quantite: round2(agg.quantite),
                 ca: round2(agg.ca),
+                prix_achat: prixAchat,
+                marge_unitaire: marge,
                 // Prix MOYEN constate, et non prix de catalogue: c'est celui-la
                 // qui explique le chiffre d'affaires de la periode.
                 prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
@@ -2139,7 +2159,11 @@ router.get('/config', async (req, res) => {
 // Body: { commission_pct?, categories_eligibles?, stock_pertes_decoupe_pct? }
 router.put('/config', async (req, res) => {
     try {
-        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions'];
+        // parage_dechets: la FAMILLE dechet - les produits dont le bilan
+        // (soir + vendu + jete - matin) mesure le dechet PRODUIT par la
+        // decoupe. Configuree dans le meme ecran admin que les exclusions,
+        // et stockee pareil: une liste CSV de noms, pas de table dediee.
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions', 'parage_dechets'];
         // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
         // parametre date a ce jour.
         const moisCible = req.body?.mois || null;
@@ -2147,9 +2171,30 @@ router.put('/config', async (req, res) => {
             return res.status(400).json({ success: false, error: 'mois: format YYYY-MM attendu' });
         }
         const now = new Date();
+        // Deux passes: TOUT valider avant de RIEN ecrire, puis toutes les
+        // ecritures dans une transaction. En un seul passage, une requete
+        // multi-cles pouvait persister les premieres valeurs et echouer sur la
+        // suivante: etat partiel en base sous une reponse 400.
+        const aEcrire = [];
         for (const key of allowedKeys) {
             if (req.body[key] !== undefined) {
                 const value = String(req.body[key]);
+                // Produits verrouilles (lib/parage.js): "Boeuf" est la
+                // carcasse, l'exclure ou le mettre en famille dechet
+                // effondrerait le denominateur du parage. L'ecran desactive la
+                // case, mais une regle qui ne vit que dans l'ecran se
+                // contourne - ici comme pour le jete a impact positif.
+                if (key === 'parage_exclusions' || key === 'parage_dechets') {
+                    const { estProduitVerrouille } = require('../lib/parage');
+                    const interdits = value.split(',').map((s) => s.trim())
+                        .filter((s) => s && estProduitVerrouille(s));
+                    if (interdits.length) {
+                        return res.status(400).json({
+                            success: false,
+                            error: `${interdits.join(', ')} : produit verrouillé, il porte le stock du parage et ne peut être ni exclu ni mis en famille déchet`
+                        });
+                    }
+                }
                 // Validations numeriques (commission_pct, stock_pertes_decoupe_pct):
                 // doivent etre entre 0 et 100 inclus.
                 if ((key === 'commission_pct' || key === 'stock_pertes_decoupe_pct')
@@ -2159,16 +2204,21 @@ router.put('/config', async (req, res) => {
                         error: `${key} doit etre entre 0 et 100`
                     });
                 }
+                aEcrire.push({ key, value });
+            }
+        }
+        await sequelize.transaction(async (t) => {
+            for (const { key, value } of aEcrire) {
                 // Avec un mois, le taux de pertes est DATE et l'ancrage
                 // n'est pas touche: sinon la nouvelle valeur deviendrait le
                 // repli des mois anterieurs et reecrirait le passe.
                 if (moisCible && key === 'stock_pertes_decoupe_pct') {
-                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now });
+                    await FinanceConfigMois.upsert({ mois: moisCible, key, value, updated_at: now }, { transaction: t });
                 } else {
-                    await FinanceConfig.upsert({ key, value, updated_at: now });
+                    await FinanceConfig.upsert({ key, value, updated_at: now }, { transaction: t });
                 }
             }
-        }
+        });
         // commission_pct change -> les calculs derives (commission MaaS cumul
         // dans cash-stock) doivent etre recomputed. Invalider tous les caches
         // finance-derives pour rester safe.

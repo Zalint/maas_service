@@ -1984,6 +1984,7 @@
                                                 <th>Point de Vente</th>
                                                 <th>Produit</th>
                                                 <th>Impact (+/-)</th>
+                                                <th class="text-center" title="Sortie sans recette : pesée du déchet jeté. Compte dans le bilan déchet, jamais comme un transfert de marchandise.">Jeté</th>
                                                 <th>Quantité</th>
                                                 <th>Détails (calibres)</th>
                                                 <th>Prix Unitaire</th>
@@ -3977,7 +3978,11 @@
     </script>
     <!-- Helpers UI partages (toast + modal de confirmation, override alert) -->
     <script src="js/ui-helpers.js"></script>
-    <script src="reconciliationManager.js?v=20260805-parage-mois"></script>
+    <!-- La formule du parage, LA MEME qu'au serveur (window.parageLib).
+         Charge avant reconciliationManager.js et script.js, qui la lisent
+         au lieu d'en recopier le seuil et le calcul. -->
+    <script src="lib/parage.js?v=20260808-tauxdeperte"></script>
+    <script src="reconciliationManager.js?v=20260808-dechet-negatif"></script>
     <script src="cash-payment-function.js"></script>
     <script src="js/vente-abonnement.js"></script>
     <!-- Gestionnaire de modules - doit être chargé avant script.js -->
@@ -3985,11 +3990,11 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260807-infostock"></script>
+    <script src="script.js?v=20260808-revue84"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260808-simulation7"></script>
+    <script src="js/finance.js?v=20260808-revue84"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

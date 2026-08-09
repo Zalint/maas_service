@@ -110,6 +110,34 @@
         if (simBump) simBump.addEventListener('input', () => {
             if (simDernieresDonnees) renderSimulation(simDernieresDonnees);
         });
+        // Cases a cocher: delegation sur le conteneur, car innerHTML les
+        // reconstruit a chaque rendu et des listeners directs seraient perdus.
+        const simResultEl = document.getElementById('fin-sim-result');
+        if (simResultEl) simResultEl.addEventListener('change', (e) => {
+            const c = e.target;
+            if (c && c.id === 'fin-sim-tout') {
+                simResultEl.querySelectorAll('[data-sim-produit]').forEach((box) => {
+                    if (c.checked) simProduitsExclus.delete(box.dataset.simProduit);
+                    else simProduitsExclus.add(box.dataset.simProduit);
+                });
+            } else if (c && c.dataset && c.dataset.simProduit) {
+                if (c.checked) simProduitsExclus.delete(c.dataset.simProduit);
+                else simProduitsExclus.add(c.dataset.simProduit);
+            } else {
+                return;
+            }
+            if (simDernieresDonnees) {
+                // Le rendu detruit la case qui vient d'etre basculee. Sans
+                // remise du focus sur son equivalente re-rendue, la barre
+                // Espace au clavier ne fonctionne qu'une seule fois.
+                const cibleFocus = c.id === 'fin-sim-tout'
+                    ? '#fin-sim-tout'
+                    : `[data-sim-produit="${CSS.escape(c.dataset.simProduit)}"]`;
+                renderSimulation(simDernieresDonnees);
+                const caseRendue = simResultEl.querySelector(cibleFocus);
+                if (caseRendue) caseRendue.focus();
+            }
+        });
         const stockPertesSave = document.getElementById('fin-stock-pertes-save');
         if (stockPertesSave) stockPertesSave.addEventListener('click', onStockPertesSave);
         const stockPertesInput = document.getElementById('fin-stock-pertes-pct');
@@ -2325,6 +2353,11 @@
     // le RESULTAT. Recalculer le resultat ici en aurait fait une seconde source,
     // et deux sources finissent toujours par diverger.
     let simDernieresDonnees = null;
+    // Produits DECOCHES de la hausse simulee. On memorise les exclus plutot que
+    // les inclus: un produit ajoute plus tard a la liste suivie sera coche par
+    // defaut, ce qui est le comportement attendu. innerHTML detruit les cases a
+    // chaque rendu, cet etat doit donc vivre en dehors du DOM.
+    const simProduitsExclus = new Set();
 
     async function loadSimulation() {
         const resultEl = document.getElementById('fin-sim-result');
@@ -2393,20 +2426,30 @@
         const totalVentes = Number(pl.total_ventes) || 0;
         const lignes = produits.map((p) => {
             const cfa100 = 100 * p.quantite;
-            const effetBump = bump * p.quantite;
+            // Un produit decoche ne subit pas la hausse: son effet est nul et
+            // son resultat reste celui d'aujourd'hui. CFA 100 reste affiche -
+            // c'est une caracteristique du produit, pas un choix de simulation.
+            const retenu = !simProduitsExclus.has(p.nom);
+            const effetBump = retenu ? bump * p.quantite : 0;
             // Poids du produit dans le chiffre d'affaires de la periode. C'est
             // ce qui dit si une sensibilite pese vraiment: 71 580 F sur le
             // boeuf en detail n'a pas le meme sens selon qu'il fait 5% ou 66%
             // des ventes.
             const partVentes = totalVentes > 0 ? (p.ca / totalVentes) * 100 : null;
-            return { ...p, cfa100, effetBump, partVentes, plApres: plActuel + effetBump };
+            return { ...p, retenu, cfa100, effetBump, partVentes, plApres: plActuel + effetBump };
         });
 
+        // Deux perimetres dans le meme total, a dessein: ca et cfa100 cumulent
+        // TOUS les produits (des caracteristiques de la periode, pas des choix
+        // de simulation), tandis qu'effetBump - et donc le PL apres - ne
+        // cumule que les produits COCHES: c'est ce qui repond a "et si je
+        // n'augmentais que le boeuf ?".
         const totaux = lignes.reduce((acc, l) => ({
             ca: acc.ca + l.ca,
             cfa100: acc.cfa100 + l.cfa100,
             effetBump: acc.effetBump + l.effetBump
         }), { ca: 0, cfa100: 0, effetBump: 0 });
+        const nbRetenus = lignes.filter((l) => l.retenu).length;
         const partTotale = totalVentes > 0 ? (totaux.ca / totalVentes) * 100 : null;
         const fmtPct = (v) => (v === null ? '—' : v.toFixed(1) + ' %');
         // Les quantites ne sont pas des montants, mais elles restent des
@@ -2438,8 +2481,18 @@
             // La colonne "PL apres" doit donc porter le PL INCHANGE, et non la
             // note: une colonne de montants qui contient parfois du texte ne se
             // lit plus en diagonale.
+            // La case reste presente sur toutes les lignes, meme celles sans
+            // vente: une colonne dont les cases apparaissent et disparaissent
+            // se lit mal, et cocher un produit sans vente est simplement sans
+            // effet - ce que le zero affiche dit deja.
+            const caseHtml = `<td class="text-center">
+                <input type="checkbox" class="form-check-input" data-sim-produit="${esc(l.nom)}"
+                       ${l.retenu ? 'checked' : ''} aria-label="Appliquer la hausse à ${esc(l.nom)}">
+            </td>`;
+
             if (l.sans_vente) {
                 return `<tr class="text-muted">
+                    ${caseHtml}
                     <td>${esc(l.nom)}
                         <span class="small">— aucune vente sur la période</span></td>
                     <td class="text-end">0</td>
@@ -2451,7 +2504,10 @@
                     <td class="text-end">${esc(montantSigne(plActuel))}</td>
                 </tr>`;
             }
-            return `<tr>
+            // Un produit decoche s'estompe: on voit d'un coup d'oeil ce que
+            // porte la simulation en cours.
+            return `<tr${l.retenu ? '' : ' class="text-muted"'}>
+                ${caseHtml}
                 <td>${esc(l.nom)}${l.graphies.length > 1
                     ? ` <i class="bi bi-info-circle text-muted" style="font-size:.8rem"
                          title="${esc(l.graphies.join(' + '))}"></i>` : ''}</td>
@@ -2460,7 +2516,7 @@
                 <td class="text-end">${esc(fmtMoney(l.ca))}</td>
                 <td class="text-end fw-medium">${esc(fmtPct(l.partVentes))}</td>
                 <td class="text-end fw-medium text-success">${esc(fmtMoney(l.cfa100))}</td>
-                <td class="text-end fw-medium text-success">${esc(fmtMoney(l.effetBump))}</td>
+                <td class="text-end fw-medium ${l.retenu ? 'text-success' : ''}">${esc(fmtMoney(l.effetBump))}</td>
                 <td class="text-end fw-medium ${l.plApres >= 0 ? 'text-success' : 'text-danger'}">${
                     esc(montantSigne(l.plApres))}</td>
             </tr>`;
@@ -2479,6 +2535,52 @@
             const prixEq = cible.prix_moyen + hausse;
             const pct = cible.prix_moyen > 0 ? (hausse / cible.prix_moyen) * 100 : null;
             const enBaisse = hausse < 0;
+
+            // --- Le levier VOLUME, a cote du levier prix.
+            //
+            // Vendre un kilo de plus rapporte le prix de vente MAIS coute le
+            // prix d'achat: seule la MARGE tombe dans le resultat. Rapporter le
+            // PL au prix de vente - ce que je faisais d'abord - divisait le
+            // volume necessaire par cinq: 4 715 F de prix moyen contre 880 F de
+            // marge reelle sur le boeuf en juillet.
+            const marge = cible.marge_unitaire;
+            // Une seule matrice de signes pour tous les messages volume:
+            //   marge > 0 et PL < 0  -> vendre PLUS rapproche de zero
+            //   marge > 0 et PL > 0  -> vendre MOINS ramene a zero
+            //   marge < 0            -> chaque unite vendue fait BAISSER le resultat
+            //   marge = 0            -> le volume ne change rien
+            //   PL = 0               -> rien a compenser
+            let volumeHtml;
+            if (marge === null || marge === undefined) {
+                volumeHtml = `<div class="small text-muted mt-2">
+                    Volume d'équilibre non calculable : aucun prix d'achat renseigné
+                    pour ${esc(cible.nom)}, donc pas de marge connue.</div>`;
+            } else if (marge === 0) {
+                volumeHtml = `<div class="small text-muted mt-2">
+                    Marge unitaire nulle : vendre plus ou moins ne change pas le résultat.</div>`;
+            } else if (marge < 0) {
+                volumeHtml = `<div class="small text-warning mt-2">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    Marge unitaire ${esc(fmtMoney(marge))} : chaque unité vendue fait
+                    <strong>baisser</strong> le résultat${plActuel < 0
+                        ? ' — vendre davantage creuse la perte'
+                        : (plActuel > 0 ? ' — vendre davantage entame le bénéfice' : '')}.</div>`;
+            } else if (plActuel === 0) {
+                volumeHtml = `<div class="small text-muted mt-2">
+                    Résultat déjà à zéro : rien à compenser par le volume.</div>`;
+            } else {
+                const kg = -plActuel / marge;
+                volumeHtml = enBaisse
+                    ? `<div class="small text-muted mt-2">
+                         Le résultat est positif : à marge constante, il faudrait vendre
+                         <strong>${esc(fmtQte(Math.round(Math.abs(kg) * 10) / 10))}</strong>
+                         de moins pour le ramener à zéro.</div>`
+                    : `<div class="small text-muted mt-2">
+                         Autre levier, à prix inchangé : vendre
+                         <strong>${esc(fmtQte(Math.round(kg * 10) / 10))}</strong> de plus,
+                         à ${esc(fmtMoney(marge))} de marge l'unité.</div>`;
+            }
+
             equilibreHtml = `
                 <div class="row g-2">
                     <div class="col-md-4">
@@ -2487,6 +2589,13 @@
                                 <h6 class="card-subtitle mb-2 text-muted">Prix d'équilibre</h6>
                                 <h2 class="text-${enBaisse ? 'success' : 'danger'} mb-0">${esc(fmtMoney(prixEq))}</h2>
                                 <div class="small text-muted mt-2">par unité de ${esc(cible.nom)}</div>
+                                ${(marge !== null && marge !== undefined && marge > 0 && plActuel !== 0)
+                                    ? `<hr class="my-2">
+                                       <h6 class="card-subtitle mb-2 text-muted">ou vendre en ${enBaisse ? 'moins' : 'plus'}</h6>
+                                       <h2 class="text-${enBaisse ? 'success' : 'danger'} mb-0">${
+                                           esc(fmtQte(Math.round(Math.abs(-plActuel / marge) * 10) / 10))}</h2>
+                                       <div class="small text-muted mt-2">à prix inchangé</div>`
+                                    : ''}
                             </div>
                         </div>
                     </div>
@@ -2501,19 +2610,28 @@
                                         <td class="text-end">${esc(fmtQte(cible.quantite))}</td></tr>
                                     <tr><td>Prix moyen constaté</td>
                                         <td class="text-end">${esc(fmtMoney(cible.prix_moyen))}</td></tr>
+                                    <tr><td>Prix d'achat</td>
+                                        <td class="text-end">${cible.prix_achat === null || cible.prix_achat === undefined
+                                            ? '—' : esc(fmtMoney(cible.prix_achat))}</td></tr>
+                                    <tr><td>Marge unitaire</td>
+                                        <td class="text-end">${marge === null || marge === undefined
+                                            ? '—' : esc(fmtMoney(marge))}</td></tr>
                                     <tr class="table-light fw-bold">
                                         <td>${enBaisse ? 'Baisse possible' : 'Hausse nécessaire'} par unité</td>
                                         <td class="text-end">${esc(montantSigne(hausse))}</td></tr>
                                 </tbody>
                             </table>
                             <div class="small text-muted mt-1">
-                                ${enBaisse
-                                    ? `Le résultat est <strong>positif</strong> : c'est la marge de baisse
-                                       avant de passer sous zéro.`
-                                    : `Le résultat est <strong>négatif</strong> : c'est la hausse qu'il faudrait
-                                       appliquer pour l'annuler.`}
-                                ${pct !== null ? ` Soit ${esc(Math.abs(pct).toFixed(1))} % du prix actuel.` : ''}
+                                ${plActuel === 0
+                                    ? `Le résultat est <strong>déjà à zéro</strong> : aucun ajustement nécessaire.`
+                                    : (enBaisse
+                                        ? `Le résultat est <strong>positif</strong> : c'est la marge de baisse
+                                           avant de passer sous zéro.`
+                                        : `Le résultat est <strong>négatif</strong> : c'est la hausse qu'il faudrait
+                                           appliquer pour l'annuler.`)}
+                                ${pct !== null && plActuel !== 0 ? ` Soit ${esc(Math.abs(pct).toFixed(1))} % du prix actuel.` : ''}
                             </div>
+                            ${volumeHtml}
                         </div>
                     </div>
                 </div>`;
@@ -2526,6 +2644,11 @@
                 <table class="table table-sm mb-0">
                     <thead>
                         <tr>
+                            <th class="text-center" style="width:2.5rem">
+                                <input type="checkbox" class="form-check-input" id="fin-sim-tout"
+                                       ${lignes.length > 0 && nbRetenus === lignes.length ? 'checked' : ''}
+                                       aria-label="Tout cocher ou tout décocher">
+                            </th>
                             <th>Produit</th>
                             <th class="text-end">Quantité</th>
                             <th class="text-end">Prix moyen</th>
@@ -2539,7 +2662,10 @@
                     <tbody>${lignesHtml}</tbody>
                     <tfoot>
                         <tr>
-                            <th style="background:#f8fafc">Total des produits suivis</th>
+                            <th colspan="2" style="background:#f8fafc">Total des produits suivis${
+                                nbRetenus < lignes.length
+                                    ? ` <span class="small fw-normal text-muted">— hausse appliquée à ${nbRetenus} sur ${lignes.length}</span>`
+                                    : ''}</th>
                             <th colspan="2" style="background:#f8fafc"></th>
                             <th class="text-end" style="background:#f8fafc">${esc(fmtMoney(totaux.ca))}</th>
                             <th class="text-end" style="background:#f8fafc">${esc(fmtPct(partTotale))}</th>
@@ -2549,7 +2675,7 @@
                                 style="background:#f8fafc">${esc(montantSigne(plActuel + totaux.effetBump))}</th>
                         </tr>
                         <tr>
-                            <th style="background:#f8fafc">Résultat actuel</th>
+                            <th colspan="2" style="background:#f8fafc">Résultat actuel</th>
                             <th colspan="6" style="background:#f8fafc"></th>
                             <th class="text-end ${plActuel >= 0 ? 'text-success' : 'text-danger'}"
                                 style="background:#f8fafc">${esc(montantSigne(plActuel))}</th>
@@ -2564,7 +2690,9 @@
                     <br>
                     Sur chaque ligne, <strong>PL après</strong> suppose que ce produit
                     <em>seul</em> augmente. La ligne de total suppose au contraire que
-                    <em>tous</em> augmentent en même temps.
+                    tous les produits <em>cochés</em> augmentent en même temps —
+                    ses colonnes Ventes et CFA 100 restent, elles, la somme de
+                    tous les produits suivis.
                 </div>
             </div>
 
