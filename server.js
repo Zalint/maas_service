@@ -10777,6 +10777,29 @@ app.listen(PORT, async () => {
         }, { timezone: 'UTC' });
         console.log('Cron stock-copy programme: 0 5 * * * UTC');
     }
+
+    // Cron in-process: chaque soir a 23h35 UTC (Dakar = UTC), figer le PL du
+    // jour dans pl_snapshots - meme mecanique que le cron stock ci-dessus
+    // (single-instance par tenant, script spawne, opt-out par variable
+    // d'env). Le script passe par LE meme calcul que l'ecran PL.
+    if (process.env.DISABLE_PL_SNAPSHOT_CRON === 'true') {
+        console.log('Cron pl-snapshot DESACTIVE (DISABLE_PL_SNAPSHOT_CRON=true)');
+    } else {
+        cron.schedule('35 23 * * *', () => {
+            const ts = new Date().toISOString();
+            console.log(`[cron-pl-snapshot] ${ts} start`);
+            const child = spawn('node', ['scripts/pl-snapshot-cron.js'], {
+                cwd: __dirname,
+                env: process.env,
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            child.stdout.on('data', d => process.stdout.write(`[cron-pl-snapshot] ${d}`));
+            child.stderr.on('data', d => process.stderr.write(`[cron-pl-snapshot] ${d}`));
+            child.on('close', code => console.log(`[cron-pl-snapshot] exit ${code}`));
+            child.on('error', err => console.error('[cron-pl-snapshot] spawn error:', err.message));
+        }, { timezone: 'UTC' });
+        console.log('Cron pl-snapshot programme: 35 23 * * * UTC');
+    }
 });
 
 // API endpoint for showing estimation section

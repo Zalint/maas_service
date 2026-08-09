@@ -55,6 +55,8 @@ const FinanceConfigMois = require('./FinanceConfigMois');
 const PackComposition = require('./PackComposition');
 const LivreurConfig = require('./LivreurConfig');
 const PosConfig = require('./PosConfig');
+// Photo figee du PL, une par date (bouton "Figer" + cron du soir).
+const PlSnapshot = require('./PlSnapshot');
 
 const { sequelize } = require('../index');
 
@@ -253,6 +255,9 @@ module.exports = {
 
   // Config POS (settings affichage, ex categories Boucherie)
   PosConfig,
+
+  // Photo figee du PL, une par date
+  PlSnapshot,
 
   // Fonctions utilitaires
   syncDatabase,

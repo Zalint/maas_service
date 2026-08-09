@@ -668,6 +668,25 @@ async function updateSchema() {
         `);
         console.log('Table finance_charges_history verifiee (genesis seedee)');
 
+        // Photo figee du PL, UNE par date, la derniere ecrase (PK sur date +
+        // upsert). Ecrite par le bouton "Figer le PL du jour" et par le cron
+        // du soir (23h35 UTC, cf server.js), qui passent par le meme calcul
+        // que l'ecran. payload = la reponse complete de /api/finance/pl.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS pl_snapshots (
+                date DATE PRIMARY KEY,
+                periode_debut DATE NOT NULL,
+                periode_fin DATE NOT NULL,
+                pl NUMERIC(14, 2) NOT NULL,
+                total_ventes NUMERIC(14, 2),
+                source VARCHAR(10) NOT NULL DEFAULT 'manuel',
+                created_by VARCHAR(150),
+                payload JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        console.log('Table pl_snapshots verifiee');
+
         // Montants des charges fixes par mois.
         //
         // finance_charges porte le catalogue et le montant courant; cette

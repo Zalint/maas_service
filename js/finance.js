@@ -98,12 +98,21 @@
         // Changer de mois recharge les montants applicables a ce mois.
         const chargesMois = document.getElementById('fin-charges-mois');
         if (chargesMois) chargesMois.addEventListener('change', loadCharges);
+        // Actualiser = recalcul FORCE; l'entree par l'onglet, elle, reutilise
+        // le resultat deja affiche tant que la periode n'a pas change.
         const plRefresh = document.getElementById('fin-pl-refresh');
-        if (plRefresh) plRefresh.addEventListener('click', loadPl);
+        if (plRefresh) plRefresh.addEventListener('click', () => loadPl(true));
         const cashStockRefresh = document.getElementById('fin-cashstock-refresh');
-        if (cashStockRefresh) cashStockRefresh.addEventListener('click', loadCashStock);
+        if (cashStockRefresh) cashStockRefresh.addEventListener('click', () => loadCashStock(true));
         const simRefresh = document.getElementById('fin-sim-refresh');
-        if (simRefresh) simRefresh.addEventListener('click', loadSimulation);
+        if (simRefresh) simRefresh.addEventListener('click', () => loadSimulation(true));
+        // Export Excel + snapshots du PL.
+        const plExport = document.getElementById('fin-pl-export');
+        if (plExport) plExport.addEventListener('click', exporterPlExcel);
+        const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
+        if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
+        const plHistorique = document.getElementById('fin-pl-historique');
+        if (plHistorique) plHistorique.addEventListener('click', basculerHistoriquePl);
         // Changer le montant simule ne doit rien retelecharger: tout le calcul
         // est de l'arithmetique sur des donnees deja en memoire.
         const simBump = document.getElementById('fin-sim-bump');
@@ -2013,17 +2022,25 @@
 
     // ===== PL (Profit/Loss) =====
 
-    async function loadPl() {
+    // Periode du dernier chargement REUSSI. Revenir sur l'onglet sans changer
+    // la periode ne relance rien: l'ecran montre deja ce resultat, et le
+    // recalcul complet cote serveur n'est pas gratuit. Actualiser (force) ou
+    // changer les dates recharge. Meme motif sur Cash et Stock et Simulation.
+    let plChargePour = null;
+
+    async function loadPl(force) {
         const resultEl = document.getElementById('fin-pl-result');
         if (!resultEl) return;
         // Garde-fou: pre-remplir les dates si vides (1er du mois -> today).
         // Le subnav click handler appelle ensureDefaultDates au clic Finance
         // mais on le re-appelle ici par securite (ex: deep link direct PL).
         ensureDefaultDates();
+        const dateDebut = document.getElementById('fin-pl-date-debut').value;
+        const dateFin = document.getElementById('fin-pl-date-fin').value;
+        const clePeriode = dateDebut + '|' + dateFin;
+        if (!force && plChargePour === clePeriode && plDernieresDonnees) return;
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
-            const dateDebut = document.getElementById('fin-pl-date-debut').value;
-            const dateFin = document.getElementById('fin-pl-date-fin').value;
             const qs = new URLSearchParams();
             if (dateDebut) qs.set('dateDebut', dateDebut);
             if (dateFin) qs.set('dateFin', dateFin);
@@ -2035,8 +2052,218 @@
             }
             if (!json.success) throw new Error(json.error || 'Erreur');
             renderPl(json.data);
+            plChargePour = clePeriode;
         } catch (e) {
             resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    const fmtDateFr = (iso) => {
+        const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+        return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
+    };
+
+    // ===== Export Excel du PL (tout ce que montre l'ecran) =====
+    // Construit depuis plDernieresDonnees: on exporte EXACTEMENT ce qui est
+    // affiche - PL courant ou snapshot en cours de consultation.
+    function exporterPlExcel() {
+        try {
+            const d = plDernieresDonnees;
+            if (!d) {
+                if (typeof showToast === 'function') showToast('Charge d\'abord le PL.', 'warning');
+                return;
+            }
+            if (typeof XLSX === 'undefined') {
+                if (typeof showToast === 'function') showToast('Librairie Excel indisponible.', 'danger');
+                return;
+            }
+            const p = d.periode || {};
+            const ch = d.charges || { detail: [] };
+            const stock = d.stock || {};
+
+            // Feuille 1: la decomposition, chaque poste en CONTRIBUTION signee
+            // (comme l'ecran), puis marge brute et PL.
+            const ventes = d.total_ventes || 0;
+            const margeBrute = ventes - (d.total_avances || 0) + (stock.variation_nette || 0);
+            const synthese = [
+                { 'Poste': 'Période', 'Montant (FCFA)': `${fmtDateFr(p.dateDebut)} → ${fmtDateFr(p.dateFin)} (${p.nb_jours} jours)` },
+                { 'Poste': 'Montant total des ventes', 'Montant (FCFA)': ventes },
+                { 'Poste': 'dont hors boucherie', 'Montant (FCFA)': d.ventes_hors_boucherie || 0 },
+                { 'Poste': 'Total avances (MataBanq)', 'Montant (FCFA)': -(d.total_avances || 0) },
+                { 'Poste': 'Commission MaaS', 'Montant (FCFA)': -(d.commission_maas || 0) },
+                { 'Poste': 'Marge CDC (Il me doit)', 'Montant (FCFA)': d.marge_cdc || 0 },
+                { 'Poste': `Charges proratisées (× ${ch.ratio_jours != null ? ch.ratio_jours : ''})`, 'Montant (FCFA)': -(ch.total_prorata || 0) },
+                { 'Poste': 'Dépenses (période)', 'Montant (FCFA)': -(d.depenses_periode || 0) },
+                { 'Poste': 'Paiements faits au fournisseur', 'Montant (FCFA)': -(d.paiements_fournisseur || 0) },
+                { 'Poste': `Variation stock × ${stock.coeff != null ? stock.coeff : ''} (pertes découpe ${stock.pertes_decoupe_pct != null ? stock.pertes_decoupe_pct : ''}%)`, 'Montant (FCFA)': stock.variation_nette || 0 },
+                { 'Poste': 'Marge brute (ventes − avances + variation stock)', 'Montant (FCFA)': Math.round(margeBrute * 100) / 100 },
+                { 'Poste': 'Marge brute (% des ventes)', 'Montant (FCFA)': ventes > 0 ? Math.round((margeBrute / ventes) * 1000) / 10 : '' },
+                { 'Poste': 'PL', 'Montant (FCFA)': d.pl || 0 }
+            ];
+            if (d.depenses_double_compte && d.depenses_double_compte.montant > 0) {
+                synthese.push({
+                    'Poste': `⚠ Dépenses en possible double compte (${(d.depenses_double_compte.categories || []).join(', ')})`,
+                    'Montant (FCFA)': d.depenses_double_compte.montant
+                });
+            }
+
+            // Feuille 2: les charges, comme le tableau de l'ecran.
+            const charges = (ch.detail || []).map((c) => ({
+                'Charge': c.libelle,
+                'Mensuel (FCFA)': c.montant_mensuel,
+                'Prorata période (FCFA)': c.prorata
+            }));
+            charges.push({
+                'Charge': 'TOTAL',
+                'Mensuel (FCFA)': ch.total_mensuel || 0,
+                'Prorata période (FCFA)': ch.total_prorata || 0
+            });
+
+            // Feuille 3: le detail de la variation stock.
+            const feuilleStock = [
+                { 'Élément': `Stock matin (${fmtDateFr(stock.matin_date) || 'n/a'})`, 'Valeur': stock.matin_debut || 0 },
+                { 'Élément': `Stock soir (${fmtDateFr(stock.soir_date) || 'n/a'})`, 'Valeur': stock.soir_fin || 0 },
+                { 'Élément': 'Variation brute', 'Valeur': stock.variation_brute || 0 },
+                { 'Élément': 'dont boucherie', 'Valeur': stock.variation_boucherie || 0 },
+                { 'Élément': 'dont hors boucherie', 'Valeur': stock.variation_hors_boucherie || 0 },
+                { 'Élément': `Pertes découpe (%)`, 'Valeur': stock.pertes_decoupe_pct != null ? stock.pertes_decoupe_pct : '' },
+                { 'Élément': 'Coefficient appliqué à la boucherie', 'Valeur': stock.coeff != null ? stock.coeff : '' },
+                { 'Élément': 'Variation nette (dans le PL)', 'Valeur': stock.variation_nette || 0 },
+                { 'Élément': 'Stocks négatifs ignorés', 'Valeur': stock.negatifs_ignores || 0 },
+                { 'Élément': 'Produits écartés (stock non fiable)', 'Valeur': (stock.produits_ecartes || []).join(', ') || '—' }
+            ];
+            (stock.avertissements || []).forEach((a) => {
+                feuilleStock.push({ 'Élément': '⚠ Avertissement valorisation', 'Valeur': a });
+            });
+
+            const classeur = XLSX.utils.book_new();
+            const fSyn = XLSX.utils.json_to_sheet(synthese);
+            fSyn['!cols'] = [{ wch: 55 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(classeur, fSyn, 'Synthese PL');
+            const fCh = XLSX.utils.json_to_sheet(charges);
+            fCh['!cols'] = [{ wch: 30 }, { wch: 16 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(classeur, fCh, 'Charges');
+            const fSt = XLSX.utils.json_to_sheet(feuilleStock);
+            fSt['!cols'] = [{ wch: 40 }, { wch: 24 }];
+            XLSX.utils.book_append_sheet(classeur, fSt, 'Detail stock');
+
+            // Detail par produit de chaque borne, quand le serveur le fournit
+            // (un snapshot fige avant cette version ne l'a pas: pas de feuille).
+            const ajouterFeuilleBorne = (nomFeuille, lignes) => {
+                if (!lignes || !lignes.length) return;
+                const rows = lignes.map((l) => ({
+                    'Produit': l.produit,
+                    'Quantité': l.quantite,
+                    'Prix utilisé (FCFA)': l.prix_utilise == null ? '' : Math.round(l.prix_utilise * 100) / 100,
+                    'Base': l.base === 'achat' ? 'prix achat' : 'prix de vente conservé',
+                    'Valeur (FCFA)': Math.round((l.valeur || 0) * 100) / 100
+                }));
+                rows.push({
+                    'Produit': 'TOTAL', 'Quantité': '', 'Prix utilisé (FCFA)': '', 'Base': '',
+                    'Valeur (FCFA)': Math.round(lignes.reduce((s, l) => s + (l.valeur || 0), 0) * 100) / 100
+                });
+                const f = XLSX.utils.json_to_sheet(rows);
+                f['!cols'] = [{ wch: 28 }, { wch: 10 }, { wch: 18 }, { wch: 22 }, { wch: 16 }];
+                XLSX.utils.book_append_sheet(classeur, f, nomFeuille);
+            };
+            ajouterFeuilleBorne('Stock matin (detail)', stock.matin_detail);
+            ajouterFeuilleBorne('Stock soir (detail)', stock.soir_detail);
+
+            XLSX.writeFile(classeur, `pl-${p.dateDebut || 'periode'}-au-${p.dateFin || ''}.xlsx`);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur export: ' + e.message, 'danger');
+        }
+    }
+
+    // ===== Snapshots: figer le PL du jour + historique =====
+
+    async function figerPlDuJour() {
+        try {
+            const res = await fetch('/api/finance/pl/snapshot', { method: 'POST', credentials: 'include' });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            if (typeof showToast === 'function') {
+                showToast(`PL du ${fmtDateFr(j.data.date)} figé : ${fmtMoney(j.data.pl)}`, 'success');
+            }
+            // Panneau historique ouvert: il montre tout de suite la nouvelle ligne.
+            const panel = document.getElementById('fin-pl-historique-panel');
+            if (panel && panel.style.display !== 'none') chargerHistoriquePl();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    async function basculerHistoriquePl() {
+        const panel = document.getElementById('fin-pl-historique-panel');
+        if (!panel) return;
+        if (panel.style.display !== 'none') {
+            panel.style.display = 'none';
+            return;
+        }
+        panel.style.display = '';
+        await chargerHistoriquePl();
+    }
+
+    async function chargerHistoriquePl() {
+        const panel = document.getElementById('fin-pl-historique-panel');
+        if (!panel) return;
+        panel.innerHTML = '<div class="text-muted small"><i class="bi bi-hourglass-split"></i> Chargement…</div>';
+        try {
+            const res = await fetch('/api/finance/pl/snapshots', { credentials: 'include' });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            if (!j.data.length) {
+                panel.innerHTML = '<div class="alert alert-secondary py-2 small mb-0">Aucun PL figé pour l\'instant — le bouton « Figer le PL du jour » ou le cron du soir en créera.</div>';
+                return;
+            }
+            const lignes = j.data.map((s) => `<tr data-snap-date="${esc(s.date)}" style="cursor:pointer" title="Afficher ce PL figé">
+                <td>${esc(fmtDateFr(s.date))}</td>
+                <td class="text-end fw-medium ${parseFloat(s.pl) >= 0 ? 'text-success' : 'text-danger'}">${esc(fmtMoney(s.pl))}</td>
+                <td class="text-end">${esc(fmtMoney(s.total_ventes || 0))}</td>
+                <td class="text-center"><span class="badge bg-${s.source === 'cron' ? 'secondary' : 'primary'}">${esc(s.source)}</span></td>
+                <td class="small text-muted">${esc(s.created_by || '—')}</td>
+            </tr>`).join('');
+            panel.innerHTML = `<div class="card"><div class="card-body p-2">
+                <div class="small text-muted mb-1">Un PL figé par date — cliquer une ligne pour l'afficher. La période figée court du 1ᵉʳ du mois à la date.</div>
+                <div class="table-responsive" style="max-height:300px; overflow:auto;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead><tr><th>Date</th><th class="text-end">PL</th><th class="text-end">Ventes</th><th class="text-center">Source</th><th>Par</th></tr></thead>
+                    <tbody>${lignes}</tbody>
+                </table></div></div></div>`;
+            panel.querySelectorAll('[data-snap-date]').forEach((tr) => {
+                tr.addEventListener('click', () => afficherSnapshotPl(tr.dataset.snapDate));
+            });
+        } catch (e) {
+            panel.innerHTML = `<div class="alert alert-danger py-2 small mb-0">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    async function afficherSnapshotPl(date) {
+        try {
+            const res = await fetch('/api/finance/pl/snapshots/' + encodeURIComponent(date), { credentials: 'include' });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            const snap = j.data;
+            // MEME rendu que le PL courant: le payload est la reponse de
+            // /api/finance/pl telle qu'elle etait ce jour-la. L'export Excel
+            // exporte alors ce snapshot, puisqu'il lit ce qui est affiche.
+            renderPl(snap.payload);
+            // Le prochain passage par l'onglet recharge le PL COURANT.
+            plChargePour = null;
+            const resultEl = document.getElementById('fin-pl-result');
+            if (resultEl) {
+                const bandeau = document.createElement('div');
+                bandeau.className = 'alert alert-info py-2 small d-flex justify-content-between align-items-center flex-wrap gap-2';
+                bandeau.innerHTML = `<span><i class="bi bi-camera"></i> <strong>PL figé du ${esc(fmtDateFr(snap.date))}</strong>
+                        — période ${esc(fmtDateFr(snap.periode_debut))} → ${esc(fmtDateFr(snap.periode_fin))},
+                        source ${esc(snap.source)}${snap.created_by ? ', par ' + esc(snap.created_by) : ''}</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="fin-pl-snapshot-retour">Retour au PL courant</button>`;
+                resultEl.prepend(bandeau);
+                bandeau.querySelector('#fin-pl-snapshot-retour')
+                    .addEventListener('click', () => loadPl(true));
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
     }
 
@@ -2230,6 +2457,46 @@
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
+        // Detail par produit des deux bornes du stock, a la demande: nom,
+        // quantite, prix utilise et base (achat, ou prix de vente conserve
+        // faute de prix d'achat - marque *). Present seulement quand le
+        // serveur le fournit: un snapshot fige avant cette version ne l'a
+        // pas, et le bouton n'apparait alors pas.
+        const fmtQteStock = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+        const detailBorneStock = (titre, lignes) => {
+            if (!lignes || !lignes.length) return '';
+            const corps = lignes.map((l) => `<tr>
+                <td>${esc(l.produit)}${l.base === 'vente' ? ' <span title="Valorisé au prix de vente saisi, faute de prix d\'achat connu.">*</span>' : ''}</td>
+                <td class="text-end">${esc(fmtQteStock(l.quantite))}</td>
+                <td class="text-end">${l.prix_utilise == null ? '—' : esc(fmtMoney(l.prix_utilise))}</td>
+                <td class="text-end">${esc(fmtMoney(l.valeur))}</td>
+            </tr>`).join('');
+            const total = lignes.reduce((s, l) => s + (l.valeur || 0), 0);
+            return `<div class="col-md-6">
+                <div class="small fw-medium mb-1">${titre}</div>
+                <div class="table-responsive" style="max-height:280px; overflow:auto;">
+                <table class="table table-sm mb-0">
+                    <thead><tr><th>Produit</th><th class="text-end">Qté</th><th class="text-end">Prix utilisé</th><th class="text-end">Valeur</th></tr></thead>
+                    <tbody>${corps}</tbody>
+                    <tfoot><tr class="table-light fw-bold"><th colspan="3">Total</th><th class="text-end">${esc(fmtMoney(total))}</th></tr></tfoot>
+                </table></div></div>`;
+        };
+        const aDetailStock = (stock.matin_detail && stock.matin_detail.length)
+            || (stock.soir_detail && stock.soir_detail.length);
+        const blocDetailStock = aDetailStock ? `
+                <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="fin-pl-stock-detail-toggle"
+                        aria-controls="fin-pl-stock-detail" aria-expanded="false"
+                        title="Voir, produit par produit, le prix d'achat utilisé et la valeur de chaque borne.">
+                    <i class="bi bi-list-ul"></i> Détails par produit
+                </button>
+                <div id="fin-pl-stock-detail" class="mt-2" style="display:none">
+                    <div class="row g-3">
+                        ${detailBorneStock(`Stock matin (${esc(stock.matin_date || 'n/a')})`, stock.matin_detail)}
+                        ${detailBorneStock(`Stock soir (${esc(stock.soir_date || 'n/a')})`, stock.soir_detail)}
+                    </div>
+                    <div class="small text-muted mt-1">* valorisé au prix de vente saisi, faute de prix d'achat connu.</div>
+                </div>` : '';
+
         resultEl.innerHTML = `
             <!-- Cartes PL et marge brute -->
             <div class="row g-2 mb-3">
@@ -2329,6 +2596,7 @@
                 ${plLegendePrix}
                 ${plNoteStock}
                 ${plAvertPrix}
+                ${blocDetailStock}
             </div>
 
             <!-- Detail charges -->
@@ -2375,6 +2643,18 @@
                 renderPl(plDernieresDonnees);
             });
         }
+        // Bouton "Détails par produit" du bloc variation stock: simple
+        // bascule d'affichage, tout est deja rendu.
+        const toggleDetailStock = document.getElementById('fin-pl-stock-detail-toggle');
+        if (toggleDetailStock) {
+            toggleDetailStock.addEventListener('click', () => {
+                const zone = document.getElementById('fin-pl-stock-detail');
+                if (!zone) return;
+                const ouvre = zone.style.display === 'none';
+                zone.style.display = ouvre ? '' : 'none';
+                toggleDetailStock.setAttribute('aria-expanded', String(ouvre));
+            });
+        }
     }
 
     // ===== Cash et Stock =====
@@ -2391,7 +2671,9 @@
     // chaque rendu, cet etat doit donc vivre en dehors du DOM.
     const simProduitsExclus = new Set();
 
-    async function loadSimulation() {
+    let simChargePour = null;
+
+    async function loadSimulation(force) {
         const resultEl = document.getElementById('fin-sim-result');
         if (!resultEl) return;
 
@@ -2417,6 +2699,10 @@
         if (finEl && !finEl.value && plFin && plFin.value) finEl.value = plFin.value;
         ensureDefaultDates();
 
+        // Meme garde de periode que loadPl: revenir sur l'onglet sans changer
+        // les dates ne relance pas les deux calculs serveur.
+        const clePeriode = (debutEl ? debutEl.value : '') + '|' + (finEl ? finEl.value : '');
+        if (!force && simChargePour === clePeriode && simDernieresDonnees) return;
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
             const qs = new URLSearchParams();
@@ -2439,6 +2725,7 @@
             }
             simDernieresDonnees = { sim: jsonSim.data, pl: jsonPl.data };
             renderSimulation(simDernieresDonnees);
+            simChargePour = clePeriode;
         } catch (e) {
             resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
         }
@@ -2737,7 +3024,9 @@
             </div>`;
     }
 
-    async function loadCashStock() {
+    let cashStockChargePour = null;
+
+    async function loadCashStock(force) {
         const resultEl = document.getElementById('fin-cashstock-result');
         if (!resultEl) return;
         // Pre-remplir la date avec today si vide.
@@ -2749,6 +3038,10 @@
             const dd = String(now.getDate()).padStart(2, '0');
             dateEl.value = `${yyyy}-${mm}-${dd}`;
         }
+        // Meme garde de date que loadPl: revenir sur l'onglet sans changer la
+        // date ne relance pas le calcul.
+        const cleDate = dateEl ? dateEl.value : '';
+        if (!force && cashStockChargePour === cleDate) return;
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
             const date = dateEl ? dateEl.value : '';
@@ -2771,6 +3064,7 @@
                 throw new Error(json.error || 'Erreur');
             }
             renderCashStock(json.data);
+            cashStockChargePour = cleDate;
         } catch (e) {
             resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
         }

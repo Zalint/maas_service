@@ -3157,12 +3157,25 @@
                                     <label class="form-label">Date fin</label>
                                     <input type="date" id="fin-pl-date-fin" class="form-control form-control-sm">
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-6">
                                     <button class="btn btn-sm btn-primary" id="fin-pl-refresh">
                                         <i class="bi bi-calculator"></i> Calculer
                                     </button>
+                                    <button class="btn btn-sm btn-outline-success" id="fin-pl-export"
+                                            title="Télécharger le PL affiché et ses composants (synthèse, charges, détail stock) en classeur Excel.">
+                                        <i class="bi bi-file-earmark-excel"></i> Export Excel
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-primary" id="fin-pl-snapshot"
+                                            title="Fige le PL du jour (période du 1ᵉʳ du mois à aujourd'hui). Un snapshot par date, le dernier écrase. Le cron du soir en fige un automatiquement à 23h35.">
+                                        <i class="bi bi-camera"></i> Figer le PL du jour
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" id="fin-pl-historique"
+                                            title="Voir les PL figés, un par date.">
+                                        <i class="bi bi-clock-history"></i> Historique PL
+                                    </button>
                                 </div>
                             </div>
+                            <div id="fin-pl-historique-panel" class="mb-3" style="display:none"></div>
                             <div id="fin-pl-result"></div>
                         </div>
 
@@ -3994,7 +4007,7 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260809-hors-mata2"></script>
+    <script src="js/finance.js?v=20260809-pl-snapshot2"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>
