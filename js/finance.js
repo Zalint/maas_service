@@ -1325,6 +1325,17 @@
         };
         chkHors.addEventListener('change', syncHors);
         syncHors();
+        // Le title dit l'ETAT, identique sur toutes les lignes: sans nom de
+        // produit dans l'aria-label, un lecteur d'ecran annonce cinq cases
+        // indiscernables. Suit le champ produit, editable sur chaque ligne.
+        const majLabelHors = () => {
+            const nom = inP.value.trim();
+            chkHors.setAttribute('aria-label', nom
+                ? `Hors Mata : exclure ${nom} de la commission fournisseur`
+                : 'Hors Mata : exclure ce produit de la commission fournisseur');
+        };
+        inP.addEventListener('input', majLabelHors);
+        majLabelHors();
         tdHors.appendChild(chkHors);
 
         // Bouton supprimer. Si la ligne vient de la BDD (produit existant),
