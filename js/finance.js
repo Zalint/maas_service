@@ -2156,7 +2156,7 @@
                     'Quantité': l.quantite,
                     'Prix utilisé (FCFA)': l.prix_utilise == null ? '' : Math.round(l.prix_utilise * 100) / 100,
                     'Base': l.base === 'achat' ? 'prix achat' : 'prix de vente conservé',
-                    'Valeur (FCFA)': Math.round(l.valeur * 100) / 100
+                    'Valeur (FCFA)': Math.round((l.valeur || 0) * 100) / 100
                 }));
                 rows.push({
                     'Produit': 'TOTAL', 'Quantité': '', 'Prix utilisé (FCFA)': '', 'Base': '',
@@ -2485,6 +2485,7 @@
             || (stock.soir_detail && stock.soir_detail.length);
         const blocDetailStock = aDetailStock ? `
                 <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="fin-pl-stock-detail-toggle"
+                        aria-controls="fin-pl-stock-detail" aria-expanded="false"
                         title="Voir, produit par produit, le prix d'achat utilisé et la valeur de chaque borne.">
                     <i class="bi bi-list-ul"></i> Détails par produit
                 </button>
@@ -2648,7 +2649,10 @@
         if (toggleDetailStock) {
             toggleDetailStock.addEventListener('click', () => {
                 const zone = document.getElementById('fin-pl-stock-detail');
-                if (zone) zone.style.display = zone.style.display === 'none' ? '' : 'none';
+                if (!zone) return;
+                const ouvre = zone.style.display === 'none';
+                zone.style.display = ouvre ? '' : 'none';
+                toggleDetailStock.setAttribute('aria-expanded', String(ouvre));
             });
         }
     }

@@ -28,38 +28,50 @@ const DRY_RUN = process.argv.includes('--dry-run');
 
 (async () => {
     const t0 = Date.now();
-    const { computePl, periodePlParDefaut } = require('../routes/finance');
-    const { PlSnapshot, sequelize } = require('../db/models');
+    // Hisse hors du try: si le require lui-meme echoue, sequelize reste
+    // undefined et le finally n'essaie pas de fermer une connexion qui
+    // n'existe pas.
+    let sequelize;
+    try {
+        ({ sequelize } = require('../db/models'));
+        const { computePl, periodePlParDefaut } = require('../routes/finance');
+        const { PlSnapshot } = require('../db/models');
 
-    const { dateDebut, dateFin } = periodePlParDefaut();
-    console.log(`[pl-snapshot] calcul du PL ${dateDebut} -> ${dateFin}${DRY_RUN ? ' (dry-run)' : ''}`);
+        const { dateDebut, dateFin } = periodePlParDefaut();
+        console.log(`[pl-snapshot] calcul du PL ${dateDebut} -> ${dateFin}${DRY_RUN ? ' (dry-run)' : ''}`);
 
-    const data = await computePl(dateDebut, dateFin);
-    console.log(`[pl-snapshot] PL ${data.pl} FCFA (ventes ${data.total_ventes}, ${data.periode.nb_jours} jour(s))`);
+        const data = await computePl(dateDebut, dateFin);
+        console.log(`[pl-snapshot] PL ${data.pl} FCFA (ventes ${data.total_ventes}, ${data.periode.nb_jours} jour(s))`);
 
-    if (DRY_RUN) {
-        console.log('[pl-snapshot] dry-run: rien ecrit');
-    } else {
-        await PlSnapshot.upsert({
-            date: dateFin,
-            periode_debut: dateDebut,
-            periode_fin: dateFin,
-            pl: data.pl,
-            total_ventes: data.total_ventes,
-            source: 'cron',
-            created_by: null,
-            payload: data,
-            updated_at: new Date()
-        });
-        console.log(`[pl-snapshot] fige pour le ${dateFin} (source cron)`);
+        if (DRY_RUN) {
+            console.log('[pl-snapshot] dry-run: rien ecrit');
+        } else {
+            await PlSnapshot.upsert({
+                date: dateFin,
+                periode_debut: dateDebut,
+                periode_fin: dateFin,
+                pl: data.pl,
+                total_ventes: data.total_ventes,
+                source: 'cron',
+                created_by: null,
+                payload: data,
+                updated_at: new Date()
+            });
+            console.log(`[pl-snapshot] fige pour le ${dateFin} (source cron)`);
+        }
+        console.log(`[pl-snapshot] termine en ${Date.now() - t0} ms`);
+    } catch (e) {
+        // Un echec ne doit pas rester silencieux dans les logs Render, mais ne
+        // casse rien d'autre: le snapshot du jour manquera, c'est tout.
+        // exitCode (et non exit()) laisse Node vider stdout/stderr avant de
+        // quitter - un exit() immediat peut tronquer la sortie sur un
+        // pipe (le process est spawn avec stdio 'pipe' cote server.js).
+        console.error('[pl-snapshot] ECHEC:', e.message);
+        process.exitCode = 1;
+    } finally {
+        // Ferme le pool dans TOUS les cas (succes, dry-run, echec): sans ca,
+        // une erreur APRES l'ouverture de la connexion laissait le pool
+        // ouvert, le seul filet etant l'exit() force qui masquait le probleme.
+        if (sequelize) await sequelize.close();
     }
-
-    await sequelize.close();
-    console.log(`[pl-snapshot] termine en ${Date.now() - t0} ms`);
-    process.exit(0);
-})().catch(async (e) => {
-    // Un echec ne doit pas rester silencieux dans les logs Render, mais ne
-    // casse rien d'autre: le snapshot du jour manquera, c'est tout.
-    console.error('[pl-snapshot] ECHEC:', e.message);
-    process.exit(1);
-});
+})();

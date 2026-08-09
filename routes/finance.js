@@ -325,6 +325,22 @@ const ADVANCED_FINANCE_PREFIXES = [
 ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
 // DELETE /depenses/:id reste admin via inline check (cf le handler).
 
+// Garde PL: admin ou superviseur uniquement, PLUS stricte que
+// checkAdvancedAccess ci-dessus (qui laisse aussi passer superutilisateur).
+// Etait duplique identique sur GET /pl, POST /pl/snapshot, GET
+// /pl/snapshots et GET /pl/snapshots/:date - une seule definition ici.
+function checkPlAccess(req, res, next) {
+    const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+    if (!['admin', 'superviseur'].includes(role)) {
+        return res.status(403).json({
+            success: false,
+            error: 'Accès réservé aux administrateurs et superviseurs'
+        });
+    }
+    next();
+}
+router.use('/pl', checkPlAccess);
+
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
 // MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
 const ALLOWED_MIMES = new Set([
@@ -1483,12 +1499,32 @@ function erreurPl(statusHttp, message) {
 // d'onglets (PL et Simulation lisent le meme calcul).
 const _plMemo = new Map();
 const PL_MEMO_TTL_MS = 60 * 1000;
+// Plafond defensif: sans lui, des requetes sur des periodes toutes
+// differentes (usage normal ou non) accumuleraient des entrees jamais
+// relues donc jamais remplacees, au-dela meme du TTL - rien ne les purge
+// sinon. Une carte de 500 periodes couvre tres largement l'usage reel
+// (quelques periodes par tenant) sans borner artificiellement le confort.
+const PL_MEMO_MAX_ENTRIES = 500;
 async function computePlMemoise(dateDebut, dateFin) {
     const cle = `${dateDebut}|${dateFin}`;
+    const maintenant = Date.now();
     const present = _plMemo.get(cle);
-    if (present && (Date.now() - present.at) < PL_MEMO_TTL_MS) return present.data;
+    if (present && (maintenant - present.at) < PL_MEMO_TTL_MS) return present.data;
+    // Purge des entrees perimees a chaque lecture: la carte ne grossit pas
+    // indefiniment entre deux invalidations meme si aucune cle n'est
+    // jamais redemandee.
+    for (const [k, v] of _plMemo) {
+        if ((maintenant - v.at) >= PL_MEMO_TTL_MS) _plMemo.delete(k);
+    }
     const data = await computePl(dateDebut, dateFin);
     _plMemo.set(cle, { data, at: Date.now() });
+    // Le Map JS conserve l'ordre d'insertion: la premiere cle est la plus
+    // ancienne, evincee en priorite si le plafond est depasse.
+    while (_plMemo.size > PL_MEMO_MAX_ENTRIES) {
+        const plusAncienne = _plMemo.keys().next().value;
+        if (plusAncienne === undefined) break;
+        _plMemo.delete(plusAncienne);
+    }
     return data;
 }
 
@@ -1827,15 +1863,6 @@ async function computePl(dateDebut, dateFin) {
 // Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
 router.get('/pl', async (req, res) => {
     try {
-        // Auth: seuls admin et superviseur
-        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Accès réservé aux administrateurs et superviseurs'
-            });
-        }
-
         // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
         const { dateDebut: defaultDebut, dateFin: defaultFin } = periodePlParDefaut();
         const rawDebut = req.query.dateDebut;
@@ -1862,13 +1889,6 @@ router.get('/pl', async (req, res) => {
 // Le cron du soir ecrit la meme chose avec source='cron'.
 router.post('/pl/snapshot', async (req, res) => {
     try {
-        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Accès réservé aux administrateurs et superviseurs'
-            });
-        }
         const { dateDebut, dateFin } = periodePlParDefaut();
         const data = await computePl(dateDebut, dateFin);
         const username = req.session && req.session.user ? req.session.user.username : null;
@@ -1895,13 +1915,6 @@ router.post('/pl/snapshot', async (req, res) => {
 // les payloads - un an d'historique par tenant reste une reponse legere.
 router.get('/pl/snapshots', async (req, res) => {
     try {
-        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Accès réservé aux administrateurs et superviseurs'
-            });
-        }
         const rows = await PlSnapshot.findAll({
             attributes: ['date', 'periode_debut', 'periode_fin', 'pl', 'total_ventes', 'source', 'created_by', 'updated_at'],
             order: [['date', 'DESC']],
@@ -1919,13 +1932,6 @@ router.get('/pl/snapshots', async (req, res) => {
 // re-rend avec le MEME code d'affichage que le PL courant.
 router.get('/pl/snapshots/:date', async (req, res) => {
     try {
-        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Accès réservé aux administrateurs et superviseurs'
-            });
-        }
         const dateISO = parseDateVersISO(String(req.params.date || ''));
         if (!dateISO) {
             return res.status(400).json({ success: false, error: 'date invalide' });
