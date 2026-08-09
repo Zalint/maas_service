@@ -411,6 +411,16 @@ async function updateSchema() {
               AND LOWER(TRIM(produit)) = 'boeuf'
         `);
 
+        // Colonne hors_mata: produit achete HORS circuit Mata. Quand TRUE,
+        // ses transferts entrants ne generent aucune commission fournisseur
+        // (routes/finance-creances.js), mais son prix d'achat continue de
+        // valoriser le stock. Interrupteur courant, non historise, comme
+        // prix_achat_dynamique.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_prix
+            ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE
+        `);
+
         // Historique des modifications de prix_vente_cdc.
         // Chaque sauvegarde insere une ligne (point-in-time pricing).
         // Le calcul de marge utilise la valeur effective a la date de la
@@ -595,15 +605,41 @@ async function updateSchema() {
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         `);
-        await sequelize.query(`
-            INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
-                ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
-                ('loyer',           'Loyer',           125000, 2, NOW()),
-                ('elec',            'Électricité',      30000, 3, NOW()),
-                ('internet',        'Internet',         15000, 4, NOW())
-            ON CONFLICT (nom) DO NOTHING
-        `);
-        console.log('Table finance_charges verifiee (seed 4 charges par defaut)');
+        // Graine UNE SEULE FOIS par tenant, jamais re-semee. L'ancien
+        // "ON CONFLICT (nom) DO NOTHING" a chaque demarrage protegeait les
+        // charges modifiees mais ressuscitait les charges SUPPRIMEES: la
+        // ligne effacee n'existe plus, donc pas de conflit, donc re-inseree
+        // au montant par defaut a chaque deploiement. La sentinelle dans
+        // finance_config rend la suppression definitive. Tenant existant
+        // (table deja peuplee, sentinelle absente): on pose la sentinelle
+        // sans rien semer - ses suppressions ne reviennent plus.
+        const [chargesSeedees] = await sequelize.query(
+            `SELECT 1 FROM finance_config WHERE key = 'finance_charges_seedees' LIMIT 1`,
+            { type: sequelize.QueryTypes.SELECT }
+        );
+        if (!chargesSeedees) {
+            const [chargeExistante] = await sequelize.query(
+                `SELECT 1 FROM finance_charges LIMIT 1`,
+                { type: sequelize.QueryTypes.SELECT }
+            );
+            if (!chargeExistante) {
+                await sequelize.query(`
+                    INSERT INTO finance_charges (nom, libelle, montant_mensuel, ordre, updated_at) VALUES
+                        ('masse_salariale', 'Masse salariale', 250000, 1, NOW()),
+                        ('loyer',           'Loyer',           125000, 2, NOW()),
+                        ('elec',            'Électricité',      30000, 3, NOW()),
+                        ('internet',        'Internet',         15000, 4, NOW())
+                    ON CONFLICT (nom) DO NOTHING
+                `);
+                console.log('Table finance_charges: graine initiale (4 charges par defaut)');
+            }
+            await sequelize.query(`
+                INSERT INTO finance_config (key, value, updated_at)
+                VALUES ('finance_charges_seedees', '1', NOW())
+                ON CONFLICT (key) DO NOTHING
+            `);
+        }
+        console.log('Table finance_charges verifiee');
 
         // Historique des modifications de finance_charges.montant_mensuel.
         // Meme pattern point-in-time que prix_vente_cdc_history etc. : chaque

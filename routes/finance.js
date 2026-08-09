@@ -390,9 +390,10 @@ router.get('/prix', async (req, res) => {
                 produit: r.produit,
                 prix_vente: pv == null ? null : pv,
                 prix_achat: pa == null ? null : pa,
-                // Reglage courant (non historise): c'est un interrupteur de
-                // config, pas un prix. Affiche en lecture seule en mode as-of.
+                // Reglages courants (non historises): des interrupteurs de
+                // config, pas des prix. Affiches en lecture seule en mode as-of.
                 prix_achat_dynamique: r.prix_achat_dynamique === true,
+                hors_mata: r.hors_mata === true,
                 updated_at: r.updated_at,
                 as_of: dateParam,
                 // Aucune donnee historique <= date: produit pas encore au
@@ -449,6 +450,15 @@ router.put('/prix', async (req, res) => {
             const prixAchatDynamique = (rawDyn === undefined || rawDyn === null)
                 ? undefined
                 : (rawDyn === true || rawDyn === 'true' || rawDyn === 'on' || rawDyn === '1');
+            // Toggle "Hors Mata": produit achete hors circuit Mata, exclu de
+            // la commission fournisseur (routes/finance-creances.js) mais dont
+            // le prix d'achat valorise toujours le stock. Meme statut que le
+            // toggle API: interrupteur courant, non historise. Absent du
+            // body -> valeur existante inchangee.
+            const rawHors = item.hors_mata;
+            const horsMata = (rawHors === undefined || rawHors === null)
+                ? undefined
+                : (rawHors === true || rawHors === 'true' || rawHors === 'on' || rawHors === '1');
 
             // Transaction atomique: lire l'ancien etat AVEC FOR UPDATE, puis
             // upsert + inserts history conditionnels. Le lock evite que deux
@@ -472,6 +482,9 @@ router.put('/prix', async (req, res) => {
                 };
                 if (prixAchatDynamique !== undefined) {
                     payload.prix_achat_dynamique = prixAchatDynamique;
+                }
+                if (horsMata !== undefined) {
+                    payload.hors_mata = horsMata;
                 }
                 await FournisseurPrix.upsert(payload, { transaction: t });
 
@@ -502,7 +515,8 @@ router.put('/prix', async (req, res) => {
                 produit,
                 prix_vente: prixVente,
                 prix_achat: prixAchat,
-                prix_achat_dynamique: prixAchatDynamique
+                prix_achat_dynamique: prixAchatDynamique,
+                hors_mata: horsMata
             });
         }
         invalidateFinanceDerivedCaches();

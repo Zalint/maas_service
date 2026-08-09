@@ -44,6 +44,15 @@ const FournisseurPrix = sequelize.define('FournisseurPrix', {
         allowNull: true,
         field: 'prix_achat_dynamique'
     },
+    // TRUE = produit achete HORS circuit Mata: ses transferts entrants ne
+    // generent aucune commission fournisseur, mais son prix_achat continue
+    // de valoriser le stock. Interrupteur courant, non historise.
+    hors_mata: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'hors_mata'
+    },
     updated_at: {
         type: DataTypes.DATE,
         allowNull: false,
