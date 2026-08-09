@@ -52,6 +52,61 @@ describe('valorisation du stock', () => {
         expect(r.produits_au_prix_de_vente).toEqual(['Poulet']);
     });
 
+    // Le detail par produit alimente le bouton "Détails par produit" du PL et
+    // les feuilles Excel: chaque ligne doit dire QUEL prix a valorise QUOI.
+    describe('detail par produit (detail_lignes)', () => {
+        test('agrege par produit, prix utilise exact, trie par valeur', () => {
+            const r = valoriserLignes({
+                lignes: [
+                    { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                    { produit: 'Boeuf', quantite: 5, total: 24000, prix_unitaire: 4800 },
+                    { produit: 'Poulet', quantite: 4, total: 14000, prix_unitaire: 3500 }
+                ],
+                prixAchat
+            });
+            // Boeuf agrege: 15 kg x 3835 = 57 525, base achat, prix = 3835.
+            expect(r.detail_lignes).toEqual([
+                { produit: 'Boeuf', base: 'achat', quantite: 15, prix_utilise: 3835, valeur: 57525 },
+                { produit: 'Poulet', base: 'vente', quantite: 4, prix_utilise: 3500, valeur: 14000 }
+            ]);
+        });
+
+        test('la somme du detail vaut exactement la valeur totale', () => {
+            const r = valoriserLignes({
+                lignes: [
+                    { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                    { produit: 'Poulet', quantite: 4, total: 14000, prix_unitaire: 3500 },
+                    { produit: 'Laxass', quantite: 5, total: 1000, prix_unitaire: 200 }
+                ],
+                prixAchat
+            });
+            const somme = r.detail_lignes.reduce((s, l) => s + l.valeur, 0);
+            expect(somme).toBeCloseTo(r.valeur, 6);
+        });
+
+        test('une ligne negative ecartee de la valeur reste hors du detail', () => {
+            const r = valoriserLignes({
+                lignes: [
+                    { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                    { produit: 'Yell', quantite: -3, total: -9000, prix_unitaire: 3000 }
+                ],
+                prixAchat
+            });
+            expect(r.detail_lignes.map((l) => l.produit)).toEqual(['Boeuf']);
+            expect(r.lignes_negatives).toEqual([{ produit: 'Yell', quantite: -3, total: -9000 }]);
+        });
+
+        test('valeur conservee sur quantite nulle: pas de prix affichable', () => {
+            const r = valoriserLignes({
+                lignes: [{ produit: 'Beurre', quantite: 0, total: 3300, prix_unitaire: 3300 }],
+                prixAchat
+            });
+            expect(r.detail_lignes).toEqual([
+                { produit: 'Beurre', base: 'vente', quantite: 0, prix_utilise: null, valeur: 3300 }
+            ]);
+        });
+    });
+
     // Une quantite nulle ne peut pas etre revalorisee: quantite x prix vaudrait
     // zero et effacerait une valeur qui existe bel et bien en base.
     test('une quantite nulle avec un total non nul ne perd pas sa valeur', () => {

@@ -63,6 +63,7 @@ const {
     ClotureCaisse,
     Produit,
     Vente,
+    PlSnapshot,
     sequelize
 } = require('../db/models');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
@@ -1459,47 +1460,57 @@ router.get('/simulation', async (req, res) => {
     }
 });
 
-// Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
-router.get('/pl', async (req, res) => {
-    try {
-        // Auth: seuls admin et superviseur
-        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
-            return res.status(403).json({
-                success: false,
-                error: 'Accès réservé aux administrateurs et superviseurs'
-            });
-        }
+// Periode par defaut du PL: 1er du mois -> aujourd'hui (UTC). Partagee par
+// la route, le bouton "Figer le PL du jour" et le cron du soir.
+function periodePlParDefaut() {
+    const today = new Date();
+    return {
+        dateDebut: `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`,
+        dateFin: today.toISOString().slice(0, 10)
+    };
+}
 
-        // Periode (defaut: 1er du mois -> aujourd'hui)
-        const today = new Date();
-        const defaultDebut = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-01`;
-        const defaultFin = today.toISOString().slice(0, 10);
-        // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
-        const rawDebut = req.query.dateDebut;
-        const rawFin = req.query.dateFin;
-        const dateDebut = rawDebut ? parseDateVersISO(rawDebut) : defaultDebut;
-        const dateFin = rawFin ? parseDateVersISO(rawFin) : defaultFin;
-        if (rawDebut && !dateDebut) {
-            return res.status(400).json({ success: false, error: 'invalid dateDebut' });
-        }
-        if (rawFin && !dateFin) {
-            return res.status(400).json({ success: false, error: 'invalid dateFin' });
-        }
+// Erreur metier a statut HTTP: la route la mappe, le cron se contente de
+// la logger. Evite de faire passer du res.status() dans le calcul.
+function erreurPl(statusHttp, message) {
+    return Object.assign(new Error(message), { statusHttp });
+}
 
+// Memoisation du PL par periode. Un TTL COURT en plus de l'invalidation
+// sur mutation: les ventes s'ecrivent dans server.js, qui ne passe pas par
+// invalidateFinanceDerivedCaches - un cache sans TTL montrerait un PL
+// perime apres une vente. 60s suffisent a absorber les allers-retours
+// d'onglets (PL et Simulation lisent le meme calcul).
+const _plMemo = new Map();
+const PL_MEMO_TTL_MS = 60 * 1000;
+async function computePlMemoise(dateDebut, dateFin) {
+    const cle = `${dateDebut}|${dateFin}`;
+    const present = _plMemo.get(cle);
+    if (present && (Date.now() - present.at) < PL_MEMO_TTL_MS) return present.data;
+    const data = await computePl(dateDebut, dateFin);
+    _plMemo.set(cle, { data, at: Date.now() });
+    return data;
+}
+
+/**
+ * LE calcul du PL, sans HTTP. La route GET /pl, le bouton "Figer le PL du
+ * jour" et le cron du soir (scripts/pl-snapshot-cron.js) passent tous par
+ * ici: trois chiffres qui ne peuvent pas diverger. Dates en ISO YYYY-MM-DD.
+ *
+ * Le corps garde l'indentation de la route dont il est extrait: le diff
+ * reste lisible et l'historique git suit chaque ligne.
+ */
+async function computePl(dateDebut, dateFin) {
         // Nombre de jours dans la periode (inclus). Sert a l'affichage: le
         // prorata des charges, lui, se calcule mois par mois sur les jours
         // REELS de chaque mois (voir decouperEnMois), sans mois conventionnel.
         const startD = new Date(dateDebut + 'T00:00:00Z');
         const endD = new Date(dateFin + 'T00:00:00Z');
         if (isNaN(startD.getTime()) || isNaN(endD.getTime())) {
-            return res.status(400).json({ success: false, error: 'invalid dateDebut/dateFin' });
+            throw erreurPl(400, 'invalid dateDebut/dateFin');
         }
         if (startD > endD) {
-            return res.status(400).json({
-                success: false,
-                error: 'dateDebut must be <= dateFin'
-            });
+            throw erreurPl(400, 'dateDebut must be <= dateFin');
         }
         const nbDaysPeriod = Math.floor((endD - startD) / 86400000) + 1;
 
@@ -1511,10 +1522,7 @@ router.get('/pl', async (req, res) => {
         // rapports annuels.
         const MAX_DAYS_PERIOD = 366;
         if (nbDaysPeriod > MAX_DAYS_PERIOD) {
-            return res.status(400).json({
-                success: false,
-                error: `periode trop longue (${nbDaysPeriod} jours, max ${MAX_DAYS_PERIOD})`
-            });
+            throw erreurPl(400, `periode trop longue (${nbDaysPeriod} jours, max ${MAX_DAYS_PERIOD})`);
         }
 
         // 1. Total ventes sur la periode (= Vente.date IN periode, montant)
@@ -1740,9 +1748,7 @@ router.get('/pl', async (req, res) => {
             - totalPaiementsFournisseur
             + variationStockNette;
 
-        res.json({
-            success: true,
-            data: {
+        return {
                 periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
                 total_ventes: round2(totalVentes),
                 // Part non-boucherie du chiffre d'affaires, pour information.
@@ -1787,6 +1793,12 @@ router.get('/pl', async (req, res) => {
                     // par borne: elles n'ont aucune raison d'etre identiques.
                     matin_au_prix_de_vente: stockMatinAuPrixDeVente,
                     soir_au_prix_de_vente: stockSoirAuPrixDeVente,
+                    // Detail par produit de chaque borne (nom, quantite, prix
+                    // utilise, base achat/vente): l'ecran l'affiche a la
+                    // demande, l'export Excel l'emporte, et les snapshots le
+                    // portent d'office puisqu'ils stockent cette reponse.
+                    matin_detail: stockMatinVal.detail_lignes || [],
+                    soir_detail: stockSoirVal.detail_lignes || [],
                     // Le coefficient ne porte que sur la boucherie: l'ecran doit
                     // pouvoir le dire plutot que laisser croire a un 5% global.
                     variation_boucherie: round2(variationBoucherie),
@@ -1809,10 +1821,122 @@ router.get('/pl', async (req, res) => {
                     avertissements: resolveurPrix.avertissements || []
                 },
                 pl: round2(pl)
-            }
-        });
+        };
+}
+
+// Periode: dateDebut/dateFin (YYYY-MM-DD). Defaut = 1er du mois -> aujourd'hui.
+router.get('/pl', async (req, res) => {
+    try {
+        // Auth: seuls admin et superviseur
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        // Distinguer "param absent" (-> defaut) de "param fourni mais malforme" (-> 400).
+        const { dateDebut: defaultDebut, dateFin: defaultFin } = periodePlParDefaut();
+        const rawDebut = req.query.dateDebut;
+        const rawFin = req.query.dateFin;
+        const dateDebut = rawDebut ? parseDateVersISO(rawDebut) : defaultDebut;
+        const dateFin = rawFin ? parseDateVersISO(rawFin) : defaultFin;
+        if (rawDebut && !dateDebut) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut' });
+        }
+        if (rawFin && !dateFin) {
+            return res.status(400).json({ success: false, error: 'invalid dateFin' });
+        }
+
+        const data = await computePlMemoise(dateDebut, dateFin);
+        res.json({ success: true, data });
     } catch (e) {
-        console.error('GET /api/finance/pl:', e);
+        if (!e.statusHttp) console.error('GET /api/finance/pl:', e);
+        res.status(e.statusHttp || 500).json({ success: false, error: e.message });
+    }
+});
+
+// Fige le PL du jour: calcul FRAIS (pas le memo) sur la periode par defaut
+// (1er du mois -> aujourd'hui), une ligne par date, la derniere ecrase.
+// Le cron du soir ecrit la meme chose avec source='cron'.
+router.post('/pl/snapshot', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+        const { dateDebut, dateFin } = periodePlParDefaut();
+        const data = await computePl(dateDebut, dateFin);
+        const username = req.session && req.session.user ? req.session.user.username : null;
+        await PlSnapshot.upsert({
+            date: dateFin,
+            periode_debut: dateDebut,
+            periode_fin: dateFin,
+            pl: data.pl,
+            total_ventes: data.total_ventes,
+            source: 'manuel',
+            created_by: username,
+            payload: data,
+            updated_at: new Date()
+        });
+        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source: 'manuel' });
+        res.json({ success: true, data: { date: dateFin, pl: data.pl } });
+    } catch (e) {
+        if (!e.statusHttp) console.error('POST /api/finance/pl/snapshot:', e);
+        res.status(e.statusHttp || 500).json({ success: false, error: e.message });
+    }
+});
+
+// Liste des PL figes (bouton Historique PL): dates + chiffres cles, sans
+// les payloads - un an d'historique par tenant reste une reponse legere.
+router.get('/pl/snapshots', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+        const rows = await PlSnapshot.findAll({
+            attributes: ['date', 'periode_debut', 'periode_fin', 'pl', 'total_ventes', 'source', 'created_by', 'updated_at'],
+            order: [['date', 'DESC']],
+            limit: 400,
+            raw: true
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/pl/snapshots:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Un PL fige complet, tel que l'ecran l'a calcule ce jour-la: le client le
+// re-rend avec le MEME code d'affichage que le PL courant.
+router.get('/pl/snapshots/:date', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+        const dateISO = parseDateVersISO(String(req.params.date || ''));
+        if (!dateISO) {
+            return res.status(400).json({ success: false, error: 'date invalide' });
+        }
+        const snap = await PlSnapshot.findByPk(dateISO, { raw: true });
+        if (!snap) {
+            return res.status(404).json({ success: false, error: `aucun PL figé le ${dateISO}` });
+        }
+        res.json({ success: true, data: snap });
+    } catch (e) {
+        console.error('GET /api/finance/pl/snapshots/:date:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -1934,8 +2058,16 @@ function setCachedCumul(dateD, value) {
 function invalidateFinanceDerivedCaches() {
     financeCache.invalidate();
     _cashStockCumulCache.clear();
+    // Le PL depend des prix, charges, depenses, paiements et config: toute
+    // mutation finance jette aussi sa memoisation (le TTL couvre le reste).
+    _plMemo.clear();
 }
 router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
+// Le cron du soir (scripts/pl-snapshot-cron.js) et le snapshot manuel
+// passent par LE meme calcul que la route - exporte a cote du router,
+// comme invalidateFinanceDerivedCaches ci-dessus.
+router.computePl = computePl;
+router.periodePlParDefaut = periodePlParDefaut;
 
 router.get('/cash-stock', async (req, res) => {
     try {
