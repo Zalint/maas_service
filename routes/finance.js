@@ -1721,9 +1721,35 @@ async function computePl(dateDebut, dateFin) {
         //    On somme donc les operations 'avance' filtrees sur la periode,
         //    exactement comme le fait l'UI pour son tableau et ses tuiles.
         let totalAvances = 0;
+        // Etat de la SOURCE, distinct du montant. Un zero peut vouloir dire
+        // "aucune avance sur la periode" ou "on n'a pas pu demander": ces deux
+        // reponses ne se valent pas, et rien ne les distinguait.
+        let avancesEtat = 'ok';
+        let avancesRaison = null;
         try {
             const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
             const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
+            // L'ETAT SE DEDUIT DE LA VALEUR DE RETOUR, PAS DU catch.
+            //
+            // fetchCreanceCdb ne leve JAMAIS sur les pannes qu'on veut
+            // detecter: lib/depenses-creance-client.js rend null sur quatre
+            // chemins distincts - variables d'environnement absentes, libelle
+            // introuvable, reponse HTTP en erreur, panne reseau - et le
+            // documente comme un "echec gracieux". Le catch ci-dessous
+            // n'attrapait donc rien, totalAvances restait a 0, et RIEN dans la
+            // reponse ne le signalait: le snapshot pouvait graver un PL ampute
+            // de tout le montant des avances. Mesure sur le 1er au 10 aout
+            // 2026: 1 825 273 F d'avances, soit largement de quoi faire passer
+            // un resultat negatif pour un resultat positif.
+            if (!cdb) {
+                avancesEtat = 'indisponible';
+                avancesRaison = 'MataBanq injoignable ou non configuré '
+                    + '(DEPENSES_API_BASE_URL / DEPENSES_API_KEY)';
+            } else if (!Array.isArray(cdb.details) || !cdb.details[0]
+                || !Array.isArray(cdb.details[0].operations)) {
+                avancesEtat = 'indisponible';
+                avancesRaison = 'réponse MataBanq sans liste d\'opérations';
+            }
             const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
                 && Array.isArray(cdb.details[0].operations))
                 ? cdb.details[0].operations : [];
@@ -1735,6 +1761,10 @@ async function computePl(dateDebut, dateFin) {
                 totalAvances += parseFloat(op.montant) || 0;
             }
         } catch (e) {
+            // Le catch reste un filet: il ne peut pas servir de signal, mais
+            // une exception inattendue doit tout de meme fermer la source.
+            avancesEtat = 'indisponible';
+            avancesRaison = `erreur inattendue (${e.message})`;
             console.warn('[PL] fetch CDB avances echoue:', e.message);
         }
 
@@ -1916,6 +1946,14 @@ async function computePl(dateDebut, dateFin) {
                 // memes lignes). L'ecart eventuel entre les deux est donc un
                 // signal de defaut, pas une nuance de methode.
                 volumes: volumesVendus,
+                // ETAT DES SOURCES, a cote des montants et jamais confondu
+                // avec eux. `fiable` est faux des qu'un poste repose sur une
+                // source muette: c'est ce que POST /pl/snapshot regarde pour
+                // refuser de graver un PL ampute.
+                sources: {
+                    avances: { etat: avancesEtat, raison: avancesRaison },
+                    fiable: avancesEtat === 'ok'
+                },
                 // Part non-boucherie du chiffre d'affaires, pour information.
                 // Un produit sans famille connue compte comme hors boucherie:
                 // mieux vaut le signaler que le ranger d'office dans la viande.
@@ -2020,6 +2058,31 @@ router.post('/pl/snapshot', async (req, res) => {
     try {
         const { dateDebut, dateFin } = periodePlParDefaut();
         const data = await computePl(dateDebut, dateFin);
+
+        // REFUS DE FIGER UN PL AMPUTE.
+        //
+        // Un PL fige est destine a etre relu des mois plus tard, compare et
+        // exporte. Le graver alors qu'une source n'a pas repondu produit un
+        // chiffre faux que plus rien ne signale ensuite: la valeur est en
+        // base, elle a l'air definitive.
+        //
+        // Le cas est mesure et pas theorique: sur le 1er au 10 aout 2026 les
+        // avances valent 1 825 273 F. Les compter pour zero fait passer un
+        // resultat de -65 515 F a +1 759 758 F.
+        //
+        // 409 et non 500: la demande est comprise, l'etat du systeme ne permet
+        // pas d'y repondre maintenant. Le figeage redeviendra possible des que
+        // la source repond, sans rien changer.
+        if (data.sources && data.sources.fiable === false) {
+            const raison = (data.sources.avances && data.sources.avances.raison) || 'source indisponible';
+            const err = new Error(
+                `PL non figé : ${raison}. Les avances comptent pour 0, le résultat serait faux.`
+            );
+            err.statusHttp = 409;
+            err.code = 'source_indisponible';
+            throw err;
+        }
+
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({
             date: dateFin,
