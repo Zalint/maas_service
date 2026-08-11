@@ -344,15 +344,26 @@ class StockCopyProcessor {
         const exists = await this.fileManager.fileExists(stockSoirPath);
         if (exists) {
             const data = await this.fileManager.readJsonFile(stockSoirPath);
-            logger.info(`📊 Stock soir chargé depuis JSON: ${Object.keys(data || {}).length} éléments`);
-            return data;
+            const nb = Object.keys(data || {}).length;
+            if (nb > 0) {
+                logger.info(`📊 Stock soir chargé depuis JSON: ${nb} éléments`);
+                return data;
+            }
+            // Un JSON VIDE faisait echouer toute la copie: {} est truthy, il
+            // traversait le garde d'entree, puis la validation le rejetait en
+            // "Donnees vides" et levait - sans jamais essayer la base, dont le
+            // repli est en aval de ce return. Aucun stock matin n'etait alors
+            // cree pour J+1. On tombe desormais sur la base, en passant par
+            // loadSourceStockFromDB pour conserver sa garde anti-ecrasement.
+            logger.warn(`Stock soir JSON vide: ${stockSoirPath}`);
+        } else {
+            logger.warn(`Stock soir introuvable en JSON: ${stockSoirPath}`);
         }
 
         // 2. Fallback BDD: sur Render le filesystem est éphémère, donc un
         //    redeploiement entre la saisie du stock soir (J 18h) et le cron
         //    (J+1 5h UTC) wipe data/by-date/. La BDD persiste — on la lit
         //    pour reconstruire la meme structure dict {key: item} que le JSON.
-        logger.warn(`Stock soir introuvable en JSON: ${stockSoirPath}`);
         logger.info('🔄 Fallback BDD: tentative de chargement depuis Postgres...');
         return this.loadSourceStockFromDB();
     }
