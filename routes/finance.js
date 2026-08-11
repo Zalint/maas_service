@@ -98,6 +98,22 @@ const { checkAdvancedAccess } = require('../middlewares/auth');
 // Normalisation partagee des noms de produits: casse et accents ignores.
 const { normaliserNom: normaliserNomProduit } = require('../lib/parage');
 
+/**
+ * Reglages de Simulation 2.0, lus a chaque appel de GET /simulation.
+ *
+ * Une lecture en echec ne doit JAMAIS ouvrir la v2: on retombe sur le
+ * comportement d'origine, qui est celui d'aujourd'hui et qui ne surprend
+ * personne. Sur un drapeau qui change des chiffres a l'ecran, le doute ferme.
+ */
+async function lireReglagesSimulationV2() {
+    try {
+        return await require('../lib/simulation-v2/reglages').lireReglages();
+    } catch (e) {
+        console.warn('[simulation] reglages v2 illisibles, comportement d\'origine:', e.message);
+        return { actif: false, famillePoulet: [], prixPouletDefaut: 0, avertissements: [] };
+    }
+}
+
 const STOCKS_DATE_AS_ISO_SQL =
     "(substring(date FROM 7 FOR 4) || '-' || " +
     "substring(date FROM 4 FOR 2) || '-' || " +
@@ -1390,8 +1406,10 @@ router.get('/simulation', async (req, res) => {
         // question, donc deux chiffres qui allaient finir par diverger. Le
         // GROUP BY economisait un transfert de quelques milliers de lignes,
         // ce que la periode maximale (366 jours) garde tres modeste.
+        // `date` sert a ponderer le prix d'achat jour par jour (voir plus bas).
+        // Colonne de plus sur la meme requete, aucun aller-retour ajoute.
         const lignes = await sequelize.query(
-            `SELECT produit, nombre, montant
+            `SELECT produit, nombre, montant, date
                FROM ventes
               WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
@@ -1403,15 +1421,86 @@ router.get('/simulation', async (req, res) => {
         const { agregerVolumes, trouverProduit } = require('../lib/volumes-vendus');
         const volumes = agregerVolumes(lignes);
 
-        // Prix d'ACHAT a la fin de la periode. Il sert au levier VOLUME, pas au
-        // levier prix: augmenter le prix ne coute rien de plus, mais vendre un
-        // kilo de plus oblige a l'acheter. Seule la MARGE tombe dans le
-        // resultat. Sur le boeuf en juillet, 4 715 F de prix moyen contre
-        // 3 835 F d'achat: rapporter le resultat au prix de vente surestimait
-        // le volume necessaire d'un facteur cinq.
-        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
-        const resolveurPrix = await creerResolveurPrixAchat(dateFin);
-        const prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
+        // Prix d'ACHAT. Il sert au levier VOLUME, pas au levier prix:
+        // augmenter le prix ne coute rien de plus, mais vendre un kilo de plus
+        // oblige a l'acheter. Seule la MARGE tombe dans le resultat. Sur le
+        // boeuf en juillet, 4 728 F de prix moyen contre 3 835 F d'achat:
+        // rapporter le resultat au prix de vente surestimait le volume
+        // necessaire d'un facteur cinq.
+        //
+        // DEUX REGIMES, selon le drapeau d'administration:
+        //
+        //  - drapeau ferme: comportement d'origine, mot pour mot. Un prix
+        //    unique, resolu a la date de FIN. L'ecran actuel ne change pas.
+        //
+        //  - drapeau ouvert: le prix devient la MOYENNE de la periode ponderee
+        //    par les quantites vendues chaque jour, et la famille poulet
+        //    s'applique. Figer un prix unique etait faux des que le cout bouge
+        //    dans le mois: le boeuf va de 3 735 a 4 435 F sur juillet 2026,
+        //    et la simulation valorisait les 31 journees au prix du dernier
+        //    jour. computePl, lui, resout deja par borne.
+        const reglagesSim = await lireReglagesSimulationV2();
+        const v2 = reglagesSim.actif;
+
+        let resolveurPrix;
+        let prixAchatDe;
+        let origineDe = () => null;
+
+        if (!v2) {
+            const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+            resolveurPrix = await creerResolveurPrixAchat(dateFin);
+            prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
+        } else {
+            const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulation');
+            resolveurPrix = await creerResolveurPrixAchatSimulation({
+                dateMax: dateFin, reglages: reglagesSim
+            });
+
+            // Un resolveur par JOURNEE, memoise: pourDate relit tout
+            // l'historique a chaque appel, et il y a une ligne de vente par
+            // appel sinon.
+            const parJour = new Map();
+            const pour = (iso) => {
+                if (!parJour.has(iso)) parJour.set(iso, resolveurPrix.pourDate(iso));
+                return parJour.get(iso);
+            };
+
+            // Somme(prix du jour x quantite du jour) / Somme(quantite), par
+            // produit. Les journees dont le cout est inconnu sont ECARTEES du
+            // numerateur ET du denominateur: les inclure a zero ferait passer
+            // une donnee manquante pour un achat gratuit.
+            const cumul = new Map();
+            for (const l of lignes) {
+                const iso = parseDateVersISO(l.date);
+                if (!iso) continue;
+                const q = parseFloat(l.nombre) || 0;
+                if (q <= 0) continue;
+                const r = pour(iso);
+                const pa = parseFloat(r.prixAchat(l.produit));
+                if (!Number.isFinite(pa) || pa <= 0) continue;
+                const cle = normaliserNomProduit(l.produit);
+                if (!cumul.has(cle)) cumul.set(cle, { pondere: 0, qte: 0, origines: new Set() });
+                const c = cumul.get(cle);
+                c.pondere += pa * q;
+                c.qte += q;
+                const o = r.origine(l.produit);
+                if (o) c.origines.add(o);
+            }
+
+            const finDePeriode = resolveurPrix.pourDate(dateFin);
+            prixAchatDe = (nom) => {
+                const c = cumul.get(normaliserNomProduit(nom));
+                if (c && c.qte > 0) return c.pondere / c.qte;
+                // Produit sans vente sur la periode: aucune ponderation
+                // possible, on rend le prix de fin de periode plutot que rien.
+                return finDePeriode.prixAchat(nom);
+            };
+            origineDe = (nom) => {
+                const c = cumul.get(normaliserNomProduit(nom));
+                if (c && c.origines.size) return Array.from(c.origines).sort().join('+');
+                return finDePeriode.origine(nom);
+            };
+        }
 
         const produits = PRODUITS_SIMULATION.map((nom) => {
             const agg = trouverProduit(volumes.produits, nom)
@@ -1439,7 +1528,14 @@ router.get('/simulation', async (req, res) => {
                 graphies: agg.graphies,
                 // Un produit sans vente n'est pas une erreur, mais sa
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
-                sans_vente: agg.quantite === 0
+                sans_vente: agg.quantite === 0,
+                // D'ou vient le cout: 'propre' (catalogue ou historique du
+                // produit lui-meme), 'famille_poulet', 'repli_poulet', ou null
+                // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
+                // un chiffre dont on ne peut pas nommer la source ne se
+                // verifie pas. Null hors Simulation 2.0, ou la notion n'existe
+                // pas.
+                prix_achat_origine: origineDe(nom)
             };
         });
 
@@ -1464,7 +1560,21 @@ router.get('/simulation', async (req, res) => {
                 total_ventes_toutes_lignes: round2(totalToutesLignes),
                 produit_equilibre: PRODUIT_EQUILIBRE,
                 // Mesure, cf le commentaire d'en-tete de cette route.
-                coefficient_pl_par_franc_vendu: 1
+                coefficient_pl_par_franc_vendu: 1,
+                // 1 = comportement d'origine, 2 = drapeau d'administration
+                // ouvert. Le client aiguille dessus plutot que d'interroger le
+                // drapeau separement: la version voyage DANS la reponse qui
+                // porte les chiffres, elle ne peut donc pas etre en desaccord
+                // avec eux.
+                version: v2 ? 2 : 1,
+                prix_achat: {
+                    // 'periode' dit que le cout est une moyenne ponderee par
+                    // les quantites vendues; 'fin_de_periode' qu'il est fige
+                    // au dernier jour.
+                    mode: v2 ? 'periode' : 'fin_de_periode',
+                    famille_poulet: v2 ? reglagesSim.famillePoulet : [],
+                    avertissements: resolveurPrix.avertissements || []
+                }
             }
         });
     } catch (error) {
