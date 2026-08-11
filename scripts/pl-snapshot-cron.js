@@ -43,6 +43,17 @@ const DRY_RUN = process.argv.includes('--dry-run');
         const data = await computePl(dateDebut, dateFin);
         console.log(`[pl-snapshot] PL ${data.pl} FCFA (ventes ${data.total_ventes}, ${data.periode.nb_jours} jour(s))`);
 
+        // Meme garde que la route: on ne grave pas une estimation dans un
+        // historique qu'aucune route ne peut corriger. Le cron tourne a 23h35
+        // alors que la saisie du soir reste ouverte jusqu'a 04h00: sans ce
+        // refus, il figerait presque chaque soir un stock non encore compte.
+        if (data.stock && data.stock.soir_estime) {
+            const meta = data.stock.estimation || {};
+            console.warn(`[pl-snapshot] REFUS: stock du soir non saisi pour le ${dateFin} `
+                + `(dernier comptage le ${meta.date_ancre || '?'}). Rien n'est fige.`);
+            return;
+        }
+
         if (DRY_RUN) {
             console.log('[pl-snapshot] dry-run: rien ecrit');
         } else {

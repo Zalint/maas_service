@@ -294,6 +294,124 @@ function graphiesDeDatesPourPeriode(dateDebut, dateFin) {
     return dates;
 }
 
+/** 'JJ-MM-AAAA' (format de stocks.date) -> 'AAAA-MM-JJ'. null si illisible. */
+function isoDepuisJjmmaaaa(brut) {
+    const m = String(brut || '').match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+/** 'AAAA-MM-JJ' -> 'JJ-MM-AAAA', pour parler la meme langue que l'ecran. */
+function jjmmaaaaDepuisIso(iso) {
+    const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : String(iso || '');
+}
+
+/**
+ * Estime la borne du soir quand la date de fin n'a pas ete comptee.
+ *
+ * Rend null quand il n'y a rien a estimer - soit le comptage existe bien a
+ * dateFin, soit il n'existe AUCUN comptage sur lequel s'ancrer.
+ *
+ * La formule vit dans lib/stock-soir-estime.js (fonction pure, testee); ici on
+ * ne fait que rassembler ses entrees et revaloriser sa sortie. La valorisation
+ * repasse par valoriserLignes, donc les regles deja etablies continuent de
+ * s'appliquer telles quelles: prix d'achat a la date, repli sur le prix de
+ * vente, et surtout mise a l'ecart des quantites negatives.
+ */
+async function estimerBorneSoir(args) {
+    const {
+        ancre, dateFin, contexte, resolveurPrix,
+        estBoucherie, produitsNonFiables, ratioRepli
+    } = args;
+
+    const ancreIso = isoDepuisJjmmaaaa(ancre.date_utilisee);
+    // Comptage bien present a la date demandee: rien a estimer.
+    if (ancreIso === dateFin) return null;
+    // Aucun comptage nulle part: il n'y a pas d'ancre, donc pas d'estimation
+    // possible. Le PL garde son comportement actuel (valeur nulle).
+    if (!ancreIso || ancreIso > dateFin) return null;
+
+    const { Stock, Transfert, Vente } = require('../db/models');
+    const { lirePackCompositions } = require('../lib/pack-compositions');
+    const { tauxParageMois } = require('../lib/parage-mois');
+    const { estimerStockSoir } = require('../lib/stock-soir-estime');
+    const { valoriserLignes } = require('../lib/valorisation-stock');
+
+    // Fenetre OUVERTE a gauche: le comptage du soir de l'ancre inclut deja les
+    // mouvements de sa propre journee. L'inclure doublerait ses ventes.
+    const lendemain = new Date(ancreIso + 'T00:00:00Z');
+    lendemain.setUTCDate(lendemain.getUTCDate() + 1);
+    const debutFenetre = lendemain.toISOString().slice(0, 10);
+    const formes = graphiesDeDatesPourPeriode(debutFenetre, dateFin);
+
+    const packs = await lirePackCompositions();
+    const [transferts, ventesFenetre, tauxMois] = await Promise.all([
+        Transfert.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
+        Vente.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
+        // Le taux du mois de dateFin, avec la definition EXACTE des cartes
+        // "Parage Boeuf (Mois)" - contexte reutilise, 5 requetes economisees.
+        tauxParageMois(sequelize, dateFin, contexte, packs)
+    ]);
+
+    // Lignes de l'ancre telles qu'elles sont en base: l'estimation part du
+    // comptage, pas de sa valorisation.
+    const lignesAncre = await sequelize.query(
+        `SELECT produit, quantite, total, prix_unitaire
+         FROM stocks
+         WHERE type_stock = 'soir' AND date = :dateAncre`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { dateAncre: ancre.date_utilisee } }
+    );
+
+    const ratios = {
+        bovin: tauxMois && tauxMois.bovin ? tauxMois.bovin.ratio : null,
+        ovin: tauxMois && tauxMois.ovin ? tauxMois.ovin.ratio : null
+    };
+
+    const estimation = estimerStockSoir({
+        lignesAncre,
+        transferts,
+        ventes: ventesFenetre,
+        ratios,
+        ratioRepli,
+        categorieDe: contexte.categorieDe,
+        estBoucherie,
+        exclusions: contexte.exclusions,
+        familleDechet: contexte.familleDechet,
+        packs
+    });
+
+    // Meme mise a l'ecart des produits non fiables que les deux bornes reelles,
+    // sinon l'estimation compare un perimetre plus large que le stock du matin.
+    const retenues = produitsNonFiables && produitsNonFiables.size
+        ? estimation.lignes.filter((l) => !produitsNonFiables.has(normaliserNomProduit(l.produit)))
+        : estimation.lignes;
+    const valorisation = valoriserLignes({
+        lignes: retenues,
+        prixAchat: resolveurPrix.pourDate(dateFin).prixAchat,
+        estBoucherie
+    });
+
+    const joursEcart = Math.round(
+        (new Date(dateFin + 'T00:00:00Z') - new Date(ancreIso + 'T00:00:00Z')) / 86400000
+    );
+
+    return {
+        valorisation: { ...valorisation, date_utilisee: jjmmaaaaDepuisIso(dateFin) },
+        date_demandee_jjmmaaaa: jjmmaaaaDepuisIso(dateFin),
+        meta: {
+            date_ancre: ancre.date_utilisee,
+            date_ancre_iso: ancreIso,
+            jours_ecart: joursEcart,
+            mois_taux: dateFin.slice(0, 7),
+            par_categorie: estimation.parCategorie,
+            nb_lignes_parage: estimation.nb_lignes_parage,
+            nb_lignes_sans_parage: estimation.nb_lignes_sans_parage,
+            valeur_ancre: round2(ancre.valeur),
+            valeur_estimee: round2(valorisation.valeur),
+            avertissements: estimation.avertissements
+        }
+    };
+}
+
 const router = express.Router();
 
 // ============================================================
@@ -1737,8 +1855,10 @@ async function computePl(dateDebut, dateFin) {
 
         const stockMatinDebut = stockMatinVal.valeur;
         const stockMatinDate = stockMatinVal.date_utilisee;
-        const stockSoirFin = stockSoirVal.valeur;
-        const stockSoirDate = stockSoirVal.date_utilisee;
+        // `let`: la borne du soir peut etre remplacee plus bas par une
+        // ESTIMATION quand personne n'a encore compte le soir de dateFin.
+        let stockSoirEffectif = stockSoirVal;
+        let stockSoirDate = stockSoirVal.date_utilisee;
         // Produits restes au prix de VENTE, faute de prix d'achat: l'ecran les
         // marque d'un asterisque. Les deux bornes sont rendues SEPAREMENT: un
         // produit present le matin et absent le soir ne concerne qu'une des
@@ -1746,8 +1866,6 @@ async function computePl(dateDebut, dateFin) {
         // melange de bases qu'il ne contenait pas - une fausse piste pour qui
         // cherche a expliquer une variation.
         const stockMatinAuPrixDeVente = stockMatinVal.produits_au_prix_de_vente;
-        const stockSoirAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
-        const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Coefficient pertes decoupe (default 5%): la viande perd du
         // volume lors de la decoupe, donc on ne valorise que (100-X)%
         // de la variation brute.
@@ -1766,12 +1884,40 @@ async function computePl(dateDebut, dateFin) {
             ? pertesPct
             : 5;
         const coeffStock = (100 - safePertesPct) / 100;
+
+        // --- Stock du soir ESTIME, tant qu'il n'est pas compte ---------------
+        //
+        // Sans comptage a dateFin, cette fonction repliait EN SILENCE sur le
+        // dernier inventaire - parfois vieux de plusieurs jours - en comparant
+        // donc deux instants non adjacents alors que ventes, charges et
+        // depenses, elles, couvrent bien toute la periode.
+        //
+        // On estime desormais, par inversion de l'identite du parage
+        // (soir = ancre + transferts - vendu / rendement), et on le DIT: rien
+        // n'est ecrit en base, et le PL ne peut pas etre fige dans cet etat.
+        const estimation = await estimerBorneSoir({
+            ancre: stockSoirVal,
+            dateFin,
+            contexte: ctxFamille,
+            resolveurPrix,
+            estBoucherie,
+            produitsNonFiables,
+            ratioRepli: coeffStock
+        });
+        if (estimation) {
+            stockSoirEffectif = estimation.valorisation;
+            stockSoirDate = estimation.date_demandee_jjmmaaaa;
+        }
+
+        const stockSoirFin = stockSoirEffectif.valeur;
+        const stockSoirAuPrixDeVente = stockSoirEffectif.produits_au_prix_de_vente;
+        const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Le coefficient de pertes de DECOUPE ne s'applique qu'a la viande.
         // Applique a toute la variation, il retranchait 5% a des sachets
         // d'epicerie qu'on ne pare pas - et comme le stock des produits
         // automatiques vaut leurs ventes, il en rognait 5% sans raison.
-        const variationBoucherie = stockSoirVal.valeur_boucherie - stockMatinVal.valeur_boucherie;
-        const variationHorsBoucherie = stockSoirVal.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
+        const variationBoucherie = stockSoirEffectif.valeur_boucherie - stockMatinVal.valeur_boucherie;
+        const variationHorsBoucherie = stockSoirEffectif.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
         const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
         // 7. PL final
@@ -1834,7 +1980,14 @@ async function computePl(dateDebut, dateFin) {
                     // demande, l'export Excel l'emporte, et les snapshots le
                     // portent d'office puisqu'ils stockent cette reponse.
                     matin_detail: stockMatinVal.detail_lignes || [],
-                    soir_detail: stockSoirVal.detail_lignes || [],
+                    soir_detail: stockSoirEffectif.detail_lignes || [],
+                    // Borne du soir ESTIMEE faute de comptage a la date de fin.
+                    // Un client d'avant cette version ne lit pas ces champs et
+                    // se comporte comme avant; un snapshot fige avant elle non
+                    // plus, d'ou le booleen plutot qu'un objet toujours present.
+                    soir_estime: !!estimation,
+                    soir_origine: estimation ? 'estimation' : 'comptage',
+                    estimation: estimation ? estimation.meta : null,
                     // Le coefficient ne porte que sur la boucherie: l'ecran doit
                     // pouvoir le dire plutot que laisser croire a un 5% global.
                     variation_boucherie: round2(variationBoucherie),
@@ -1843,11 +1996,11 @@ async function computePl(dateDebut, dateFin) {
                     // calcule dont les entrees ne sont pas saisies).
                     negatifs_ignores: round2(
                         (stockMatinVal.valeur_negative_ignoree || 0)
-                        + (stockSoirVal.valeur_negative_ignoree || 0)
+                        + (stockSoirEffectif.valeur_negative_ignoree || 0)
                     ),
                     nb_lignes_negatives:
                         (stockMatinVal.lignes_negatives || []).length
-                        + (stockSoirVal.lignes_negatives || []).length,
+                        + (stockSoirEffectif.lignes_negatives || []).length,
                     // Produits ecartes des DEUX bornes faute de stock fiable.
                     produits_ecartes: produitsNonFiables.pourAffichage || [],
                     // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
@@ -1891,6 +2044,19 @@ router.post('/pl/snapshot', async (req, res) => {
     try {
         const { dateDebut, dateFin } = periodePlParDefaut();
         const data = await computePl(dateDebut, dateFin);
+        // Un PL dont le stock du soir est ESTIME ne se fige pas: la table ne
+        // porte qu'une ligne par date, aucune route ne permet de corriger un
+        // snapshot passe, et l'estimation bouge a chaque vente. Le figer
+        // graverait un chiffre provisoire dans un historique immuable.
+        if (data.stock && data.stock.soir_estime) {
+            return res.status(409).json({
+                success: false,
+                code: 'stock_soir_estime',
+                error: `Stock du soir non encore saisi pour le ${dateFin} : le PL affiché `
+                    + `repose sur une estimation et ne peut pas être figé. `
+                    + `Saisissez l'inventaire du soir, puis refigez.`
+            });
+        }
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({
             date: dateFin,

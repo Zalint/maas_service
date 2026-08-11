@@ -2122,7 +2122,7 @@
             // Feuille 3: le detail de la variation stock.
             const feuilleStock = [
                 { 'Élément': `Stock matin (${fmtDateFr(stock.matin_date) || 'n/a'})`, 'Valeur': stock.matin_debut || 0 },
-                { 'Élément': `Stock soir (${fmtDateFr(stock.soir_date) || 'n/a'})`, 'Valeur': stock.soir_fin || 0 },
+                { 'Élément': `Stock soir${stock.soir_estime === true ? ' — ESTIMÉ' : ''} (${stock.soir_date || 'n/a'})`, 'Valeur': stock.soir_fin || 0 },
                 { 'Élément': 'Variation brute', 'Valeur': stock.variation_brute || 0 },
                 { 'Élément': 'dont boucherie', 'Valeur': stock.variation_boucherie || 0 },
                 { 'Élément': 'dont hors boucherie', 'Valeur': stock.variation_hors_boucherie || 0 },
@@ -2135,6 +2135,23 @@
             (stock.avertissements || []).forEach((a) => {
                 feuilleStock.push({ 'Élément': '⚠ Avertissement valorisation', 'Valeur': a });
             });
+            // Un classeur qui ne dirait pas que le stock du soir est estime
+            // ferait circuler un chiffre provisoire comme un chiffre constate.
+            if (stock.soir_estime === true && stock.estimation) {
+                const e = stock.estimation;
+                feuilleStock.push({ 'Élément': '⚠ Stock du soir ESTIMÉ', 'Valeur': `inventaire du soir non saisi au ${p.dateFin}` });
+                feuilleStock.push({ 'Élément': 'Ancré sur le comptage du', 'Valeur': `${e.date_ancre} (${e.jours_ecart} jour(s) d'écart)` });
+                feuilleStock.push({ 'Élément': 'Taux de parage du mois', 'Valeur': e.mois_taux });
+                Object.entries(e.par_categorie || {}).forEach(([cat, v]) => {
+                    feuilleStock.push({
+                        'Élément': `  ${cat} : ancre ${v.kg_ancre} kg + transferts ${v.kg_transferts} kg − sortis ${v.kg_sortis} kg`,
+                        'Valeur': `${v.kg_estime} kg estimés (vendu ${v.kg_vendus} kg, parage ${v.taux_parage} %${v.taux_mesure ? ' mesuré' : ' repli'})`
+                    });
+                });
+                (e.avertissements || []).forEach((a) => {
+                    feuilleStock.push({ 'Élément': '⚠ Avertissement estimation', 'Valeur': a });
+                });
+            }
 
             const classeur = XLSX.utils.book_new();
             const fSyn = XLSX.utils.json_to_sheet(synthese);
@@ -2167,7 +2184,10 @@
                 XLSX.utils.book_append_sheet(classeur, f, nomFeuille);
             };
             ajouterFeuilleBorne('Stock matin (detail)', stock.matin_detail);
-            ajouterFeuilleBorne('Stock soir (detail)', stock.soir_detail);
+            ajouterFeuilleBorne(
+                stock.soir_estime === true ? 'Stock soir (ESTIME)' : 'Stock soir (detail)',
+                stock.soir_detail
+            );
 
             XLSX.writeFile(classeur, `pl-${p.dateDebut || 'periode'}-au-${p.dateFin || ''}.xlsx`);
         } catch (e) {
@@ -2177,10 +2197,29 @@
 
     // ===== Snapshots: figer le PL du jour + historique =====
 
+    // Reflete l'etat du PL affiche sur le bouton "Figer". Le serveur reste
+    // l'autorite (il refuse en 409): ceci n'est qu'un confort, d'autant que la
+    // route fige TOUJOURS la periode par defaut, pas celle affichee a l'ecran.
+    function majBoutonFigerPl(d) {
+        const btn = document.getElementById('fin-pl-snapshot');
+        if (!btn) return;
+        const estime = !!(d && d.stock && d.stock.soir_estime === true);
+        btn.disabled = estime;
+        btn.title = estime
+            ? "Stock du soir non encore saisi : un PL estimé ne peut pas être figé."
+            : "Fige le PL du jour (période du 1ᵉʳ du mois à aujourd'hui). Un snapshot par date, le dernier écrase.";
+    }
+
     async function figerPlDuJour() {
         try {
             const res = await fetch('/api/finance/pl/snapshot', { method: 'POST', credentials: 'include' });
             const j = await res.json();
+            // Refus explicite du serveur: ce n'est pas une panne, c'est la
+            // regle. On le dit calmement, sans alerte rouge.
+            if (res.status === 409) {
+                if (typeof showToast === 'function') showToast(j.error || 'PL non figeable.', 'warning');
+                return;
+            }
             if (!j.success) throw new Error(j.error || 'Erreur');
             if (typeof showToast === 'function') {
                 showToast(`PL du ${fmtDateFr(j.data.date)} figé : ${fmtMoney(j.data.pl)}`, 'success');
@@ -2250,6 +2289,14 @@
             renderPl(snap.payload);
             // Le prochain passage par l'onglet recharge le PL COURANT.
             plChargePour = null;
+            // On consulte le passe: figer ne s'applique pas a ce qui est
+            // affiche (la route fige toujours le jour courant). renderPl vient
+            // de regler le bouton sur l'etat du SNAPSHOT: on le neutralise.
+            const btnFiger = document.getElementById('fin-pl-snapshot');
+            if (btnFiger) {
+                btnFiger.disabled = true;
+                btnFiger.title = 'Consultation d\'un PL figé : revenez au PL courant pour figer.';
+            }
             const resultEl = document.getElementById('fin-pl-result');
             if (resultEl) {
                 const bandeau = document.createElement('div');
@@ -2278,6 +2325,7 @@
         if (!resultEl) return;
         // Memorise pour pouvoir re-rendre a chaque bascule sans rappeler l'API.
         plDernieresDonnees = d;
+        majBoutonFigerPl(d);
         const ch = d.charges || { detail: [] };
         const stock = d.stock || { matin_debut: 0, soir_fin: 0, variation_brute: 0, variation_nette: 0, coeff: 0.95, pertes_decoupe_pct: 5 };
         const plColor0 = (d.pl || 0) >= 0 ? 'success' : 'danger';
@@ -2294,7 +2342,12 @@
             : '';
         const stockCouleur = stock.variation_nette >= 0 ? 'success' : 'danger';
 
-        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+        // Le meme chiffre est rejoue ici, dans la Decomposition et dans les
+        // termes de la marge brute: sans la mention "estime" aux trois
+        // endroits, l'ecran affiche un chiffre provisoire a trois centimetres
+        // du bandeau qui l'annonce.
+        const mentionEstime = stock.soir_estime === true ? ' [estimé]' : '';
+        const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir${mentionEstime} (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
 
         const postes = [
             { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
@@ -2320,7 +2373,10 @@
             { cle: 'stock', signe: 1, montant: stock.variation_nette || 0, couleur: stockCouleur, neutralisable: true,
               libelle: `<i class="bi bi-box-seam text-${stockCouleur}"></i> Variation stock ×
                         <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
-                        <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`,
+                        <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`
+                        + (stock.soir_estime === true
+                            ? ' <span class="badge bg-warning text-dark" title="Le stock du soir n\'a pas encore été compté : cette variation repose sur une estimation.">stock soir estimé</span>'
+                            : ''),
               titre: stockTooltip }
         ];
 
@@ -2364,7 +2420,8 @@
             .map((p) => {
                 const off = !actif(p);
                 const valeur = p.signe * p.montant;
-                const libelle = { ventes: 'Ventes', avances: 'Avances', stock: 'Variation stock' }[p.cle];
+                const libelle = { ventes: 'Ventes', avances: 'Avances', stock: 'Variation stock' }[p.cle]
+                    + (p.cle === 'stock' && stock.soir_estime === true ? ' (estimée)' : '');
                 const texte = `${valeur >= 0 ? '+' : '−'} ${fmtMoney(Math.abs(valeur))}`;
                 return off
                     ? `<span class="text-muted" style="text-decoration:line-through;">${libelle} ${esc(texte)}</span>`
@@ -2454,6 +2511,49 @@
             ? `<div class="alert alert-warning py-2 small mt-2 mb-0"><i class="bi bi-exclamation-triangle"></i>
                ${(stock.avertissements || []).map((a) => esc(a)).join('<br>')}</div>`
             : '';
+
+        // --- Stock du soir ESTIME -------------------------------------------
+        // Ni l'asterisque (qui parle de la base de PRIX) ni le triangle
+        // d'avertissement (deja pris par les produits ecartes) ne sont
+        // reutilises ici: un badge en toutes lettres, sinon trois signaux
+        // differents finissent par dire la meme chose et plus rien.
+        const estimation = stock.estimation || null;
+        const soirEstime = stock.soir_estime === true && !!estimation;
+        const fmtQte = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+        const badgeEstime = soirEstime
+            ? ' <span class="badge bg-warning text-dark" title="Le stock du soir de cette date n\'a pas encore été compté : il est estimé à partir du dernier inventaire.">estimé</span>'
+            : '';
+        const detailParage = soirEstime
+            ? Object.entries(estimation.par_categorie || {}).map(([cat, v]) => {
+                const nom = cat === 'dechet' ? 'déchet' : cat;
+                const sortie = v.kg_vendus
+                    ? `vendu ${esc(fmtQte(v.kg_vendus))} kg → ${esc(fmtQte(v.kg_sortis))} kg sortis du stock`
+                        + (v.taux_parage ? ` (parage ${esc(String(v.taux_parage).replace('.', ','))} %${v.taux_mesure ? ' mesuré' : ' — taux de repli'})` : '')
+                    : 'aucune vente sur la période';
+                return `<li><strong>${esc(nom)}</strong> : ${esc(fmtQte(v.kg_ancre))} kg au dernier comptage`
+                    + (v.kg_transferts ? ` ${v.kg_transferts > 0 ? '+' : '−'} ${esc(fmtQte(Math.abs(v.kg_transferts)))} kg de transferts` : '')
+                    + `, ${sortie} → <strong>${esc(fmtQte(v.kg_estime))} kg</strong> estimés</li>`;
+            }).join('')
+            : '';
+        const plBandeauEstimation = soirEstime
+            ? `<div class="alert alert-warning py-2 small mb-3">
+                 <div><i class="bi bi-hourglass-split"></i>
+                   <strong>Stock du soir non encore saisi au ${esc(fmtDateFr(d.periode.dateFin))}.</strong>
+                   Il est <strong>estimé</strong> à partir du dernier inventaire compté
+                   (${esc(estimation.date_ancre)}, il y a ${esc(String(estimation.jours_ecart))} jour(s)),
+                   auquel on ajoute les transferts et duquel on retranche les kilos
+                   qu'il a fallu sortir pour les ventes — parage compris pour la boucherie.
+                 </div>
+                 ${detailParage ? `<ul class="mb-1 mt-2">${detailParage}</ul>` : ''}
+                 <div>Les produits hors boucherie ne subissent aucun parage.
+                   Ce PL <strong>ne peut pas être figé</strong> tant que l'inventaire du soir
+                   n'est pas saisi.</div>
+                 ${(estimation.avertissements || []).length
+                    ? `<div class="mt-1">${(estimation.avertissements || []).map((a) => esc(a)).join('<br>')}</div>`
+                    : ''}
+               </div>`
+            : '';
+
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
@@ -2492,12 +2592,17 @@
                 <div id="fin-pl-stock-detail" class="mt-2" style="display:none">
                     <div class="row g-3">
                         ${detailBorneStock(`Stock matin (${esc(stock.matin_date || 'n/a')})`, stock.matin_detail)}
-                        ${detailBorneStock(`Stock soir (${esc(stock.soir_date || 'n/a')})`, stock.soir_detail)}
+                        ${detailBorneStock(
+                            soirEstime
+                                ? `Stock soir estimé au ${esc(stock.soir_date || 'n/a')} — réparti au prorata du comptage du ${esc(estimation.date_ancre)}`
+                                : `Stock soir (${esc(stock.soir_date || 'n/a')})`,
+                            stock.soir_detail)}
                     </div>
                     <div class="small text-muted mt-1">* valorisé au prix de vente saisi, faute de prix d'achat connu.</div>
                 </div>` : '';
 
         resultEl.innerHTML = `
+            ${plBandeauEstimation}
             <!-- Cartes PL et marge brute -->
             <div class="row g-2 mb-3">
                 <div class="col-md-6">
@@ -2576,7 +2681,7 @@
                             <td class="text-end">${esc(fmtMoney(stock.matin_debut))}</td>
                         </tr>
                         <tr>
-                            <td>Stock soir${plAsterisqueSoir} <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
+                            <td>Stock soir${plAsterisqueSoir}${badgeEstime} <small class="text-muted">(${esc(stock.soir_date || 'n/a')})</small></td>
                             <td class="text-end">${esc(fmtMoney(stock.soir_fin))}</td>
                         </tr>
                         <tr>

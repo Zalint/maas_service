@@ -5816,25 +5816,9 @@ app.post('/api/reconciliation/save', checkAuth, checkWriteAccess, async (req, re
 })();
 
 // Reconstruit la table { pack: [composants] } depuis la base.
-async function lirePackCompositions() {
-    const { PackComposition } = require('./db/models');
-    const lignes = await PackComposition.findAll({
-        order: [['pack', 'ASC'], ['ordre', 'ASC']],
-        raw: true
-    });
-    const table = {};
-    for (const l of lignes) {
-        if (!table[l.pack]) table[l.pack] = [];
-        const composant = {
-            produit: l.produit,
-            quantite: parseFloat(l.quantite),
-            unite: l.unite
-        };
-        if (l.poids_unitaire != null) composant.poids_unitaire = parseFloat(l.poids_unitaire);
-        table[l.pack].push(composant);
-    }
-    return table;
-}
+// La definition vit desormais dans lib/pack-compositions.js: le PL en a besoin
+// lui aussi, et une copie privee ici aurait fini par diverger.
+const { lirePackCompositions } = require('./lib/pack-compositions');
 
 app.get('/pack-compositions.js', async (req, res) => {
     try {
