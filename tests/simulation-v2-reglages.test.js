@@ -219,3 +219,20 @@ describe('GET /reglages : ce que chaque role voit', () => {
         expect(FinanceConfig.upsert).not.toHaveBeenCalled();
     });
 });
+
+describe('deduplication de la famille', () => {
+    test('accents et casse sont ignores, comme a la resolution des prix', () => {
+        // 'Poulet en détail' et 'POULET EN DETAIL' resolvent vers le meme cout:
+        // les garder tous deux afficherait un doublon qui n'en est pas un.
+        const v = reglages.valider({
+            famillePoulet: 'Poulet en détail, POULET EN DETAIL, Poulet en gros'
+        });
+        expect(v.ok).toBe(true);
+        expect(v.aEcrire[0].value).toBe('Poulet en détail,Poulet en gros');
+    });
+
+    test('deux produits reellement differents sont conserves', () => {
+        const v = reglages.valider({ famillePoulet: 'Poulet en détail, Cuisse de poulet' });
+        expect(v.aEcrire[0].value).toBe('Poulet en détail,Cuisse de poulet');
+    });
+});
