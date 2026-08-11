@@ -157,7 +157,7 @@ const STOCKS_DATE_VALIDE_SQL = "date ~ '^\\d{2}-\\d{2}-\\d{4}$'";
 //   snapshot. Sert a sortir des DEUX bornes un produit dont le stock du soir
 //   est negatif: sa donnee de stock n'est pas fiable, et ses achats sont deja
 //   passes en charge par ailleurs (onglet Depenses).
-async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie, produitsExclus) {
+async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie, produitsExclus, categorieDe) {
     // La date du snapshot vient des lignes elles-memes: toutes celles d'un
     // meme snapshot la partagent, donc une seule requete suffit.
     const lignes = await sequelize.query(
@@ -191,7 +191,7 @@ async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie
     const retenues = produitsExclus && produitsExclus.size
         ? lignes.filter((l) => !produitsExclus.has(normaliserNomProduit(l.produit)))
         : lignes;
-    const r = valoriserLignes({ lignes: retenues, prixAchat, estBoucherie });
+    const r = valoriserLignes({ lignes: retenues, prixAchat, estBoucherie, categorieDe });
     return { ...r, date_utilisee: dateUtilisee };
 }
 
@@ -1881,8 +1881,8 @@ async function computePl(dateDebut, dateFin) {
         // le negatif apparait.
         const produitsNonFiables = await produitsAStockSoirNegatif(dateFin);
         const [stockMatinVal, stockSoirVal] = await Promise.all([
-            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate, estBoucherie, produitsNonFiables),
-            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate, estBoucherie, produitsNonFiables)
+            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate, estBoucherie, produitsNonFiables, ctxFamille.categorieDe),
+            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate, estBoucherie, produitsNonFiables, ctxFamille.categorieDe)
         ]);
 
         const stockMatinDebut = stockMatinVal.valeur;
@@ -1921,6 +1921,19 @@ async function computePl(dateDebut, dateFin) {
         // d'epicerie qu'on ne pare pas - et comme le stock des produits
         // automatiques vaut leurs ventes, il en rognait 5% sans raison.
         const variationBoucherie = stockSoirVal.valeur_boucherie - stockMatinVal.valeur_boucherie;
+        // Ventilation de la variation boucherie par espece. Le PL applique un
+        // coefficient de parage UNIQUE, alors que lib/parage.js calcule deja
+        // deux ratios separes, bovin et ovin. Exposer le partage ne change
+        // aucun montant aujourd'hui: il rend possible de donner un taux par
+        // espece sans avoir a deviner leur poids respectif.
+        //
+        // Ce que la mesure montre et qu'un total masquait: sur juillet 2026 le
+        // bovin fait +13 480 F quand l'ovin fait -6 200 F. Le signe differe,
+        // donc augmenter le taux de parage agneau AMELIORE le resultat.
+        const variationBovin = stockSoirVal.valeur_bovin - stockMatinVal.valeur_bovin;
+        const variationOvin = stockSoirVal.valeur_ovin - stockMatinVal.valeur_ovin;
+        const variationAutreBoucherie = stockSoirVal.valeur_autre_boucherie
+            - stockMatinVal.valeur_autre_boucherie;
         const variationHorsBoucherie = stockSoirVal.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
         const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
@@ -2006,6 +2019,14 @@ async function computePl(dateDebut, dateFin) {
                     // pouvoir le dire plutot que laisser croire a un 5% global.
                     variation_boucherie: round2(variationBoucherie),
                     variation_hors_boucherie: round2(variationHorsBoucherie),
+                    // variation_bovin + variation_ovin + variation_autre_boucherie
+                    // == variation_boucherie. 'autre' recueille la volaille, le
+                    // caprin et tout produit dont l'espece est inconnue: le
+                    // ranger d'office dans une espece fausserait le taux qu'on
+                    // lui appliquera.
+                    variation_bovin: round2(variationBovin),
+                    variation_ovin: round2(variationOvin),
+                    variation_autre_boucherie: round2(variationAutreBoucherie),
                     // Stocks negatifs ecartes de la somme (produits a stock
                     // calcule dont les entrees ne sont pas saisies).
                     negatifs_ignores: round2(
