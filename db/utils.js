@@ -6,38 +6,10 @@ const { Op } = require('sequelize');
  * Fonctions utilitaires pour les opérations de base de données courantes
  */
 
-// Formatter la date au format DD-MM-YYYY
-function formatDate(date) {
-  const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  return `${day}-${month}-${year}`;
-}
-
-// Parser une date au format DD-MM-YYYY
-function parseDate(dateStr) {
-  if (!dateStr) return null;
-  
-  let jour, mois, annee;
-  
-  if (dateStr.includes('/')) {
-    // Format DD/MM/YYYY
-    [jour, mois, annee] = dateStr.split('/');
-  } else if (dateStr.includes('-')) {
-    // Format DD-MM-YYYY
-    [jour, mois, annee] = dateStr.split('-');
-  } else {
-    return null;
-  }
-  
-  // S'assurer que l'année est au format 4 chiffres
-  if (annee.length === 2) {
-    annee = '20' + annee;
-  }
-  
-  return new Date(annee, mois - 1, jour);
-}
+// Conversion des dates: la definition vit dans lib/dates.js, module sans
+// dependance donc testable. Ici elle chargeait Sequelize au premier require,
+// et c'est ainsi qu'un parseDate silencieusement faux a pu vivre longtemps.
+const { formatDate, parseDate } = require('../lib/dates');
 
 // Récupérer les ventes pour une période donnée
 async function getVentesByPeriod(startDate, endDate, pointVente = null) {

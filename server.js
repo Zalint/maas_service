@@ -2731,15 +2731,29 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
         // Obtenir le chemin du fichier spécifique à la date
         const filePath = getPathByDate(baseFilePath, date);
 
-        // Vérifier si le fichier existe
+        // Le fichier doit exister ET porter quelque chose.
+        //
+        // Un fichier VIDE ({}) masquait integralement la base: le contenu
+        // etait renvoye tel quel et le repli ci-dessous, place apres ce
+        // return, devenait inatteignable. Neuf journees en portent la trace,
+        // dont huit ou la table contenait pourtant 85 a 90 lignes. La cause
+        // premiere est corrigee (cf parseDate dans db/utils.js), mais un
+        // fichier vide ne doit plus jamais faire autorite sur la base: le
+        // filesystem est ephemere sur Render, le Postgres ne l'est pas.
         if (fs.existsSync(filePath)) {
             const data = await fsPromises.readFile(filePath, 'utf8');
-            return res.json(JSON.parse(data));
+            const contenu = data.trim() ? JSON.parse(data) : null;
+            const vide = !contenu || (typeof contenu === 'object' && Object.keys(contenu).length === 0);
+            if (!vide) {
+                return res.json(contenu);
+            }
+            console.warn(`⚠️  ${filePath} est vide: lecture de la base a la place.`);
         }
 
-        // Fallback BDD: typiquement apres un redeploiement Render qui a
-        // efface le filesystem ephemere. On reconstitue le shape attendu
-        // par le client (objet flat, cle = "<PointVente>-<Produit>").
+        // Fallback BDD: fichier absent ou vide - typiquement apres un
+        // redeploiement Render qui a efface le filesystem ephemere. On
+        // reconstitue le shape attendu par le client (objet flat, cle =
+        // "<PointVente>-<Produit>").
         try {
             const { Stock } = require('./db/models');
             const { formatDate, parseDate } = require('./db/utils');
