@@ -1384,29 +1384,24 @@ router.get('/simulation', async (req, res) => {
         // cette raison. Deux routes qui interrogent la meme table par deux
         // chemins differents finissent par rendre deux chiffres differents.
         const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
+        // Lignes BRUTES, agregees ensuite par lib/volumes-vendus.js. C'etait
+        // auparavant un GROUP BY SQL suivi d'un regroupement JS ecrit ici, en
+        // double de celui de computePl: deux codes qui repondaient a la meme
+        // question, donc deux chiffres qui allaient finir par diverger. Le
+        // GROUP BY economisait un transfert de quelques milliers de lignes,
+        // ce que la periode maximale (366 jours) garde tres modeste.
         const lignes = await sequelize.query(
-            `SELECT produit,
-                    SUM(nombre::numeric)  AS quantite,
-                    SUM(montant::numeric) AS ca,
-                    COUNT(*)::int         AS nb_lignes
-             FROM ventes
-             WHERE date IN (:dateList)
-             GROUP BY produit`,
+            `SELECT produit, nombre, montant
+               FROM ventes
+              WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
         );
 
-        // Regroupement par nom normalise: plusieurs graphies d'un meme produit
-        // doivent additionner leurs volumes, pas se concurrencer.
-        const parCle = new Map();
-        for (const l of lignes) {
-            const cle = normaliserNomProduit(l.produit);
-            if (!parCle.has(cle)) parCle.set(cle, { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] });
-            const agg = parCle.get(cle);
-            agg.quantite += Number(l.quantite) || 0;
-            agg.ca += Number(l.ca) || 0;
-            agg.nb_lignes += Number(l.nb_lignes) || 0;
-            if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
-        }
+        // MEME agregation que le PL, par le meme module: les graphies d'un
+        // produit s'additionnent au lieu de se concurrencer, et la regle de
+        // normalisation ne vit qu'a un endroit.
+        const { agregerVolumes, trouverProduit } = require('../lib/volumes-vendus');
+        const volumes = agregerVolumes(lignes);
 
         // Prix d'ACHAT a la fin de la periode. Il sert au levier VOLUME, pas au
         // levier prix: augmenter le prix ne coute rien de plus, mais vendre un
@@ -1419,7 +1414,7 @@ router.get('/simulation', async (req, res) => {
         const prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
 
         const produits = PRODUITS_SIMULATION.map((nom) => {
-            const agg = parCle.get(normaliserNomProduit(nom))
+            const agg = trouverProduit(volumes.produits, nom)
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
             const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
             const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
@@ -1439,7 +1434,9 @@ router.get('/simulation', async (req, res) => {
                 // qui explique le chiffre d'affaires de la periode.
                 prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
                 nb_lignes: agg.nb_lignes,
-                graphies: agg.graphies.sort((a, b) => a.localeCompare(b, 'fr')),
+                // Deja triees par agregerVolumes. Ne pas retrier ici: .sort()
+                // trie EN PLACE, donc sur le tableau porte par volumes.produits.
+                graphies: agg.graphies,
                 // Un produit sans vente n'est pas une erreur, mais sa
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0
@@ -1457,7 +1454,7 @@ router.get('/simulation', async (req, res) => {
         // pourcentages deviendront faux SANS RIEN DIRE. Renvoyer le total
         // permet a l'ecran de s'en apercevoir plutot que d'afficher des parts
         // qui ne somment plus.
-        const totalToutesLignes = lignes.reduce((a, l) => a + (Number(l.ca) || 0), 0);
+        const totalToutesLignes = volumes.total_ca;
 
         res.json({
             success: true,
@@ -1578,13 +1575,26 @@ async function computePl(dateDebut, dateFin) {
             // liste d'attributs explicite ne remonte QUE ce qu'elle nomme, sans
             // erreur: sans lui, estBoucherie recevait undefined et classait
             // 100% du chiffre d'affaires hors boucherie.
-            attributes: ['montant', 'produit']
+            //
+            // 'nombre' sert aux VOLUMES vendus (agregerVolumes ci-dessous).
+            // C'est une colonne de plus sur la MEME requete: aucun aller-retour
+            // supplementaire, alors que faire calculer les volumes ailleurs en
+            // aurait coute un, sur les memes lignes, avec le risque de deux
+            // filtres de dates qui divergent.
+            attributes: ['montant', 'produit', 'nombre']
         });
         // totalVentes = somme des Vente.montant REELLES uniquement.
         // Les commandes envoyees au CDC sont prises en compte ailleurs dans
         // la formule via "+ Marge CDC" (creances.ce_qu_il_me_doit), pas
         // ici — sinon on compterait deux fois la contribution CDC.
         const totalVentes = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
+
+        // Volumes vendus par produit, sur les MEMES lignes que totalVentes.
+        // Ils entrent dans le resultat du PL, donc dans pl_snapshots.payload:
+        // une simulation rejouee sur un PL fige lira les volumes de ce jour-la
+        // plutot que ceux d'aujourd'hui.
+        const { agregerVolumes } = require('../lib/volumes-vendus');
+        const volumesVendus = agregerVolumes(ventes);
 
         // 2. Commission MaaS + Marge CDC via computeCreances
         const { computeCreances } = require('./finance-creances');
@@ -1787,6 +1797,15 @@ async function computePl(dateDebut, dateFin) {
         return {
                 periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
                 total_ventes: round2(totalVentes),
+                // Volumes vendus par produit, issus des MEMES lignes que
+                // total_ventes. Presents ici pour etre figes avec le PL: sans
+                // eux, une simulation rejouee sur un PL fige melangerait un
+                // resultat fige et des volumes vivants.
+                //
+                // total_ca vaut total_ventes par construction (meme boucle,
+                // memes lignes). L'ecart eventuel entre les deux est donc un
+                // signal de defaut, pas une nuance de methode.
+                volumes: volumesVendus,
                 // Part non-boucherie du chiffre d'affaires, pour information.
                 // Un produit sans famille connue compte comme hors boucherie:
                 // mieux vaut le signaler que le ranger d'office dans la viande.
