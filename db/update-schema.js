@@ -1306,6 +1306,28 @@ async function updateSchema() {
             console.log(`Colonne ventes.gros_client_id verifiee (${maj.length} vente(s) rattachee(s))`);
         }
 
+        // ventes.date: AUCUN index n'existait sur cette colonne, alors que
+        // toutes les requetes de Finance filtrent dessus - le PL, la
+        // simulation, les creances - avec un IN de plusieurs CENTAINES de
+        // litteraux (deux graphies par jour, jusqu'a 366 jours), sur une
+        // colonne TEXTE. Chaque rendu balayait donc la table entiere.
+        //
+        // Bloc SEPARE de celui de gros_client_id juste au-dessus: celui-la
+        // exige aussi la table gros_clients, et un tenant qui ne l'a pas
+        // n'aurait jamais recu cet index.
+        //
+        // Le compose (date, point_vente) sert les ventilations par point de
+        // vente, qui filtrent d'abord sur la periode.
+        if (await checkTableExists('ventes')) {
+            await sequelize.query(`
+                CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)
+            `);
+            await sequelize.query(`
+                CREATE INDEX IF NOT EXISTS idx_ventes_date_pv ON ventes (date, point_vente)
+            `);
+            console.log('Index ventes.date verifies (idx_ventes_date, idx_ventes_date_pv)');
+        }
+
         // Categories de depenses (ADMIN > Categories depenses). Remplace la
         // liste figee en dur dans le <select> de l'onglet Depenses. Seed des
         // 8 categories historiques UNIQUEMENT si la table est vide: les
