@@ -168,7 +168,8 @@ const ADMIN_SECTION_WHITELIST = [
     'modules',
     'ui-settings',
     'livreurs',
-    'pos-categories'
+    'pos-categories',
+    'simulation-v2'
 ];
 
 // Persiste la section courante dans l'URL (?section=X) au click. Utilise
@@ -4023,6 +4024,7 @@ document.addEventListener('DOMContentLoaded', function() {
             initDepenseCategoriesSection();
             initParageExclusionsSection();
             initPackCompositionsSection();
+            initSimulationV2Section();
         }
     });
 });
@@ -7300,4 +7302,105 @@ async function supprimerDepenseCategorie(id) {
     } catch (e) {
         alert('Erreur: ' + e.message);
     }
+}
+
+// ============================================================
+// SIMULATION 2.0 — bascule et famille poulet
+// ============================================================
+//
+// Ces reglages vivent dans finance_config, comme parage_exclusions, mais ils
+// NE PASSENT PAS par PUT /api/finance/config: cette route est gardee par
+// checkAdvancedAccess, qui laisse passer superviseur et superutilisateur.
+// Basculer le moteur de simulation du tenant est une operation d'admin, donc
+// l'ecriture passe par /api/simulation-v2/reglages et son controle strict.
+//
+// admin.html est la seule page deja reservee au role admin (admin.js renvoie
+// sur index.html si !isAdmin): l'ecran et le serveur disent donc la meme chose.
+
+function initSimulationV2Section() {
+    if (!document.getElementById('simulation-v2-section')) return;
+    chargerSimulationV2();
+    document.querySelectorAll('[data-section="simulation-v2"]').forEach(function (el) {
+        el.addEventListener('click', chargerSimulationV2);
+    });
+}
+
+// Vrai une fois la lecture serveur reussie. Sans ce garde, un echec de
+// chargement laisserait les champs vides et un clic sur Enregistrer ecraserait
+// la famille poulet par une liste vide - le meme piege que pxListeChargee.
+let sv2Charge = false;
+
+async function chargerSimulationV2() {
+    const actif = document.getElementById('sv2Actif');
+    const famille = document.getElementById('sv2Famille');
+    const prix = document.getElementById('sv2Prix');
+    const avert = document.getElementById('sv2Avertissements');
+    if (!actif || !famille || !prix) return;
+    try {
+        const res = await fetch('/api/simulation-v2/reglages', { credentials: 'include' });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Erreur');
+        const d = j.data || {};
+        actif.checked = !!d.actif;
+        famille.value = Array.isArray(d.famille_poulet) ? d.famille_poulet.join(', ') : '';
+        prix.value = d.prix_achat_defaut_poulet != null ? d.prix_achat_defaut_poulet : '';
+        sv2Charge = true;
+        if (avert) {
+            const liste = Array.isArray(d.avertissements) ? d.avertissements : [];
+            avert.innerHTML = liste.length
+                ? '<div class="alert alert-warning py-2 mb-0 small">'
+                  + liste.map(escapeHtmlSv2).join('<br>') + '</div>'
+                : '';
+        }
+    } catch (e) {
+        sv2Charge = false;
+        if (avert) {
+            avert.innerHTML = '<div class="alert alert-danger py-2 mb-0 small">'
+                + 'Réglages illisibles : ' + escapeHtmlSv2(e.message)
+                + '. Rien ne sera enregistré tant que la lecture échoue.</div>';
+        }
+    }
+}
+
+async function sauvegarderSimulationV2() {
+    if (!sv2Charge) {
+        showToast("Réglages non chargés : rien n'a été enregistré.", 'warning');
+        return;
+    }
+    const actif = document.getElementById('sv2Actif');
+    const famille = document.getElementById('sv2Famille');
+    const prix = document.getElementById('sv2Prix');
+    const corps = {
+        actif: !!actif.checked,
+        famillePoulet: famille.value
+    };
+    // Le prix n'est envoye que s'il est renseigne: un champ vide veut dire
+    // "ne touche pas", pas "mets zero".
+    const p = parseFloat(prix.value);
+    if (Number.isFinite(p)) corps.prixPouletDefaut = p;
+
+    try {
+        const res = await fetch('/api/simulation-v2/reglages', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(corps)
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Erreur');
+        showToast(
+            'Simulation 2.0 ' + (j.data.actif ? 'activée' : 'désactivée')
+            + ' · famille poulet : ' + (j.data.famille_poulet || []).length + ' produit(s)',
+            'success'
+        );
+        chargerSimulationV2();
+    } catch (e) {
+        showToast('Erreur: ' + e.message, 'danger');
+    }
+}
+
+function escapeHtmlSv2(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

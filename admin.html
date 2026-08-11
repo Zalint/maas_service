@@ -399,6 +399,11 @@
                                 <i class="bi bi-tags me-1"></i>Catégories dépenses
                             </a>
                         </li>
+                        <li class="nav-item" id="simulation-v2-nav">
+                            <a class="nav-link" href="#" data-section="simulation-v2">
+                                <i class="bi bi-sliders me-1"></i>Simulation 2.0
+                            </a>
+                        </li>
                     </ul>
                     <div class="navbar-nav text-end align-items-lg-center flex-lg-row gap-lg-2">
                         <!-- Tenant badge -->
@@ -1313,6 +1318,71 @@
                         <div class="row" id="pxDechetsListe">
                             <div class="col-12 text-center text-muted py-3">Chargement...</div>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="simulation-v2-section" class="admin-section">
+                <h2><i class="bi bi-sliders me-2"></i>Simulation 2.0</h2>
+                <p class="text-muted">
+                    Le second onglet Simulation apparaît à côté de l'actuel, qui n'est pas modifié.
+                    Les deux se comparent sur la même période. <b>Inactif par défaut.</b>
+                </p>
+
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-toggle-on me-2"></i>Activation</h5>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="chargerSimulationV2()"><i class="bi bi-arrow-clockwise"></i> Rafraîchir</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="sv2Actif">
+                            <label class="form-check-label" for="sv2Actif">Activer Simulation 2.0 pour ce point de vente</label>
+                        </div>
+                        <div class="form-text">
+                            Réservé aux administrateurs. Les superviseurs et superutilisateurs ne peuvent
+                            pas modifier ce réglage.
+                        </div>
+                    </div>
+                </div>
+
+                <p class="text-muted">
+                    La <b>famille poulet</b> désigne les produits qui prennent le prix d'achat de la
+                    ligne <b>Poulet</b> du catalogue fournisseur, comme le bœuf et le veau partagent
+                    déjà celui de la carcasse bovine. Sans elle, « Poulet en détail » et
+                    « Poulet en gros » n'ont aucun coût connu : ni marge, ni levier volume, ni prix
+                    d'équilibre.
+                    <br>
+                    <b>Cuisse de poulet</b> n'a rien à y faire : elle porte son propre prix d'achat.
+                    C'est pourquoi c'est une liste explicite et non une règle sur le mot « poulet »,
+                    qui avalerait aussi « Merguez poulet ».
+                    <br>
+                    Ce réglage ne s'applique qu'à Simulation 2.0. Le PL, Cash et Stock et la marge du
+                    Centre de Découpe ne sont pas touchés.
+                </p>
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Famille poulet</h5>
+                        <button class="btn btn-primary btn-sm" onclick="sauvegarderSimulationV2()"><i class="bi bi-save"></i> Enregistrer</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label" for="sv2Famille">Produits de la famille</label>
+                            <input type="text" class="form-control" id="sv2Famille"
+                                   placeholder="Poulet en détail, Poulet en gros">
+                            <div class="form-text">Noms séparés par des virgules, tels qu'ils apparaissent dans les ventes.</div>
+                        </div>
+                        <div class="mb-3" style="max-width:20rem">
+                            <label class="form-label" for="sv2Prix">Prix d'achat par défaut</label>
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="sv2Prix" min="1" max="100000" step="50">
+                                <span class="input-group-text">FCFA</span>
+                            </div>
+                            <div class="form-text">
+                                Utilisé seulement si la ligne « Poulet » du catalogue ne porte aucun prix d'achat.
+                            </div>
+                        </div>
+                        <div id="sv2Avertissements"></div>
                     </div>
                 </div>
             </div>

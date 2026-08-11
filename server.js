@@ -694,6 +694,14 @@ app.use('/api/decoupe', checkAuth, checkDecoupeModule, decoupeForwardRouter);
 const financeRouter = require('./routes/finance');
 app.use('/api/finance', checkAuth, financeRouter);
 
+// Simulation 2.0, derriere un drapeau d'administration inactif par defaut.
+// Prefixe de premier niveau et non /api/finance/...: les gardes par prefixe
+// de routes/finance.js sont poses sur '/simulation' et ne couvriraient pas
+// '/simulation-v2'. Le routeur porte les siens. Deux lignes, donc une
+// suppression d'un seul bloc le jour ou la v2 ne convient pas.
+const simulationV2Router = require('./routes/simulation-v2');
+app.use('/api/simulation-v2', checkAuth, simulationV2Router);
+
 // Helper: invalider les caches derives Finance apres mutation Vente.
 // Les routes /api/ventes (POST, PUT, DELETE, DELETE jour) et
 // /api/import-ventes modifient les ventes, qui sont l'entree principale
@@ -2742,12 +2750,22 @@ app.get('/api/stock/:type', checkAuth, checkReadAccess, async (req, res) => {
         // filesystem est ephemere sur Render, le Postgres ne l'est pas.
         if (fs.existsSync(filePath)) {
             const data = await fsPromises.readFile(filePath, 'utf8');
-            const contenu = data.trim() ? JSON.parse(data) : null;
+            let contenu = null;
+            try {
+                contenu = data.trim() ? JSON.parse(data) : null;
+            } catch (parseError) {
+                // Un fichier ILLISIBLE (tronque par un redeploiement, ecriture
+                // interrompue) doit se comporter comme un fichier vide: le
+                // JSON.parse levait ici, l'erreur remontait au catch exterieur
+                // et l'ecran recevait un 500 alors que la base, elle, avait la
+                // donnee. On tombe sur le repli comme dans les autres cas.
+                console.warn(`⚠️  ${filePath} illisible (${parseError.message}): lecture de la base a la place.`);
+            }
             const vide = !contenu || (typeof contenu === 'object' && Object.keys(contenu).length === 0);
             if (!vide) {
                 return res.json(contenu);
             }
-            console.warn(`⚠️  ${filePath} est vide: lecture de la base a la place.`);
+            if (contenu) console.warn(`⚠️  ${filePath} est vide: lecture de la base a la place.`);
         }
 
         // Fallback BDD: fichier absent ou vide - typiquement apres un
@@ -4492,9 +4510,9 @@ app.delete('/api/ventes/jour/:date', checkAuth, checkWriteAccess, async (req, re
         // remplace par le calcul canonique, qui met a jour la BASE puis
         // regenere le JSON depuis elle. Une passe par DATE suffit: la fonction
         // recalcule tous les produits automatiques de la journee.
+        const { recomputeStockSoirForAuto } = require('./db/utils');
         for (const dateVente of datesConcernees) {
             try {
-                const { recomputeStockSoirForAuto } = require('./db/utils');
                 const result = await recomputeStockSoirForAuto(dateVente);
                 console.log(`📦 Stock soir auto recompute apres suppression du jour (${dateVente}):`, result);
                 await syncStockJsonFromBDD(dateVente, 'soir');
