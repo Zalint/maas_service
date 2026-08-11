@@ -4338,84 +4338,39 @@ app.delete('/api/ventes/:id', checkAuth, checkWriteAccess, async (req, res) => {
             });
         }
 
-        // =====================================================
-        // RECALCUL STOCK SOIR APRÈS SUPPRESSION
-        // Stock Soir = Stock Matin - Ventes restantes
-        // =====================================================
-        try {
-            const { Produit } = require('./db/models');
-            
-            // Chercher si le produit est en mode automatique
-            const produit = await Produit.findOne({
-                where: { 
-                    nom: vente.produit,
-                    mode_stock: 'automatique'
-                }
-            });
-            
-            if (produit) {
-                const dateVente = vente.date;
-                const dateFormatted = standardiserDateFormat(dateVente);
-                const pointVente = vente.pointVente;
-                const produitNom = vente.produit;
-                const stockKey = `${pointVente}-${produitNom}`;
-                
-                // Charger Stock Matin (format PLAT)
-                const stockMatinPath = getPathByDate(STOCK_MATIN_PATH, dateFormatted);
-                let stockMatin = {};
-                if (fs.existsSync(stockMatinPath)) {
-                    stockMatin = JSON.parse(fs.readFileSync(stockMatinPath, 'utf8'));
-                }
-                
-                const stockMatinData = stockMatin[stockKey] || {};
-                const stockMatinQte = parseFloat(stockMatinData.Nombre || stockMatinData.quantite || 0);
-                
-                // Recalculer total des ventes après suppression
-                const ventesRestantes = await Vente.findAll({
-                    where: {
-                        date: vente.date,
-                        pointVente: pointVente,
-                        produit: produitNom,
-                        id: { [Op.ne]: venteId } // Exclure la vente en cours de suppression
-                    }
-                });
-                
-                const totalVentesRestantes = ventesRestantes.reduce((sum, v) => sum + parseFloat(v.nombre || 0), 0);
-                const stockSoirQte = stockMatinQte - totalVentesRestantes;
-                const prixUnit = parseFloat(produit.prix_defaut || vente.prixUnit || 0);
-                
-                // Mettre à jour Stock Soir (format PLAT)
-                const stockSoirPath = getPathByDate(STOCK_SOIR_PATH, dateFormatted);
-                let stockSoir = {};
-                if (fs.existsSync(stockSoirPath)) {
-                    stockSoir = JSON.parse(fs.readFileSync(stockSoirPath, 'utf8'));
-                }
-                
-                if (totalVentesRestantes === 0 && stockMatinQte === 0) {
-                    // Si plus de ventes et stock matin à 0, supprimer l'entrée
-                    delete stockSoir[stockKey];
-                } else {
-                    stockSoir[stockKey] = {
-                        Nombre: stockSoirQte,
-                        PU: prixUnit,
-                        Montant: stockSoirQte * prixUnit,
-                        Produit: produitNom,
-                        "Point de Vente": pointVente,
-                        mode: 'automatique'
-                    };
-                }
-                
-                fs.writeFileSync(stockSoirPath, JSON.stringify(stockSoir, null, 2));
-                console.log(`📦 Stock Soir recalculé: ${stockKey}: ${stockMatinQte} - ${totalVentesRestantes} = ${stockSoirQte}`);
-            }
-        } catch (stockError) {
-            console.error('⚠️ Erreur recalcul stock (non bloquant):', stockError.message);
-        }
-        // =====================================================
+        // La date doit etre lue AVANT la suppression: le recalcul en a besoin.
+        const dateVenteSupprimee = vente.date;
 
         // Supprimer la vente
         await vente.destroy();
         invalidateFinanceCachesOnVenteMutation();
+
+        // =====================================================
+        // RECALCUL STOCK SOIR APRES SUPPRESSION
+        //
+        // Ce bloc recalculait le stock A LA MAIN, dans le fichier JSON
+        // uniquement, avec la formule "matin - ventes" - SANS les transferts.
+        // Trois defauts en un: la table stocks n'etait jamais mise a jour, donc
+        // le JSON et la base divergeaient en silence; la formule etait une
+        // cinquieme definition du stock du soir, fausse des qu'un transfert
+        // existait; et le calcul tournait AVANT la suppression, en excluant la
+        // vente a la main.
+        //
+        // On passe desormais par le calcul canonique, celui qu'utilisent deja
+        // POST /api/ventes, /api/transferts et /api/stock/matin: il ecrit la
+        // BASE (matin + transferts - ventes, sur les seuls produits en mode
+        // automatique), puis regenere le JSON DEPUIS la base. Les deux ne
+        // peuvent plus diverger, et la suppression precede le recalcul, donc
+        // il n'y a plus rien a exclure a la main.
+        // =====================================================
+        try {
+            const { recomputeStockSoirForAuto } = require('./db/utils');
+            const result = await recomputeStockSoirForAuto(dateVenteSupprimee);
+            console.log(`📦 Stock soir auto recompute apres suppression (${dateVenteSupprimee}):`, result);
+            await syncStockJsonFromBDD(dateVenteSupprimee, 'soir');
+        } catch (stockError) {
+            console.error('⚠️ Erreur recalcul stock (non bloquant):', stockError.message);
+        }
 
         console.log(`Vente ID: ${venteId} supprimée avec succès`);
 
@@ -4518,90 +4473,33 @@ app.delete('/api/ventes/jour/:date', checkAuth, checkWriteAccess, async (req, re
             });
         }
         
-        // Récupérer les ventes pour recalculer les stocks soir
-        const ventes = await Vente.findAll({ where: whereConditions });
-        
-        // Grouper les ventes par produit auto pour recalcul
-        const { Produit } = require('./db/models');
-        const produitsARecalculer = new Map(); // key = date-pointVente-produit
-        
-        for (const vente of ventes) {
-            const produit = await Produit.findOne({
-                where: { 
-                    nom: vente.produit,
-                    mode_stock: 'automatique'
-                }
-            });
-            
-            if (produit) {
-                const key = `${vente.date}-${vente.pointVente}-${vente.produit}`;
-                produitsARecalculer.set(key, {
-                    date: vente.date,
-                    pointVente: vente.pointVente,
-                    produit: vente.produit,
-                    produitObj: produit
-                });
-            }
-        }
-        
+        // Les DATES concernees, lues AVANT la suppression. Le filtre accepte
+        // deux graphies de la meme journee: on recalcule celles qui existent
+        // reellement, plutot que de supposer laquelle etait en base.
+        const ventes = await Vente.findAll({
+            where: whereConditions,
+            attributes: ['date'],
+            raw: true
+        });
+        const datesConcernees = [...new Set(ventes.map((v) => v.date))];
+
         // Supprimer toutes les ventes
         const deletedCount = await Vente.destroy({ where: whereConditions });
         if (deletedCount > 0) invalidateFinanceCachesOnVenteMutation();
 
-        // Recalculer Stock Soir pour chaque produit affecté (format PLAT)
-        for (const [key, info] of produitsARecalculer) {
+        // Meme correction que la suppression unitaire: le recalcul maison
+        // ("matin - ventes", sans transferts, ecrit dans le seul JSON) est
+        // remplace par le calcul canonique, qui met a jour la BASE puis
+        // regenere le JSON depuis elle. Une passe par DATE suffit: la fonction
+        // recalcule tous les produits automatiques de la journee.
+        for (const dateVente of datesConcernees) {
             try {
-                const dateFormatted = standardiserDateFormat(info.date);
-                const stockKey = `${info.pointVente}-${info.produit}`;
-                
-                // Charger Stock Matin (format PLAT)
-                const stockMatinPath = getPathByDate(STOCK_MATIN_PATH, dateFormatted);
-                let stockMatin = {};
-                if (fs.existsSync(stockMatinPath)) {
-                    stockMatin = JSON.parse(fs.readFileSync(stockMatinPath, 'utf8'));
-                }
-                
-                const stockMatinData = stockMatin[stockKey] || {};
-                const stockMatinQte = parseFloat(stockMatinData.Nombre || stockMatinData.quantite || 0);
-                
-                // Calculer ventes restantes (après suppression)
-                const ventesRestantes = await Vente.findAll({
-                    where: {
-                        date: info.date,
-                        pointVente: info.pointVente,
-                        produit: info.produit
-                    }
-                });
-                
-                const totalVentesRestantes = ventesRestantes.reduce((sum, v) => sum + parseFloat(v.nombre || 0), 0);
-                const stockSoirQte = stockMatinQte - totalVentesRestantes;
-                const prixUnit = parseFloat(info.produitObj.prix_defaut || 0);
-                
-                // Mettre à jour Stock Soir (format PLAT)
-                const stockSoirPath = getPathByDate(STOCK_SOIR_PATH, dateFormatted);
-                let stockSoir = {};
-                if (fs.existsSync(stockSoirPath)) {
-                    stockSoir = JSON.parse(fs.readFileSync(stockSoirPath, 'utf8'));
-                }
-                
-                if (totalVentesRestantes === 0 && stockMatinQte === 0) {
-                    // Si plus de ventes et stock matin à 0, supprimer l'entrée
-                    delete stockSoir[stockKey];
-                } else {
-                    stockSoir[stockKey] = {
-                        Nombre: stockSoirQte,
-                        PU: prixUnit,
-                        Montant: stockSoirQte * prixUnit,
-                        Produit: info.produit,
-                        "Point de Vente": info.pointVente,
-                        mode: 'automatique'
-                    };
-                }
-                
-                fs.writeFileSync(stockSoirPath, JSON.stringify(stockSoir, null, 2));
-                console.log(`📦 Stock Soir recalculé: ${stockKey}: ${stockSoirQte}`);
+                const { recomputeStockSoirForAuto } = require('./db/utils');
+                const result = await recomputeStockSoirForAuto(dateVente);
+                console.log(`📦 Stock soir auto recompute apres suppression du jour (${dateVente}):`, result);
+                await syncStockJsonFromBDD(dateVente, 'soir');
             } catch (err) {
-                console.error(`Erreur recalcul stock pour ${info.produit}:`, err);
+                console.error(`Erreur recalcul stock pour ${dateVente}:`, err.message);
             }
         }
         
