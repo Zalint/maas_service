@@ -43,7 +43,18 @@ const DRY_RUN = process.argv.includes('--dry-run');
         const data = await computePl(dateDebut, dateFin);
         console.log(`[pl-snapshot] PL ${data.pl} FCFA (ventes ${data.total_ventes}, ${data.periode.nb_jours} jour(s))`);
 
-        if (DRY_RUN) {
+        // MEME refus que POST /api/finance/pl/snapshot: on ne grave pas un PL
+        // dont une source n'a pas repondu. Le cron est le chemin le plus
+        // dangereux pour cette faute, parce que personne ne regarde: un PL
+        // ampute des avances s'installerait en base sans qu'aucun ecran ne le
+        // dise. Mieux vaut un trou dans l'historique, qui se voit et se
+        // rattrape, qu'un chiffre faux qui a l'air definitif.
+        if (data.sources && data.sources.fiable === false) {
+            const raison = (data.sources.avances && data.sources.avances.raison) || 'source indisponible';
+            console.warn(`[pl-snapshot] REFUS de figer le ${dateFin}: ${raison}.`);
+            console.warn('[pl-snapshot] les avances comptent pour 0, le PL serait faux. Rien ecrit.');
+            process.exitCode = 1;
+        } else if (DRY_RUN) {
             console.log('[pl-snapshot] dry-run: rien ecrit');
         } else {
             await PlSnapshot.upsert({

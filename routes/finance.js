@@ -98,6 +98,22 @@ const { checkAdvancedAccess } = require('../middlewares/auth');
 // Normalisation partagee des noms de produits: casse et accents ignores.
 const { normaliserNom: normaliserNomProduit } = require('../lib/parage');
 
+/**
+ * Reglages de Simulation 2.0, lus a chaque appel de GET /simulation.
+ *
+ * Une lecture en echec ne doit JAMAIS ouvrir la v2: on retombe sur le
+ * comportement d'origine, qui est celui d'aujourd'hui et qui ne surprend
+ * personne. Sur un drapeau qui change des chiffres a l'ecran, le doute ferme.
+ */
+async function lireReglagesSimulationV2() {
+    try {
+        return await require('../lib/simulation-v2/reglages').lireReglages();
+    } catch (e) {
+        console.warn('[simulation] reglages v2 illisibles, comportement d\'origine:', e.message);
+        return { actif: false, famillePoulet: [], prixPouletDefaut: 0, avertissements: [] };
+    }
+}
+
 const STOCKS_DATE_AS_ISO_SQL =
     "(substring(date FROM 7 FOR 4) || '-' || " +
     "substring(date FROM 4 FOR 2) || '-' || " +
@@ -141,7 +157,7 @@ const STOCKS_DATE_VALIDE_SQL = "date ~ '^\\d{2}-\\d{2}-\\d{4}$'";
 //   snapshot. Sert a sortir des DEUX bornes un produit dont le stock du soir
 //   est negatif: sa donnee de stock n'est pas fiable, et ses achats sont deja
 //   passes en charge par ailleurs (onglet Depenses).
-async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie, produitsExclus) {
+async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie, produitsExclus, categorieDe) {
     // La date du snapshot vient des lignes elles-memes: toutes celles d'un
     // meme snapshot la partagent, donc une seule requete suffit.
     const lignes = await sequelize.query(
@@ -175,7 +191,7 @@ async function valoriserSnapshotStock(typeStock, dateMax, pourDate, estBoucherie
     const retenues = produitsExclus && produitsExclus.size
         ? lignes.filter((l) => !produitsExclus.has(normaliserNomProduit(l.produit)))
         : lignes;
-    const r = valoriserLignes({ lignes: retenues, prixAchat, estBoucherie });
+    const r = valoriserLignes({ lignes: retenues, prixAchat, estBoucherie, categorieDe });
     return { ...r, date_utilisee: dateUtilisee };
 }
 
@@ -1384,42 +1400,132 @@ router.get('/simulation', async (req, res) => {
         // cette raison. Deux routes qui interrogent la meme table par deux
         // chemins differents finissent par rendre deux chiffres differents.
         const dateList = graphiesDeDatesPourPeriode(dateDebut, dateFin);
+        // Lignes BRUTES, agregees ensuite par lib/volumes-vendus.js. C'etait
+        // auparavant un GROUP BY SQL suivi d'un regroupement JS ecrit ici, en
+        // double de celui de computePl: deux codes qui repondaient a la meme
+        // question, donc deux chiffres qui allaient finir par diverger. Le
+        // GROUP BY economisait un transfert de quelques milliers de lignes,
+        // ce que la periode maximale (366 jours) garde tres modeste.
+        // `date` sert a ponderer le prix d'achat jour par jour (voir plus bas).
+        // Colonne de plus sur la meme requete, aucun aller-retour ajoute.
         const lignes = await sequelize.query(
-            `SELECT produit,
-                    SUM(nombre::numeric)  AS quantite,
-                    SUM(montant::numeric) AS ca,
-                    COUNT(*)::int         AS nb_lignes
-             FROM ventes
-             WHERE date IN (:dateList)
-             GROUP BY produit`,
+            `SELECT produit, nombre, montant, date
+               FROM ventes
+              WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
         );
 
-        // Regroupement par nom normalise: plusieurs graphies d'un meme produit
-        // doivent additionner leurs volumes, pas se concurrencer.
-        const parCle = new Map();
-        for (const l of lignes) {
-            const cle = normaliserNomProduit(l.produit);
-            if (!parCle.has(cle)) parCle.set(cle, { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] });
-            const agg = parCle.get(cle);
-            agg.quantite += Number(l.quantite) || 0;
-            agg.ca += Number(l.ca) || 0;
-            agg.nb_lignes += Number(l.nb_lignes) || 0;
-            if (!agg.graphies.includes(l.produit)) agg.graphies.push(l.produit);
+        // MEME agregation que le PL, par le meme module: les graphies d'un
+        // produit s'additionnent au lieu de se concurrencer, et la regle de
+        // normalisation ne vit qu'a un endroit.
+        const { agregerVolumes, trouverProduit } = require('../lib/volumes-vendus');
+        const volumes = agregerVolumes(lignes);
+
+        // Prix d'ACHAT. Il sert au levier VOLUME, pas au levier prix:
+        // augmenter le prix ne coute rien de plus, mais vendre un kilo de plus
+        // oblige a l'acheter. Seule la MARGE tombe dans le resultat. Sur le
+        // boeuf en juillet, 4 728 F de prix moyen contre 3 835 F d'achat:
+        // rapporter le resultat au prix de vente surestimait le volume
+        // necessaire d'un facteur cinq.
+        //
+        // DEUX REGIMES, selon le drapeau d'administration:
+        //
+        //  - drapeau ferme: comportement d'origine, mot pour mot. Un prix
+        //    unique, resolu a la date de FIN. L'ecran actuel ne change pas.
+        //
+        //  - drapeau ouvert: le prix devient la MOYENNE de la periode ponderee
+        //    par les quantites vendues chaque jour, et la famille poulet
+        //    s'applique. Figer un prix unique etait faux des que le cout bouge
+        //    dans le mois: le boeuf va de 3 735 a 4 435 F sur juillet 2026,
+        //    et la simulation valorisait les 31 journees au prix du dernier
+        //    jour. computePl, lui, resout deja par borne.
+        const reglagesSim = await lireReglagesSimulationV2();
+        const v2 = reglagesSim.actif;
+
+        let resolveurPrix;
+        let prixAchatDe;
+        let origineDe = () => null;
+
+        if (!v2) {
+            const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+            resolveurPrix = await creerResolveurPrixAchat(dateFin);
+            prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
+        } else {
+            const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulation');
+            resolveurPrix = await creerResolveurPrixAchatSimulation({
+                dateMax: dateFin, reglages: reglagesSim
+            });
+
+            // Un resolveur par JOURNEE, memoise: pourDate relit tout
+            // l'historique a chaque appel, et il y a une ligne de vente par
+            // appel sinon.
+            const parJour = new Map();
+            const pour = (iso) => {
+                if (!parJour.has(iso)) parJour.set(iso, resolveurPrix.pourDate(iso));
+                return parJour.get(iso);
+            };
+
+            // Somme(prix du jour x quantite du jour) / Somme(quantite), par
+            // produit. Les journees dont le cout est inconnu sont ECARTEES du
+            // numerateur ET du denominateur: les inclure a zero ferait passer
+            // une donnee manquante pour un achat gratuit.
+            const cumul = new Map();
+            for (const l of lignes) {
+                const iso = parseDateVersISO(l.date);
+                if (!iso) continue;
+                const q = parseFloat(l.nombre) || 0;
+                if (q <= 0) continue;
+                const r = pour(iso);
+                const pa = parseFloat(r.prixAchat(l.produit));
+                if (!Number.isFinite(pa) || pa <= 0) continue;
+                const cle = normaliserNomProduit(l.produit);
+                if (!cumul.has(cle)) cumul.set(cle, { pondere: 0, qte: 0, origines: new Set() });
+                const c = cumul.get(cle);
+                c.pondere += pa * q;
+                c.qte += q;
+                const o = r.origine(l.produit);
+                if (o) c.origines.add(o);
+            }
+
+            const finDePeriode = resolveurPrix.pourDate(dateFin);
+            prixAchatDe = (nom) => {
+                const c = cumul.get(normaliserNomProduit(nom));
+                if (c && c.qte > 0) return c.pondere / c.qte;
+                // AUCUNE journee ponderable. Deux cas distincts tombent ici,
+                // et le repli sur la fin de periode convient aux deux:
+                //  - produit sans vente: rien a ponderer;
+                //  - produit vendu dont aucune journee n'avait de cout connu -
+                //    par exemple un prix d'achat saisi APRES la periode, ou un
+                //    produit entre dans la famille poulet apres coup.
+                // Rendre null dans le second cas priverait l'ecran d'une marge
+                // qu'il peut estimer; le prix de fin de periode est le
+                // meilleur substitut disponible, et prix_achat_origine dit
+                // d'ou il vient.
+                return finDePeriode.prixAchat(nom);
+            };
+            // UNE seule valeur, jamais une composee. La moyenne ponderee peut
+            // melanger des journees resolues differemment - un prix propre
+            // apparu en cours de mois apres des journees en repli de famille -
+            // et rendre "famille_poulet+propre" faisait sortir la sortie de
+            // son contrat documente, que le client aiguille par egalite.
+            //
+            // Quand les origines different, on rend la MOINS sure des trois:
+            // c'est celle qui doit alerter, et c'est aussi la seule lecture
+            // honnete d'un prix qui n'a pas la meme provenance tous les jours.
+            const RANG = { propre: 0, famille_poulet: 1, repli_poulet: 2 };
+            origineDe = (nom) => {
+                const c = cumul.get(normaliserNomProduit(nom));
+                if (!c || !c.origines.size) return finDePeriode.origine(nom);
+                let pire = null;
+                for (const o of c.origines) {
+                    if (pire === null || (RANG[o] ?? 99) > (RANG[pire] ?? 99)) pire = o;
+                }
+                return pire;
+            };
         }
 
-        // Prix d'ACHAT a la fin de la periode. Il sert au levier VOLUME, pas au
-        // levier prix: augmenter le prix ne coute rien de plus, mais vendre un
-        // kilo de plus oblige a l'acheter. Seule la MARGE tombe dans le
-        // resultat. Sur le boeuf en juillet, 4 715 F de prix moyen contre
-        // 3 835 F d'achat: rapporter le resultat au prix de vente surestimait
-        // le volume necessaire d'un facteur cinq.
-        const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
-        const resolveurPrix = await creerResolveurPrixAchat(dateFin);
-        const prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
-
         const produits = PRODUITS_SIMULATION.map((nom) => {
-            const agg = parCle.get(normaliserNomProduit(nom))
+            const agg = trouverProduit(volumes.produits, nom)
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
             const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
             const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
@@ -1439,10 +1545,19 @@ router.get('/simulation', async (req, res) => {
                 // qui explique le chiffre d'affaires de la periode.
                 prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
                 nb_lignes: agg.nb_lignes,
-                graphies: agg.graphies.sort((a, b) => a.localeCompare(b, 'fr')),
+                // Deja triees par agregerVolumes. Ne pas retrier ici: .sort()
+                // trie EN PLACE, donc sur le tableau porte par volumes.produits.
+                graphies: agg.graphies,
                 // Un produit sans vente n'est pas une erreur, mais sa
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
-                sans_vente: agg.quantite === 0
+                sans_vente: agg.quantite === 0,
+                // D'ou vient le cout: 'propre' (catalogue ou historique du
+                // produit lui-meme), 'famille_poulet', 'repli_poulet', ou null
+                // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
+                // un chiffre dont on ne peut pas nommer la source ne se
+                // verifie pas. Null hors Simulation 2.0, ou la notion n'existe
+                // pas.
+                prix_achat_origine: origineDe(nom)
             };
         });
 
@@ -1457,7 +1572,7 @@ router.get('/simulation', async (req, res) => {
         // pourcentages deviendront faux SANS RIEN DIRE. Renvoyer le total
         // permet a l'ecran de s'en apercevoir plutot que d'afficher des parts
         // qui ne somment plus.
-        const totalToutesLignes = lignes.reduce((a, l) => a + (Number(l.ca) || 0), 0);
+        const totalToutesLignes = volumes.total_ca;
 
         res.json({
             success: true,
@@ -1467,7 +1582,31 @@ router.get('/simulation', async (req, res) => {
                 total_ventes_toutes_lignes: round2(totalToutesLignes),
                 produit_equilibre: PRODUIT_EQUILIBRE,
                 // Mesure, cf le commentaire d'en-tete de cette route.
-                coefficient_pl_par_franc_vendu: 1
+                coefficient_pl_par_franc_vendu: 1,
+                // 1 = comportement d'origine, 2 = drapeau d'administration
+                // ouvert. Le client aiguille dessus plutot que d'interroger le
+                // drapeau separement: la version voyage DANS la reponse qui
+                // porte les chiffres, elle ne peut donc pas etre en desaccord
+                // avec eux.
+                version: v2 ? 2 : 1,
+                prix_achat: {
+                    // 'periode' dit que le cout est une moyenne ponderee par
+                    // les quantites vendues; 'fin_de_periode' qu'il est fige
+                    // au dernier jour.
+                    mode: v2 ? 'periode' : 'fin_de_periode',
+                    // La composition de la famille est un REGLAGE, pas un
+                    // resultat: elle ne sort que pour les admins, comme le
+                    // decident deja GET /api/simulation-v2/reglages et
+                    // GET /api/finance/config. Cette route etant ouverte aux
+                    // superviseurs, la laisser passer ici annulait les deux
+                    // autres restrictions.
+                    //
+                    // prix_achat_origine reste rendu a tous: il dit d'ou vient
+                    // un cout affiche, ce qui est necessaire pour le lire, et
+                    // ne divulgue pas la liste.
+                    famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
+                    avertissements: resolveurPrix.avertissements || []
+                }
             }
         });
     } catch (error) {
@@ -1578,13 +1717,26 @@ async function computePl(dateDebut, dateFin) {
             // liste d'attributs explicite ne remonte QUE ce qu'elle nomme, sans
             // erreur: sans lui, estBoucherie recevait undefined et classait
             // 100% du chiffre d'affaires hors boucherie.
-            attributes: ['montant', 'produit']
+            //
+            // 'nombre' sert aux VOLUMES vendus (agregerVolumes ci-dessous).
+            // C'est une colonne de plus sur la MEME requete: aucun aller-retour
+            // supplementaire, alors que faire calculer les volumes ailleurs en
+            // aurait coute un, sur les memes lignes, avec le risque de deux
+            // filtres de dates qui divergent.
+            attributes: ['montant', 'produit', 'nombre']
         });
         // totalVentes = somme des Vente.montant REELLES uniquement.
         // Les commandes envoyees au CDC sont prises en compte ailleurs dans
         // la formule via "+ Marge CDC" (creances.ce_qu_il_me_doit), pas
         // ici — sinon on compterait deux fois la contribution CDC.
         const totalVentes = ventes.reduce((s, v) => s + (parseFloat(v.montant) || 0), 0);
+
+        // Volumes vendus par produit, sur les MEMES lignes que totalVentes.
+        // Ils entrent dans le resultat du PL, donc dans pl_snapshots.payload:
+        // une simulation rejouee sur un PL fige lira les volumes de ce jour-la
+        // plutot que ceux d'aujourd'hui.
+        const { agregerVolumes } = require('../lib/volumes-vendus');
+        const volumesVendus = agregerVolumes(ventes);
 
         // 2. Commission MaaS + Marge CDC via computeCreances
         const { computeCreances } = require('./finance-creances');
@@ -1601,9 +1753,62 @@ async function computePl(dateDebut, dateFin) {
         //    On somme donc les operations 'avance' filtrees sur la periode,
         //    exactement comme le fait l'UI pour son tableau et ses tuiles.
         let totalAvances = 0;
+        // Etat de la SOURCE, distinct du montant. Un zero peut vouloir dire
+        // "aucune avance sur la periode" ou "on n'a pas pu demander": ces deux
+        // reponses ne se valent pas, et rien ne les distinguait.
+        let avancesEtat = 'ok';
+        let avancesRaison = null;
         try {
-            const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+            const { fetchCreanceCdb, aDesIdentifiants } = require('../lib/depenses-creance-client');
+            // On regarde les IDENTIFIANTS, pas la configuration complete.
+            // estConfigure() exige en plus un libelle lisible, et confondre les
+            // deux laissait passer un cas faux: identifiants presents mais
+            // brand-config.json sans libelle, fetchCreanceCdb rend null, les
+            // avances valent 0 - et le PL se declarait 'non_configure' donc
+            // FIABLE, puis se figeait ampute. Ce deploiement utilise bien
+            // MataBanq: son silence est une panne, pas un choix.
+            const identifiants = aDesIdentifiants();
             const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
+            // L'ETAT SE DEDUIT DE LA VALEUR DE RETOUR, PAS DU catch.
+            //
+            // fetchCreanceCdb ne leve JAMAIS sur les pannes qu'on veut
+            // detecter: lib/depenses-creance-client.js rend null sur quatre
+            // chemins distincts - variables d'environnement absentes, libelle
+            // introuvable, reponse HTTP en erreur, panne reseau - et le
+            // documente comme un "echec gracieux". Le catch ci-dessous
+            // n'attrapait donc rien, totalAvances restait a 0, et RIEN dans la
+            // reponse ne le signalait: le snapshot pouvait graver un PL ampute
+            // de tout le montant des avances. Mesure sur le 1er au 10 aout
+            // 2026: 1 825 273 F d'avances, soit largement de quoi faire passer
+            // un resultat negatif pour un resultat positif.
+            // TROIS etats, et non deux. La distinction est ce qui manquait:
+            //
+            //  - 'non_configure': ce deploiement n'utilise pas MataBanq. Mode
+            //    explicitement supporte (.env.example). Les avances valent
+            //    legitimement zero, le PL est COMPLET, le figeage est permis.
+            //    Confondre ce cas avec une panne rendait le figeage impossible
+            //    a jamais sur ces tenants: recette, nouveau point de vente,
+            //    poste de developpement.
+            //
+            //  - 'indisponible': la source est configuree mais muette. Il
+            //    manque un poste, le PL est faux, on refuse de le graver.
+            //
+            //  - 'ok': lue.
+            if (!identifiants) {
+                avancesEtat = 'non_configure';
+                avancesRaison = 'MataBanq n\'est pas configuré sur ce déploiement';
+            } else if (!cdb) {
+                avancesEtat = 'indisponible';
+                avancesRaison = 'MataBanq configuré mais injoignable';
+            } else if (!Array.isArray(cdb.details)) {
+                // `details` ABSENT est une anomalie; `details` vide ne l'est
+                // pas. Une reponse saine sans client rapproche pour ce label
+                // rend un tableau vide, et l'ecran la traite deja comme
+                // normale (js/finance.js). L'exiger non vide bloquait le
+                // figeage sur une reponse pourtant valide.
+                avancesEtat = 'indisponible';
+                avancesRaison = 'réponse MataBanq sans bloc de détails';
+            }
             const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
                 && Array.isArray(cdb.details[0].operations))
                 ? cdb.details[0].operations : [];
@@ -1615,6 +1820,19 @@ async function computePl(dateDebut, dateFin) {
                 totalAvances += parseFloat(op.montant) || 0;
             }
         } catch (e) {
+            // Le catch reste un filet: il ne peut pas servir de signal, mais
+            // une exception inattendue doit tout de meme fermer la source.
+            //
+            // SEULEMENT si l'etat vaut encore 'ok'. Ecraser inconditionnellement
+            // aurait pu requalifier un 'non_configure' en 'indisponible' et
+            // rebloquer le figeage sur un tenant qui n'a jamais eu d'avances a
+            // lire - le defaut meme que cette distinction corrige. Le chemin
+            // n'est pas atteignable aujourd'hui; il ne tiendrait qu'a la
+            // brievete de ce bloc try.
+            if (avancesEtat === 'ok') {
+                avancesEtat = 'indisponible';
+                avancesRaison = `erreur inattendue (${e.message})`;
+            }
             console.warn('[PL] fetch CDB avances echoue:', e.message);
         }
 
@@ -1731,8 +1949,8 @@ async function computePl(dateDebut, dateFin) {
         // le negatif apparait.
         const produitsNonFiables = await produitsAStockSoirNegatif(dateFin);
         const [stockMatinVal, stockSoirVal] = await Promise.all([
-            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate, estBoucherie, produitsNonFiables),
-            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate, estBoucherie, produitsNonFiables)
+            valoriserSnapshotStock('matin', dateDebut, resolveurPrix.pourDate, estBoucherie, produitsNonFiables, ctxFamille.categorieDe),
+            valoriserSnapshotStock('soir', dateFin, resolveurPrix.pourDate, estBoucherie, produitsNonFiables, ctxFamille.categorieDe)
         ]);
 
         const stockMatinDebut = stockMatinVal.valeur;
@@ -1771,6 +1989,19 @@ async function computePl(dateDebut, dateFin) {
         // d'epicerie qu'on ne pare pas - et comme le stock des produits
         // automatiques vaut leurs ventes, il en rognait 5% sans raison.
         const variationBoucherie = stockSoirVal.valeur_boucherie - stockMatinVal.valeur_boucherie;
+        // Ventilation de la variation boucherie par espece. Le PL applique un
+        // coefficient de parage UNIQUE, alors que lib/parage.js calcule deja
+        // deux ratios separes, bovin et ovin. Exposer le partage ne change
+        // aucun montant aujourd'hui: il rend possible de donner un taux par
+        // espece sans avoir a deviner leur poids respectif.
+        //
+        // Ce que la mesure montre et qu'un total masquait: sur juillet 2026 le
+        // bovin fait +13 480 F quand l'ovin fait -6 200 F. Le signe differe,
+        // donc augmenter le taux de parage agneau AMELIORE le resultat.
+        const variationBovin = stockSoirVal.valeur_bovin - stockMatinVal.valeur_bovin;
+        const variationOvin = stockSoirVal.valeur_ovin - stockMatinVal.valeur_ovin;
+        const variationAutreBoucherie = stockSoirVal.valeur_autre_boucherie
+            - stockMatinVal.valeur_autre_boucherie;
         const variationHorsBoucherie = stockSoirVal.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
         const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
@@ -1787,6 +2018,31 @@ async function computePl(dateDebut, dateFin) {
         return {
                 periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
                 total_ventes: round2(totalVentes),
+                // Volumes vendus par produit, issus des MEMES lignes que
+                // total_ventes. Presents ici pour etre figes avec le PL: sans
+                // eux, une simulation rejouee sur un PL fige melangerait un
+                // resultat fige et des volumes vivants.
+                //
+                // total_ca et total_ventes portent la MEME somme, sur les memes
+                // lignes - mais total_ventes est arrondi au centime et
+                // total_ca ne l'est pas, l'arrondi appartenant a la sortie
+                // depuis qu'il faussait le prix moyen. Un controle qui
+                // confronte les deux doit donc se donner une tolerance, comme
+                // celui des postes: au-dela du centime, l'ecart est un signal
+                // de defaut; en deca, c'est l'arrondi.
+                volumes: volumesVendus,
+                // ETAT DES SOURCES, a cote des montants et jamais confondu
+                // avec eux. `fiable` est faux des qu'un poste repose sur une
+                // source muette: c'est ce que POST /pl/snapshot regarde pour
+                // refuser de graver un PL ampute.
+                sources: {
+                    avances: { etat: avancesEtat, raison: avancesRaison },
+                    // 'non_configure' est FIABLE: le poste vaut zero parce
+                    // qu'il n'existe pas sur ce deploiement, pas parce qu'on
+                    // n'a pas pu le lire. Seule une source configuree et
+                    // muette rend le PL incomplet.
+                    fiable: avancesEtat !== 'indisponible'
+                },
                 // Part non-boucherie du chiffre d'affaires, pour information.
                 // Un produit sans famille connue compte comme hors boucherie:
                 // mieux vaut le signaler que le ranger d'office dans la viande.
@@ -1839,6 +2095,20 @@ async function computePl(dateDebut, dateFin) {
                     // pouvoir le dire plutot que laisser croire a un 5% global.
                     variation_boucherie: round2(variationBoucherie),
                     variation_hors_boucherie: round2(variationHorsBoucherie),
+                    // variation_bovin + variation_ovin + variation_autre_boucherie
+                    // == variation_boucherie AVANT arrondi. Les quatre champs
+                    // etant arrondis SEPAREMENT a deux decimales, leur somme
+                    // peut differer du total de quelques centimes: c'est un
+                    // artefact d'affichage, pas un ecart de calcul, et un
+                    // controle qui exigerait l'egalite stricte sur ces valeurs
+                    // signalerait a tort.
+                    //
+                    // 'autre' recueille la volaille, le caprin et tout produit
+                    // dont l'espece est inconnue: le ranger d'office dans une
+                    // espece fausserait le taux qu'on lui appliquera.
+                    variation_bovin: round2(variationBovin),
+                    variation_ovin: round2(variationOvin),
+                    variation_autre_boucherie: round2(variationAutreBoucherie),
                     // Stocks negatifs ecartes de la somme (produits a stock
                     // calcule dont les entrees ne sont pas saisies).
                     negatifs_ignores: round2(
@@ -1884,13 +2154,140 @@ router.get('/pl', async (req, res) => {
     }
 });
 
-// Fige le PL du jour: calcul FRAIS (pas le memo) sur la periode par defaut
-// (1er du mois -> aujourd'hui), une ligne par date, la derniere ecrase.
-// Le cron du soir ecrit la meme chose avec source='cron'.
+// Fige le PL: calcul FRAIS (pas le memo), une ligne par date, la derniere
+// ecrase. Le cron du soir ecrit la meme chose avec source='cron'.
+//
+// Body optionnel { date } pour RATTRAPER une journee passee. Sans lui, la
+// periode par defaut (1er du mois -> aujourd'hui), comportement d'origine.
+//
+// Ce rattrapage est le pendant obligatoire du refus ci-dessous: sans lui, une
+// nuit ou la source ne repond pas laissait un trou DEFINITIF, puisque
+// periodePlParDefaut() construit sa date a partir de l'instant present et que
+// la date est cle primaire. Poser une garde sans fournir son remede, c'est
+// echanger un chiffre faux contre une donnee manquante et irrecuperable.
+/**
+ * Gardes du figeage, isolees de HTTP pour etre testables.
+ *
+ * Sans date: comportement d'origine, la periode par defaut, source 'manuel'.
+ * Avec date: rattrapage d'une journee passee, sous trois conditions.
+ *
+ * @param {Object} args
+ * @param {Object} args.body        corps de la requete
+ * @param {Object} args.defaut      { dateDebut, dateFin } de periodePlParDefaut()
+ * @param {string} args.role        role de la session, en minuscules
+ * @param {Object|null} args.existant ligne pl_snapshots deja presente a cette date
+ * @returns {{dateDebut, dateFin, source, remplace}}
+ * @throws {Error} avec statusHttp et code
+ */
+function resoudreCibleSnapshot({ body, defaut, role, existant }) {
+    const corps = body || {};
+    const brut = corps.date;
+    if (brut === undefined || brut === null || String(brut).trim() === '') {
+        return {
+            dateDebut: defaut.dateDebut, dateFin: defaut.dateFin,
+            source: 'manuel', remplace: null
+        };
+    }
+
+    const refus = (message, statusHttp, code) => {
+        const err = new Error(message);
+        err.statusHttp = statusHttp;
+        if (code) err.code = code;
+        return err;
+    };
+
+    const iso = parseDateVersISO(String(brut));
+    if (!iso) throw refus('date invalide (attendu YYYY-MM-DD ou DD-MM-YYYY)', 400, 'date_invalide');
+
+    // Une date FUTURE figerait une periode vide en se faisant passer pour un
+    // resultat. computePl ne borne que la LONGUEUR de la periode, pas sa
+    // position.
+    if (iso > defaut.dateFin) {
+        throw refus(`date future refusée : ${iso} est après aujourd'hui`, 400, 'date_future');
+    }
+
+    // ADMIN STRICT sur cette branche seulement. Le chemin par defaut fige la
+    // journee COURANTE, et un superviseur a toujours pu le faire. Rattraper
+    // une date PASSEE est autre chose: c'est ecrire dans l'historique.
+    // checkPlAccess, qui garde ce prefixe, laisse passer admin ET superviseur,
+    // trop large pour ce geste-la.
+    if (role !== 'admin') {
+        throw refus('Le rattrapage d\'une date passée est réservé aux administrateurs', 403, 'admin_requis');
+    }
+
+    // UN PL FIGE NE S'ECRASE PAS PAR ACCIDENT. La cle primaire est la date et
+    // l'ecriture est un upsert: sans cette garde, rattraper une date DEJA
+    // figee remplacait silencieusement une valeur officielle par un recalcul
+    // qui peut differer. Mesure sur le 1er au 10 aout 2026: le fige dit
+    // -65 514,94 et le recalcul -37 442,44, les donnees de stock ayant bouge
+    // depuis. La valeur d'origine, peut-etre deja lue et exportee,
+    // disparaissait sans trace. Le remplacement reste possible, mais il doit
+    // etre DEMANDE.
+    if (existant && corps.remplacer !== true) {
+        throw refus(
+            `Le PL du ${iso} est déjà figé (${existant.pl} FCFA, source ${existant.source}). `
+            + 'Renvoyez remplacer: true pour l\'écraser.',
+            409, 'deja_fige'
+        );
+    }
+
+    return {
+        // Meme convention que tout l'historique: un PL fige est un cumul du
+        // 1er du mois a la date figee. Rattraper avec une autre borne rendrait
+        // la ligne incomparable aux autres.
+        dateDebut: iso.slice(0, 8) + '01',
+        dateFin: iso,
+        source: 'rattrapage',
+        // La valeur remplacee part dans la trace: c'est la seule facon de
+        // savoir plus tard ce qui a ete ecrase, et par qui.
+        remplace: existant ? { pl: existant.pl, source: existant.source } : null
+    };
+}
+
 router.post('/pl/snapshot', async (req, res) => {
     try {
-        const { dateDebut, dateFin } = periodePlParDefaut();
+        const defaut = periodePlParDefaut();
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        // La ligne existante n'est lue QUE si une date est demandee: le chemin
+        // par defaut ecrase la journee courante a dessein, et le cron comme le
+        // bouton "Figer le PL du jour" doivent pouvoir refiger apres une
+        // saisie tardive.
+        const brut = req.body && req.body.date;
+        const viseUneDate = brut !== undefined && brut !== null && String(brut).trim() !== '';
+        const isoDemande = viseUneDate ? parseDateVersISO(String(brut)) : null;
+        const existant = isoDemande
+            ? await PlSnapshot.findByPk(isoDemande, { raw: true })
+            : null;
+
+        const { dateDebut, dateFin, source, remplace } =
+            resoudreCibleSnapshot({ body: req.body, defaut, role, existant });
+
         const data = await computePl(dateDebut, dateFin);
+
+        // REFUS DE FIGER UN PL AMPUTE.
+        //
+        // Un PL fige est destine a etre relu des mois plus tard, compare et
+        // exporte. Le graver alors qu'une source n'a pas repondu produit un
+        // chiffre faux que plus rien ne signale ensuite: la valeur est en
+        // base, elle a l'air definitive.
+        //
+        // Le cas est mesure et pas theorique: sur le 1er au 10 aout 2026 les
+        // avances valent 1 825 273 F. Les compter pour zero fait passer un
+        // resultat de -65 515 F a +1 759 758 F.
+        //
+        // 409 et non 500: la demande est comprise, l'etat du systeme ne permet
+        // pas d'y repondre maintenant. Le figeage redeviendra possible des que
+        // la source repond, sans rien changer.
+        if (data.sources && data.sources.fiable === false) {
+            const raison = (data.sources.avances && data.sources.avances.raison) || 'source indisponible';
+            const err = new Error(
+                `PL non figé : ${raison}. Les avances comptent pour 0, le résultat serait faux.`
+            );
+            err.statusHttp = 409;
+            err.code = 'source_indisponible';
+            throw err;
+        }
+
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({
             date: dateFin,
@@ -1898,13 +2295,13 @@ router.post('/pl/snapshot', async (req, res) => {
             periode_fin: dateFin,
             pl: data.pl,
             total_ventes: data.total_ventes,
-            source: 'manuel',
+            source,
             created_by: username,
             payload: data,
             updated_at: new Date()
         });
-        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source: 'manuel' });
-        res.json({ success: true, data: { date: dateFin, pl: data.pl } });
+        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source, remplace });
+        res.json({ success: true, data: { date: dateFin, pl: data.pl, source, remplace } });
     } catch (e) {
         if (!e.statusHttp) console.error('POST /api/finance/pl/snapshot:', e);
         res.status(e.statusHttp || 500).json({ success: false, error: e.message });
@@ -2074,6 +2471,8 @@ router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // comme invalidateFinanceDerivedCaches ci-dessus.
 router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
+// Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
+router.resoudreCibleSnapshot = resoudreCibleSnapshot;
 
 router.get('/cash-stock', async (req, res) => {
     try {
@@ -2282,11 +2681,35 @@ router.get('/cash-stock', async (req, res) => {
 // ?mois=YYYY-MM : stock_pertes_decoupe_pct est rendu pour ce mois (saisie du
 // mois, report du dernier mois saisi, ou valeur d'ancrage). Sans le
 // parametre, valeurs courantes - comportement d'origine.
+/**
+ * finance_config, PRIVEE DES CLES DE SIMULATION 2.0.
+ *
+ * Ces routes rendent toute la table sans filtre et sont gardees par
+ * checkAdvancedAccess, qui laisse passer superviseur et superutilisateur. Les
+ * cles v2 y fuitaient donc a des roles auxquels /api/simulation-v2/reglages
+ * refuse expressement de les montrer: deux routes qui disent le contraire
+ * l'une de l'autre sur les memes donnees. Leur seule porte de lecture est le
+ * routeur v2.
+ *
+ * Partage par le GET et par l'echo du PUT: filtrer d'un cote seulement ne
+ * servait a rien, il suffisait d'ecrire une cle quelconque pour recevoir les
+ * autres en retour.
+ */
+async function lireConfigPublique() {
+    const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
+    const reserveesV2 = new Set(Object.values(CLES_V2));
+    const rows = await FinanceConfig.findAll();
+    const config = {};
+    for (const r of rows) {
+        if (reserveesV2.has(r.key)) continue;
+        config[r.key] = r.value;
+    }
+    return config;
+}
+
 router.get('/config', async (req, res) => {
     try {
-        const rows = await FinanceConfig.findAll();
-        const config = {};
-        for (const r of rows) config[r.key] = r.value;
+        const config = await lireConfigPublique();
 
         const mois = req.query.mois;
         if (mois) {
@@ -2375,10 +2798,11 @@ router.put('/config', async (req, res) => {
         // dans cash-stock) doivent etre recomputed. Invalider tous les caches
         // finance-derives pour rester safe.
         invalidateFinanceDerivedCaches();
-        const rows = await FinanceConfig.findAll();
-        const config = {};
-        for (const r of rows) config[r.key] = r.value;
-        res.json({ success: true, data: config });
+        // MEME filtre qu'au GET. Sans lui, la reponse du PUT rendait les cles
+        // de Simulation 2.0 a un superviseur, ce qui annulait le filtre pose
+        // sur la lecture: il suffisait d'ecrire n'importe quelle autre cle
+        // pour les recevoir en echo.
+        res.json({ success: true, data: await lireConfigPublique() });
     } catch (e) {
         console.error('PUT /api/finance/config:', e);
         res.status(500).json({ success: false, error: e.message });

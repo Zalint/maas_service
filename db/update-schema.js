@@ -1306,6 +1306,66 @@ async function updateSchema() {
             console.log(`Colonne ventes.gros_client_id verifiee (${maj.length} vente(s) rattachee(s))`);
         }
 
+        // ventes.date: AUCUN index n'existait sur cette colonne, alors que
+        // toutes les requetes de Finance filtrent dessus - le PL, la
+        // simulation, les creances - avec un IN de plusieurs CENTAINES de
+        // litteraux (deux graphies par jour, jusqu'a 366 jours), sur une
+        // colonne TEXTE. Chaque rendu balayait donc la table entiere.
+        //
+        // Bloc SEPARE de celui de gros_client_id juste au-dessus: celui-la
+        // exige aussi la table gros_clients, et un tenant qui ne l'a pas
+        // n'aurait jamais recu cet index.
+        //
+        // Le compose (date, point_vente) sert les ventilations par point de
+        // vente, qui filtrent d'abord sur la periode.
+        // UN SEUL index, sur (date) seule. J'avais d'abord ajoute un compose
+        // (date, point_vente) "pour les ventilations par point de vente", puis
+        // envisage de supprimer le simple comme redondant. Les deux idees sont
+        // fausses, et le planificateur les refute:
+        //
+        //   aucun index                    Seq Scan            cout 79,14
+        //   compose (date, point_vente)    Bitmap Heap Scan    cout 71,34
+        //   simple (date)                  Index Scan          cout 43,53
+        //   les deux                       Index Scan          cout 43,53
+        //
+        // Le compose n'apporte presque rien a la requete qui compte - il est
+        // plus large, donc moins de tuples par page - et il n'apporte RIEN de
+        // plus quand le simple existe. Il aurait coute une ecriture d'index a
+        // chaque vente pour un gain nul. On ne l'ajoutera que le jour ou une
+        // requete filtrera reellement sur les deux colonnes.
+        //
+        // lock_timeout: CREATE INDEX sans CONCURRENTLY prend un SHARE lock qui
+        // bloque les ECRITURES sur ventes le temps de la construction. Ce bloc
+        // tourne au demarrage, et une autre instance peut servir le POS
+        // pendant ce temps. Plutot que de bloquer indefiniment, on abandonne
+        // au bout de 5 s: IF NOT EXISTS fait que le boot suivant reessaiera.
+        // CONCURRENTLY n'est pas utilisable ici: il refuse de s'executer dans
+        // une transaction et laisse un index invalide en cas d'echec.
+        // Le timeout et la creation DOIVENT partager la meme connexion.
+        // lock_timeout est un reglage de SESSION, et sequelize prend une
+        // connexion du pool (max 5) par requete: deux sequelize.query
+        // successifs pouvaient tomber sur deux sessions differentes, le
+        // CREATE INDEX s'executant alors avec lock_timeout illimite - donc
+        // exactement le blocage que ce garde-fou est cense empecher.
+        //
+        // Une transaction epingle la connexion, et SET LOCAL limite la portee
+        // du reglage a cette transaction: rien a remettre a DEFAULT ensuite,
+        // meme en cas d'echec.
+        if (await checkTableExists('ventes')) {
+            try {
+                await sequelize.transaction(async (t) => {
+                    await sequelize.query(`SET LOCAL lock_timeout = '5s'`, { transaction: t });
+                    await sequelize.query(
+                        `CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)`,
+                        { transaction: t }
+                    );
+                });
+                console.log('Index idx_ventes_date verifie');
+            } catch (e) {
+                console.warn(`Index idx_ventes_date non cree (${e.message}) - nouvelle tentative au prochain demarrage`);
+            }
+        }
+
         // Categories de depenses (ADMIN > Categories depenses). Remplace la
         // liste figee en dur dans le <select> de l'onglet Depenses. Seed des
         // 8 categories historiques UNIQUEMENT si la table est vide: les

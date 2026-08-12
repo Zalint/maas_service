@@ -3107,7 +3107,18 @@
             ? `du ${sp.debut.slice(8)} au ${sp.fin.slice(8)}/${sp.fin.slice(5, 7)}`
             : 'du mois en cours';
 
-        const stockSnapshotInfo = stock.soir_date_utilisee && stock.soir_date_utilisee !== d.date
+        // Comparaison sur une base COMMUNE: soir_date_utilisee vient de la
+        // colonne stocks.date, donc en JJ-MM-AAAA, tandis que d.date est en
+        // ISO. La comparaison directe etait donc TOUJOURS vraie et
+        // l'avertissement s'affichait en permanence, y compris quand le stock
+        // etait bien celui du jour demande - une alerte qui ne s'eteint jamais
+        // ne dit plus rien.
+        const isoDepuisJjmm = (brut) => {
+            const m = String(brut || '').match(/^(\d{2})-(\d{2})-(\d{4})$/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : String(brut || '');
+        };
+        const soirDateIso = isoDepuisJjmm(stock.soir_date_utilisee);
+        const stockSnapshotInfo = stock.soir_date_utilisee && soirDateIso !== d.date
             ? `<small class="text-warning"><i class="bi bi-exclamation-triangle"></i> Snapshot du ${esc(stock.soir_date_utilisee)} utilisé (pas de stock soir saisi le ${esc(d.date)})</small>`
             : '';
 
