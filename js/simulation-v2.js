@@ -866,8 +866,32 @@
             + 'donc aucun parage à lui opposer. Classés par marge décroissante.'
             + '</div>';
 
+        // Ce qui EMPECHE les autres produits d'entrer. Un panneau vide se lit
+        // comme une panne; la meme liste, motivee, se lit comme une liste de
+        // choses a faire — et c'est le cas le plus frequent en production.
+        var ecartes = (etat.sim && etat.sim.produits_ecartes) || [];
+        var motifs = {
+            sans_prix_achat: 'prix d\'achat absent du catalogue fournisseur',
+            sans_stock: 'aucune ligne de stock à ce nom',
+            sans_prix_vente: 'aucun prix de vente constaté',
+            marge_nulle: 'marge nulle ou négative'
+        };
+        var parMotif = {};
+        ecartes.forEach(function (e) {
+            (parMotif[e.motif] = parMotif[e.motif] || []).push(e.nom);
+        });
+        var bloc = Object.keys(parMotif).map(function (m) {
+            return '<li><strong>' + esc(motifs[m] || m) + '</strong> : '
+                + parMotif[m].slice(0, 6).map(esc).join(', ')
+                + (parMotif[m].length > 6 ? ' (+' + (parMotif[m].length - 6) + ')' : '') + '</li>';
+        }).join('');
+
         if (!lignes.length) {
-            return h + '<div class="small text-muted">Aucun produit éligible sur cette période.</div>'
+            return h + '<div class="small text-muted mb-1">'
+                + 'Aucun produit éligible sur cette période.'
+                + (bloc ? ' Ceux-ci se vendent mais ne peuvent pas entrer :' : '')
+                + '</div>'
+                + (bloc ? '<ul class="small text-muted mb-0">' + bloc + '</ul>' : '')
                 + '</div></details>';
         }
 
@@ -890,6 +914,10 @@
             + '<button type="button" class="btn btn-sm btn-primary" id="sim2-suivi-save" style="color:#fff">'
             + '<i class="bi bi-save"></i> Enregistrer la sélection</button>'
             + ' <span id="sim2-suivi-msg" class="small ms-2"></span>'
+            + (bloc
+                ? '<div class="small text-muted mt-2">Ces produits se vendent aussi mais ne '
+                  + 'peuvent pas entrer :<ul class="mb-0">' + bloc + '</ul></div>'
+                : '')
             + '</div></details>';
         return h;
     }
@@ -1092,9 +1120,20 @@
                 + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
                 + '<div class="small text-muted mb-1">À volume inchangé — monter la marge</div>'
                 + '<div class="h5 mb-1">' + esc(fmt(s0.margeRequise)) + ' F/u</div>'
-                + '<div class="small text-muted">soit <strong>+' + esc(fmt(s0.hausseMarge))
-                + ' F par unité</strong> sur ' + esc(fmt(s0.volumeRestant)) + ' u → '
-                + esc(fmt(s0.montantMarge)) + ' F de marge en plus</div>'
+                // La DERIVATION, pas seulement le resultat: sans elle,
+                // « 1 714 F/u » tombe du ciel.
+                + '<div class="small text-muted">'
+                + esc(fmt(s0.marge)) + ' F/u aujourd\'hui <strong>+ '
+                + esc(fmt(s0.hausseMarge)) + ' F</strong> (' + esc(fmt(eq.manque))
+                + ' F ÷ ' + esc(fmt(s0.volumeRestant)) + ' u attendues)'
+                + (s0.prixRequis !== null
+                    ? '<br>soit un prix de vente porté de <strong>' + esc(fmt(s0.prixMoyen))
+                      + '</strong> à <strong>' + esc(fmt(s0.prixRequis)) + ' F/u</strong>'
+                      + (s0.prixMoyen > 0
+                          ? ' (+' + (s0.hausseMarge / s0.prixMoyen * 100).toFixed(0) + ' %)'
+                          : '')
+                    : '')
+                + '</div>'
                 + '</div></div></div>'
                 + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
                 + '<div class="small text-muted mb-1">À marge inchangée — vendre plus</div>'

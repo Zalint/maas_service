@@ -1885,6 +1885,7 @@ router.get('/simulation', async (req, res) => {
         // qui pousse a completer le catalogue.
         let produitsVendus = null;
         let candidatsV2 = null;
+        let ecartesV2 = null;
         if (v2) {
             produitsVendus = volumes.produits
                 .filter((a) => a.quantite > 0)
@@ -1952,6 +1953,27 @@ router.get('/simulation', async (req, res) => {
                 .filter((p) => p.marge_unitaire > 0)
                 .sort((a, b) => b.marge_unitaire - a.marge_unitaire)
                 .slice(0, 20);
+
+            // POURQUOI un produit vendu n'est-il pas proposable.
+            //
+            // Sans cela, un tenant dont le catalogue est incomplet voit un
+            // panneau vide et conclut que la fonction ne marche pas. Mesure
+            // sur la production: chez O.Foire et Keur Massar, AUCUN candidat -
+            // et la cause est la meme partout, un prix d'achat absent. C'est
+            // une liste de choses a faire, pas une panne.
+            ecartesV2 = produitsVendus
+                .filter((p) => !dejaSuivi.has(normaliserNomProduit(p.nom)))
+                .filter((p) => !candidatsV2.some((c) => c.nom === p.nom))
+                .map((p) => {
+                    let motif = null;
+                    if (!clesStock.has(normaliserNomProduit(p.nom))) motif = 'sans_stock';
+                    else if (p.prix_achat === null) motif = 'sans_prix_achat';
+                    else if (p.prix_moyen === null) motif = 'sans_prix_vente';
+                    else motif = 'marge_nulle';
+                    return { nom: p.nom, ca: p.ca, motif };
+                })
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 20);
         }
 
         // Somme de TOUTES les lignes de vente de la periode, tous produits
@@ -1976,6 +1998,8 @@ router.get('/simulation', async (req, res) => {
                 produits_vendus: produitsVendus,
                 // Produits proposes a l'ajout, par marge decroissante.
                 produits_candidats: candidatsV2,
+                // Produits vendus non proposables, avec la raison.
+                produits_ecartes: ecartesV2,
                 // Ce que l'administration a ajoute a la liste de base.
                 produits_suivis_ajoutes: v2 ? reglagesSim.produitsSuivis : null,
                 total_ventes_toutes_lignes: round2(totalToutesLignes),

@@ -442,7 +442,13 @@
                 return {
                     nom: p.nom, marge: m,
                     volumeRestant: nb(p.quantite) * proportion,
-                    quantiteActuelle: nb(p.quantite)
+                    quantiteActuelle: nb(p.quantite),
+                    // Le prix de vente moyen constate: c'est LUI qu'on releve
+                    // pour gagner de la marge, et c'est le chiffre que le
+                    // boucher manipule. Une marge cible sans le prix qui va
+                    // avec n'est pas un geste.
+                    prixMoyen: (p.prix_moyen === null || p.prix_moyen === undefined)
+                        ? null : nb(p.prix_moyen)
                 };
             })
             .filter(function (x) {
@@ -465,6 +471,12 @@
             nom: principal.nom,
             marge: principal.marge,
             volumeRestant: principal.volumeRestant,
+            prixMoyen: principal.prixMoyen,
+            // Le prix de vente qu'il faudrait pratiquer pour degager la marge
+            // requise, a cout inchange: c'est la meme hausse, exprimee sur le
+            // chiffre que le boucher affiche.
+            prixRequis: principal.prixMoyen === null
+                ? null : principal.prixMoyen + manque / principal.volumeRestant,
             // (a) meme volume, marge plus haute.
             margeRequise: margeRequise,
             hausseMarge: margeRequise - principal.marge,
