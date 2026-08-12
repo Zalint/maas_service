@@ -343,7 +343,17 @@ class StockCopyProcessor {
 
         const exists = await this.fileManager.fileExists(stockSoirPath);
         if (exists) {
-            const data = await this.fileManager.readJsonFile(stockSoirPath);
+            // readJsonFile ne rattrape que ENOENT: un fichier TRONQUE - ecriture
+            // interrompue, redeploiement - faisait lever JSON.parse et
+            // remontait jusqu'a l'appelant, alors que le repli base est juste
+            // en dessous. Un fichier illisible se comporte desormais comme un
+            // fichier vide, exactement comme cote serveur.
+            let data = null;
+            try {
+                data = await this.fileManager.readJsonFile(stockSoirPath);
+            } catch (err) {
+                logger.warn(`Stock soir JSON illisible (${err.message}): ${stockSoirPath}`);
+            }
             const nb = Object.keys(data || {}).length;
             if (nb > 0) {
                 logger.info(`📊 Stock soir chargé depuis JSON: ${nb} éléments`);

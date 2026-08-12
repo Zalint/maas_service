@@ -1759,8 +1759,15 @@ async function computePl(dateDebut, dateFin) {
         let avancesEtat = 'ok';
         let avancesRaison = null;
         try {
-            const { fetchCreanceCdb, estConfigure } = require('../lib/depenses-creance-client');
-            const configure = estConfigure();
+            const { fetchCreanceCdb, aDesIdentifiants } = require('../lib/depenses-creance-client');
+            // On regarde les IDENTIFIANTS, pas la configuration complete.
+            // estConfigure() exige en plus un libelle lisible, et confondre les
+            // deux laissait passer un cas faux: identifiants presents mais
+            // brand-config.json sans libelle, fetchCreanceCdb rend null, les
+            // avances valent 0 - et le PL se declarait 'non_configure' donc
+            // FIABLE, puis se figeait ampute. Ce deploiement utilise bien
+            // MataBanq: son silence est une panne, pas un choix.
+            const identifiants = aDesIdentifiants();
             const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
             // L'ETAT SE DEDUIT DE LA VALEUR DE RETOUR, PAS DU catch.
             //
@@ -1787,7 +1794,7 @@ async function computePl(dateDebut, dateFin) {
             //    manque un poste, le PL est faux, on refuse de le graver.
             //
             //  - 'ok': lue.
-            if (!configure) {
+            if (!identifiants) {
                 avancesEtat = 'non_configure';
                 avancesRaison = 'MataBanq n\'est pas configuré sur ce déploiement';
             } else if (!cdb) {
@@ -2674,23 +2681,35 @@ router.get('/cash-stock', async (req, res) => {
 // ?mois=YYYY-MM : stock_pertes_decoupe_pct est rendu pour ce mois (saisie du
 // mois, report du dernier mois saisi, ou valeur d'ancrage). Sans le
 // parametre, valeurs courantes - comportement d'origine.
+/**
+ * finance_config, PRIVEE DES CLES DE SIMULATION 2.0.
+ *
+ * Ces routes rendent toute la table sans filtre et sont gardees par
+ * checkAdvancedAccess, qui laisse passer superviseur et superutilisateur. Les
+ * cles v2 y fuitaient donc a des roles auxquels /api/simulation-v2/reglages
+ * refuse expressement de les montrer: deux routes qui disent le contraire
+ * l'une de l'autre sur les memes donnees. Leur seule porte de lecture est le
+ * routeur v2.
+ *
+ * Partage par le GET et par l'echo du PUT: filtrer d'un cote seulement ne
+ * servait a rien, il suffisait d'ecrire une cle quelconque pour recevoir les
+ * autres en retour.
+ */
+async function lireConfigPublique() {
+    const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
+    const reserveesV2 = new Set(Object.values(CLES_V2));
+    const rows = await FinanceConfig.findAll();
+    const config = {};
+    for (const r of rows) {
+        if (reserveesV2.has(r.key)) continue;
+        config[r.key] = r.value;
+    }
+    return config;
+}
+
 router.get('/config', async (req, res) => {
     try {
-        const rows = await FinanceConfig.findAll();
-        const config = {};
-        // Les cles de Simulation 2.0 ne sortent PAS par ici. Cette route rend
-        // toute la table sans filtre, et elle est gardee par
-        // checkAdvancedAccess, qui laisse passer superviseur et
-        // superutilisateur. Elles fuitaient donc a des roles auxquels
-        // /api/simulation-v2/reglages refuse expressement de les montrer:
-        // deux routes qui disent le contraire l'une de l'autre sur les memes
-        // donnees. Leur seule porte de lecture est le routeur v2.
-        const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
-        const reserveesV2 = new Set(Object.values(CLES_V2));
-        for (const r of rows) {
-            if (reserveesV2.has(r.key)) continue;
-            config[r.key] = r.value;
-        }
+        const config = await lireConfigPublique();
 
         const mois = req.query.mois;
         if (mois) {
@@ -2779,10 +2798,11 @@ router.put('/config', async (req, res) => {
         // dans cash-stock) doivent etre recomputed. Invalider tous les caches
         // finance-derives pour rester safe.
         invalidateFinanceDerivedCaches();
-        const rows = await FinanceConfig.findAll();
-        const config = {};
-        for (const r of rows) config[r.key] = r.value;
-        res.json({ success: true, data: config });
+        // MEME filtre qu'au GET. Sans lui, la reponse du PUT rendait les cles
+        // de Simulation 2.0 a un superviseur, ce qui annulait le filtre pose
+        // sur la lecture: il suffisait d'ecrire n'importe quelle autre cle
+        // pour les recevoir en echo.
+        res.json({ success: true, data: await lireConfigPublique() });
     } catch (e) {
         console.error('PUT /api/finance/config:', e);
         res.status(500).json({ success: false, error: e.message });

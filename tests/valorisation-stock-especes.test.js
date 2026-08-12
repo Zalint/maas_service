@@ -86,3 +86,21 @@ test('une ligne sans prix d achat est ventilee sur sa valeur saisie', () => {
     expect(r.valeur_bovin).toBeCloseTo(126000, 6);
     expect(r.valeur_au_prix_vente).toBeCloseTo(126000, 6);
 });
+
+test('une ligne negative est ecartee AVANT la ventilation par espece', () => {
+    // Les lignes negatives sont exclues de la valeur (stock calcule dont les
+    // entrees ne sont pas saisies). Elles ne doivent donc peser dans AUCUNE
+    // espece, sinon le taux de parage s'appliquerait a une part fantome.
+    const r = valoriserLignes({
+        lignes: [
+            { produit: 'Boeuf',  quantite: -5, total: -19175 },
+            { produit: 'Agneau', quantite: -2, total: -9000 }
+        ],
+        prixAchat, estBoucherie, categorieDe
+    });
+    expect(r.valeur_bovin).toBe(0);
+    expect(r.valeur_ovin).toBe(0);
+    expect(r.valeur_autre_boucherie).toBe(0);
+    expect(r.valeur_boucherie).toBe(0);
+    expect(r.lignes_negatives.length).toBe(2);
+});

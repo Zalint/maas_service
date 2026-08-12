@@ -22,10 +22,8 @@ describe('lireReglages', () => {
     });
 
     test("seule la valeur '1' active le drapeau", async () => {
-        for (const v of ['1']) {
-            FinanceConfig.findAll.mockResolvedValue([{ key: 'simulation_v2_enabled', value: v }]);
-            expect((await reglages.lireReglages()).actif).toBe(true);
-        }
+        FinanceConfig.findAll.mockResolvedValue([{ key: 'simulation_v2_enabled', value: '1' }]);
+        expect((await reglages.lireReglages()).actif).toBe(true);
         // Toute autre valeur ferme: sur un interrupteur, le doute ne doit
         // jamais ouvrir un ecran de resultat.
         for (const v of ['0', 'true', 'oui', '', 'x', '2']) {

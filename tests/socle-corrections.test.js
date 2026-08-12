@@ -52,6 +52,10 @@ describe('etat des sources : non configure n est pas une panne', () => {
     afterEach(() => {
         if (sauve.u === undefined) delete process.env[CLE]; else process.env[CLE] = sauve.u;
         if (sauve.k === undefined) delete process.env[KEY]; else process.env[KEY] = sauve.k;
+        // Le demontage de fs vit ici plutot qu'en fin de test: un test qui
+        // echoue avant sa derniere ligne laissait sinon le mock en place pour
+        // toute la suite.
+        jest.unmock('fs');
         jest.resetModules();
     });
 
@@ -66,22 +70,25 @@ describe('etat des sources : non configure n est pas une panne', () => {
         process.env[CLE] = 'https://exemple.test';
         process.env[KEY] = 'jeton';
         jest.doMock('fs', () => ({ existsSync: () => false, readFileSync: () => '' }));
-        const { estConfigure } = require('../lib/depenses-creance-client');
+        const { estConfigure, aDesIdentifiants } = require('../lib/depenses-creance-client');
+        // Les identifiants SONT la: c'est le libelle qui manque. La
+        // distinction decide si le PL peut etre fige.
+        expect(aDesIdentifiants()).toBe(true);
         expect(estConfigure()).toBe(false);
-        jest.dontMock('fs');
     });
 });
 
 describe('famille poulet : bornes et contournements', () => {
-    jest.resetModules();
     const reglages = require('../lib/simulation-v2/reglages');
 
-    test('un nom contenant une virgule ne se scinde plus en deux produits', () => {
-        // La branche tableau contournait parseListe: 'Poulet, gros' entrait
-        // tel quel puis etait RELU comme deux produits.
+    test('un nom contenant une virgule est REFUSE, jamais scinde', () => {
+        // La virgule est le separateur du stockage: un nom qui en porte une
+        // n'est pas representable. Joindre puis redecouper transformait
+        // 'Poulet, gros' en DEUX produits sans qu'aucune erreur ne le dise -
+        // le defaut meme que cette branche pretendait corriger.
         const v = reglages.valider({ famillePoulet: ['Poulet, gros'] });
-        expect(v.ok).toBe(true);
-        expect(v.aEcrire[0].value).toBe('Poulet,gros');
+        expect(v.ok).toBe(false);
+        expect(v.erreurs.join(' ')).toMatch(/sans virgule/);
     });
 
     test('la branche tableau deduplique comme la branche chaine', () => {

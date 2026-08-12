@@ -7344,7 +7344,11 @@ async function chargerSimulationV2() {
         actif.checked = !!d.actif;
         famille.value = Array.isArray(d.famille_poulet) ? d.famille_poulet.join(', ') : '';
         prix.value = d.prix_achat_defaut_poulet != null ? d.prix_achat_defaut_poulet : '';
-        sv2Charge = true;
+        // Chargé SEULEMENT si la liste est la. La route ne rend { actif } qu'aux
+        // non-admins: sans ce test, un tel payload laissait le champ famille
+        // vide et un Enregistrer ultérieur soumettait une famille VIDE, donc
+        // effaçait le réglage.
+        sv2Charge = Array.isArray(d.famille_poulet);
         if (avert) {
             const liste = Array.isArray(d.avertissements) ? d.avertissements : [];
             avert.innerHTML = liste.length
@@ -7388,6 +7392,9 @@ async function sauvegarderSimulationV2() {
         });
         const j = await res.json();
         if (!j.success) throw new Error(j.error || 'Erreur');
+        // Une réponse en succès mais sans data ferait échouer l'accès aux
+        // champs ci-dessous sur un TypeError illisible.
+        if (!j.data) throw new Error('Réponse du serveur sans données');
         showToast(
             'Simulation 2.0 ' + (j.data.actif ? 'activée' : 'désactivée')
             + ' · famille poulet : ' + (j.data.famille_poulet || []).length + ' produit(s)',

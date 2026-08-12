@@ -114,3 +114,17 @@ test('le module de base n est appele qu UNE fois, pas par journee', async () => 
     for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) r.pourDate(d);
     expect(creerResolveurPrixAchat).toHaveBeenCalledTimes(1);
 });
+
+test('sans reglages, aucune famille ne s applique et le module de base decide seul', () => {
+    // La signature accepte un objet de reglages absent: la famille est alors
+    // vide et le repli inexistant, donc le comportement est exactement celui
+    // de lib/prix-achat-date.js.
+    poserBase();
+    return creerResolveurPrixAchatSimulation({ dateMax: '2026-07-31' }).then((r) => {
+        const p = r.pourDate('2026-07-31');
+        expect(p.prixAchat('Poulet en détail')).toBeNull();
+        expect(p.origine('Poulet en détail')).toBeNull();
+        expect(p.prixAchat('Boeuf en détail')).toBe(3835);
+        expect(p.origine('Boeuf en détail')).toBe('propre');
+    });
+});

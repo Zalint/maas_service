@@ -33,7 +33,10 @@ function adminStrict(req, res, next) {
     if (!req.session || !req.session.user) {
         return res.status(401).json({ success: false, error: 'Non authentifié' });
     }
-    if (req.session.user.role !== 'admin') {
+    // Passe par role(), donc insensible a la casse, comme la lecture juste en
+    // dessous. Comparer la valeur brute faisait diverger les deux: un role
+    // stocke 'Admin' voyait tous les reglages mais ne pouvait pas les ecrire.
+    if (role(req) !== 'admin') {
         return res.status(403).json({ success: false, error: 'Accès réservé aux administrateurs' });
     }
     next();
