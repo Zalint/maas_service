@@ -73,6 +73,27 @@
         return d.toISOString().slice(0, 10);
     }
 
+    /** Dimanche = jour 0. Lu en UTC, comme toutes les dates de ce module. */
+    function estDimanche(iso) {
+        return new Date(String(iso) + 'T00:00:00Z').getUTCDay() === 0;
+    }
+
+    /**
+     * Les jours OUVRES d'un intervalle.
+     *
+     * Une boucherie fermee le dimanche n'a pas un mauvais dimanche, elle n'a
+     * pas de dimanche du tout. Le compter comme une journee a zero divise le
+     * rythme par un denominateur trop grand - le meme defaut que la derniere
+     * journee sans vente - et fait projeter un CA trop bas d'environ un
+     * septieme. Le retirer des DEUX cotes, numerateur et denominateur, rend
+     * un rythme par jour d'ouverture, qu'on multiplie ensuite par les jours
+     * d'ouverture restants.
+     */
+    function joursOuvres(debut, fin, exclureDimanche) {
+        var tous = joursEntre(debut, fin);
+        return exclureDimanche ? tous.filter(function (j) { return !estDimanche(j); }) : tous;
+    }
+
     /** Tous les jours ISO d'un intervalle inclusif. */
     function joursEntre(debut, fin) {
         var out = [];
@@ -90,9 +111,9 @@
      * vente comptent zero — un jour ouvert sans vente est une information,
      * pas un trou.
      */
-    function rythmeParType(caParJour, debut, fin) {
+    function rythmeParType(caParJour, debut, fin, exclureDimanche) {
         var somme = { P1: 0, P2: 0 }, jours = { P1: 0, P2: 0 };
-        joursEntre(debut, fin).forEach(function (j) {
+        joursOuvres(debut, fin, exclureDimanche).forEach(function (j) {
             var t = typeJour(j);
             jours[t] += 1;
             somme[t] += nb((caParJour || {})[j]);
@@ -109,10 +130,10 @@
      * 28 jours d'historique ou si le rythme P2 est nul: on ne calibre pas sur
      * du vide.
      */
-    function calibrerCoeff(histo) {
+    function calibrerCoeff(histo, exclureDimanche) {
         if (!histo || !histo.debut || !histo.fin) return null;
         if (joursEntre(histo.debut, histo.fin).length < 28) return null;
-        var r = rythmeParType(histo.ca_par_jour, histo.debut, histo.fin);
+        var r = rythmeParType(histo.ca_par_jour, histo.debut, histo.fin, exclureDimanche);
         if (!r.P2 || r.P2 <= 0 || !r.P1) return null;
         return r.P1 / r.P2;
     }
@@ -128,9 +149,10 @@
         var minJours = args.minJours === undefined ? 5 : args.minJours;
         var poidsReel = args.poidsReel === undefined ? 0.7 : args.poidsReel;
         var coeff = nb(args.coeff) || 1;
-        var reel = rythmeParType(args.caParJour, args.debutMois, args.dateAnalyse);
+        var sansDim = !!args.exclureDimanche;
+        var reel = rythmeParType(args.caParJour, args.debutMois, args.dateAnalyse, sansDim);
         var histo = args.histo
-            ? rythmeParType(args.histo.ca_par_jour, args.histo.debut, args.histo.fin)
+            ? rythmeParType(args.histo.ca_par_jour, args.histo.debut, args.histo.fin, sansDim)
             : { P1: null, P2: null };
 
         var retenu = { P1: null, P2: null, sources: {}, reel: reel, histo: histo };
@@ -166,11 +188,16 @@
     function projeterCA(args) {
         var fin = finDuMois(args.dateAnalyse);
         var rythmes = rythmesRetenus(args);
+        // Jours d'OUVERTURE restants: le rythme etant par jour ouvre, c'est
+        // par des jours ouvres qu'il doit etre multiplie.
+        // Filtre explicite sur la date d'analyse plutot qu'un slice(1): quand
+        // les dimanches sont exclus et que l'analyse TOMBE un dimanche, le
+        // premier element n'est deja plus la date d'analyse, et retirer le
+        // premier aurait supprime un vrai jour ouvre.
         var restants = { P1: 0, P2: 0 };
-        if (args.dateAnalyse < fin) {
-            joursEntre(joursEntre(args.dateAnalyse, args.dateAnalyse)[0], fin).slice(1)
-                .forEach(function (j) { restants[typeJour(j)] += 1; });
-        }
+        joursOuvres(args.dateAnalyse, fin, !!args.exclureDimanche)
+            .filter(function (j) { return j > args.dateAnalyse; })
+            .forEach(function (j) { restants[typeJour(j)] += 1; });
         var projetables = (rythmes.P1 !== null || restants.P1 === 0)
             && (rythmes.P2 !== null || restants.P2 === 0);
         var caRealise = 0;
@@ -764,6 +791,8 @@
         typeJour: typeJour,
         finDuMois: finDuMois,
         joursEntre: joursEntre,
+        joursOuvres: joursOuvres,
+        estDimanche: estDimanche,
         rythmeParType: rythmeParType,
         calibrerCoeff: calibrerCoeff,
         rythmesRetenus: rythmesRetenus,

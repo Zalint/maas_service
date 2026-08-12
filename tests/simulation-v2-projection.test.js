@@ -39,6 +39,59 @@ describe('classification des jours: P1 = 1-10 et 25-fin, P2 = 11-24', () => {
     });
 });
 
+describe('jours d ouverture: les dimanches se retirent des deux cotes', () => {
+    test('aout 2026 compte 5 dimanches', () => {
+        const tous = P.joursEntre('2026-08-01', '2026-08-31');
+        const ouvres = P.joursOuvres('2026-08-01', '2026-08-31', true);
+        expect(tous).toHaveLength(31);
+        expect(ouvres).toHaveLength(26);
+        expect(ouvres.filter(P.estDimanche)).toHaveLength(0);
+    });
+
+    test('le rythme se calcule par jour OUVRE, pas par jour calendaire', () => {
+        // 6 jours a 1 000 F, dont un dimanche ferme a 0. Compter le dimanche
+        // divise par 6 au lieu de 5 et sous-estime le rythme de 17 %.
+        const ca = {};
+        P.joursEntre('2026-08-03', '2026-08-08').forEach((j) => { ca[j] = 1000; });
+        const avec = P.rythmeParType(ca, '2026-08-02', '2026-08-08', false);
+        const sans = P.rythmeParType(ca, '2026-08-02', '2026-08-08', true);
+        expect(P.estDimanche('2026-08-02')).toBe(true);
+        expect(avec.P1 !== null || avec.P2 !== null).toBe(true);
+        // 6 jours vendus sur 7 calendaires contre 6 sur 6 ouvres.
+        const joursAvec = avec.jours.P1 + avec.jours.P2;
+        const joursSans = sans.jours.P1 + sans.jours.P2;
+        expect(joursAvec).toBe(7);
+        expect(joursSans).toBe(6);
+    });
+
+    test('les jours restants ne comptent que les jours ouvres', () => {
+        const avec = P.projeterCA({
+            caParJour: { '2026-08-01': 1000 }, debutMois: '2026-08-01',
+            dateAnalyse: '2026-08-01', histo: null, coeff: 1.3, exclureDimanche: false
+        });
+        const sans = P.projeterCA({
+            caParJour: { '2026-08-01': 1000 }, debutMois: '2026-08-01',
+            dateAnalyse: '2026-08-01', histo: null, coeff: 1.3, exclureDimanche: true
+        });
+        expect(avec.restants.P1 + avec.restants.P2).toBe(30);
+        // 30 jours restants, moins les 5 dimanches d'aout 2026.
+        expect(sans.restants.P1 + sans.restants.P2).toBe(25);
+    });
+
+    test('une analyse UN DIMANCHE ne perd pas un jour ouvre', () => {
+        // Le piege du slice(1): quand l'analyse tombe un dimanche exclu, le
+        // premier jour de la liste est deja le lundi - le retirer aurait
+        // supprime une vraie journee.
+        expect(P.estDimanche('2026-08-30')).toBe(true);
+        const r = P.projeterCA({
+            caParJour: {}, debutMois: '2026-08-01', dateAnalyse: '2026-08-30',
+            histo: null, coeff: 1.3, exclureDimanche: true
+        });
+        // Il reste le 31 seulement, et ce n'est pas un dimanche.
+        expect(r.restants.P1 + r.restants.P2).toBe(1);
+    });
+});
+
 describe('rythmes journaliers', () => {
     test('les jours sans vente comptent ZERO, ils ne sont pas ignores', () => {
         // 2 jours P1 vendus sur 10 ecoules: le rythme est dilue d'autant.

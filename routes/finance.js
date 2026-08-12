@@ -1923,7 +1923,12 @@ router.get('/simulation', async (req, res) => {
             const clesStock = new Set(
                 nomsStock.map((r) => normaliserNomProduit(r.produit)).filter(Boolean)
             );
-            const dejaSuivi = new Set(listeSuivie.map((n) => normaliserNomProduit(n)));
+            // Seuls les CINQ d'origine sont ecartes: ils sont toujours suivis
+            // et ne se decochent pas. Ceux que l'administration a ajoutes
+            // restent dans la liste, coches - sans quoi l'ecran devait les
+            // afficher a part, et le panneau se lisait comme deux listes sans
+            // rapport.
+            const dejaSuivi = new Set(PRODUITS_SIMULATION.map((n) => normaliserNomProduit(n)));
 
             candidatsV2 = produitsVendus
                 .filter((p) => {

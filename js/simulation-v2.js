@@ -84,7 +84,11 @@
             stockOption: 'garder', depensesOption: 'realise',
             // Combien de fois le rythme mensuel d'un produit on s'autorise a
             // lui demander, dans le plan d'equilibre.
-            facteurMax: 3
+            facteurMax: 3,
+            // La boucherie ne vend pas le dimanche: le compter comme une
+            // journee a zero diluerait le rythme et gonflerait les jours
+            // restants. Actif par defaut, decochable ici.
+            exclureDimanche: true
         }
     };
 
@@ -835,47 +839,52 @@
         var choisis = {};
         ajoutes.forEach(function (n) { choisis[String(n).trim().toLowerCase()] = true; });
 
+        // Les produits ajoutes mais ABSENTS des candidats du mois (ils n'ont
+        // rien vendu, ou leur cout a disparu) doivent rester cochables: sans
+        // eux dans la liste, enregistrer les retirerait en silence.
+        var connus = {};
+        cand.forEach(function (c) { connus[String(c.nom).trim().toLowerCase()] = true; });
+        var lignes = cand.slice();
+        ajoutes.forEach(function (n) {
+            if (!connus[String(n).trim().toLowerCase()]) {
+                lignes.push({ nom: n, marge_unitaire: null, quantite: null, ca: null, absent: true });
+            }
+        });
+
         var h = '<details class="mb-3"><summary class="small fw-medium">'
-            + '<i class="bi bi-gear"></i> Ajouter des produits au plan ('
-            + (cand.length ? cand.slice(0, 2).map(function (c) { return esc(c.nom); }).join(', ') : 'aucun candidat')
-            + (cand.length > 2 ? '…' : '') + ')'
-            + (ajoutes.length ? ' — ' + ajoutes.length + ' déjà ajouté(s)' : '')
+            + '<i class="bi bi-gear"></i> Produits du plan d\'équilibre — '
+            + ajoutes.length + ' ajouté(s) aux 5 d\'origine'
             + ' <span class="badge bg-secondary">admin</span></summary>'
             + '<div class="border rounded p-2 mt-1">'
             + '<div class="small text-muted mb-2">'
-            + 'Les cinq produits d\'origine sont toujours suivis. Ceux-ci s\'y ajoutent, '
-            + 'classés par marge décroissante. Seuls apparaissent les produits vendus '
-            + 'dont le nom existe <strong>aussi en stock</strong> : sans ligne de stock, '
-            + 'un produit n\'a ni borne matin ni borne soir, donc aucun parage à lui opposer.'
+            + '<strong>Boeuf en détail, Boeuf en gros, Poulet en détail, Poulet en gros et Agneau '
+            + 'sont toujours suivis</strong> et n\'apparaissent pas ici — ils ne se retirent pas. '
+            + 'Cochez ci-dessous les produits à leur ajouter, puis enregistrez : '
+            + 'une case cochée = produit suivi, décochée = retiré. '
+            + 'Seuls les produits vendus dont le nom existe <strong>aussi en stock</strong> '
+            + 'sont proposés — sans ligne de stock, un produit n\'a ni borne matin ni borne soir, '
+            + 'donc aucun parage à lui opposer. Classés par marge décroissante.'
             + '</div>';
 
-        if (ajoutes.length) {
-            var connus = {};
-            cand.forEach(function (c) { connus[String(c.nom).trim().toLowerCase()] = true; });
-            var orphelins = ajoutes.filter(function (n) {
-                return !connus[String(n).trim().toLowerCase()];
-            });
-            if (orphelins.length) {
-                h += '<div class="small mb-2">Déjà suivis : '
-                    + orphelins.map(function (n) {
-                        return '<label class="me-2"><input type="checkbox" class="sim2-suivi" checked value="'
-                            + esc(n) + '"> ' + esc(n) + '</label>';
-                    }).join('') + '</div>';
-            }
+        if (!lignes.length) {
+            return h + '<div class="small text-muted">Aucun produit éligible sur cette période.</div>'
+                + '</div></details>';
         }
 
         h += '<div class="table-responsive"><table class="table table-sm mb-2"><thead><tr>'
-            + '<th></th><th>Produit</th><th class="text-end">Marge brute</th>'
+            + '<th>Suivi</th><th>Produit</th><th class="text-end">Marge brute</th>'
             + '<th class="text-end">Vendu</th><th class="text-end">CA</th>'
             + '</tr></thead><tbody>'
-            + cand.map(function (c) {
+            + lignes.map(function (c) {
                 var coche = choisis[String(c.nom).trim().toLowerCase()] ? ' checked' : '';
                 return '<tr><td><input type="checkbox" class="sim2-suivi" value="'
                     + esc(c.nom) + '"' + coche + '></td>'
-                    + '<td>' + esc(c.nom) + '</td>'
-                    + '<td class="text-end">' + esc(fmt(c.marge_unitaire)) + ' F/u</td>'
-                    + '<td class="text-end">' + esc(fmt(c.quantite)) + ' u</td>'
-                    + '<td class="text-end">' + esc(fmt(c.ca)) + ' F</td></tr>';
+                    + '<td>' + esc(c.nom)
+                    + (c.absent ? ' <span class="badge bg-light text-dark border">aucune vente ce mois-ci</span>' : '')
+                    + '</td>'
+                    + '<td class="text-end">' + (c.marge_unitaire === null ? '—' : esc(fmt(c.marge_unitaire)) + ' F/u') + '</td>'
+                    + '<td class="text-end">' + (c.quantite === null ? '—' : esc(fmt(c.quantite)) + ' u') + '</td>'
+                    + '<td class="text-end">' + (c.ca === null ? '—' : esc(fmt(c.ca)) + ' F') + '</td></tr>';
             }).join('')
             + '</tbody></table></div>'
             + '<button type="button" class="btn btn-sm btn-primary" id="sim2-suivi-save" style="color:#fff">'
@@ -926,7 +935,8 @@
                 + 'sur une période du 1er du mois au jour d\'analyse.</div>';
         }
 
-        var calibre = PJ.calibrerCoeff(pj.historique);
+        var sansDim = etat.proj.exclureDimanche;
+        var calibre = PJ.calibrerCoeff(pj.historique, sansDim);
         var coeff = etat.proj.coeff !== null ? etat.proj.coeff
             : (calibre !== null ? calibre : nb(pj.coeff_defaut));
         var origineCoeff = etat.proj.coeff !== null ? 'ajusté à la main'
@@ -935,7 +945,8 @@
         var ca = PJ.projeterCA({
             caParJour: pj.ca_par_jour, debutMois: debut, dateAnalyse: fin,
             histo: pj.historique, coeff: coeff,
-            poidsReel: etat.proj.poidsReel, minJours: etat.proj.minJours
+            poidsReel: etat.proj.poidsReel, minJours: etat.proj.minJours,
+            exclureDimanche: sansDim
         });
         if (ca.restants.P1 === 0 && ca.restants.P2 === 0) {
             return h + '<div class="alert alert-secondary py-2 small mb-3">Mois complet : rien à projeter.</div>';
@@ -950,10 +961,12 @@
         };
         var chargesMensuel = (plBrut.charges || {}).total_mensuel;
         // Jours ECOULES du mois, pas jours observes avec vente: une depense
-        // court aussi les jours creux.
+        // court aussi les jours creux. Jours d'OUVERTURE quand les dimanches
+        // sont exclus, pour que le prorata des depenses et le plafond du plan
+        // comptent la meme chose que les rythmes.
         var jours = {
-            ecoules: PJ.joursEntre(debut, fin).length,
-            mois: PJ.joursEntre(debut, ca.finMois).length
+            ecoules: PJ.joursOuvres(debut, fin, sansDim).length,
+            mois: PJ.joursOuvres(debut, ca.finMois, sansDim).length
         };
         var argsScen = {
             postes: postes, caRealise: b.ventes, caProjete: ca.caProjete,
@@ -997,6 +1010,12 @@
                 ? ' · × ' + (jours.mois / Math.max(1, jours.ecoules)).toFixed(2)
                 : (etat.proj.depensesOption === 'realise' ? ' · poste figé, donc sous-estimé' : ' · suit l\'activité'))
             + '</div></div>'
+            + '<div class="col-md-3"><label class="form-label small">Jours d\'ouverture</label>'
+            + '<div class="form-check"><input class="form-check-input sim2-proj-ctl" type="checkbox" '
+            + 'data-k="exclureDimanche" id="sim2-sans-dim"' + (sansDim ? ' checked' : '') + '>'
+            + '<label class="form-check-label small" for="sim2-sans-dim">Exclure les dimanches</label></div>'
+            + '<div class="form-text">' + jours.ecoules + ' j ouvrés écoulés sur ' + jours.mois
+            + (sansDim ? ' · dimanches non comptés' : ' · tous les jours comptés') + '</div></div>'
             + '<div class="col-md-3"><label class="form-label small">Confiance</label><div>'
             + '<span class="badge bg-' + (conf.niveau === 'bon' ? 'success' : (conf.niveau === 'moyen' ? 'warning text-dark' : 'danger'))
             + '">' + conf.niveau + '</span></div></div>'
@@ -1438,6 +1457,7 @@
                 if (k === 'stockOption') etat.proj.stockOption = el.value;
                 else if (k === 'depensesOption') etat.proj.depensesOption = el.value;
                 else if (k === 'facteurMax') etat.proj.facteurMax = Math.max(1, nb(el.value) || 1);
+                else if (k === 'exclureDimanche') etat.proj.exclureDimanche = el.checked;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);
                 rendre();
