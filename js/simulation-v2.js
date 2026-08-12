@@ -1,0 +1,846 @@
+/**
+ * Simulation 2.0 — ecran client.
+ *
+ * ISOLE A DESSEIN. Ce fichier n'est charge que par une balise <script> dans
+ * index.html; il n'exporte rien, ne modifie aucune fonction de js/finance.js,
+ * et construit son onglet et son pane par le DOM plutot que par du markup
+ * statique. Le supprimer, c'est retirer une ligne d'index.html et ce fichier.
+ *
+ * TROIS REGLES qui rendent cette isolation reelle:
+ *
+ *  1. Aucun identifiant en "fin-sim-". Tout est prefixe "sim2-". Sans cette
+ *     regle, ensureDefaultDates() de la v1 - qui remplit une liste d'ids
+ *     codee en dur incluant fin-sim-date-debut - ecrirait dans les champs de
+ *     la v2 sans que rien ne le signale.
+ *  2. Un pane a part, jamais celui de la v1. Ses ecouteurs restent branches
+ *     sur son propre pane et ne peuvent pas muter l'etat d'ici.
+ *  3. Aucun recalcul du resultat. Le PL vient de /api/finance/pl, la
+ *     sensibilite de /api/finance/simulation. Cet ecran ne fait que de
+ *     l'arithmetique sur ce que le serveur a deja etabli.
+ *
+ * L'onglet n'apparait que si le drapeau d'administration est ouvert ET si le
+ * role a droit au PL. Le drapeau seul n'a jamais valu droit d'acces: les
+ * routes refont le controle.
+ */
+(function () {
+    'use strict';
+
+    // ---------------------------------------------------------------- outils
+    var esc = function (s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    };
+    var nb = function (v) { var n = parseFloat(v); return isFinite(n) ? n : 0; };
+    var fmt = function (v) {
+        if (v === null || v === undefined || isNaN(v)) return '—';
+        var s = Math.abs(Math.round(v)).toLocaleString('fr-FR');
+        return (v < 0 ? '−' : '') + s;
+    };
+    var signe = function (v) { return (v > 0 ? '+' : '') + fmt(v); };
+    var cls = function (v) { return v > 0 ? 'text-success' : (v < 0 ? 'text-danger' : ''); };
+    var $ = function (id) { return document.getElementById('sim2-' + id); };
+    // Meme normalisation que le serveur (lib/parage.js): accents et casse
+    // ignores. Sert a rapprocher un libelle de stock d'un nom de produit.
+    var norm = function (s) {
+        return String(s == null ? '' : s).normalize('NFD')
+            .replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+    };
+    var jsonOu = function (url, defaut) {
+        return fetch(url, { credentials: 'include' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) { return (j && j.success) ? j.data : defaut; })
+            .catch(function () { return defaut; });
+    };
+
+    // ---------------------------------------------------------------- etat
+    var etat = {
+        base: null,        // { pl, ventes, source, periode, ... }
+        produits: [],      // sensibilite par produit
+        leviers: {},       // cle produit -> { prix, unite, vol }
+        globaux: null,     // { charges, dep, com, comBase, parBov, parOvi, dPa }
+        contexte: null,    // { varBovin, varOvin, coeff, parageBase, boeuf:{matin,soir}, commission }
+        figes: [],         // liste des PL figes
+        mode: 'auto',
+        enAttente: false,
+        debug: false,
+        chargement: false
+    };
+
+    // ============================================================ INJECTION
+    /**
+     * DANS l'onglet Simulation existant, pas a cote.
+     *
+     * Un second onglet aurait ajoute une dixieme entree a une barre qui en
+     * porte deja neuf, dont deux nommees "Simulation": la comparaison v1/v2
+     * ne vaut pas cette confusion. Une bascule en tete du pane la permet
+     * quand meme, a un clic pres.
+     *
+     * L'isolation ne change pas: on n'ajoute rien a la barre, on ne touche
+     * pas au markup de la v1, et ses enfants sont simplement MASQUES - leur
+     * display d'origine est memorise et restitue. La v1 continue de rendre
+     * dans #fin-sim-result, qui reste son enfant a elle.
+     */
+    function injecter() {
+        var v1 = document.querySelector('[data-fin-pane="simulation"]');
+        if (!v1 || document.getElementById('sim2-bascule')) return false;
+
+        // Capture AVANT insertion: la bascule et la boite ne doivent pas se
+        // masquer elles-memes.
+        var enfantsV1 = Array.prototype.slice.call(v1.children).map(function (el) {
+            return { el: el, display: el.style.display };
+        });
+
+        var bascule = document.createElement('div');
+        bascule.id = 'sim2-bascule';
+        bascule.className = 'btn-group btn-group-sm mb-3';
+        // La couleur du texte selectionne est posee EN LIGNE, pas laissee aux
+        // classes Bootstrap: le theme de l'application redefinit la couleur de
+        // .btn-primary et de .active, et le libelle du bouton choisi
+        // ressortait bleu sur fond bleu, donc illisible.
+        bascule.innerHTML =
+            '<button type="button" class="btn btn-primary" data-v="1" style="color:#fff">Version actuelle</button>'
+            + '<button type="button" class="btn btn-outline-primary" data-v="2">Simulation 2.0</button>';
+
+        var boite = document.createElement('div');
+        boite.id = 'sim2-boite';
+        boite.style.display = 'none';
+        boite.innerHTML = gabarit();
+
+        v1.insertBefore(bascule, v1.firstChild);
+        v1.appendChild(boite);
+
+        bascule.addEventListener('click', function (e) {
+            var b = e.target.closest('[data-v]');
+            if (!b) return;
+            var versDeux = b.dataset.v === '2';
+            bascule.querySelectorAll('[data-v]').forEach(function (x) {
+                var choisi = x === b;
+                x.classList.toggle('btn-primary', choisi);
+                x.classList.toggle('btn-outline-primary', !choisi);
+                x.style.color = choisi ? '#fff' : '';
+            });
+            enfantsV1.forEach(function (o) {
+                o.el.style.display = versDeux ? 'none' : o.display;
+            });
+            boite.style.display = versDeux ? '' : 'none';
+            if (versDeux) charger();
+        });
+
+        cabler();
+        return true;
+    }
+
+    function gabarit() {
+        return ''
+        + '<div class="alert alert-light border small mb-3">'
+        +   '<i class="bi bi-sliders"></i> <strong>Simulation 2.0.</strong> '
+        +   'Plusieurs leviers à la fois, sur un résultat de référence au choix. '
+        +   'Le résultat vient du PL et n\'est jamais recalculé ici.'
+        + '</div>'
+        + '<div id="sim2-bandeaux"></div>'
+        + '<div class="row g-2 mb-3 align-items-end">'
+        +   '<div class="col-md-2"><label class="form-label">Date début</label>'
+        +     '<input type="date" id="sim2-debut" class="form-control form-control-sm"></div>'
+        +   '<div class="col-md-2"><label class="form-label">Date fin</label>'
+        +     '<input type="date" id="sim2-fin" class="form-control form-control-sm"></div>'
+        +   '<div class="col-md-3"><label class="form-label">Résultat de référence</label>'
+        +     '<select id="sim2-ref" class="form-select form-select-sm"><option value="calcul">Calculé maintenant</option></select></div>'
+        +   '<div class="col-md-2"><label class="form-label">Mode de calcul</label>'
+        +     '<select id="sim2-mode" class="form-select form-select-sm">'
+        +       '<option value="auto">Automatique</option><option value="manuel">Manuel</option></select></div>'
+        +   '<div class="col-md-3"><label class="form-label">&nbsp;</label><div class="d-flex gap-2">'
+        +     '<button class="btn btn-sm btn-primary" id="sim2-calc"><i class="bi bi-calculator"></i> Calculer</button>'
+        +     '<button class="btn btn-sm btn-outline-secondary" id="sim2-reset">Réinitialiser</button>'
+        +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
+        +       '<input class="form-check-input" type="checkbox" id="sim2-debug">'
+        +       '<label class="form-check-label small ms-1" for="sim2-debug">Debug</label></div>'
+        +   '</div></div>'
+        + '</div>'
+        + '<div id="sim2-corps"><div class="text-muted"><i class="bi bi-hourglass-split"></i> Chargement…</div></div>';
+    }
+
+    function cabler() {
+        $('debut').addEventListener('change', charger);
+        $('fin').addEventListener('change', charger);
+        $('ref').addEventListener('change', charger);
+        $('mode').addEventListener('change', function () {
+            etat.mode = $('mode').value;
+            if (etat.mode === 'auto') rendre();
+        });
+        $('calc').addEventListener('click', rendre);
+        $('reset').addEventListener('click', function () {
+            etat.leviers = {};
+            etat.globaux = null;
+            rendre();
+        });
+        // Le mode debug revele l'etat courant, il n'est pas un levier: il
+        // s'affiche immediatement meme en calcul manuel.
+        $('debug').addEventListener('change', function () {
+            etat.debug = $('debug').checked;
+            rendre();
+        });
+    }
+
+    // ============================================================ CHARGEMENT
+    function charger() {
+        if (etat.chargement) return;
+        var d = $('debut'), f = $('fin');
+        if (!d.value || !f.value) {
+            // Periode par defaut: on herite de celle du PL si elle est posee,
+            // sinon 1er du mois -> aujourd'hui.
+            var plD = document.getElementById('fin-pl-date-debut');
+            var plF = document.getElementById('fin-pl-date-fin');
+            var t = new Date();
+            var iso = function (x) { return x.toISOString().slice(0, 10); };
+            if (!d.value) d.value = (plD && plD.value) || iso(new Date(t.getFullYear(), t.getMonth(), 1));
+            if (!f.value) f.value = (plF && plF.value) || iso(t);
+        }
+        etat.chargement = true;
+        var corps = $('corps');
+        corps.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours…</div>';
+
+        var fige = $('ref').value !== 'calcul' ? $('ref').value : null;
+        var qs = 'dateDebut=' + encodeURIComponent(d.value) + '&dateFin=' + encodeURIComponent(f.value);
+
+        Promise.all([
+            jsonOu('/api/finance/simulation?' + qs, null),
+            jsonOu('/api/finance/pl?' + qs, null),
+            jsonOu('/api/finance/config', {}),
+            jsonOu('/api/finance/pl/snapshots', []),
+            fige ? jsonOu('/api/finance/pl/snapshots/' + encodeURIComponent(fige), null) : Promise.resolve(null)
+        ]).then(function (r) {
+            etat.chargement = false;
+            var sim = r[0], pl = r[1], cfg = r[2] || {}, snaps = r[3] || [], snap = r[4];
+            if (!sim || !pl) {
+                corps.innerHTML = '<div class="alert alert-danger">Chiffres indisponibles. '
+                    + 'Vérifiez la période, ou vos droits sur le PL.</div>';
+                return;
+            }
+            etat.figes = snaps;
+            remplirSelecteurFiges(snaps, fige);
+
+            var payload = pl;
+            var source = 'Calculé maintenant';
+            if (fige) {
+                if (!snap || !snap.payload) {
+                    corps.innerHTML = '<div class="alert alert-warning">Ce PL figé est illisible.</div>';
+                    return;
+                }
+                // Un PL fige AVANT le socle ne porte pas ses volumes: rejouer
+                // la simulation dessus melangerait un resultat fige et des
+                // volumes d'aujourd'hui. On refuse plutot que de melanger.
+                if (!snap.payload.volumes) {
+                    corps.innerHTML = '<div class="alert alert-warning">'
+                        + 'Le PL figé du ' + esc(snap.date) + ' ne porte pas ses volumes vendus : '
+                        + 'il a été figé avant que le socle ne les y grave. '
+                        + 'La simulation ne peut pas être rejouée dessus sans mélanger '
+                        + 'un résultat figé et des volumes d\'aujourd\'hui.</div>';
+                    return;
+                }
+                payload = snap.payload;
+                source = 'PL figé du ' + snap.date;
+                $('debut').value = snap.periode_debut;
+                $('fin').value = snap.periode_fin;
+            }
+            $('debut').disabled = $('fin').disabled = !!fige;
+
+            preparer(sim, payload, cfg, source, !!fige);
+            rendre();
+        }).catch(function (e) {
+            etat.chargement = false;
+            corps.innerHTML = '<div class="alert alert-danger">Erreur : ' + esc(e.message) + '</div>';
+        });
+    }
+
+    function remplirSelecteurFiges(snaps, courant) {
+        var sel = $('ref');
+        var val = courant || 'calcul';
+        sel.innerHTML = '<option value="calcul">Calculé maintenant</option>'
+            + snaps.slice(0, 60).map(function (s) {
+                return '<option value="' + esc(s.date) + '">PL figé du ' + esc(s.date) + '</option>';
+            }).join('');
+        sel.value = val;
+    }
+
+    function preparer(sim, pl, cfg, source, estFige) {
+        var stock = pl.stock || {};
+        // Quantite de carcasse bovine aux deux bornes. Le prix d'achat du
+        // boeuf valorise ces deux photos: seule leur DIFFERENCE bouge le
+        // resultat.
+        var qBoeuf = function (detail) {
+            var t = 0;
+            (detail || []).forEach(function (l) { if (norm(l.produit) === 'boeuf') t += nb(l.quantite); });
+            return t;
+        };
+        etat.base = {
+            pl: nb(pl.pl), ventes: nb(pl.total_ventes), source: source, fige: estFige,
+            periode: pl.periode || {}, sources: pl.sources || null, stock: stock,
+            postes: postesDe(pl)
+        };
+        etat.produits = (sim.produits || []).map(function (p) { return p; });
+        etat.sim = sim;
+        var parageBase = nb(stock.pertes_decoupe_pct);
+        etat.contexte = {
+            varBovin: nb(stock.variation_bovin),
+            varOvin: nb(stock.variation_ovin),
+            varAutre: nb(stock.variation_autre_boucherie),
+            coeff: nb(stock.coeff),
+            parageBase: parageBase,
+            boeuf: { matin: qBoeuf(stock.matin_detail), soir: qBoeuf(stock.soir_detail) },
+            commission: nb(pl.commission_maas),
+            commissionPct: nb(cfg.commission_pct) || 3
+        };
+        if (!etat.globaux) reinitGlobaux();
+    }
+
+    function reinitGlobaux() {
+        var c = etat.contexte;
+        etat.globaux = {
+            charges: 0, dep: 0,
+            com: c ? c.commissionPct : 3,
+            parBov: c ? c.parageBase : 0,
+            parOvi: c ? c.parageBase : 0,
+            dPa: 0
+        };
+    }
+
+    function postesDe(pl) {
+        var ch = pl.charges || {};
+        return [
+            { lib: 'Chiffre d\'affaires', s: 1, v: nb(pl.total_ventes) },
+            { lib: 'Avances MataBanq', s: -1, v: nb(pl.total_avances) },
+            { lib: 'Commission MaaS', s: -1, v: nb(pl.commission_maas) },
+            { lib: 'Marge Centre de Découpe', s: 1, v: nb(pl.marge_cdc) },
+            { lib: 'Charges fixes au prorata', s: -1, v: nb(ch.total_prorata) },
+            { lib: 'Dépenses', s: -1, v: nb(pl.depenses_periode) },
+            { lib: 'Paiements fournisseur', s: -1, v: nb(pl.paiements_fournisseur) },
+            { lib: 'Variation de stock nette', s: 1, v: nb((pl.stock || {}).variation_nette) }
+        ];
+    }
+
+    // ============================================================ CALCUL
+    // Source UNIQUE de la formule. Le tableau, l'equilibre, la matrice et le
+    // mode debug appellent tous ceci: aucune n'ecrit sa propre version, et la
+    // matrice n'a donc pas besoin de supposer que les leviers s'additionnent.
+    function levierDe(p) {
+        var l = etat.leviers[p.nom];
+        return l || { prix: 0, unite: 'F', vol: 0 };
+    }
+    function margeAvec(p, dPa) {
+        if (p.prix_moyen === null || p.prix_moyen === undefined) return null;
+        var pa = p.prix_achat;
+        if (pa === null || pa === undefined) return null;
+        return p.prix_moyen - (pa + (estBoeuf(p) ? dPa : 0));
+    }
+    function estBoeuf(p) { return /^(boeuf|veau)/.test(norm(p.nom)); }
+
+    function effetProduit(p, s) {
+        var e = s.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
+        var q = nb(p.quantite), ca = nb(p.ca);
+        var xUnit = e.unite === '%' ? (nb(p.prix_moyen) * e.prix / 100) : e.prix;
+        var dPrix = e.unite === '%' ? (ca * e.prix / 100) : e.prix * q;
+        var m = margeAvec(p, s.globaux.dPa);
+        var dVol = (m === null) ? 0 : m * e.vol;
+        // Terme croise: le prix supplementaire vaut aussi sur ce qu'on vend en
+        // plus. L'oublier sous-estime tout scenario qui combine les deux.
+        return dPrix + dVol + xUnit * e.vol;
+    }
+
+    function effetsGlobaux(s) {
+        var c = etat.contexte, g = s.globaux;
+        var ch = -nb(g.charges);
+        var dp = -nb(g.dep);
+        // La commission est proportionnelle a son taux: on met le montant reel
+        // a l'echelle plutot que d'approcher son assiette.
+        var co = c.commissionPct > 0
+            ? -(c.commission * (nb(g.com) / c.commissionPct - 1)) : 0;
+        // Chaque taux de parage ne porte que sur la variation de stock de SON
+        // espece. Le PL n'a qu'un coefficient, mais il expose la ventilation.
+        var pab = -((nb(g.parBov) - c.parageBase) / 100) * c.varBovin;
+        var pao = -((nb(g.parOvi) - c.parageBase) / 100) * c.varOvin;
+        // Prix d'achat du boeuf. TROIS chemins, et le premier est le dominant:
+        //
+        //  1. LE COUT DES VENTES. Chaque unite bovine vendue sur la periode
+        //     aurait ete achetee delta de moins: -delta x quantites vendues.
+        //     C'est le terme que la premiere version OUBLIAIT - elle ne
+        //     comptait que le stock, et -400 F sur le prix d'achat ne bougeait
+        //     le resultat que de 6 080 F la ou l'economie reelle porte sur
+        //     plus de 1 150 unites. Hypothese assumee, affichee en debug: les
+        //     achats de la periode suivent les ventes (les avances et
+        //     paiements auraient ete moindres d'autant).
+        //  2. le stock: la carcasse est valorisee a ce prix aux DEUX bornes,
+        //     seule la difference de quantite compte, sous le coefficient de
+        //     parage bovin du scenario.
+        //  3. la marge des unites AJOUTEES par un levier volume - portee par
+        //     effetProduit via margeAvec, pas ici, sinon comptee deux fois.
+        var qBovinsVendus = 0;
+        etat.produits.forEach(function (p) { if (estBoeuf(p)) qBovinsVendus += nb(p.quantite); });
+        var pbVentes = -nb(g.dPa) * qBovinsVendus;
+        var pbStock = (1 - nb(g.parBov) / 100) * nb(g.dPa) * (c.boeuf.soir - c.boeuf.matin);
+        var pb = pbVentes + pbStock;
+        return { ch: ch, dp: dp, co: co, pab: pab, pao: pao,
+                 pb: pb, pbVentes: pbVentes, pbStock: pbStock, qBovins: qBovinsVendus,
+                 total: ch + dp + co + pab + pao + pb };
+    }
+
+    function effetTotal(s) {
+        var t = effetsGlobaux(s).total;
+        etat.produits.forEach(function (p) { t += effetProduit(p, s); });
+        return t;
+    }
+
+    function snapshotEtat() {
+        return {
+            leviers: JSON.parse(JSON.stringify(etat.leviers)),
+            globaux: JSON.parse(JSON.stringify(etat.globaux))
+        };
+    }
+
+    function nbActifs(s) {
+        var c = etat.contexte, n = 0;
+        etat.produits.forEach(function (p) {
+            var l = s.leviers[p.nom]; if (l && (l.prix || l.vol)) n++;
+        });
+        if (nb(s.globaux.charges)) n++;
+        if (nb(s.globaux.dep)) n++;
+        if (nb(s.globaux.com) !== c.commissionPct) n++;
+        if (nb(s.globaux.parBov) !== c.parageBase) n++;
+        if (nb(s.globaux.parOvi) !== c.parageBase) n++;
+        if (nb(s.globaux.dPa)) n++;
+        return n;
+    }
+
+    // ============================================================ RENDU
+    function rendre() {
+        if (!etat.base) return;
+        etat.enAttente = false;
+        var b = $('calc');
+        if (b) { b.classList.remove('btn-warning'); b.classList.add('btn-primary'); b.innerHTML = '<i class="bi bi-calculator"></i> Calculer'; }
+
+        var s = snapshotEtat();
+        var g = effetsGlobaux(s);
+        var total = effetTotal(s);
+        var n = nbActifs(s);
+
+        $('bandeaux').innerHTML = bandeaux();
+        $('corps').innerHTML = ''
+            + panneauScenario(s, g)
+            + kpis(total, n)
+            + tableau(s, total)
+            + equilibre(s)
+            + matrice(s)
+            + (etat.debug ? debug(s, g, total) : '');
+        cablerLeviers();
+    }
+
+    function marquerEnAttente() {
+        etat.enAttente = true;
+        var b = $('calc');
+        if (b) { b.classList.remove('btn-primary'); b.classList.add('btn-warning'); b.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Calculer (en attente)'; }
+    }
+
+    function onLevier() {
+        if (etat.mode === 'manuel') { marquerEnAttente(); return; }
+        rendre();
+    }
+
+    function bandeaux() {
+        var b = etat.base, st = b.stock || {}, h = '';
+        var src = b.sources && b.sources.avances;
+        if (src && src.etat === 'indisponible') {
+            h += '<div class="alert alert-danger py-2 small mb-2"><i class="bi bi-exclamation-triangle"></i> '
+               + '<strong>Avances MataBanq indisponibles.</strong> ' + esc(src.raison || '')
+               + '. Elles comptent pour 0 : le résultat est surévalué d\'autant, et le PL ne peut pas être figé.</div>';
+        } else if (src && src.etat === 'non_configure') {
+            h += '<div class="alert alert-secondary py-2 small mb-2"><i class="bi bi-info-circle"></i> '
+               + 'MataBanq n\'est pas configuré ici : les avances valent zéro, ce qui est normal sur ce déploiement.</div>';
+        }
+        var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
+        h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
+           + 'Résultat <strong>' + esc(b.source) + '</strong>, du ' + esc(b.periode.dateDebut || '')
+           + ' au ' + esc(b.periode.dateFin || '') + '. '
+           + 'Stock du soir au ' + esc(st.soir_date || '—') + ', il pèse ' + esc(fmt(nb(st.variation_nette)))
+           + ' F soit ' + poids.toFixed(1) + ' % du résultat. '
+           + 'Prix d\'achat : ' + (etat.sim && etat.sim.prix_achat && etat.sim.prix_achat.mode === 'periode'
+               ? 'moyenne de la période pondérée par les quantités vendues.'
+               : 'figé au dernier jour de la période.')
+           + '</div>';
+        var av = (etat.sim && etat.sim.prix_achat && etat.sim.prix_achat.avertissements) || [];
+        if (av.length) {
+            h += '<div class="alert alert-warning py-2 small mb-3"><i class="bi bi-exclamation-triangle"></i> '
+               + av.map(esc).join('<br>') + '</div>';
+        }
+        return h;
+    }
+
+    function panneauScenario(s, g) {
+        var c = etat.contexte;
+        var lignes = etat.produits.map(function (p, i) {
+            var l = s.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
+            var m = margeAvec(p, s.globaux.dPa);
+            var e = effetProduit(p, s);
+            return '<tr>'
+                + '<td>' + esc(p.nom)
+                  + (p.prix_achat_origine === 'famille_poulet' ? ' <span class="badge bg-success-subtle text-success">famille poulet</span>' : '')
+                  + (p.prix_achat_origine === 'repli_poulet' ? ' <span class="badge bg-warning-subtle text-warning">prix de repli</span>' : '')
+                  + (m !== null && m < 0 ? ' <span class="badge bg-danger-subtle text-danger">marge négative</span>' : '')
+                  + (p.sans_vente ? ' <span class="badge bg-light text-muted">aucune vente</span>' : '')
+                + '</td>'
+                + '<td class="text-end"><div class="input-group input-group-sm" style="width:11rem;margin-left:auto">'
+                  + '<input type="number" class="form-control sim2-lev" data-p="' + i + '" data-k="prix" value="' + l.prix + '" step="50">'
+                  + '<select class="form-select sim2-lev" data-p="' + i + '" data-k="unite" style="max-width:4rem">'
+                    + '<option>F</option><option' + (l.unite === '%' ? ' selected' : '') + '>%</option></select>'
+                + '</div></td>'
+                + '<td class="text-end"><input type="number" class="form-control form-control-sm sim2-lev" '
+                  + 'data-p="' + i + '" data-k="vol" value="' + l.vol + '" step="10" style="width:7rem;margin-left:auto"></td>'
+                + '<td class="text-end ' + cls(e) + '">' + (e ? esc(signe(e)) : '0') + '</td>'
+                + '</tr>';
+        }).join('');
+
+        var glob = function (id, lib, val, step, suffixe, effet, note) {
+            return '<tr><td>' + lib + (note ? ' <span class="text-muted small">' + note + '</span>' : '') + '</td>'
+                + '<td class="text-end" colspan="2"><input type="number" class="form-control form-control-sm sim2-glob" '
+                + 'data-g="' + id + '" value="' + val + '" step="' + step + '" style="width:9rem;margin-left:auto"></td>'
+                + '<td class="text-end ' + cls(effet) + '">' + (effet ? esc(signe(effet)) : '0')
+                + ' <span class="text-muted small">' + suffixe + '</span></td></tr>';
+        };
+
+        return '<details class="mb-3" open><summary class="fw-medium mb-2">Scénario '
+            + '<span class="badge bg-secondary">' + nbActifs(s) + ' levier(s)</span></summary>'
+            + '<div class="table-responsive"><table class="table table-sm mb-0">'
+            + '<thead><tr><th>Levier</th><th class="text-end">Prix de vente</th>'
+            + '<th class="text-end">Volume (unités)</th><th class="text-end">Effet</th></tr></thead>'
+            + '<tbody>' + lignes
+            + '<tr><td colspan="4" class="p-0"><hr class="my-1"></td></tr>'
+            + glob('charges', 'Charges fixes', s.globaux.charges, 25000, 'FCFA', g.ch)
+            + glob('dep', 'Dépenses', s.globaux.dep, 10000, 'FCFA', g.dp)
+            + glob('com', 'Commission fournisseur', s.globaux.com, 0.5, '%', g.co)
+            + glob('parBov', 'Taux de parage bœuf', s.globaux.parBov, 0.5, '%', g.pab,
+                   'stock bovin ' + fmt(etat.contexte.varBovin) + ' F')
+            + glob('parOvi', 'Taux de parage agneau', s.globaux.parOvi, 0.5, '%', g.pao,
+                   'stock ovin ' + fmt(etat.contexte.varOvin) + ' F')
+            + glob('dPa', 'Prix d\'achat du bœuf', s.globaux.dPa, 100, 'FCFA', g.pb,
+                   fmt(g.qBovins) + ' unités bovines vendues · carcasse '
+                   + fmt(etat.contexte.boeuf.matin) + ' → ' + fmt(etat.contexte.boeuf.soir))
+            + '</tbody></table></div>'
+            + '<div class="small text-muted mt-2">Le prix d\'achat du bœuf agit par trois chemins : '
+            + 'le coût de <strong>toutes</strong> les unités bovines vendues sur la période '
+            + '(le terme dominant — on suppose que les achats suivent les ventes), la revalorisation '
+            + 'du stock de carcasse aux deux bornes, et la marge unitaire, donc le levier volume et '
+            + 'le volume d\'équilibre. Ce dernier est porté par la colonne Marge du tableau, pas par '
+            + 'cette ligne, pour ne pas le compter deux fois.</div>'
+            + '</details>';
+    }
+
+    function kpis(total, n) {
+        var b = etat.base;
+        var apres = b.pl + total;
+        var pct = b.pl ? (total / Math.abs(b.pl)) * 100 : 0;
+        var carte = function (lab, val, hint, c) {
+            return '<div class="col-md-4"><div class="card h-100"><div class="card-body text-center py-3">'
+                + '<h6 class="card-subtitle mb-2 text-muted">' + lab + '</h6>'
+                + '<h3 class="mb-0 ' + (c || '') + '">' + esc(val) + '</h3>'
+                + '<div class="small text-muted mt-1">' + hint + '</div></div></div></div>';
+        };
+        return '<div class="row g-2 mb-3">'
+            + carte('Résultat de référence', fmt(b.pl), esc(b.source), cls(b.pl))
+            + carte('Effet du scénario', total ? signe(total) : '0',
+                    n === 0 ? 'scénario vide' : n + ' levier(s) actif(s)', cls(total))
+            + carte('Résultat simulé', fmt(apres), pct.toFixed(2) + ' % de variation', cls(apres))
+            + '</div>';
+    }
+
+    function tableau(s, total) {
+        var b = etat.base;
+        var totCa = 0, tot100 = 0;
+        var lignes = etat.produits.map(function (p) {
+            var q = nb(p.quantite), ca = nb(p.ca), c100 = 100 * q;
+            var m = margeAvec(p, s.globaux.dPa);
+            var e = effetProduit(p, s);
+            totCa += ca; tot100 += c100;
+            var part = b.ventes > 0 ? (ca / b.ventes) * 100 : 0;
+            var pa = p.prix_achat === null || p.prix_achat === undefined
+                ? null : p.prix_achat + (estBoeuf(p) ? nb(s.globaux.dPa) : 0);
+            return '<tr' + (p.sans_vente ? ' class="text-muted"' : '') + '>'
+                + '<td>' + esc(p.nom) + '</td>'
+                + '<td class="text-end">' + esc(q.toLocaleString('fr-FR')) + '</td>'
+                + '<td class="text-end">' + esc(fmt(p.prix_moyen)) + '</td>'
+                + '<td class="text-end' + (estBoeuf(p) && nb(s.globaux.dPa) ? ' text-danger' : '') + '">'
+                  + esc(pa === null ? '—' : fmt(pa)) + '</td>'
+                + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger' : '') + '">'
+                  + esc(m === null ? '—' : fmt(m)) + '</td>'
+                + '<td class="text-end">' + esc(fmt(ca)) + '</td>'
+                + '<td class="text-end">' + part.toFixed(1) + ' %</td>'
+                + '<td class="text-end text-success">' + esc(fmt(c100)) + '</td>'
+                + '<td class="text-end ' + cls(e) + '">' + (e ? esc(signe(e)) : '0') + '</td>'
+                + '</tr>';
+        }).join('');
+        return '<h6 class="fin-subheading">Sensibilité par produit</h6>'
+            + '<div class="table-responsive mb-3"><table class="table table-sm mb-0">'
+            + '<thead><tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Prix moyen</th>'
+            + '<th class="text-end">Prix d\'achat</th><th class="text-end">Marge</th><th class="text-end">Ventes</th>'
+            + '<th class="text-end">% ventes</th><th class="text-end">CFA 100</th><th class="text-end">Effet</th></tr></thead>'
+            + '<tbody>' + lignes + '</tbody>'
+            + '<tfoot><tr class="table-light"><th colspan="5">Total des produits suivis</th>'
+            + '<th class="text-end">' + esc(fmt(totCa)) + '</th>'
+            + '<th class="text-end">' + (b.ventes > 0 ? ((totCa / b.ventes) * 100).toFixed(1) : '0') + ' %</th>'
+            + '<th class="text-end text-success">' + esc(fmt(tot100)) + '</th>'
+            + '<th class="text-end ' + cls(total) + '">' + esc(signe(total)) + '</th></tr></tfoot>'
+            + '</table></div>'
+            + '<div class="small text-muted mb-3"><strong>CFA 100</strong> : ce que rapporterait 100 FCFA '
+            + 'de plus sur le prix unitaire, à quantités inchangées.</div>';
+    }
+
+    function equilibre(s) {
+        var nomPilote = (etat.sim && etat.sim.produit_equilibre) || '';
+        var p = etat.produits.filter(function (x) { return x.nom === nomPilote; })[0];
+        if (!p || p.sans_vente) {
+            return '<h6 class="fin-subheading">Point d\'équilibre — ' + esc(nomPilote) + '</h6>'
+                + '<div class="alert alert-secondary py-2 small">Pas de vente sur la période : '
+                + 'ce produit ne peut pas servir de levier.</div>';
+        }
+        // Le resultat A COMPENSER est celui obtenu sous toutes les AUTRES
+        // hypotheses, le pilote remis a zero.
+        var sansPilote = snapshotEtat();
+        sansPilote.leviers[p.nom] = { prix: 0, unite: 'F', vol: 0 };
+        var base = etat.base.pl + effetTotal(sansPilote);
+        var q = nb(p.quantite), m = margeAvec(p, s.globaux.dPa);
+        var hausse = -base / q, prixEq = nb(p.prix_moyen) + hausse;
+        var dq = (m === null || m === 0) ? null : -base / m;
+
+        var carte = function (lab, val, hint, c) {
+            return '<div class="col-md-4"><div class="card h-100"><div class="card-body text-center py-3">'
+                + '<h6 class="card-subtitle mb-2 text-muted">' + lab + '</h6>'
+                + '<h3 class="mb-0 ' + (c || '') + '">' + esc(val) + '</h3>'
+                + '<div class="small text-muted mt-1">' + hint + '</div></div></div></div>';
+        };
+        // Un seul levier ne ramene pas toujours a zero: un prix negatif ou une
+        // baisse de volume superieure a ce qui a ete vendu sont des reponses
+        // arithmetiques sans realite commerciale.
+        var cPrix = prixEq < 0
+            ? carte('Prix d\'équilibre', 'hors d\'atteinte',
+                    'il faudrait un prix négatif', 'text-muted fs-5')
+            : carte('Prix d\'équilibre', fmt(prixEq), 'par unité, à volume inchangé',
+                    hausse < 0 ? 'text-success' : 'text-danger');
+        var cVol = (dq === null)
+            ? carte('Volume d\'équilibre', '—', 'marge inconnue ou nulle')
+            : (dq < -q
+                ? carte('Volume d\'équilibre', 'hors d\'atteinte',
+                        'il faudrait vendre ' + fmt(-dq) + ' de moins pour ' + fmt(q) + ' vendues', 'text-muted fs-5')
+                : carte('Volume d\'équilibre', signe(dq), 'à prix inchangé, via la marge',
+                        m < 0 ? 'text-danger' : (dq > 0 ? 'text-danger' : 'text-success')));
+
+        return '<h6 class="fin-subheading">Point d\'équilibre — ' + esc(p.nom) + '</h6>'
+            + '<div class="row g-2 mb-3">'
+            + carte('Résultat à compenser', fmt(base), 'sous les autres leviers', cls(base))
+            + cPrix + cVol + '</div>'
+            + (m !== null && m < 0
+                ? '<div class="alert alert-warning py-2 small">Marge unitaire ' + esc(fmt(m))
+                  + ' : chaque unité vendue en plus fait <strong>baisser</strong> le résultat.</div>' : '');
+    }
+
+    // ---- Matrice de risque. Chaque case reevalue le scenario ENTIER: les
+    // termes croises sont donc exacts, jamais supposes nuls.
+    // RECONSTRUITS a chaque appel, jamais mis en cache.
+    //
+    // Les memoiser capturait le produit et le contexte de la periode chargee
+    // au premier rendu: changer de periode laissait la matrice calculer ses
+    // volumes sur les quantites de l'ANCIENNE, et son taux de parage de
+    // reference sur l'ancien aussi. Les cases devenaient fausses sans que rien
+    // ne le signale. Six objets litteraux par rendu ne coutent rien.
+    function axes() {
+        var c = etat.contexte;
+        var p0 = etat.produits[0];
+        if (!c || !p0) return {};
+        return {
+            pv: { lib: 'Prix de vente ' + (p0 ? p0.nom : ''), vals: [-300, -200, -100, 0, 100, 200, 300], u: 'F',
+                  set: function (s, v) { s.leviers[p0.nom] = { prix: v, unite: 'F', vol: (s.leviers[p0.nom] || {}).vol || 0 }; } },
+            vol: { lib: 'Volume ' + (p0 ? p0.nom : ''), vals: [-30, -20, -10, 0, 10, 20, 30], u: '%',
+                   set: function (s, v) { var l = s.leviers[p0.nom] || { prix: 0, unite: 'F', vol: 0 }; l.vol = nb(p0.quantite) * v / 100; s.leviers[p0.nom] = l; } },
+            pa: { lib: 'Prix d\'achat bœuf', vals: [-400, -200, -100, 0, 100, 200, 400], u: 'F',
+                  set: function (s, v) { s.globaux.dPa = v; } },
+            parBov: { lib: 'Taux de parage bœuf', vals: [0, 2, 4, c.parageBase, 6, 8, 10], u: '%', abs: true,
+                      set: function (s, v) { s.globaux.parBov = v; } },
+            parOvi: { lib: 'Taux de parage agneau', vals: [0, 2, 4, c.parageBase, 6, 8, 10], u: '%', abs: true,
+                      set: function (s, v) { s.globaux.parOvi = v; } },
+            com: { lib: 'Commission', vals: [1, 2, 3, 4, 5, 6, 7], u: '%', abs: true,
+                   set: function (s, v) { s.globaux.com = v; } }
+        };
+    }
+
+    function matrice(s) {
+        var A = axes();
+        var xk = (etat.matX && A[etat.matX]) ? etat.matX : 'pa';
+        var yk = (etat.matY && A[etat.matY]) ? etat.matY : 'vol';
+        var ax = A[xk], ay = A[yk];
+        var etiq = function (a, v) { return (a.abs ? v : (v > 0 ? '+' + v : v)) + ' ' + a.u; };
+        var opt = function (sel) {
+            return Object.keys(A).map(function (k) {
+                return '<option value="' + k + '"' + (k === sel ? ' selected' : '') + '>' + esc(A[k].lib) + '</option>';
+            }).join('');
+        };
+        var h = '<h6 class="fin-subheading">Matrice de risque</h6>'
+            + '<div class="row g-2 mb-2"><div class="col-md-4"><label class="form-label small">Axe horizontal</label>'
+            + '<select id="sim2-matx" class="form-select form-select-sm">' + opt(xk) + '</select></div>'
+            + '<div class="col-md-4"><label class="form-label small">Axe vertical</label>'
+            + '<select id="sim2-maty" class="form-select form-select-sm">' + opt(yk) + '</select></div></div>'
+            + '<div class="table-responsive mb-2"><table class="table table-sm table-bordered mb-0" style="width:auto;font-size:.8rem">'
+            + '<thead><tr><th class="text-muted small">' + esc(ay.lib) + ' \\ ' + esc(ax.lib) + '</th>';
+        ax.vals.forEach(function (x) { h += '<th class="text-end small">' + esc(etiq(ax, x)) + '</th>'; });
+        h += '</tr></thead><tbody>';
+        ay.vals.forEach(function (y) {
+            h += '<tr><th class="small">' + esc(etiq(ay, y)) + '</th>';
+            var vals = ax.vals.map(function (x) {
+                var c = snapshotEtat();
+                ay.set(c, y); ax.set(c, x);
+                return etat.base.pl + effetTotal(c);
+            });
+            var best = 0;
+            vals.forEach(function (v, k) { if (Math.abs(v) < Math.abs(vals[best])) best = k; });
+            vals.forEach(function (v, k) {
+                h += '<td class="text-end ' + (v >= 0 ? 'text-success' : 'text-danger') + '"'
+                   + (k === best ? ' style="outline:2px solid var(--bs-primary);outline-offset:-2px"' : '')
+                   + '>' + esc(fmt(v)) + '</td>';
+            });
+            h += '</tr>';
+        });
+        return h + '</tbody></table></div>'
+            + '<div class="small text-muted mb-3">Chaque case rejoue le scénario entier sous les deux '
+            + 'leviers croisés, en plus de ceux du panneau. La case cerclée est la plus proche de '
+            + 'l\'équilibre sur sa ligne.</div>';
+    }
+
+    // ---- Mode debug. Il ne recalcule RIEN: il imprime la derivation du
+    // chiffre deja affiche. Un mode debug qui referait le calcul par un autre
+    // chemin controlerait son propre chemin, pas celui de l'ecran.
+    function debug(s, g, total) {
+        var b = etat.base, c = etat.contexte;
+        var somme = 0;
+        var pad = function (t, n) { t = String(t); return t + ' '.repeat(Math.max(0, n - t.length)); };
+        var padL = function (t, n) { t = String(t); return ' '.repeat(Math.max(0, n - t.length)) + t; };
+        var h = '<h6 class="fin-subheading">Détail du calcul</h6><pre class="small border rounded p-2 mb-3" '
+              + 'style="background:#f8fafc;overflow-x:auto">';
+
+        h += '1. RÉSULTAT DE RÉFÉRENCE, POSTE PAR POSTE\n';
+        b.postes.forEach(function (p) {
+            somme += p.s * p.v;
+            h += '   ' + (p.s > 0 ? '+' : '−') + ' ' + pad(p.lib, 30) + padL(fmt(p.v), 14) + '\n';
+        });
+        h += '   ' + pad('', 32) + padL('──────────────', 14) + '\n';
+        h += '   = ' + pad('somme', 30) + padL(fmt(somme), 14) + '\n';
+        var ecart = somme - b.pl;
+        h += '   contrôle : somme − PL rendu = ' + fmt(ecart)
+           + (Math.abs(ecart) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
+
+        h += '2. VOLUMES ET PÉRIMÈTRE\n';
+        var caSuivis = 0;
+        etat.produits.forEach(function (p) { caSuivis += nb(p.ca); });
+        h += '   ' + pad('chiffre d\'affaires total', 30) + padL(fmt(b.ventes), 14) + '\n';
+        h += '   ' + pad('dont produits suivis', 30) + padL(fmt(caSuivis), 14)
+           + '   ' + (b.ventes > 0 ? ((caSuivis / b.ventes) * 100).toFixed(1) : '0') + ' %\n';
+        h += '   ' + pad('hors périmètre', 30) + padL(fmt(b.ventes - caSuivis), 14) + '\n\n';
+
+        h += '3. PRIX D\'ACHAT RETENUS\n';
+        etat.produits.forEach(function (p) {
+            h += '   ' + pad(p.nom, 24) + padL(p.prix_achat === null || p.prix_achat === undefined ? 'aucun' : fmt(p.prix_achat), 10)
+               + '   ' + (p.prix_achat_origine || '—') + '\n';
+        });
+        h += '\n4. STOCK PAR ESPÈCE\n';
+        h += '   ' + pad('bovin', 24) + padL(fmt(c.varBovin), 12) + '\n';
+        h += '   ' + pad('ovin', 24) + padL(fmt(c.varOvin), 12) + '\n';
+        h += '   ' + pad('autre boucherie', 24) + padL(fmt(c.varAutre), 12) + '\n';
+        h += '   ' + pad('coefficient de parage', 24) + padL(c.coeff, 12) + '\n\n';
+
+        h += '5. EFFET DE CHAQUE LEVIER\n';
+        var lignes = [];
+        etat.produits.forEach(function (p) {
+            var l = s.leviers[p.nom]; if (!l || (!l.prix && !l.vol)) return;
+            var m = margeAvec(p, s.globaux.dPa);
+            var xUnit = l.unite === '%' ? (nb(p.prix_moyen) * l.prix / 100) : l.prix;
+            if (l.prix) lignes.push([p.nom + ' · prix',
+                l.unite === '%' ? (l.prix + ' % × ' + fmt(p.ca)) : (fmt(l.prix) + ' × ' + nb(p.quantite)),
+                l.unite === '%' ? (nb(p.ca) * l.prix / 100) : l.prix * nb(p.quantite)]);
+            if (l.vol) {
+                lignes.push([p.nom + ' · volume',
+                    'marge ' + (m === null ? 'inconnue' : fmt(m)) + ' × ' + fmt(l.vol),
+                    m === null ? 0 : m * l.vol]);
+                if (l.prix) lignes.push([p.nom + ' · croisé', fmt(xUnit) + ' × ' + fmt(l.vol), xUnit * l.vol]);
+            }
+        });
+        if (g.ch) lignes.push(['Charges fixes', '−' + fmt(-g.ch), g.ch]);
+        if (g.dp) lignes.push(['Dépenses', '−' + fmt(-g.dp), g.dp]);
+        if (g.co) lignes.push(['Commission', 'mise à l\'échelle de ' + fmt(c.commission), g.co]);
+        if (g.pab) lignes.push(['Parage bœuf', '−(' + s.globaux.parBov + ' − ' + c.parageBase + ')/100 × ' + fmt(c.varBovin), g.pab]);
+        if (g.pao) lignes.push(['Parage agneau', '−(' + s.globaux.parOvi + ' − ' + c.parageBase + ')/100 × ' + fmt(c.varOvin), g.pao]);
+        if (g.pbVentes) lignes.push(['Prix d\'achat bœuf · ventes',
+            '−(' + fmt(s.globaux.dPa) + ') × ' + fmt(g.qBovins) + ' unités bovines vendues', g.pbVentes]);
+        if (g.pbStock) lignes.push(['Prix d\'achat bœuf · stock',
+            '(1 − ' + s.globaux.parBov + '/100) × ' + fmt(s.globaux.dPa) + ' × (' + fmt(c.boeuf.soir) + ' − ' + fmt(c.boeuf.matin) + ')', g.pbStock]);
+
+        if (!lignes.length) { h += '   scénario vide\n'; }
+        else {
+            var sTot = 0;
+            lignes.forEach(function (l) { sTot += l[2]; h += '   ' + pad(l[0], 26) + pad(l[1], 42) + padL(signe(l[2]), 13) + '\n'; });
+            h += '   ' + pad('', 68) + padL('─────────────', 13) + '\n';
+            h += '   ' + pad('total', 68) + padL(signe(sTot), 13) + '\n';
+            h += '   contrôle : total des lignes − effet appliqué = ' + (sTot - total).toFixed(2)
+               + (Math.abs(sTot - total) < 0.01 ? '  ✓' : '  ✗') + '\n';
+        }
+        h += '\n6. RÉSULTAT SIMULÉ\n';
+        h += '   ' + pad('référence', 26) + padL(fmt(b.pl), 14) + '\n';
+        h += '   ' + pad('effet du scénario', 26) + padL(signe(total), 14) + '\n';
+        h += '   ' + pad('', 26) + padL('──────────────', 14) + '\n';
+        h += '   ' + pad('simulé', 26) + padL(fmt(b.pl + total), 14) + '\n';
+        return h + '</pre>';
+    }
+
+    function cablerLeviers() {
+        document.querySelectorAll('.sim2-lev').forEach(function (el) {
+            el.addEventListener('input', function () {
+                var p = etat.produits[+el.dataset.p];
+                if (!p) return;
+                var l = etat.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
+                l[el.dataset.k] = el.dataset.k === 'unite' ? el.value : nb(el.value);
+                etat.leviers[p.nom] = l;
+                onLevier();
+            });
+        });
+        document.querySelectorAll('.sim2-glob').forEach(function (el) {
+            el.addEventListener('input', function () {
+                etat.globaux[el.dataset.g] = nb(el.value);
+                onLevier();
+            });
+        });
+        var mx = document.getElementById('sim2-matx'), my = document.getElementById('sim2-maty');
+        if (mx) mx.addEventListener('change', function () { etat.matX = mx.value; rendre(); });
+        if (my) my.addEventListener('change', function () { etat.matY = my.value; rendre(); });
+    }
+
+    // ============================================================ BOOTSTRAP
+    // Le drapeau est demande au PREMIER clic sur Finance, pas au chargement de
+    // la page: inutile d'ajouter un aller-retour au demarrage pour tous les
+    // utilisateurs, dont ceux qui n'ouvriront jamais cet ecran.
+    var demande = false;
+    function amorcer() {
+        if (demande) return;
+        demande = true;
+        var u = window.currentUser || {};
+        var role = String(u.role || '').toLowerCase();
+        // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme pas les
+        // reglages a un role qui ne peut pas lire le PL. Les routes refont le
+        // controle de toute facon.
+        if (['admin', 'superviseur'].indexOf(role) < 0) return;
+        jsonOu('/api/simulation-v2/reglages', null).then(function (d) {
+            if (d && d.actif) injecter();
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        var lien = document.querySelector('[data-section="finance"], #finance-item, [data-page="finance"]');
+        if (lien) lien.addEventListener('click', amorcer);
+        // Filet: si l'onglet Finance est deja ouvert (retour arriere, lien
+        // direct), le sous-menu existe deja et personne ne cliquera dessus.
+        if (document.getElementById('finance-subnav')) setTimeout(amorcer, 1200);
+    });
+})();
