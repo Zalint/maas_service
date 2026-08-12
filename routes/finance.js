@@ -1408,8 +1408,11 @@ router.get('/simulation', async (req, res) => {
         // ce que la periode maximale (366 jours) garde tres modeste.
         // `date` sert a ponderer le prix d'achat jour par jour (voir plus bas).
         // Colonne de plus sur la meme requete, aucun aller-retour ajoute.
+        // nom_client et commande_id ne servent qu'a la v2 (fidelisation,
+        // commandes a multiplier), mais les porter ici ne coute que deux
+        // colonnes sur la meme requete.
         const lignes = await sequelize.query(
-            `SELECT produit, nombre, montant, date
+            `SELECT produit, nombre, montant, date, nom_client, commande_id
                FROM ventes
               WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
@@ -1452,6 +1455,9 @@ router.get('/simulation', async (req, res) => {
         // achats que les leviers volume et parage induisent - sans quoi le
         // levier volume etait surestime d'environ 20 %.
         let catalogueV2 = null;
+        let projectionV2 = null;
+        let topClientsV2 = null;
+        let commandesV2 = null;
 
         if (!v2) {
             const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
@@ -1475,6 +1481,108 @@ router.get('/simulation', async (req, res) => {
                 pv_agneau: pvDe('agneau'),
                 pv_poulet: pvDe('poulet')
             };
+
+            // ---- Donnees de PROJECTION fin de mois (methode P1/P2).
+            //
+            // CA par jour de la periode demandee: derive des lignes deja
+            // chargees, zero requete de plus. L'historique des 92 jours qui
+            // PRECEDENT la periode sert a deux choses: les rythmes
+            // historiques comparables de la regle 70/30, et la CALIBRATION du
+            // coefficient P1/P2 sur les ventes du tenant lui-meme plutot que
+            // sur la valeur de reference du document.
+            const caParJour = {};
+            for (const l of lignes) {
+                const iso = parseDateVersISO(l.date);
+                if (iso) caParJour[iso] = (caParJour[iso] || 0) + (parseFloat(l.montant) || 0);
+            }
+
+            const finHisto = new Date(dateDebut + 'T00:00:00Z');
+            finHisto.setUTCDate(finHisto.getUTCDate() - 1);
+            const debutHisto = new Date(finHisto);
+            debutHisto.setUTCDate(debutHisto.getUTCDate() - 91);
+            const histoDebutIso = debutHisto.toISOString().slice(0, 10);
+            const histoFinIso = finHisto.toISOString().slice(0, 10);
+            const lignesHisto = await sequelize.query(
+                `SELECT date, montant FROM ventes WHERE date IN (:dl)`,
+                {
+                    type: sequelize.QueryTypes.SELECT,
+                    replacements: { dl: graphiesDeDatesPourPeriode(histoDebutIso, histoFinIso) }
+                }
+            );
+            const caHisto = {};
+            for (const l of lignesHisto) {
+                const iso = parseDateVersISO(l.date);
+                if (iso) caHisto[iso] = (caHisto[iso] || 0) + (parseFloat(l.montant) || 0);
+            }
+
+            // Coefficient de REFERENCE du document, par tenant. La calibration
+            // sur l'historique, faite cote client, prime quand elle est
+            // possible; cette valeur est le repli et le point de comparaison.
+            const COEFFS_DOCUMENT = {
+                o_foire: 1.336, mbao: 1.243, keur_massar: 1.280, sacre_coeur: 1.392
+            };
+            const slugTenant = String(require('../config/tenant').slug || '').toLowerCase();
+            projectionV2 = {
+                ca_par_jour: caParJour,
+                historique: { debut: histoDebutIso, fin: histoFinIso, ca_par_jour: caHisto },
+                coeff_defaut: COEFFS_DOCUMENT[slugTenant] || 1.28
+            };
+
+            // ---- Clients de la periode, pour la fidelisation: les plus gros
+            // par chiffre d'affaires, avec leur dernier passage. Derive des
+            // memes lignes.
+            const parClient = new Map();
+            for (const l of lignes) {
+                const nom = String(l.nom_client || '').trim();
+                if (!nom) continue;
+                const cle = nom.toLowerCase();
+                if (!parClient.has(cle)) parClient.set(cle, { nom, ca: 0, nb: 0, dernier: null });
+                const cl = parClient.get(cle);
+                cl.ca += parseFloat(l.montant) || 0;
+                cl.nb += 1;
+                const iso = parseDateVersISO(l.date);
+                if (iso && (!cl.dernier || iso > cl.dernier)) cl.dernier = iso;
+            }
+            topClientsV2 = Array.from(parClient.values())
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 8)
+                .map((cl) => ({ nom: cl.nom, ca: round2(cl.ca), nb: cl.nb, dernier: cl.dernier }));
+
+            // ---- Commandes de la periode: les lignes partageant un
+            // commande_id. Le serveur livre les PANIERS; le classement par PL
+            // estime se fait cote ecran, seul a connaitre les marges nettes.
+            // Les 30 plus grosses par CA suffisent: on cherche les meilleures,
+            // pas l'exhaustivite.
+            const parCommande = new Map();
+            for (const l of lignes) {
+                const id = l.commande_id;
+                if (id === null || id === undefined || id === '') continue;
+                if (!parCommande.has(id)) {
+                    parCommande.set(id, { id, client: null, date: null, ca: 0, produits: new Map() });
+                }
+                const cde = parCommande.get(id);
+                cde.ca += parseFloat(l.montant) || 0;
+                const nomCl = String(l.nom_client || '').trim();
+                if (nomCl && !cde.client) cde.client = nomCl;
+                const isoCde = parseDateVersISO(l.date);
+                if (isoCde && (!cde.date || isoCde > cde.date)) cde.date = isoCde;
+                const prod = String(l.produit || '').trim();
+                if (prod) {
+                    if (!cde.produits.has(prod)) cde.produits.set(prod, { produit: prod, quantite: 0, ca: 0 });
+                    const pr = cde.produits.get(prod);
+                    pr.quantite += parseFloat(l.nombre) || 0;
+                    pr.ca += parseFloat(l.montant) || 0;
+                }
+            }
+            commandesV2 = Array.from(parCommande.values())
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 30)
+                .map((cde) => ({
+                    id: cde.id, client: cde.client, date: cde.date, ca: round2(cde.ca),
+                    lignes: Array.from(cde.produits.values()).map((p) => ({
+                        produit: p.produit, quantite: round2(p.quantite), ca: round2(p.ca)
+                    }))
+                }));
 
             // Un resolveur par JOURNEE, memoise: pourDate relit tout
             // l'historique a chaque appel, et il y a une ligne de vente par
@@ -1609,8 +1717,11 @@ router.get('/simulation', async (req, res) => {
                 // porte les chiffres, elle ne peut donc pas etre en desaccord
                 // avec eux.
                 version: v2 ? 2 : 1,
-                // null hors v2: la notion n'y sert a rien.
+                // null hors v2: ces notions n'y servent a rien.
                 catalogue: catalogueV2,
+                projection: projectionV2,
+                top_clients: topClientsV2,
+                commandes: commandesV2,
                 prix_achat: {
                     // 'periode' dit que le cout est une moyenne ponderee par
                     // les quantites vendues; 'fin_de_periode' qu'il est fige

@@ -36,7 +36,13 @@ const CLES = [
     'volumes',
     'pv_boeuf',
     'pv_agneau',
-    'pv_poulet'
+    'pv_poulet',
+    // projection fin de mois
+    'ca_par_jour',
+    'historique',
+    'coeff_defaut',
+    'top_clients',
+    'commandes'
 ];
 
 test('chaque cle du contrat existe cote serveur ET cote ecran', () => {
@@ -60,5 +66,17 @@ test('le moteur ne lit le contexte que par les noms que l ecran construit', () =
         .forEach((k) => {
             expect(moteur.includes(k)).toBe(true);
             expect(ecran.includes(k)).toBe(true);
+        });
+});
+
+test('la projection ne lit le module que par les fonctions qu il exporte', () => {
+    // Meme logique pour le module de projection: l'ecran appelle ces
+    // fonctions par leur nom, le module doit les exporter.
+    const module_ = lire('js/simulation-v2-projection.js');
+    const ecran = lire('js/simulation-v2.js');
+    ['calibrerCoeff', 'projeterCA', 'scenarios', 'confiance', 'recommandations', 'commandesRentables']
+        .forEach((k) => {
+            expect(module_.includes(k + ':')).toBe(true);
+            expect(ecran.includes('PJ.' + k)).toBe(true);
         });
 });

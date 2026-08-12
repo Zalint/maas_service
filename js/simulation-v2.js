@@ -64,7 +64,11 @@
         mode: 'auto',
         enAttente: false,
         debug: false,
-        chargement: false
+        chargement: false,
+        // Parametres de la projection fin de mois, ajustables a l'ecran.
+        // coeff null = prendre le calibre sur l'historique, sinon la
+        // reference du document.
+        proj: { coeff: null, poidsReel: 0.7, minJours: 5, stockOption: 'garder' }
     };
 
     // ============================================================ INJECTION
@@ -284,6 +288,10 @@
             periode: pl.periode || {}, sources: pl.sources || null, stock: stock,
             postes: postesDe(pl)
         };
+        // Le payload BRUT sert a la projection fin de mois: elle a besoin des
+        // postes nommes et du total mensuel des charges, pas du tableau
+        // d'affichage.
+        etat.plBrut = pl;
         var produits = (sim.produits || []).map(function (p) { return p; });
         if (estFige && pl.volumes && Array.isArray(pl.volumes.produits)) {
             // MODE FIGE: les volumes viennent du SNAPSHOT, jamais du calcul
@@ -427,6 +435,7 @@
             + tableau(s, total)
             + equilibre(s)
             + matrice(s)
+            + projection()
             + (etat.debug ? debug(s, g, total) : '');
         cablerLeviers();
     }
@@ -765,6 +774,217 @@
     }
 
 
+    // ============================================================ PROJECTION
+    // Fin de mois, methode P1/P2 du document d'estimation. TOUTES les regles
+    // vivent dans js/simulation-v2-projection.js, un module pur teste par
+    // Jest: cet ecran ne fait que les brancher et les afficher.
+    var PJ = (typeof window !== 'undefined' && window.Sim2Projection) || null;
+
+    // Marge nette SANS scenario: les recommandations decrivent la realite du
+    // moment, pas l'hypothese en cours de test dans le panneau.
+    function margeBase(p) {
+        return M.margeAvec(p, { leviers: {}, globaux: {} }, etat.contexte);
+    }
+
+    function projection() {
+        if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
+        var pj = etat.sim.projection;
+        var b = etat.base;
+        var debut = b.periode.dateDebut || '';
+        var fin = b.periode.dateFin || '';
+        var h = '<h6 class="fin-subheading">Projection fin de mois</h6>';
+        if (!/^\d{4}-\d{2}-01$/.test(debut) || fin.slice(0, 7) !== debut.slice(0, 7)) {
+            return h + '<div class="alert alert-secondary py-2 small mb-3">Projection disponible '
+                + 'sur une période du 1er du mois au jour d\'analyse.</div>';
+        }
+
+        var calibre = PJ.calibrerCoeff(pj.historique);
+        var coeff = etat.proj.coeff !== null ? etat.proj.coeff
+            : (calibre !== null ? calibre : nb(pj.coeff_defaut));
+        var origineCoeff = etat.proj.coeff !== null ? 'ajusté à la main'
+            : (calibre !== null ? 'calibré sur vos 3 derniers mois' : 'référence du document');
+
+        var ca = PJ.projeterCA({
+            caParJour: pj.ca_par_jour, debutMois: debut, dateAnalyse: fin,
+            histo: pj.historique, coeff: coeff,
+            poidsReel: etat.proj.poidsReel, minJours: etat.proj.minJours
+        });
+        if (ca.restants.P1 === 0 && ca.restants.P2 === 0) {
+            return h + '<div class="alert alert-secondary py-2 small mb-3">Mois complet : rien à projeter.</div>';
+        }
+
+        var plBrut = etat.plBrut || {};
+        var postes = {
+            total_avances: plBrut.total_avances, commission_maas: plBrut.commission_maas,
+            marge_cdc: plBrut.marge_cdc, depenses_periode: plBrut.depenses_periode,
+            paiements_fournisseur: plBrut.paiements_fournisseur,
+            stock_variation_nette: (plBrut.stock || {}).variation_nette
+        };
+        var chargesMensuel = (plBrut.charges || {}).total_mensuel;
+        var scen = (ca.caProjete === null) ? null : PJ.scenarios({
+            postes: postes, caRealise: b.ventes, caProjete: ca.caProjete,
+            chargesMensuel: chargesMensuel, stockOption: etat.proj.stockOption
+        });
+        var conf = PJ.confiance({
+            rythmes: ca.rythmes, restants: ca.restants,
+            sourcesFiables: !(b.sources && b.sources.fiable === false),
+            histoDisponible: calibre !== null
+        });
+
+        // ---- Controles: chaque parametre du document est ajustable.
+        h += '<div class="row g-2 mb-2">'
+            + '<div class="col-md-3"><label class="form-label small">Coefficient P1/P2</label>'
+            + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" data-k="coeff" '
+            + 'value="' + (Math.round(coeff * 1000) / 1000) + '" step="0.01" min="0.5" max="3">'
+            + '<div class="form-text">' + esc(origineCoeff)
+            + (calibre !== null ? ' · calibré : ' + calibre.toFixed(3) : '')
+            + ' · document : ' + nb(pj.coeff_defaut).toFixed(3) + '</div></div>'
+            + '<div class="col-md-3"><label class="form-label small">Pondération réel / historique</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="poidsReel">'
+            + '<option value="0.7"' + (etat.proj.poidsReel === 0.7 ? ' selected' : '') + '>70 % réel + 30 % historique</option>'
+            + '<option value="0.5"' + (etat.proj.poidsReel === 0.5 ? ' selected' : '') + '>50 / 50</option>'
+            + '<option value="1"' + (etat.proj.poidsReel === 1 ? ' selected' : '') + '>100 % réel</option>'
+            + '</select></div>'
+            + '<div class="col-md-3"><label class="form-label small">Variation de stock projetée</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="stockOption">'
+            + '<option value="garder"' + (etat.proj.stockOption === 'garder' ? ' selected' : '') + '>Garder la variation actuelle</option>'
+            + '<option value="zero"' + (etat.proj.stockOption === 'zero' ? ' selected' : '') + '>La poser à zéro</option>'
+            + '</select></div>'
+            + '<div class="col-md-3"><label class="form-label small">Confiance</label><div>'
+            + '<span class="badge bg-' + (conf.niveau === 'bon' ? 'success' : (conf.niveau === 'moyen' ? 'warning text-dark' : 'danger'))
+            + '">' + conf.niveau + '</span></div></div>'
+            + '</div>';
+
+        // ---- Le CA projete et ses rythmes, toujours dits.
+        h += '<div class="alert alert-light border py-2 small mb-2">'
+            + 'CA réalisé au ' + esc(fin) + ' : <strong>' + esc(fmt(ca.caRealise)) + '</strong> F. '
+            + 'Restent ' + ca.restants.P1 + ' jours P1 à ' + esc(fmt(ca.rythmes.P1)) + ' F/j ('
+            + esc((ca.rythmes.sources || {}).P1 || '—') + ') et '
+            + ca.restants.P2 + ' jours P2 à ' + esc(fmt(ca.rythmes.P2)) + ' F/j ('
+            + esc((ca.rythmes.sources || {}).P2 || '—') + '). '
+            + 'CA estimé fin de mois : <strong>' + esc(fmt(ca.caProjete)) + '</strong> F.</div>';
+
+        if (!scen || !scen.central) {
+            // Regle du document: sans realise exploitable, on ne projette que
+            // le CA et on le DIT.
+            return h + '<div class="alert alert-warning py-2 small mb-3">'
+                + 'P&L incomplet — données de coût insuffisantes : seule la projection de CA est rendue.</div>';
+        }
+
+        // ---- Les trois scenarios du document.
+        var carte = function (lab, d, note) {
+            return '<div class="col-md-4"><div class="card h-100"><div class="card-body text-center py-3">'
+                + '<h6 class="card-subtitle mb-2 text-muted">' + lab + '</h6>'
+                + '<h3 class="mb-0 ' + cls(d.pl) + '">' + esc(fmt(d.pl)) + '</h3>'
+                + '<div class="small text-muted mt-1">CA ' + esc(fmt(d.ca)) + ' · marge nette '
+                + (d.margeNette === null ? '—' : (d.margeNette * 100).toFixed(1) + ' %') + note + '</div>'
+                + '</div></div></div>';
+        };
+        h += '<div class="row g-2 mb-2">'
+            + carte('Prudent (CA −10 %)', scen.prudent, '')
+            + carte('Central', scen.central, '')
+            + carte('Haut (CA +10 %)', scen.haut, '')
+            + '</div>';
+
+        // ---- La decomposition du scenario central, chaque regle nommee.
+        var lig = function (lib, v, regle) {
+            return '<tr><td>' + lib + ' <span class="text-muted small">' + regle + '</span></td>'
+                + '<td class="text-end">' + esc(fmt(v)) + '</td></tr>';
+        };
+        var d0 = scen.central;
+        h += '<details class="mb-2"><summary class="small fw-medium">Décomposition du scénario central</summary>'
+            + '<div class="table-responsive"><table class="table table-sm mb-1">'
+            + '<tbody>'
+            + lig('+ Chiffre d\'affaires', d0.ca, 'projection P1/P2')
+            + lig('− Avances', d0.avances, 'suivent le CA')
+            + lig('− Commission', d0.commission, 'suit le CA')
+            + lig('+ Marge CDC', d0.margeCdc, 'suit le CA')
+            + lig('− Charges fixes', d0.charges, 'mois complet')
+            + lig('− Dépenses', d0.depenses, 'réalisées à date, non extrapolées')
+            + lig('− Paiements fournisseur', d0.paiements, 'réalisés à date')
+            + lig('+ Variation de stock', d0.stock, etat.proj.stockOption === 'zero' ? 'posée à zéro' : 'photo actuelle conservée')
+            + '<tr class="table-light fw-bold"><td>PL projeté fin de mois</td>'
+            + '<td class="text-end ' + cls(d0.pl) + '">' + esc(fmt(d0.pl)) + '</td></tr>'
+            + '</tbody></table></div></details>';
+
+        if (conf.notes.length) {
+            h += '<div class="small text-muted mb-2">' + conf.notes.map(esc).join(' · ') + '</div>';
+        }
+
+        // ---- Les recommandations: des gestes chiffres.
+        var recos = PJ.recommandations({
+            plCentral: d0.pl, produits: etat.produits, margeDe: margeBase,
+            topClients: etat.sim.top_clients || [], dateAnalyse: fin
+        });
+        if (recos.length) {
+            var ico = { volume: 'graph-up-arrow', prix: 'tag', client: 'person-heart', donnee: 'database-exclamation' };
+            h += '<div class="list-group mb-3">' + recos.slice(0, 6).map(function (r) {
+                return '<div class="list-group-item py-2"><i class="bi bi-' + (ico[r.type] || 'lightbulb')
+                    + ' me-2 text-muted"></i><strong>' + esc(r.titre) + '</strong>'
+                    + '<span class="small text-muted"> — ' + esc(r.detail) + '</span></div>';
+            }).join('') + '</div>';
+        }
+
+        // ---- Les commandes qui rapportent le plus, classees par MARGE (pas
+        // par CA), et le geste pour les multiplier: relancer un panier unique,
+        // securiser une recurrence deja installee. Les lignes des commandes ne
+        // portent qu'un NOM: la marge se lit sur la ligne produit complete du
+        // tableau, quand elle existe — un produit hors simulation (Dorade,
+        // Beurre...) reste au cout inconnu et pese sur la couverture.
+        var parNom = {};
+        (etat.produits || []).forEach(function (p) {
+            parNom[String(p.nom || '').trim().toLowerCase()] = p;
+        });
+        var cdes = PJ.commandesRentables({
+            commandes: etat.sim.commandes || [],
+            margeDe: function (l) {
+                var p = parNom[String(l.nom || '').trim().toLowerCase()];
+                return p ? margeBase(p) : null;
+            },
+            limite: 3
+        });
+        if (cdes.length) {
+            h += '<h6 class="small fw-medium mb-1">Commandes qui rapportent le plus — à multiplier</h6>'
+                + '<div class="list-group mb-3">' + cdes.map(function (c) {
+                    var geste = c.commandesClient > 1
+                        ? (c.client ? esc(c.client) + ' en a passé ' + c.commandesClient
+                            + ' sur la période : sécuriser la récurrence (rappel, jour fixe de livraison)' : '')
+                        : (c.client ? 'relancer ' + esc(c.client)
+                            + ' et proposer la même sélection à vos autres gros clients'
+                            : 'proposer cette sélection en avant à vos gros clients');
+                    return '<div class="list-group-item py-2"><i class="bi bi-bag-check me-2 text-muted"></i>'
+                        + '<strong>' + esc(c.client || ('Commande #' + c.id))
+                        + (c.date ? ' · ' + esc(c.date) : '') + '</strong>'
+                        + '<span class="small text-muted"> — PL estimé +' + esc(fmt(c.marge))
+                        + ' F sur ' + esc(fmt(c.ca)) + ' F de CA ('
+                        + esc(c.produits.slice(0, 3).join(', ')) + (c.produits.length > 3 ? ', …' : '') + ')'
+                        + (c.couverture < 0.999 ? ' · coûts connus sur ' + Math.round(c.couverture * 100) + ' % du panier' : '')
+                        + ' · ' + geste + '</span></div>';
+                }).join('') + '</div>';
+        }
+
+        // ---- Derivation en mode debug: le meme niveau d'exigence que le
+        // reste, chiffres et controle de coherence compris.
+        if (etat.debug) {
+            var sommeJours = 0;
+            Object.keys(pj.ca_par_jour || {}).forEach(function (j) {
+                if (j >= debut && j <= fin) sommeJours += nb(pj.ca_par_jour[j]);
+            });
+            var pad2 = function (t, n) { t = String(t); return t + ' '.repeat(Math.max(0, n - t.length)); };
+            var dbg = 'PROJECTION — DERIVATION\n';
+            dbg += '   coefficient P1/P2         ' + coeff.toFixed(3) + '  (' + origineCoeff + ')\n';
+            dbg += '   rythme P1 retenu          ' + fmt(ca.rythmes.P1) + ' F/j  (' + ((ca.rythmes.sources || {}).P1 || '—') + ')\n';
+            dbg += '   rythme P2 retenu          ' + fmt(ca.rythmes.P2) + ' F/j  (' + ((ca.rythmes.sources || {}).P2 || '—') + ')\n';
+            dbg += '   CA estimé = ' + fmt(ca.caRealise) + ' + ' + ca.restants.P1 + ' j × ' + fmt(ca.rythmes.P1)
+                + ' + ' + ca.restants.P2 + ' j × ' + fmt(ca.rythmes.P2) + ' = ' + fmt(ca.caProjete) + '\n';
+            dbg += '   contrôle : somme du CA journalier − total ventes du PL = '
+                + fmt(sommeJours - b.ventes) + ' F'
+                + (Math.abs(sommeJours - b.ventes) < 1 ? '  ✓' : '  (ventes à date illisible exclues)') + '\n';
+            h += '<pre class="small border rounded p-2 mb-3" style="background:#f8fafc;overflow-x:auto">' + esc(dbg) + '</pre>';
+        }
+        return h;
+    }
+
     // ---- Mode debug. Il ne recalcule RIEN: il imprime la derivation du
     // chiffre deja affiche. Un mode debug qui referait le calcul par un autre
     // chemin controlerait son propre chemin, pas celui de l'ecran.
@@ -853,6 +1073,15 @@
                 }
                 etat.globaux[el.dataset.g] = v;
                 onLevier();
+            });
+        });
+        document.querySelectorAll('.sim2-proj-ctl').forEach(function (el) {
+            el.addEventListener('input', function () {
+                var k = el.dataset.k;
+                if (k === 'stockOption') etat.proj.stockOption = el.value;
+                else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
+                else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);
+                rendre();
             });
         });
         // Le detail au clic n'existe qu'en mode debug: c'est un outil de
