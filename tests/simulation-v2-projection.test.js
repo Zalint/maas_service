@@ -360,18 +360,51 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         expect(suite).toEqual([...suite].sort((a, b) => b - a));
     });
 
-    test('meme nombre d unites pour tous, et les fortes marges rapportent plus', () => {
-        // La part suit la marge, donc les unites s'egalisent: un seul chiffre
-        // a transmettre, et l'argent suit la marge sans explication.
-        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+    test('les fortes marges rapportent plus a effort egal en unites', () => {
+        // Manque modeste: aucun produit n'atteint son plafond, les unites
+        // s'egalisent donc et l'argent suit la marge sans explication.
+        const r = P.planEquilibre(Object.assign({ plCentral: -26000 }, BASE));
         const somme = 900 + 700 + 500 + 300 + 200;
-        expect(r.unitesCommunes).toBeCloseTo(450000 / somme, 6);
+        expect(r.unitesCommunes).toBeCloseTo(26000 / somme, 6);
         r.plan.forEach((x) => {
+            expect(x.plafonne).toBe(false);
             expect(x.volumeAdditionnel).toBeCloseTo(r.unitesCommunes, 6);
             expect(x.part).toBeCloseTo(r.unitesCommunes * x.marge, 4);
         });
-        // A effort egal en unites, le plus forte marge apporte le plus.
+        // Le plan est trie par apport: la plus forte marge en tete.
+        expect(r.plan[0].nom).toBe('Boeuf en détail');
         expect(r.plan[0].part).toBeGreaterThan(r.plan[4].part);
+    });
+
+    test('un produit ne peut pas plus que doubler: le reste va aux autres', () => {
+        // Yell n'attend que 50 u, plafond +50 u. A 450 000 F de manque, la
+        // part egale (172 u) le depasserait: il est plafonne a 50 u, et son
+        // reliquat se reporte sur les produits qui peuvent l'absorber.
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        const yell = r.plan.filter((x) => x.nom === 'Yell')[0];
+        expect(yell.plafonne).toBe(true);
+        expect(yell.volumeAdditionnel).toBeCloseTo(50, 6);
+        expect(yell.haussePct).toBeCloseTo(100, 6);
+        // Aucun produit ne depasse son volume attendu.
+        r.plan.forEach((x) => { expect(x.volumeAdditionnel).toBeLessThanOrEqual(x.volumeRestant + 1e-9); });
+        // Le compte tombe toujours juste.
+        expect(r.plan.reduce((s, x) => s + x.part, 0)).toBeCloseTo(450000, 3);
+        expect(r.atteignable).toBe(true);
+        expect(r.resteACouvrir).toBe(0);
+    });
+
+    test('un produit qui ne se vend presque pas ne porte presque rien', () => {
+        // La plus forte marge du lot, mais un demi-kilo attendu: le classement
+        // par marge seule en aurait fait le pilier du plan.
+        const r = P.planEquilibre(Object.assign({}, BASE, {
+            plCentral: -450000,
+            produits: BASE.produits.concat([{ nom: 'Rarissime', quantite: 0.5, ca: 5000 }]),
+            margeDe: (p) => (p.nom === 'Rarissime' ? 5000 : MARGES[p.nom])
+        }));
+        const rare = r.plan.filter((x) => x.nom === 'Rarissime')[0];
+        expect(rare.plafonne).toBe(true);
+        expect(rare.volumeAdditionnel).toBeCloseTo(0.5, 6);
+        expect(rare.part).toBeCloseTo(2500, 6);
     });
 
     test('un produit sans marge connue, nulle ou negative ne porte rien', () => {
@@ -381,15 +414,12 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         expect(r.plan[0].nom).toBe('Boeuf en détail');
     });
 
-    test('demander plus que doubler un produit est signale', () => {
-        // Yell n'attend que 50 u: un objectif de 173 u le fait plus que
-        // tripler. L'ecran doit le dire plutot que de le presenter comme
-        // acquis.
-        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
-        const yell = r.plan.filter((x) => x.nom === 'Yell')[0];
-        expect(yell.volumeRestant).toBeCloseTo(50, 6);
-        expect(yell.exigeant).toBe(true);
-        expect(r.plan[0].exigeant).toBe(false); // 432 u attendus sur le boeuf
+    test('un manque hors de portee du volume laisse un reste, et le dit', () => {
+        // Capacite au plafond = somme(marge x volume attendu) = 1 390 000.
+        const r = P.planEquilibre(Object.assign({ plCentral: -2000000 }, BASE));
+        expect(r.atteignable).toBe(false);
+        expect(r.resteACouvrir).toBeCloseTo(2000000 - 1390000, 3);
+        r.plan.forEach((x) => { expect(x.plafonne).toBe(true); });
     });
 
     test('un objectif hors d atteinte est annonce comme tel', () => {

@@ -1822,7 +1822,19 @@ router.get('/simulation', async (req, res) => {
             };
         }
 
-        const produits = PRODUITS_SIMULATION.map((nom) => {
+        // Les cinq d'origine, plus ceux que l'administration a ajoutes. La
+        // base reste codee en dur: un tableau dont les lignes changent d'un
+        // mois a l'autre ne se compare pas, et l'ajout doit etre un acte
+        // explicite. Hors v2, la liste ne bouge pas du tout.
+        const listeSuivie = v2 && reglagesSim.produitsSuivis.length
+            ? PRODUITS_SIMULATION.concat(
+                reglagesSim.produitsSuivis.filter((nom) => !PRODUITS_SIMULATION.some(
+                    (base) => normaliserNomProduit(base) === normaliserNomProduit(nom)
+                ))
+            )
+            : PRODUITS_SIMULATION;
+
+        const produits = listeSuivie.map((nom) => {
             const agg = trouverProduit(volumes.produits, nom)
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
             const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
@@ -1859,6 +1871,84 @@ router.get('/simulation', async (req, res) => {
             };
         });
 
+        // ---- TOUS les produits vendus, avec leur cout quand il est connu.
+        //
+        // PRODUITS_SIMULATION est une liste FERMEE, et c'est voulu: le tableau
+        // de sensibilite doit se comparer d'un mois a l'autre, donc ses lignes
+        // ne doivent pas apparaitre et disparaitre. Mais le plan d'equilibre,
+        // lui, cherche ou aller chercher de la marge - et rien ne justifie
+        // qu'il ignore une cuisse de poulet qui se vend avec un cout connu.
+        //
+        // Deux listes pour deux usages, donc, plutot qu'une liste ouverte qui
+        // casserait la comparaison. Les produits SANS cout connu sont rendus
+        // avec marge nulle: l'ecran les nomme au lieu de les taire, c'est ce
+        // qui pousse a completer le catalogue.
+        let produitsVendus = null;
+        let candidatsV2 = null;
+        if (v2) {
+            produitsVendus = volumes.produits
+                .filter((a) => a.quantite > 0)
+                .map((a) => {
+                    // La graphie la plus courante fait un meilleur libelle que
+                    // la cle normalisee, qui est en minuscules sans accents.
+                    const nom = a.graphies[0] || a.cle;
+                    const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
+                    const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+                    return {
+                        nom,
+                        quantite: round2(a.quantite),
+                        ca: round2(a.ca),
+                        prix_moyen: a.prix_moyen === null ? null : round2(a.prix_moyen),
+                        prix_achat: prixAchat,
+                        nb_lignes: a.nb_lignes,
+                        sans_vente: false,
+                        prix_achat_origine: origineDe(nom)
+                    };
+                });
+
+            // ---- CANDIDATS a l'ajout dans la liste suivie, par marge.
+            //
+            // Condition posee par le proprietaire du produit: le nom vendu doit
+            // etre AUSSI un nom de stock. Sans ligne de stock, le produit n'a
+            // ni borne matin ni borne soir - donc ni variation ni parage a lui
+            // opposer, et il n'apporterait qu'un prix a la simulation.
+            //
+            // Une seule requete, sur les noms DISTINCTS de la table stocks:
+            // c'est un ensemble court, et la comparaison se fait ensuite en
+            // memoire avec la meme normalisation que partout ailleurs.
+            const nomsStock = await sequelize.query(
+                'SELECT DISTINCT produit FROM stocks',
+                { type: sequelize.QueryTypes.SELECT }
+            );
+            const clesStock = new Set(
+                nomsStock.map((r) => normaliserNomProduit(r.produit)).filter(Boolean)
+            );
+            const dejaSuivi = new Set(listeSuivie.map((n) => normaliserNomProduit(n)));
+
+            candidatsV2 = produitsVendus
+                .filter((p) => {
+                    if (dejaSuivi.has(normaliserNomProduit(p.nom))) return false;
+                    if (!clesStock.has(normaliserNomProduit(p.nom))) return false;
+                    // Sans cout connu, aucune marge a proposer: le produit
+                    // apparait deja dans les recommandations "coût inconnu".
+                    return p.prix_achat !== null && p.prix_moyen !== null;
+                })
+                .map((p) => ({
+                    nom: p.nom,
+                    quantite: p.quantite,
+                    ca: p.ca,
+                    prix_moyen: p.prix_moyen,
+                    prix_achat: p.prix_achat,
+                    // Marge BRUTE: le parage par espece est une affaire de
+                    // l'ecran, qui connait le scenario en cours. Elle suffit a
+                    // classer les candidats entre eux.
+                    marge_unitaire: round2(p.prix_moyen - p.prix_achat)
+                }))
+                .filter((p) => p.marge_unitaire > 0)
+                .sort((a, b) => b.marge_unitaire - a.marge_unitaire)
+                .slice(0, 20);
+        }
+
         // Somme de TOUTES les lignes de vente de la periode, tous produits
         // confondus. Le client s'en sert pour verifier que le denominateur des
         // pourcentages - le total_ventes du PL - se rapporte bien au meme
@@ -1877,6 +1967,12 @@ router.get('/simulation', async (req, res) => {
             data: {
                 periode: { dateDebut, dateFin },
                 produits,
+                // Null hors v2: le plan d'equilibre n'y existe pas.
+                produits_vendus: produitsVendus,
+                // Produits proposes a l'ajout, par marge decroissante.
+                produits_candidats: candidatsV2,
+                // Ce que l'administration a ajoute a la liste de base.
+                produits_suivis_ajoutes: v2 ? reglagesSim.produitsSuivis : null,
                 total_ventes_toutes_lignes: round2(totalToutesLignes),
                 produit_equilibre: PRODUIT_EQUILIBRE,
                 // Mesure, cf le commentaire d'en-tete de cette route.

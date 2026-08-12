@@ -68,6 +68,7 @@ router.get('/reglages', async (req, res) => {
                 actif: r.actif,
                 famille_poulet: r.famillePoulet,
                 prix_achat_defaut_poulet: r.prixPouletDefaut,
+                produits_simulation: r.produitsSuivis,
                 avertissements: r.avertissements
             }
         });
@@ -79,7 +80,8 @@ router.get('/reglages', async (req, res) => {
 
 /**
  * PUT /api/simulation-v2/reglages
- * Body: { actif?: boolean, famillePoulet?: string[]|string, prixPouletDefaut?: number }
+ * Body: { actif?: boolean, famillePoulet?: string[]|string,
+ *         prixPouletDefaut?: number, produitsSuivis?: string[]|string }
  */
 router.put('/reglages', adminStrict, async (req, res) => {
     try {

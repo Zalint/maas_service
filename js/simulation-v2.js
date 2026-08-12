@@ -802,6 +802,102 @@
         return M.margeAvec(p, { leviers: {}, globaux: {} }, etat.contexte);
     }
 
+    /**
+     * Reglage ADMIN des produits suivis, a l'endroit ou l'on constate le
+     * besoin: on voit ici qu'un produit manque au plan, on l'ajoute ici.
+     *
+     * Les candidats viennent du serveur, deja filtres (nom present AUSSI en
+     * stock, cout connu) et classes par marge decroissante. Le tri par marge
+     * est le seul qui reponde a la question posee: ou aller chercher de la
+     * marge en plus.
+     */
+    function panneauProduitsSuivis() {
+        var u = window.currentUser || {};
+        if (String(u.role || '').toLowerCase() !== 'admin') return '';
+        var cand = (etat.sim && etat.sim.produits_candidats) || [];
+        var ajoutes = (etat.sim && etat.sim.produits_suivis_ajoutes) || [];
+        if (!cand.length && !ajoutes.length) return '';
+
+        var choisis = {};
+        ajoutes.forEach(function (n) { choisis[String(n).trim().toLowerCase()] = true; });
+
+        var h = '<details class="mb-3"><summary class="small fw-medium">'
+            + 'Produits suivis par la simulation'
+            + (ajoutes.length ? ' — ' + ajoutes.length + ' ajouté(s)' : '')
+            + ' <span class="badge bg-secondary">admin</span></summary>'
+            + '<div class="border rounded p-2 mt-1">'
+            + '<div class="small text-muted mb-2">'
+            + 'Les cinq produits d\'origine sont toujours suivis. Ceux-ci s\'y ajoutent, '
+            + 'classés par marge décroissante. Seuls apparaissent les produits vendus '
+            + 'dont le nom existe <strong>aussi en stock</strong> : sans ligne de stock, '
+            + 'un produit n\'a ni borne matin ni borne soir, donc aucun parage à lui opposer.'
+            + '</div>';
+
+        if (ajoutes.length) {
+            var connus = {};
+            cand.forEach(function (c) { connus[String(c.nom).trim().toLowerCase()] = true; });
+            var orphelins = ajoutes.filter(function (n) {
+                return !connus[String(n).trim().toLowerCase()];
+            });
+            if (orphelins.length) {
+                h += '<div class="small mb-2">Déjà suivis : '
+                    + orphelins.map(function (n) {
+                        return '<label class="me-2"><input type="checkbox" class="sim2-suivi" checked value="'
+                            + esc(n) + '"> ' + esc(n) + '</label>';
+                    }).join('') + '</div>';
+            }
+        }
+
+        h += '<div class="table-responsive"><table class="table table-sm mb-2"><thead><tr>'
+            + '<th></th><th>Produit</th><th class="text-end">Marge brute</th>'
+            + '<th class="text-end">Vendu</th><th class="text-end">CA</th>'
+            + '</tr></thead><tbody>'
+            + cand.map(function (c) {
+                var coche = choisis[String(c.nom).trim().toLowerCase()] ? ' checked' : '';
+                return '<tr><td><input type="checkbox" class="sim2-suivi" value="'
+                    + esc(c.nom) + '"' + coche + '></td>'
+                    + '<td>' + esc(c.nom) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(c.marge_unitaire)) + ' F/u</td>'
+                    + '<td class="text-end">' + esc(fmt(c.quantite)) + ' u</td>'
+                    + '<td class="text-end">' + esc(fmt(c.ca)) + ' F</td></tr>';
+            }).join('')
+            + '</tbody></table></div>'
+            + '<button type="button" class="btn btn-sm btn-primary" id="sim2-suivi-save" style="color:#fff">'
+            + '<i class="bi bi-save"></i> Enregistrer la sélection</button>'
+            + ' <span id="sim2-suivi-msg" class="small ms-2"></span>'
+            + '</div></details>';
+        return h;
+    }
+
+    function enregistrerProduitsSuivis() {
+        var noms = [];
+        document.querySelectorAll('.sim2-suivi').forEach(function (el) {
+            if (el.checked) noms.push(el.value);
+        });
+        var msg = document.getElementById('sim2-suivi-msg');
+        if (msg) msg.textContent = 'Enregistrement…';
+        fetch('/api/simulation-v2/reglages', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ produitsSuivis: noms })
+        }).then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+                if (!j || !j.success) {
+                    if (msg) msg.innerHTML = '<span class="text-danger">'
+                        + esc((j && j.error) || 'Enregistrement refusé') + '</span>';
+                    return;
+                }
+                if (msg) msg.innerHTML = '<span class="text-success">Enregistré. Recalcul…</span>';
+                // Le serveur recompose la liste suivie: seul un rechargement
+                // rend le tableau coherent avec le reglage.
+                charger();
+            })
+            .catch(function (e) {
+                if (msg) msg.innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
+            });
+    }
+
     function projection() {
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
@@ -929,8 +1025,16 @@
         //
         // Les leviers portent sur le volume RESTANT, pas sur le volume deja
         // vendu: le mois ecoule ne se rejoue pas.
+        // Le plan puise dans TOUS les produits vendus, pas dans la seule liste
+        // suivie: celle-ci est fermee pour que le tableau de sensibilite se
+        // compare d'un mois a l'autre, ce qui n'a aucune raison de priver
+        // l'equilibre d'une cuisse de poulet dont le cout est connu. Repli sur
+        // la liste suivie si le serveur ne fournit pas encore l'autre.
+        var universEq = (etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+            ? etat.sim.produits_vendus
+            : etat.produits;
         var eq = PJ.planEquilibre({
-            plCentral: d0.pl, produits: etat.produits, margeDe: margeBase,
+            plCentral: d0.pl, produits: universEq, margeDe: margeBase,
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             principal: 'Boeuf en détail', nbProduits: 5
@@ -978,7 +1082,7 @@
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
                     + eq.plan.map(function (x) {
                         return '<tr><td>' + esc(x.nom)
-                            + (x.exigeant ? ' <span class="badge bg-warning text-dark">plus que doubler</span>' : '')
+                            + (x.plafonne ? ' <span class="badge bg-secondary">au maximum</span>' : '')
                             + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
                             + '<td class="text-end">' + esc(fmt(x.volumeRestant)) + ' u</td>'
@@ -1003,6 +1107,8 @@
                     + 'l\'équilibre ne se joue pas sur le seul volume ce mois-ci.</div>';
             }
         }
+
+        h += panneauProduitsSuivis();
 
         // ---- La decomposition du scenario central, chaque regle nommee.
         var lig = function (lib, v, regle) {
@@ -1257,6 +1363,8 @@
                 onLevier();
             });
         });
+        var sauve = document.getElementById('sim2-suivi-save');
+        if (sauve) sauve.addEventListener('click', enregistrerProduitsSuivis);
         document.querySelectorAll('.sim2-proj-ctl').forEach(function (el) {
             el.addEventListener('input', function () {
                 var k = el.dataset.k;

@@ -467,33 +467,65 @@
             return b.marge - a.marge;
         }).slice(0, args.nbProduits || 5);
 
-        // Part de chacun PROPORTIONNELLE A SA MARGE. La consequence est le
-        // coeur du plan: le nombre d'unites supplementaires est alors le MEME
-        // pour tous, et ce sont les fortes marges qui rapportent le plus a
-        // effort egal. Un seul chiffre a transmettre - "+N unites de chacun" -
-        // et l'argent suit la marge sans qu'on ait a l'expliquer.
-        var sommeMarges = choisis.reduce(function (s, x) { return s + x.marge; }, 0);
-        var unitesCommunes = sommeMarges > 0 ? manque / sommeMarges : null;
+        // Part de chacun PROPORTIONNELLE A SA MARGE, sous PLAFOND DE REALISME.
+        //
+        // A marge egale de traitement, le nombre d'unites supplementaires est
+        // le meme pour tous et ce sont les fortes marges qui rapportent le
+        // plus: un seul chiffre a transmettre, et l'argent suit la marge sans
+        // qu'on ait a l'expliquer.
+        //
+        // Mais classer sur la seule marge unitaire fait remonter des produits
+        // qui ne se vendent presque pas - une demi-unite de "Viande boeuf
+        // Avant" a la plus forte marge du catalogue. Lui demander +197 u n'est
+        // pas un plan. Chaque produit est donc plafonne a facteurMax fois son
+        // volume attendu (1 = au plus doubler), et ce qu'il ne peut pas porter
+        // est redistribue sur les autres - un remplissage par paliers, jusqu'a
+        // ce que le manque soit couvert ou que tout soit plafonne.
+        var facteurMax = args.facteurMax === undefined ? 1 : args.facteurMax;
+        var etats = choisis.map(function (x) {
+            return { p: x, plafond: x.volumeRestant * facteurMax, unites: 0, plafonne: false };
+        });
+        var reste = manque;
+        var unitesCommunes = null;
+        for (var tour = 0; tour < etats.length + 1; tour++) {
+            var libres = etats.filter(function (e) { return !e.plafonne; });
+            if (!libres.length || reste <= 0) break;
+            var sommeMarges = libres.reduce(function (s, e) { return s + e.p.marge; }, 0);
+            if (sommeMarges <= 0) break;
+            var u = reste / sommeMarges;
+            var depassent = libres.filter(function (e) { return u > e.plafond; });
+            if (!depassent.length) {
+                libres.forEach(function (e) { e.unites = u; });
+                unitesCommunes = u;
+                reste = 0;
+                break;
+            }
+            depassent.forEach(function (e) {
+                e.unites = e.plafond;
+                e.plafonne = true;
+                reste -= e.plafond * e.p.marge;
+            });
+        }
 
-        var plan = choisis.map(function (x) {
-            var unites = unitesCommunes === null ? 0 : unitesCommunes;
+        var plan = etats.map(function (e) {
+            var x = e.p;
             return {
                 nom: x.nom, marge: x.marge,
                 volumeRestant: x.volumeRestant,
-                volumeAdditionnel: unites,
-                part: unites * x.marge,
-                haussePct: x.volumeRestant > 0 ? (unites / x.volumeRestant) * 100 : null,
-                parJour: nb(args.joursRestants) > 0 ? unites / nb(args.joursRestants) : null,
-                // Demander plus que le volume deja attendu, c'est demander de
-                // faire mieux que doubler: signale, pas cache.
-                exigeant: x.volumeRestant > 0 && unites > x.volumeRestant
+                volumeAdditionnel: e.unites,
+                part: e.unites * x.marge,
+                haussePct: x.volumeRestant > 0 ? (e.unites / x.volumeRestant) * 100 : null,
+                parJour: nb(args.joursRestants) > 0 ? e.unites / nb(args.joursRestants) : null,
+                // Le produit donne tout ce qu'il peut raisonnablement donner:
+                // c'est le signe que l'effort doit aller ailleurs.
+                plafonne: e.plafonne
             };
-        });
+        }).sort(function (a, b) { return b.part - a.part; });
 
-        // Ce que les produits retenus peuvent porter si chacun DOUBLE son
-        // volume attendu: au-dela, l'equilibre ne se joue pas sur le volume.
+        // Ce que les produits retenus peuvent porter au plafond: au-dela,
+        // l'equilibre ne se joue pas sur le volume.
         var capaciteTotale = choisis.reduce(function (s, x) {
-            return s + x.marge * x.volumeRestant;
+            return s + x.marge * x.volumeRestant * facteurMax;
         }, 0);
 
         return {
@@ -502,13 +534,16 @@
             proportion: proportion,
             seul: seul,
             plan: plan,
-            // Meme nombre d'unites pour tous, par construction: le chiffre a
-            // retenir pour toute l'equipe.
+            // Meme nombre d'unites pour tous ceux qui ne sont pas plafonnes:
+            // le chiffre a retenir pour l'equipe. Null si tout est plafonne.
             unitesCommunes: unitesCommunes,
             capaciteTotale: capaciteTotale,
-            // Le plan ne suffit pas si meme +100 % de volume ne comble pas le
-            // manque: on le DIT plutot que d'afficher un objectif intenable.
-            atteignable: capaciteTotale >= manque
+            facteurMax: facteurMax,
+            // Ce qui reste a trouver ailleurs quand le volume ne suffit pas.
+            resteACouvrir: reste > 0 ? reste : 0,
+            // Le plan ne suffit pas si meme au plafond le manque tient: on le
+            // DIT plutot que d'afficher un objectif intenable.
+            atteignable: reste <= 0
         };
     }
 
