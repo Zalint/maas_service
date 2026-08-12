@@ -1341,17 +1341,28 @@ async function updateSchema() {
         // au bout de 5 s: IF NOT EXISTS fait que le boot suivant reessaiera.
         // CONCURRENTLY n'est pas utilisable ici: il refuse de s'executer dans
         // une transaction et laisse un index invalide en cas d'echec.
+        // Le timeout et la creation DOIVENT partager la meme connexion.
+        // lock_timeout est un reglage de SESSION, et sequelize prend une
+        // connexion du pool (max 5) par requete: deux sequelize.query
+        // successifs pouvaient tomber sur deux sessions differentes, le
+        // CREATE INDEX s'executant alors avec lock_timeout illimite - donc
+        // exactement le blocage que ce garde-fou est cense empecher.
+        //
+        // Une transaction epingle la connexion, et SET LOCAL limite la portee
+        // du reglage a cette transaction: rien a remettre a DEFAULT ensuite,
+        // meme en cas d'echec.
         if (await checkTableExists('ventes')) {
             try {
-                await sequelize.query(`SET lock_timeout = '5s'`);
-                await sequelize.query(`
-                    CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)
-                `);
+                await sequelize.transaction(async (t) => {
+                    await sequelize.query(`SET LOCAL lock_timeout = '5s'`, { transaction: t });
+                    await sequelize.query(
+                        `CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)`,
+                        { transaction: t }
+                    );
+                });
                 console.log('Index idx_ventes_date verifie');
             } catch (e) {
                 console.warn(`Index idx_ventes_date non cree (${e.message}) - nouvelle tentative au prochain demarrage`);
-            } finally {
-                await sequelize.query(`SET lock_timeout = DEFAULT`);
             }
         }
 

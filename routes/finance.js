@@ -1594,7 +1594,17 @@ router.get('/simulation', async (req, res) => {
                     // les quantites vendues; 'fin_de_periode' qu'il est fige
                     // au dernier jour.
                     mode: v2 ? 'periode' : 'fin_de_periode',
-                    famille_poulet: v2 ? reglagesSim.famillePoulet : [],
+                    // La composition de la famille est un REGLAGE, pas un
+                    // resultat: elle ne sort que pour les admins, comme le
+                    // decident deja GET /api/simulation-v2/reglages et
+                    // GET /api/finance/config. Cette route etant ouverte aux
+                    // superviseurs, la laisser passer ici annulait les deux
+                    // autres restrictions.
+                    //
+                    // prix_achat_origine reste rendu a tous: il dit d'ou vient
+                    // un cout affiche, ce qui est necessaire pour le lire, et
+                    // ne divulgue pas la liste.
+                    famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
                     avertissements: resolveurPrix.avertissements || []
                 }
             }
@@ -1805,8 +1815,17 @@ async function computePl(dateDebut, dateFin) {
         } catch (e) {
             // Le catch reste un filet: il ne peut pas servir de signal, mais
             // une exception inattendue doit tout de meme fermer la source.
-            avancesEtat = 'indisponible';
-            avancesRaison = `erreur inattendue (${e.message})`;
+            //
+            // SEULEMENT si l'etat vaut encore 'ok'. Ecraser inconditionnellement
+            // aurait pu requalifier un 'non_configure' en 'indisponible' et
+            // rebloquer le figeage sur un tenant qui n'a jamais eu d'avances a
+            // lire - le defaut meme que cette distinction corrige. Le chemin
+            // n'est pas atteignable aujourd'hui; il ne tiendrait qu'a la
+            // brievete de ce bloc try.
+            if (avancesEtat === 'ok') {
+                avancesEtat = 'indisponible';
+                avancesRaison = `erreur inattendue (${e.message})`;
+            }
             console.warn('[PL] fetch CDB avances echoue:', e.message);
         }
 
@@ -1997,9 +2016,13 @@ async function computePl(dateDebut, dateFin) {
                 // eux, une simulation rejouee sur un PL fige melangerait un
                 // resultat fige et des volumes vivants.
                 //
-                // total_ca vaut total_ventes par construction (meme boucle,
-                // memes lignes). L'ecart eventuel entre les deux est donc un
-                // signal de defaut, pas une nuance de methode.
+                // total_ca et total_ventes portent la MEME somme, sur les memes
+                // lignes - mais total_ventes est arrondi au centime et
+                // total_ca ne l'est pas, l'arrondi appartenant a la sortie
+                // depuis qu'il faussait le prix moyen. Un controle qui
+                // confronte les deux doit donc se donner une tolerance, comme
+                // celui des postes: au-dela du centime, l'ecart est un signal
+                // de defaut; en deca, c'est l'arrondi.
                 volumes: volumesVendus,
                 // ETAT DES SOURCES, a cote des montants et jamais confondu
                 // avec eux. `fiable` est faux des qu'un poste repose sur une
@@ -2135,36 +2158,102 @@ router.get('/pl', async (req, res) => {
 // periodePlParDefaut() construit sa date a partir de l'instant present et que
 // la date est cle primaire. Poser une garde sans fournir son remede, c'est
 // echanger un chiffre faux contre une donnee manquante et irrecuperable.
+/**
+ * Gardes du figeage, isolees de HTTP pour etre testables.
+ *
+ * Sans date: comportement d'origine, la periode par defaut, source 'manuel'.
+ * Avec date: rattrapage d'une journee passee, sous trois conditions.
+ *
+ * @param {Object} args
+ * @param {Object} args.body        corps de la requete
+ * @param {Object} args.defaut      { dateDebut, dateFin } de periodePlParDefaut()
+ * @param {string} args.role        role de la session, en minuscules
+ * @param {Object|null} args.existant ligne pl_snapshots deja presente a cette date
+ * @returns {{dateDebut, dateFin, source, remplace}}
+ * @throws {Error} avec statusHttp et code
+ */
+function resoudreCibleSnapshot({ body, defaut, role, existant }) {
+    const corps = body || {};
+    const brut = corps.date;
+    if (brut === undefined || brut === null || String(brut).trim() === '') {
+        return {
+            dateDebut: defaut.dateDebut, dateFin: defaut.dateFin,
+            source: 'manuel', remplace: null
+        };
+    }
+
+    const refus = (message, statusHttp, code) => {
+        const err = new Error(message);
+        err.statusHttp = statusHttp;
+        if (code) err.code = code;
+        return err;
+    };
+
+    const iso = parseDateVersISO(String(brut));
+    if (!iso) throw refus('date invalide (attendu YYYY-MM-DD ou DD-MM-YYYY)', 400, 'date_invalide');
+
+    // Une date FUTURE figerait une periode vide en se faisant passer pour un
+    // resultat. computePl ne borne que la LONGUEUR de la periode, pas sa
+    // position.
+    if (iso > defaut.dateFin) {
+        throw refus(`date future refusée : ${iso} est après aujourd'hui`, 400, 'date_future');
+    }
+
+    // ADMIN STRICT sur cette branche seulement. Le chemin par defaut fige la
+    // journee COURANTE, et un superviseur a toujours pu le faire. Rattraper
+    // une date PASSEE est autre chose: c'est ecrire dans l'historique.
+    // checkPlAccess, qui garde ce prefixe, laisse passer admin ET superviseur,
+    // trop large pour ce geste-la.
+    if (role !== 'admin') {
+        throw refus('Le rattrapage d\'une date passée est réservé aux administrateurs', 403, 'admin_requis');
+    }
+
+    // UN PL FIGE NE S'ECRASE PAS PAR ACCIDENT. La cle primaire est la date et
+    // l'ecriture est un upsert: sans cette garde, rattraper une date DEJA
+    // figee remplacait silencieusement une valeur officielle par un recalcul
+    // qui peut differer. Mesure sur le 1er au 10 aout 2026: le fige dit
+    // -65 514,94 et le recalcul -37 442,44, les donnees de stock ayant bouge
+    // depuis. La valeur d'origine, peut-etre deja lue et exportee,
+    // disparaissait sans trace. Le remplacement reste possible, mais il doit
+    // etre DEMANDE.
+    if (existant && corps.remplacer !== true) {
+        throw refus(
+            `Le PL du ${iso} est déjà figé (${existant.pl} FCFA, source ${existant.source}). `
+            + 'Renvoyez remplacer: true pour l\'écraser.',
+            409, 'deja_fige'
+        );
+    }
+
+    return {
+        // Meme convention que tout l'historique: un PL fige est un cumul du
+        // 1er du mois a la date figee. Rattraper avec une autre borne rendrait
+        // la ligne incomparable aux autres.
+        dateDebut: iso.slice(0, 8) + '01',
+        dateFin: iso,
+        source: 'rattrapage',
+        // La valeur remplacee part dans la trace: c'est la seule facon de
+        // savoir plus tard ce qui a ete ecrase, et par qui.
+        remplace: existant ? { pl: existant.pl, source: existant.source } : null
+    };
+}
+
 router.post('/pl/snapshot', async (req, res) => {
     try {
         const defaut = periodePlParDefaut();
-        let dateDebut = defaut.dateDebut;
-        let dateFin = defaut.dateFin;
-        let source = 'manuel';
-
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        // La ligne existante n'est lue QUE si une date est demandee: le chemin
+        // par defaut ecrase la journee courante a dessein, et le cron comme le
+        // bouton "Figer le PL du jour" doivent pouvoir refiger apres une
+        // saisie tardive.
         const brut = req.body && req.body.date;
-        if (brut !== undefined && brut !== null && String(brut).trim() !== '') {
-            const iso = parseDateVersISO(String(brut));
-            if (!iso) {
-                const err = new Error('date invalide (attendu YYYY-MM-DD ou DD-MM-YYYY)');
-                err.statusHttp = 400;
-                throw err;
-            }
-            // Une date FUTURE figerait une periode vide en se faisant passer
-            // pour un resultat. computePl ne borne que la LONGUEUR de la
-            // periode, pas sa position.
-            if (iso > defaut.dateFin) {
-                const err = new Error(`date future refusée : ${iso} est après aujourd'hui`);
-                err.statusHttp = 400;
-                throw err;
-            }
-            // Meme convention que tout l'historique: un PL fige est un cumul
-            // du 1er du mois a la date figee. Rattraper avec une autre borne
-            // rendrait la ligne incomparable aux autres.
-            dateDebut = iso.slice(0, 8) + '01';
-            dateFin = iso;
-            source = 'rattrapage';
-        }
+        const viseUneDate = brut !== undefined && brut !== null && String(brut).trim() !== '';
+        const isoDemande = viseUneDate ? parseDateVersISO(String(brut)) : null;
+        const existant = isoDemande
+            ? await PlSnapshot.findByPk(isoDemande, { raw: true })
+            : null;
+
+        const { dateDebut, dateFin, source, remplace } =
+            resoudreCibleSnapshot({ body: req.body, defaut, role, existant });
 
         const data = await computePl(dateDebut, dateFin);
 
@@ -2204,8 +2293,8 @@ router.post('/pl/snapshot', async (req, res) => {
             payload: data,
             updated_at: new Date()
         });
-        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source });
-        res.json({ success: true, data: { date: dateFin, pl: data.pl, source } });
+        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source, remplace });
+        res.json({ success: true, data: { date: dateFin, pl: data.pl, source, remplace } });
     } catch (e) {
         if (!e.statusHttp) console.error('POST /api/finance/pl/snapshot:', e);
         res.status(e.statusHttp || 500).json({ success: false, error: e.message });
@@ -2375,6 +2464,8 @@ router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // comme invalidateFinanceDerivedCaches ci-dessus.
 router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
+// Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
+router.resoudreCibleSnapshot = resoudreCibleSnapshot;
 
 router.get('/cash-stock', async (req, res) => {
     try {

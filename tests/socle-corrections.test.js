@@ -95,3 +95,25 @@ describe('famille poulet : bornes et contournements', () => {
         expect(v.erreurs.join(' ')).toMatch(/120 caractères/);
     });
 });
+
+describe('famille poulet : un element non textuel est refuse, pas converti', () => {
+    const reglages2 = require('../lib/simulation-v2/reglages');
+
+    test('un objet dans le tableau fait echouer la validation', () => {
+        // String({nom:'Poulet'}) rendait '[object Object]', qui passait la
+        // validation et s'affichait comme un produit de la famille.
+        const v = reglages2.valider({ famillePoulet: [{ nom: 'Poulet en gros' }] });
+        expect(v.ok).toBe(false);
+        expect(v.erreurs.join(' ')).toMatch(/liste de noms/);
+    });
+
+    test('un nombre est refuse lui aussi', () => {
+        expect(reglages2.valider({ famillePoulet: ['Poulet en gros', 42] }).ok).toBe(false);
+    });
+
+    test('un tableau de chaines reste accepte', () => {
+        const v = reglages2.valider({ famillePoulet: ['Poulet en gros', 'Poulet en détail'] });
+        expect(v.ok).toBe(true);
+        expect(v.aEcrire[0].value).toBe('Poulet en gros,Poulet en détail');
+    });
+});
