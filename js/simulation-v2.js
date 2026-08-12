@@ -68,7 +68,10 @@
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
-        proj: { coeff: null, poidsReel: 0.7, minJours: 5, stockOption: 'garder' }
+        proj: {
+            coeff: null, poidsReel: 0.7, minJours: 5,
+            stockOption: 'garder', depensesOption: 'realise'
+        }
     };
 
     // ============================================================ INJECTION
@@ -834,10 +837,18 @@
             stock_variation_nette: (plBrut.stock || {}).variation_nette
         };
         var chargesMensuel = (plBrut.charges || {}).total_mensuel;
-        var scen = (ca.caProjete === null) ? null : PJ.scenarios({
+        // Jours ECOULES du mois, pas jours observes avec vente: une depense
+        // court aussi les jours creux.
+        var jours = {
+            ecoules: PJ.joursEntre(debut, fin).length,
+            mois: PJ.joursEntre(debut, ca.finMois).length
+        };
+        var argsScen = {
             postes: postes, caRealise: b.ventes, caProjete: ca.caProjete,
-            chargesMensuel: chargesMensuel, stockOption: etat.proj.stockOption
-        });
+            chargesMensuel: chargesMensuel, stockOption: etat.proj.stockOption,
+            depensesOption: etat.proj.depensesOption, jours: jours
+        };
+        var scen = (ca.caProjete === null) ? null : PJ.scenarios(argsScen);
         var conf = PJ.confiance({
             rythmes: ca.rythmes, restants: ca.restants,
             sourcesFiables: !(b.sources && b.sources.fiable === false),
@@ -863,6 +874,17 @@
             + '<option value="garder"' + (etat.proj.stockOption === 'garder' ? ' selected' : '') + '>Garder la variation actuelle</option>'
             + '<option value="zero"' + (etat.proj.stockOption === 'zero' ? ' selected' : '') + '>La poser à zéro</option>'
             + '</select></div>'
+            + '<div class="col-md-3"><label class="form-label small">Dépenses d\'ici la fin du mois</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="depensesOption">'
+            + '<option value="realise"' + (etat.proj.depensesOption === 'realise' ? ' selected' : '') + '>Réalisées à date (aucun ajout)</option>'
+            + '<option value="jours"' + (etat.proj.depensesOption === 'jours' ? ' selected' : '') + '>Extrapolées au prorata des jours</option>'
+            + '<option value="ca"' + (etat.proj.depensesOption === 'ca' ? ' selected' : '') + '>Proportionnelles au chiffre d\'affaires</option>'
+            + '</select>'
+            + '<div class="form-text">' + jours.ecoules + ' j écoulés sur ' + jours.mois
+            + (etat.proj.depensesOption === 'jours'
+                ? ' · × ' + (jours.mois / Math.max(1, jours.ecoules)).toFixed(2)
+                : (etat.proj.depensesOption === 'realise' ? ' · poste figé, donc sous-estimé' : ' · suit l\'activité'))
+            + '</div></div>'
             + '<div class="col-md-3"><label class="form-label small">Confiance</label><div>'
             + '<span class="badge bg-' + (conf.niveau === 'bon' ? 'success' : (conf.niveau === 'moyen' ? 'warning text-dark' : 'danger'))
             + '">' + conf.niveau + '</span></div></div>'
@@ -913,12 +935,41 @@
             + lig('− Commission', d0.commission, 'suit le CA')
             + lig('+ Marge CDC', d0.margeCdc, 'suit le CA')
             + lig('− Charges fixes', d0.charges, 'mois complet')
-            + lig('− Dépenses', d0.depenses, 'réalisées à date, non extrapolées')
-            + lig('− Paiements fournisseur', d0.paiements, 'réalisés à date')
+            + lig('− Dépenses', d0.depenses, etat.proj.depensesOption === 'jours'
+                ? 'extrapolées × ' + nb(d0.depensesFacteur).toFixed(2) + ' (' + jours.mois + ' j ÷ ' + jours.ecoules + ' j)'
+                : (etat.proj.depensesOption === 'ca'
+                    ? 'proportionnelles au CA (× ' + nb(d0.depensesFacteur).toFixed(2) + ')'
+                    : 'réalisées à date, non extrapolées'))
+            + lig('− Paiements fournisseur', d0.paiements, 'réalisés à date — jamais extrapolés : l\'argent sorti revient en stock')
             + lig('+ Variation de stock', d0.stock, etat.proj.stockOption === 'zero' ? 'posée à zéro' : 'photo actuelle conservée')
             + '<tr class="table-light fw-bold"><td>PL projeté fin de mois</td>'
             + '<td class="text-end ' + cls(d0.pl) + '">' + esc(fmt(d0.pl)) + '</td></tr>'
             + '</tbody></table></div></details>';
+
+        // ---- SENSIBILITE DES DEUX HYPOTHESES DISCRETIONNAIRES.
+        //
+        // Le stock et les depenses ne se projettent pas, ils se POSTULENT: la
+        // valeur de fin de mois n'est pas observable aujourd'hui. Plutot que
+        // de laisser croire a une precision qui n'existe pas, on montre de
+        // combien le PL bouge entre les choix — c'est la vraie barre d'erreur,
+        // et elle est souvent plus large que l'ecart prudent/haut.
+        var varStock = nb(postes.stock_variation_nette);
+        var ecartDepenses = nb(postes.depenses_periode)
+            * (jours.ecoules > 0 ? jours.mois / jours.ecoules : 1) - nb(postes.depenses_periode);
+        if (varStock || ecartDepenses) {
+            h += '<div class="alert alert-secondary py-2 small mb-2"><i class="bi bi-rulers"></i> '
+                + '<strong>Ce que ces deux choix valent.</strong> ';
+            if (varStock) {
+                h += 'Variation de stock : ' + esc(fmt(Math.abs(varStock)))
+                    + ' F d\'écart entre « garder » et « zéro ». ';
+            }
+            if (ecartDepenses) {
+                h += 'Dépenses : ' + esc(fmt(Math.abs(ecartDepenses)))
+                    + ' F d\'écart entre « réalisées » et « extrapolées ». ';
+            }
+            h += 'À comparer aux ' + esc(fmt(Math.abs(scen.haut.pl - scen.prudent.pl)))
+                + ' F qui séparent le scénario prudent du haut.</div>';
+        }
 
         if (conf.notes.length) {
             h += '<div class="small text-muted mb-2">' + conf.notes.map(esc).join(' · ') + '</div>';
@@ -1092,6 +1143,7 @@
             el.addEventListener('input', function () {
                 var k = el.dataset.k;
                 if (k === 'stockOption') etat.proj.stockOption = el.value;
+                else if (k === 'depensesOption') etat.proj.depensesOption = el.value;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);
                 rendre();

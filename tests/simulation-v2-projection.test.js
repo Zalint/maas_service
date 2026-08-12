@@ -161,6 +161,45 @@ describe('PL projete: chaque poste suit sa regle, jamais une autre', () => {
         expect(d.pl).toBeCloseTo(20000 - 2000 - 600 + 200 - 500 - 50 - 80 + 200, 10);
         expect(d.margeNette).toBeCloseTo(d.pl / 20000, 10);
     });
+    test('depenses extrapolees au prorata des JOURS, pas du CA', () => {
+        // 12 jours ecoules sur 31: une depense courante court aussi les jours
+        // creux, son facteur ne doit donc rien devoir au chiffre d'affaires.
+        const d = P.projeterPL({
+            postes: POSTES, caRealise: 10000, caCible: 40000,
+            chargesMensuel: 0, depensesOption: 'jours',
+            jours: { ecoules: 12, mois: 31 }
+        });
+        expect(d.depensesFacteur).toBeCloseTo(31 / 12, 10);
+        expect(d.depenses).toBeCloseTo(50 * 31 / 12, 10);
+        // Le CA a quadruple: si le facteur en dependait, il vaudrait 4.
+        expect(d.depensesFacteur).not.toBeCloseTo(4, 3);
+    });
+    test("l option 'ca' fait suivre les depenses a l activite", () => {
+        const d = P.projeterPL({
+            postes: POSTES, caRealise: 10000, caCible: 20000,
+            chargesMensuel: 0, depensesOption: 'ca', jours: { ecoules: 12, mois: 31 }
+        });
+        expect(d.depenses).toBeCloseTo(100, 10); // 50 x 2
+    });
+    test('les paiements fournisseur ne sont JAMAIS extrapoles', () => {
+        // L'argent sorti revient en marchandise, donc en variation de stock:
+        // l'extrapoler compterait la meme sortie deux fois.
+        ['realise', 'jours', 'ca'].forEach((opt) => {
+            const d = P.projeterPL({
+                postes: POSTES, caRealise: 10000, caCible: 40000,
+                chargesMensuel: 0, depensesOption: opt, jours: { ecoules: 12, mois: 31 }
+            });
+            expect(d.paiements).toBe(80);
+        });
+    });
+    test('sans jours exploitables, l extrapolation ne divise pas par zero', () => {
+        const d = P.projeterPL({
+            postes: POSTES, caRealise: 10000, caCible: 10000,
+            chargesMensuel: 0, depensesOption: 'jours', jours: { ecoules: 0, mois: 31 }
+        });
+        expect(d.depensesFacteur).toBe(1);
+        expect(d.depenses).toBe(50);
+    });
     test("l option stock 'zero' retire la photo du resultat", () => {
         const d = P.projeterPL({
             postes: POSTES, caRealise: 10000, caCible: 10000,
@@ -194,6 +233,21 @@ describe('scenarios: prudent -10 %, central, haut +10 %', () => {
         expect(s.haut.charges).toBe(500);
         expect(s.prudent.depenses).toBe(50);
         expect(s.haut.depenses).toBe(50);
+    });
+    test("l extrapolation par les jours reste fixe d un scenario a l autre", () => {
+        // Elle depend du calendrier, pas du CA: les trois scenarios doivent
+        // porter la MEME depense, sinon le facteur a fuite vers le CA.
+        const s = P.scenarios(Object.assign({}, ARGS, {
+            depensesOption: 'jours', jours: { ecoules: 12, mois: 31 }
+        }));
+        expect(s.prudent.depenses).toBeCloseTo(50 * 31 / 12, 10);
+        expect(s.central.depenses).toBeCloseTo(50 * 31 / 12, 10);
+        expect(s.haut.depenses).toBeCloseTo(50 * 31 / 12, 10);
+    });
+    test("l option 'ca' fait au contraire varier les depenses par scenario", () => {
+        const s = P.scenarios(Object.assign({}, ARGS, { depensesOption: 'ca' }));
+        expect(s.prudent.depenses).toBeCloseTo(50 * 1.8, 10);
+        expect(s.haut.depenses).toBeCloseTo(50 * 2.2, 10);
     });
 });
 

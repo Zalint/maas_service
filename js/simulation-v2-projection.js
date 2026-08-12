@@ -202,13 +202,39 @@
         if (caRealise <= 0) return null; // regle du document: on n'invente pas
         var r = caCible / caRealise;
         var stock = args.stockOption === 'zero' ? 0 : nb(p.stock_variation_nette);
+
+        // DEPENSES: trois lectures possibles, et le choix change le resultat.
+        //
+        //  'realise' - ce qui est deja sorti, sans rien y ajouter. Honnete mais
+        //              structurellement SOUS-ESTIME des qu'il reste des jours:
+        //              on projette un CA de fin de mois contre des depenses
+        //              arretees au jour d'analyse.
+        //  'jours'   - extrapolation lineaire dans le TEMPS: une depense
+        //              courante (carburant, glace, petit entretien) tombe a
+        //              rythme regulier, pas au rythme des ventes.
+        //  'ca'      - proportionnelle a l'ACTIVITE, comme la commission. Pour
+        //              une depense qui suit les volumes.
+        //
+        // Aucun facteur n'est applique aux PAIEMENTS FOURNISSEUR: l'argent qui
+        // sort revient en marchandise, donc en variation de stock. Les
+        // extrapoler compterait la meme sortie deux fois.
+        var joursEcoules = nb(args.jours && args.jours.ecoules);
+        var joursMois = nb(args.jours && args.jours.mois);
+        var facteurDepenses = 1;
+        if (args.depensesOption === 'jours') {
+            facteurDepenses = joursEcoules > 0 ? joursMois / joursEcoules : 1;
+        } else if (args.depensesOption === 'ca') {
+            facteurDepenses = r;
+        }
+
         var d = {
             ca: caCible,
             avances: nb(p.total_avances) * r,
             commission: nb(p.commission_maas) * r,
             margeCdc: nb(p.marge_cdc) * r,
             charges: nb(args.chargesMensuel),
-            depenses: nb(p.depenses_periode),
+            depenses: nb(p.depenses_periode) * facteurDepenses,
+            depensesFacteur: facteurDepenses,
             paiements: nb(p.paiements_fournisseur),
             stock: stock
         };
@@ -225,7 +251,8 @@
         var faire = function (cible) {
             return projeterPL({
                 postes: args.postes, caRealise: args.caRealise, caCible: cible,
-                chargesMensuel: args.chargesMensuel, stockOption: args.stockOption
+                chargesMensuel: args.chargesMensuel, stockOption: args.stockOption,
+                depensesOption: args.depensesOption, jours: args.jours
             });
         };
         return {
