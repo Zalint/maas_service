@@ -825,8 +825,10 @@
         ajoutes.forEach(function (n) { choisis[String(n).trim().toLowerCase()] = true; });
 
         var h = '<details class="mb-3"><summary class="small fw-medium">'
-            + 'Produits suivis par la simulation'
-            + (ajoutes.length ? ' — ' + ajoutes.length + ' ajouté(s)' : '')
+            + '<i class="bi bi-gear"></i> Ajouter des produits au plan ('
+            + (cand.length ? cand.slice(0, 2).map(function (c) { return esc(c.nom); }).join(', ') : 'aucun candidat')
+            + (cand.length > 2 ? '…' : '') + ')'
+            + (ajoutes.length ? ' — ' + ajoutes.length + ' déjà ajouté(s)' : '')
             + ' <span class="badge bg-secondary">admin</span></summary>'
             + '<div class="border rounded p-2 mt-1">'
             + '<div class="small text-muted mb-2">'
@@ -1053,7 +1055,10 @@
                 + esc(fmt(s0.volumeRestant)) + ' u</strong> de ' + esc(s0.nom)
                 + ' (marge nette actuelle ' + esc(fmt(s0.marge)) + ' F/u).</div>';
 
-            h += '<div class="row g-2 mb-2">'
+            h += '<div class="small text-muted mb-1">'
+                + '<strong>Plan A</strong> — tout jouer sur le ' + esc(s0.nom)
+                + ', de deux façons possibles :</div>'
+                + '<div class="row g-2 mb-2">'
                 + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
                 + '<div class="small text-muted mb-1">À volume inchangé — monter la marge</div>'
                 + '<div class="h5 mb-1">' + esc(fmt(s0.margeRequise)) + ' F/u</div>'
@@ -1072,54 +1077,75 @@
                 + '</div>';
 
             if (eq.plan.length > 1) {
+                var nbPlafonnes = eq.plan.filter(function (x) { return x.plafonne; }).length;
                 h += '<details class="mb-2" open><summary class="small fw-medium">'
-                    + 'Réparti sur ' + eq.plan.length + ' produits, les plus fortes marges d\'abord'
-                    + (eq.unitesCommunes !== null
-                        ? ' — <strong>+' + esc(fmt(eq.unitesCommunes)) + ' u de chacun</strong>'
-                        : '')
+                    + 'Plan B — répartir l\'effort sur ' + eq.plan.length + ' produits'
                     + '</summary>'
-                    + '<div class="d-flex align-items-center gap-2 mb-2 small">'
+
+                    // Ce que le tableau raconte, en une phrase, AVANT le
+                    // tableau. La version precedente annoncait "+166 u de
+                    // chacun" puis affichait +68 et +4 sur les lignes
+                    // plafonnees: le titre contredisait le contenu.
+                    + '<div class="alert alert-light border py-2 small mb-2">'
+                    + 'Plutôt que de tout demander au ' + esc(s0.nom) + ', on répartit les '
+                    + '<strong>' + esc(fmt(eq.manque)) + ' F</strong> à combler sur plusieurs produits. '
+                    + 'Chacun vend déjà un certain volume d\'ici la fin du mois (colonne '
+                    + '<em>déjà attendu</em>) ; la colonne <em>à vendre en plus</em> est l\'effort '
+                    + 'demandé, et <em>total à vendre</em> est l\'objectif final. '
+                    + 'L\'effort est réparti <strong>proportionnellement à la marge</strong> : à nombre '
+                    + 'd\'unités égal, le produit qui rapporte le plus porte la plus grosse part.'
+                    + (nbPlafonnes
+                        ? ' ' + nbPlafonnes + ' produit(s) atteignent leur <strong>plafond</strong> '
+                          + '— on ne peut pas leur en demander plus, donc le reste retombe sur les autres.'
+                        : '')
+                    + '</div>'
+
+                    + '<div class="d-flex align-items-center gap-2 mb-2 small flex-wrap">'
                     + '<label class="text-muted">Plafond par produit : au plus</label>'
                     + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
                     + 'data-k="facteurMax" style="width:5rem" min="1" max="20" step="0.5" value="'
                     + esc(String(eq.facteurMax)) + '">'
-                    + '<span class="text-muted">× son rythme mensuel — soit '
+                    + '<span class="text-muted">fois son rythme mensuel — soit '
                     + '<em>vendu × (' + jours.mois + ' j ÷ ' + jours.ecoules + ' j) × '
                     + esc(String(eq.facteurMax)) + '</em></span>'
                     + '</div>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
-                    + '<thead><tr><th>Produit</th><th class="text-end">Marge nette</th>'
-                    + '<th class="text-end">Attendu d\'ici la fin</th>'
-                    + '<th class="text-end">Plafond</th>'
+                    + '<thead><tr><th>Produit</th>'
+                    + '<th class="text-end">Marge nette</th>'
+                    + '<th class="text-end">Déjà attendu</th>'
                     + '<th class="text-end">À vendre en plus</th>'
-                    + '<th class="text-end">Par jour</th>'
+                    + '<th class="text-end">Total à vendre</th>'
+                    + '<th class="text-end">Total par jour</th>'
+                    + '<th class="text-end">Plafond du total</th>'
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
                     + eq.plan.map(function (x) {
+                        var total = x.volumeRestant + x.volumeAdditionnel;
+                        var totalJour = eq.joursRestants > 0 ? total / eq.joursRestants : null;
                         return '<tr><td>' + esc(x.nom)
-                            + (x.plafonne ? ' <span class="badge bg-secondary">au maximum</span>' : '')
+                            + (x.plafonne ? ' <span class="badge bg-secondary">plafond atteint</span>' : '')
                             + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
-                            + '<td class="text-end">' + esc(fmt(x.volumeRestant)) + ' u</td>'
-                            + '<td class="text-end text-muted">' + esc(fmt(x.plafond)) + ' u</td>'
+                            + '<td class="text-end text-muted">' + esc(fmt(x.volumeRestant)) + ' u</td>'
                             + '<td class="text-end"><strong>+' + esc(fmt(x.volumeAdditionnel)) + ' u</strong>'
                             + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
                             + '</td>'
-                            + '<td class="text-end">' + (x.parJour !== null ? esc(fmt(x.parJour)) + ' u' : '—') + '</td>'
+                            + '<td class="text-end fw-bold">' + esc(fmt(total)) + ' u</td>'
+                            + '<td class="text-end">' + (totalJour !== null ? esc(fmt(totalJour)) + ' u/j' : '—') + '</td>'
+                            + '<td class="text-end text-muted">' + esc(fmt(x.plafondReste)) + ' u</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
-                    + '<tr class="table-light fw-bold"><td colspan="6">Total</td>'
+                    + '<tr class="table-light fw-bold"><td colspan="7">Total de l\'effort</td>'
                     + '<td class="text-end">' + esc(fmt(eq.manque)) + ' F</td></tr>'
                     + '</tbody></table></div>'
-                    + '<div class="small text-muted">Les produits sont pris par marge unitaire décroissante, '
-                    + 'et la part de chacun suit sa marge : le nombre d\'unités à vendre en plus est donc '
-                    + 'le même partout, et à effort égal ce sont les fortes marges qui rapportent le plus.</div>'
                     + '</details>';
             }
             if (!eq.atteignable) {
                 h += '<div class="alert alert-danger py-2 small mb-2"><i class="bi bi-exclamation-octagon"></i> '
-                    + 'Même en doublant le volume de ces produits, la marge dégagée ('
-                    + esc(fmt(eq.capaciteTotale)) + ' F) ne comble pas le manque : '
-                    + 'l\'équilibre ne se joue pas sur le seul volume ce mois-ci.</div>';
+                    + 'Même au plafond, ces produits ne dégagent que '
+                    + esc(fmt(eq.capaciteTotale)) + ' F : il manque encore '
+                    + esc(fmt(eq.resteACouvrir)) + ' F. '
+                    + 'L\'équilibre ne se joue pas sur le seul volume ce mois-ci — '
+                    + 'il faut agir sur les prix, les charges ou les dépenses.</div>';
             }
         }
 
@@ -1138,11 +1164,22 @@
             + lig('− Commission', d0.commission, 'suit le CA')
             + lig('+ Marge CDC', d0.margeCdc, 'suit le CA')
             + lig('− Charges fixes', d0.charges, 'mois complet')
-            + lig('− Dépenses', d0.depenses, etat.proj.depensesOption === 'jours'
-                ? 'extrapolées × ' + nb(d0.depensesFacteur).toFixed(2) + ' (' + jours.mois + ' j ÷ ' + jours.ecoules + ' j)'
-                : (etat.proj.depensesOption === 'ca'
-                    ? 'proportionnelles au CA (× ' + nb(d0.depensesFacteur).toFixed(2) + ')'
-                    : 'réalisées à date, non extrapolées'))
+            // Le REGLAGE est pose ici, sur la ligne qu'il gouverne. Il vit
+            // aussi en haut de la section, mais personne ne fait le lien entre
+            // « non extrapolées » ecrit ici et une liste deroulante situee
+            // trois blocs plus haut: la question « ou est le setting ? » est
+            // venue de la.
+            + '<tr><td>− Dépenses <span class="text-muted small">'
+            + '<select class="form-select form-select-sm d-inline-block sim2-proj-ctl" '
+            + 'data-k="depensesOption" style="width:auto">'
+            + '<option value="realise"' + (etat.proj.depensesOption === 'realise' ? ' selected' : '') + '>réalisées à date, non extrapolées</option>'
+            + '<option value="jours"' + (etat.proj.depensesOption === 'jours' ? ' selected' : '') + '>extrapolées au prorata des jours</option>'
+            + '<option value="ca"' + (etat.proj.depensesOption === 'ca' ? ' selected' : '') + '>proportionnelles au chiffre d\'affaires</option>'
+            + '</select>'
+            + (etat.proj.depensesOption !== 'realise'
+                ? ' × ' + nb(d0.depensesFacteur).toFixed(2) : '')
+            + '</span></td>'
+            + '<td class="text-end">' + esc(fmt(d0.depenses)) + '</td></tr>'
             + lig('− Paiements fournisseur', d0.paiements, 'réalisés à date — jamais extrapolés : l\'argent sorti revient en stock')
             + lig('+ Variation de stock', d0.stock, etat.proj.stockOption === 'zero' ? 'posée à zéro' : 'photo actuelle conservée')
             + '<tr class="table-light fw-bold"><td>PL projeté fin de mois</td>'

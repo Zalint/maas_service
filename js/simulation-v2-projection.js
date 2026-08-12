@@ -497,12 +497,25 @@
         var joursMois = nb(args.jours && args.jours.mois);
         var facteurMois = (joursEcoules > 0 && joursMois > 0) ? joursMois / joursEcoules : null;
         var etats = choisis.map(function (x) {
+            // Le plafond borne le TOTAL DU MOIS, pas le seul effort. Le poser
+            // sur l'effort laissait afficher un total superieur au plafond
+            // cense le contenir - une contradiction visible a l'ecran.
+            //
             // Sans calendrier exploitable, on retombe sur le volume attendu
             // d'ici la fin: une borne connue vaut mieux qu'aucune borne.
-            var plafond = facteurMois !== null
+            var plafondMois = facteurMois !== null
                 ? x.quantiteActuelle * facteurMois * facteurMax
-                : x.volumeRestant * facteurMax;
-            return { p: x, plafond: plafond, unites: 0, plafonne: false };
+                : x.quantiteActuelle + x.volumeRestant * facteurMax;
+            // Ce qu'il reste vendable sous ce plafond, une fois retire ce qui
+            // est DEJA vendu: c'est sur cette base que le tableau raisonne.
+            var plafondReste = Math.max(0, plafondMois - x.quantiteActuelle);
+            // Et l'effort ne peut occuper que la place laissee par le volume
+            // deja attendu sans rien faire.
+            var effortMax = Math.max(0, plafondReste - x.volumeRestant);
+            return {
+                p: x, plafond: effortMax, plafondReste: plafondReste,
+                plafondMois: plafondMois, unites: 0, plafonne: false
+            };
         });
         var reste = manque;
         var unitesCommunes = null;
@@ -538,7 +551,12 @@
                 // Le produit donne tout ce qu'il peut raisonnablement donner:
                 // c'est le signe que l'effort doit aller ailleurs.
                 plafonne: e.plafonne,
+                // Ce que l'effort peut au plus valoir...
                 plafond: e.plafond,
+                // ...et le TOTAL vendable d'ici la fin sous le meme plafond,
+                // celui auquel la colonne "total a vendre" se compare.
+                plafondReste: e.plafondReste,
+                plafondMois: e.plafondMois,
                 // Le volume vendu ramene au mois entier: la base du plafond,
                 // affichee pour que le chiffre se verifie a l'ecran.
                 volumeMois: facteurMois !== null ? x.quantiteActuelle * facteurMois : null
