@@ -37,6 +37,17 @@
         var s = Math.abs(Math.round(v)).toLocaleString('fr-FR');
         return (v < 0 ? '−' : '') + s;
     };
+    // UN chiffre apres la virgule au minimum, deux si le premier ne suffit
+    // pas a sortir du zero. Une cadence de 0,17 u/jour arrondie a l'entier
+    // s'affichait « 0 », ce qui se lit comme « rien a faire » alors qu'il
+    // faut bien vendre 3 unites d'ici la fin du mois.
+    var fmtDec = function (v) {
+        if (v === null || v === undefined || isNaN(v)) return '—';
+        var s = Math.abs(v).toLocaleString('fr-FR', {
+            minimumFractionDigits: 1, maximumFractionDigits: 2
+        });
+        return (v < 0 ? '−' : '') + s;
+    };
     var signe = function (v) { return (v > 0 ? '+' : '') + fmt(v); };
     var cls = function (v) { return v > 0 ? 'text-success' : (v < 0 ? 'text-danger' : ''); };
     var $ = function (id) { return document.getElementById('sim2-' + id); };
@@ -1071,7 +1082,7 @@
                 + '<div class="h5 mb-1">+' + esc(fmt(s0.volumeAdditionnel)) + ' u</div>'
                 + '<div class="small text-muted">soit <strong>' + esc(fmt(s0.volumeTotal))
                 + ' u au total</strong> (+' + s0.hausseVolumePct.toFixed(0) + ' %)'
-                + (s0.parJour !== null ? ', ' + esc(fmt(s0.parJour)) + ' u/jour de plus' : '')
+                + (s0.parJour !== null ? ', ' + esc(fmtDec(s0.parJour)) + ' u/jour de plus' : '')
                 + ' → ' + esc(fmt(s0.montantVolume)) + ' F</div>'
                 + '</div></div></div>'
                 + '</div>';
@@ -1130,7 +1141,7 @@
                             + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
                             + '</td>'
                             + '<td class="text-end fw-bold">' + esc(fmt(total)) + ' u</td>'
-                            + '<td class="text-end">' + (totalJour !== null ? esc(fmt(totalJour)) + ' u/j' : '—') + '</td>'
+                            + '<td class="text-end">' + (totalJour !== null ? esc(fmtDec(totalJour)) + ' u/j' : '—') + '</td>'
                             + '<td class="text-end text-muted">' + esc(fmt(x.plafondReste)) + ' u</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
