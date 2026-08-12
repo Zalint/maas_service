@@ -193,8 +193,15 @@ async function saveTransferts(transferts) {
         throw new Error('Date manquante pour un transfert');
       }
       
+      // Une date illisible ne doit pas etre rangee au 1er janvier 1970: ce
+      // groupe declenche plus bas un destroy suivi d'un bulkCreate, donc une
+      // date de repli ecrirait la donnee - et supprimerait l'existante - au
+      // mauvais endroit. On refuse franchement, comme pour la date manquante.
       const formattedDate = formatDate(parseDate(transfert.date));
-      
+      if (!formattedDate) {
+        throw new Error(`Date illisible pour un transfert: "${transfert.date}"`);
+      }
+
       if (!transfertsByDate[formattedDate]) {
         transfertsByDate[formattedDate] = [];
       }

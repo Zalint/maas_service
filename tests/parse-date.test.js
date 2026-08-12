@@ -63,6 +63,33 @@ describe('la regression qui a vide neuf fichiers', () => {
     });
 });
 
+describe('formatDate ne fabrique jamais une date de repli', () => {
+    // formatDate(null) valait '01-01-1970' - new Date(null) est l'epoch. Comme
+    // parseDate rend null sur une entree illisible, le couple
+    // formatDate(parseDate(x)) rangeait la donnee au 1er janvier 1970. Trois
+    // des neuf sites d'appel font un destroy suivi d'un bulkCreate.
+    test('null et undefined rendent null, pas 01-01-1970', () => {
+        expect(formatDate(null)).toBeNull();
+        expect(formatDate(undefined)).toBeNull();
+        expect(formatDate(null)).not.toBe('01-01-1970');
+    });
+
+    test('une date invalide rend null, pas NaN-NaN-NaN', () => {
+        expect(formatDate(new Date('nimporte quoi'))).toBeNull();
+        expect(formatDate('pas une date')).toBeNull();
+    });
+
+    test('la chaine complete formatDate(parseDate(x)) ne retombe jamais sur 1970', () => {
+        for (const mauvais of ['', 'nimporte', '31-02-2026', '2026-08']) {
+            expect(formatDate(parseDate(mauvais))).toBeNull();
+        }
+    });
+
+    test('une date valide passe toujours', () => {
+        expect(formatDate(new Date(2026, 7, 2))).toBe('02-08-2026');
+    });
+});
+
 describe('une entree douteuse rend null, jamais une date inventee', () => {
     // Mieux vaut un appelant qui echoue franchement qu'un calcul mene sur une
     // annee tiree au sort: computeStockSoirAutoValues LEVE sur date invalide,
