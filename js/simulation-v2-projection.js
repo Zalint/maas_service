@@ -340,22 +340,156 @@
             }
         });
 
-        // Fidelisation: les gros clients de la periode qu'on n'a pas revus.
-        (args.topClients || []).forEach(function (c) {
-            if (!c.dernier || !args.dateAnalyse) return;
-            var ecart = Math.round((new Date(args.dateAnalyse) - new Date(c.dernier)) / 86400000);
-            if (ecart >= 7 && nb(c.ca) > 0) {
-                out.push({
-                    type: 'client', priorite: 2,
-                    titre: 'Relancer ' + c.nom,
-                    detail: fmt(c.ca) + ' F d\'achats sur la période, aucun passage depuis '
-                        + ecart + ' jours'
-                });
-            }
+        // FIDELISATION, au rythme de chaque client.
+        //
+        // Un seuil fixe de 7 jours se trompait des deux cotes: il relancait le
+        // client bimensuel a peine reparti, et ne disait rien de
+        // l'hebdomadaire ayant saute deux tours. On compare desormais le
+        // silence a l'habitude mesuree sur la fenetre longue.
+        clientsARelancer({
+            clients: args.clientsHistorique,
+            dateAnalyse: args.dateAnalyse,
+            limite: 3
+        }).forEach(function (c) {
+            out.push({
+                type: 'client', priorite: 2,
+                titre: 'Relancer ' + c.nom,
+                detail: 'vient environ tous les ' + fmt(c.intervalle) + ' jours ('
+                    + c.nbVisites + ' passages), et rien depuis ' + c.silence
+                    + ' — soit ' + c.retard.toFixed(1) + '× son rythme. '
+                    + fmt(c.ca) + ' F sur la fenêtre.'
+            });
         });
 
         out.sort(function (a, b) { return a.priorite - b.priorite; });
         return out;
+    }
+
+    /**
+     * L'HABITUDE d'achat d'un client, lue sur ses passages.
+     *
+     * Un delai fixe se trompe des deux cotes: il harcele le client bimensuel
+     * et laisse filer l'hebdomadaire qui a saute deux tours. Ce qui compte,
+     * c'est le silence rapporte a SON rythme.
+     *
+     * L'intervalle retenu est la MEDIANE, pas la moyenne: un client regulier
+     * qui a pris trois semaines de vacances garde une mediane fidele a son
+     * habitude, la ou la moyenne se laisse tirer par ce seul trou.
+     *
+     * @param {Array} passages [{date:'AAAA-MM-JJ', ca:number}] tries ou non
+     * @param {string} dateAnalyse
+     */
+    function habitude(passages, dateAnalyse) {
+        var jours = (passages || [])
+            .map(function (p) { return String(p && p.date || ''); })
+            .filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); })
+            .sort();
+        // Deux achats le meme jour sont UNE visite.
+        var uniques = [];
+        jours.forEach(function (j) { if (uniques[uniques.length - 1] !== j) uniques.push(j); });
+
+        var ecarts = [];
+        for (var i = 1; i < uniques.length; i++) {
+            ecarts.push(Math.round(
+                (new Date(uniques[i] + 'T00:00:00Z') - new Date(uniques[i - 1] + 'T00:00:00Z')) / 86400000
+            ));
+        }
+        var mediane = null;
+        if (ecarts.length) {
+            var tri = ecarts.slice().sort(function (a, b) { return a - b; });
+            var m = Math.floor(tri.length / 2);
+            mediane = tri.length % 2 ? tri[m] : (tri[m - 1] + tri[m]) / 2;
+        }
+        var dernier = uniques.length ? uniques[uniques.length - 1] : null;
+        var silence = (dernier && dateAnalyse)
+            ? Math.round((new Date(dateAnalyse + 'T00:00:00Z') - new Date(dernier + 'T00:00:00Z')) / 86400000)
+            : null;
+
+        return {
+            nbVisites: uniques.length,
+            intervalleMedian: mediane,
+            dernier: dernier,
+            silence: silence,
+            // En dessous de 3 visites il n'y a pas d'habitude a constater: deux
+            // passages donnent UN intervalle, dont on ne peut rien conclure.
+            // On le DIT plutot que d'inventer un rythme.
+            habitudeEtablie: uniques.length >= 3 && mediane !== null && mediane > 0,
+            // Combien de rendez-vous manques, au sens de son propre rythme.
+            retardRelatif: (uniques.length >= 3 && mediane > 0 && silence !== null)
+                ? silence / mediane : null
+        };
+    }
+
+    /**
+     * Les clients a relancer: ceux dont le silence depasse NETTEMENT leur
+     * habitude. Le seuil est en nombre de rendez-vous manques, pas en jours.
+     */
+    function clientsARelancer(args) {
+        var seuil = args.seuil === undefined ? 2 : args.seuil;
+        var out = [];
+        (args.clients || []).forEach(function (c) {
+            var h = habitude(c.passages, args.dateAnalyse);
+            if (!h.habitudeEtablie || h.retardRelatif === null) return;
+            if (h.retardRelatif < seuil) return;
+            out.push({
+                nom: c.nom, ca: nb(c.ca_fenetre),
+                silence: h.silence, intervalle: h.intervalleMedian,
+                retard: h.retardRelatif, nbVisites: h.nbVisites
+            });
+        });
+        // Le plus en retard d'abord a chiffre d'affaires comparable: on trie
+        // sur ce qui est en jeu, pondere par l'anomalie.
+        out.sort(function (a, b) { return (b.ca * b.retard) - (a.ca * a.retard); });
+        return out.slice(0, args.limite || 5);
+    }
+
+    /**
+     * Les gros clients du MOIS DERNIER qui n'ont rien pris ce mois-ci.
+     *
+     * La frequence sert ici de garde-fou: un client qui achete une fois tous
+     * les deux mois n'est pas perdu au 13, il n'est simplement pas encore
+     * revenu. On le rend quand meme, mais marque `premature`, plutot que de le
+     * cacher — c'est a l'humain de trancher.
+     */
+    function clientsPerdus(args) {
+        var dateAnalyse = String(args.dateAnalyse || '');
+        var moisCourant = dateAnalyse.slice(0, 7);
+        if (!/^\d{4}-\d{2}$/.test(moisCourant)) return [];
+        // Mois precedent, sans bricolage de fin de mois.
+        var d = new Date(moisCourant + '-01T00:00:00Z');
+        d.setUTCMonth(d.getUTCMonth() - 1);
+        var moisDernier = d.toISOString().slice(0, 7);
+
+        var out = [];
+        (args.clients || []).forEach(function (c) {
+            var caDernier = 0, caCourant = 0;
+            (c.passages || []).forEach(function (p) {
+                var mois = String(p && p.date || '').slice(0, 7);
+                if (mois === moisDernier) caDernier += nb(p.ca);
+                else if (mois === moisCourant) caCourant += nb(p.ca);
+            });
+            if (caDernier <= 0 || caCourant > 0) return;
+            var h = habitude(c.passages, dateAnalyse);
+            out.push({
+                nom: c.nom,
+                caMoisDernier: caDernier,
+                silence: h.silence,
+                intervalle: h.intervalleMedian,
+                nbVisites: h.nbVisites,
+                // Trop tot pour s'alarmer: son SILENCE n'a pas encore atteint
+                // son intervalle habituel.
+                //
+                // Comparer l'habitude aux jours ecoules DANS LE MOIS serait
+                // faux: le dernier passage est souvent anterieur au 1er. Un
+                // client vu le 14 juillet et muet depuis 42 jours ressortait
+                // ainsi « pas encore en retard » le 25 aout, parce que 30 j
+                // d'habitude depassent les 25 jours du mois entame.
+                premature: h.habitudeEtablie ? (h.silence < h.intervalleMedian) : true,
+                habitudeEtablie: h.habitudeEtablie
+            });
+        });
+        out.sort(function (a, b) { return b.caMoisDernier - a.caMoisDernier; });
+        return out.slice(0, args.limite || 5);
     }
 
     /**
@@ -414,6 +548,9 @@
         scenarios: scenarios,
         confiance: confiance,
         recommandations: recommandations,
-        commandesRentables: commandesRentables
+        commandesRentables: commandesRentables,
+        habitude: habitude,
+        clientsARelancer: clientsARelancer,
+        clientsPerdus: clientsPerdus
     };
 }));

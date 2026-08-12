@@ -1581,6 +1581,7 @@ router.get('/simulation', async (req, res) => {
         let projectionV2 = null;
         let topClientsV2 = null;
         let commandesV2 = null;
+        let clientsHistoriqueV2 = null;
 
         if (!v2) {
             const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
@@ -1625,8 +1626,11 @@ router.get('/simulation', async (req, res) => {
             debutHisto.setUTCDate(debutHisto.getUTCDate() - 91);
             const histoDebutIso = debutHisto.toISOString().slice(0, 10);
             const histoFinIso = finHisto.toISOString().slice(0, 10);
+            // nom_client sur la MEME requete: l'habitude d'achat d'un client ne
+            // se lit pas sur la periode courante seule. « Aucun passage depuis
+            // 7 jours » ne veut rien dire pour qui vient tous les quinze jours.
             const lignesHisto = await sequelize.query(
-                `SELECT date, montant FROM ventes WHERE date IN (:dl)`,
+                `SELECT date, montant, nom_client FROM ventes WHERE date IN (:dl)`,
                 {
                     type: sequelize.QueryTypes.SELECT,
                     replacements: { dl: graphiesDeDatesPourPeriode(histoDebutIso, histoFinIso) }
@@ -1670,6 +1674,49 @@ router.get('/simulation', async (req, res) => {
                 .sort((a, b) => b.ca - a.ca)
                 .slice(0, 8)
                 .map((cl) => ({ nom: cl.nom, ca: round2(cl.ca), nb: cl.nb, dernier: cl.dernier }));
+
+            // ---- HABITUDE D'ACHAT, sur l'historique ET la periode courante.
+            //
+            // Relancer sur un delai fixe ("aucun passage depuis 7 jours") se
+            // trompe des deux cotes: on harcele le client bimensuel et on
+            // laisse filer l'hebdomadaire qui a saute deux tours. Ce qu'il faut
+            // comparer, c'est le silence a SON rythme a lui.
+            //
+            // On transporte les JOURNEES de passage, pas les lignes: deux
+            // achats le meme jour sont une visite. Le calcul d'intervalle et la
+            // decision vivent dans le module pur, teste.
+            const habitudes = new Map();
+            const noterPassage = (nomBrut, iso, montant) => {
+                const nom = String(nomBrut || '').trim();
+                if (!nom || !iso) return;
+                const cle = nom.toLowerCase();
+                if (!habitudes.has(cle)) habitudes.set(cle, { nom, jours: new Map(), ca: 0 });
+                const h = habitudes.get(cle);
+                const m = parseFloat(montant) || 0;
+                h.jours.set(iso, (h.jours.get(iso) || 0) + m);
+                h.ca += m;
+            };
+            for (const l of lignesHisto) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+            for (const l of lignes) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+
+            // Plafonne aux 40 plus gros de la fenetre: de quoi tenir un top 5 et
+            // des relances, sans porter toute la clientele dans la reponse.
+            clientsHistoriqueV2 = {
+                debut: histoDebutIso,
+                fin: dateFin,
+                clients: Array.from(habitudes.values())
+                    .sort((a, b) => b.ca - a.ca)
+                    .slice(0, 40)
+                    .map((h) => ({
+                        nom: h.nom,
+                        ca_fenetre: round2(h.ca),
+                        // [date ISO, montant] triees: l'ecran en tire les
+                        // intervalles et les cumuls mensuels qu'il veut.
+                        passages: Array.from(h.jours.entries())
+                            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                            .map(([j, m]) => ({ date: j, ca: round2(m) }))
+                    }))
+            };
 
             // ---- Commandes de la periode: les lignes partageant un
             // commande_id. Le serveur livre les PANIERS; le classement par PL
@@ -1845,6 +1892,7 @@ router.get('/simulation', async (req, res) => {
                 projection: projectionV2,
                 top_clients: topClientsV2,
                 commandes: commandesV2,
+                clients_historique: clientsHistoriqueV2,
                 prix_achat: {
                     // 'periode' dit que le cout est une moyenne ponderee par
                     // les quantites vendues; 'fin_de_periode' qu'il est fige
@@ -1861,7 +1909,15 @@ router.get('/simulation', async (req, res) => {
                     // un cout affiche, ce qui est necessaire pour le lire, et
                     // ne divulgue pas la liste.
                     famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
-                    avertissements: resolveurPrix.avertissements || []
+                    // Le RESUME du prix bovin retenu suit les avertissements,
+                    // au meme endroit: qu'il vienne de MATA ou du catalogue,
+                    // c'est la meme question - sur quel prix ce resultat
+                    // repose-t-il. Le taire quand tout va bien laissait
+                    // l'utilisateur sans le chiffre qui explique son cout.
+                    avertissements: (resolveurPrix.avertissements || []).concat(
+                        typeof resolveurPrix.resumePrixBoeuf === 'function'
+                            ? resolveurPrix.resumePrixBoeuf() : []
+                    )
                 }
             }
         });
@@ -2459,7 +2515,15 @@ async function computePl(dateDebut, dateFin) {
                     // lot pour la journee, historique illisible. Sans cela, un
                     // repli sur le catalogue fournisseur reste invisible et le
                     // chiffre parait simplement faux.
-                    avertissements: resolveurPrix.avertissements || []
+                    // Le RESUME du prix bovin retenu suit les avertissements,
+                    // au meme endroit: qu'il vienne de MATA ou du catalogue,
+                    // c'est la meme question - sur quel prix ce resultat
+                    // repose-t-il. Le taire quand tout va bien laissait
+                    // l'utilisateur sans le chiffre qui explique son cout.
+                    avertissements: (resolveurPrix.avertissements || []).concat(
+                        typeof resolveurPrix.resumePrixBoeuf === 'function'
+                            ? resolveurPrix.resumePrixBoeuf() : []
+                    )
                 },
                 pl: round2(pl)
         };

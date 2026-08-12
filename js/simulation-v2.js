@@ -976,9 +976,12 @@
         }
 
         // ---- Les recommandations: des gestes chiffres.
+        var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
             plCentral: d0.pl, produits: etat.produits, margeDe: margeBase,
-            topClients: etat.sim.top_clients || [], dateAnalyse: fin
+            topClients: etat.sim.top_clients || [],
+            clientsHistorique: clientsHisto,
+            dateAnalyse: fin
         });
         if (recos.length) {
             var ico = { volume: 'graph-up-arrow', prix: 'tag', client: 'person-heart', donnee: 'database-exclamation' };
@@ -987,6 +990,39 @@
                     + ' me-2 text-muted"></i><strong>' + esc(r.titre) + '</strong>'
                     + '<span class="small text-muted"> — ' + esc(r.detail) + '</span></div>';
             }).join('') + '</div>';
+        }
+
+        // ---- Les gros clients du MOIS DERNIER restes muets ce mois-ci.
+        //
+        // Classement par ce qui est en jeu (leur CA du mois dernier), avec la
+        // frequence en garde-fou: un client qui achete tous les deux mois
+        // n'est pas perdu, il n'est pas encore revenu. On le montre quand
+        // meme, marque « pas encore en retard » — c'est a l'humain de juger.
+        var perdus = PJ.clientsPerdus({ clients: clientsHisto, dateAnalyse: fin, limite: 5 });
+        if (perdus.length) {
+            h += '<h6 class="small fw-medium mb-1">Gros clients du mois dernier, rien ce mois-ci</h6>'
+                + '<div class="list-group mb-3">' + perdus.map(function (c) {
+                    var rythme = c.habitudeEtablie
+                        ? 'vient environ tous les ' + fmt(c.intervalle) + ' j (' + c.nbVisites + ' passages)'
+                        : 'habitude non établie (' + c.nbVisites + ' passage' + (c.nbVisites > 1 ? 's' : '') + ')';
+                    return '<div class="list-group-item py-2">'
+                        + '<i class="bi bi-person-dash me-2 text-muted"></i>'
+                        + '<strong>' + esc(c.nom) + '</strong>'
+                        + '<span class="small text-muted"> — ' + esc(fmt(c.caMoisDernier))
+                        + ' F le mois dernier, rien ce mois-ci · ' + esc(rythme)
+                        + (c.silence !== null ? ' · silence de ' + c.silence + ' j' : '')
+                        + '</span>'
+                        // Trois etats, pas deux. Afficher « pas encore en
+                        // retard » a un client muet depuis 36 jours dont on
+                        // ignore l'habitude serait faux: on ne sait pas, et
+                        // c'est cela qu'il faut dire.
+                        + (!c.habitudeEtablie
+                            ? ' <span class="badge bg-light text-dark border">habitude inconnue</span>'
+                            : (c.premature
+                                ? ' <span class="badge bg-secondary">pas encore en retard</span>'
+                                : ' <span class="badge bg-warning text-dark">à relancer</span>'))
+                        + '</div>';
+                }).join('') + '</div>';
         }
 
         // ---- Les commandes qui rapportent le plus, classees par MARGE (pas

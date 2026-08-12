@@ -355,17 +355,173 @@ describe('recommandations: des gestes chiffres, pas des generalites', () => {
         expect(r.filter((c) => c.id === 1)[0].commandesClient).toBe(2); // 'Awa' = 'awa '
         expect(r.filter((c) => c.id === 3)[0].commandesClient).toBe(1);
     });
-    test('un gros client disparu depuis 7 jours ou plus est a relancer', () => {
+    test('un client bimensuel muet depuis 8 jours n est PAS en retard', () => {
+        // Le defaut que ce calcul corrige: un seuil fixe de 7 jours relancait
+        // ce client-la alors qu'il vient tous les 15 jours.
+        const c = {
+            nom: 'Bimensuel', ca_fenetre: 500000,
+            passages: [
+                { date: '2026-06-05', ca: 100000 }, { date: '2026-06-20', ca: 100000 },
+                { date: '2026-07-05', ca: 100000 }, { date: '2026-07-20', ca: 100000 },
+                { date: '2026-08-04', ca: 100000 }
+            ]
+        };
+        const h = P.habitude(c.passages, '2026-08-12');
+        expect(h.intervalleMedian).toBe(15);
+        expect(h.silence).toBe(8);
+        expect(h.retardRelatif).toBeCloseTo(8 / 15, 6);
+        expect(P.clientsARelancer({ clients: [c], dateAnalyse: '2026-08-12' })).toHaveLength(0);
+    });
+
+    test('un client hebdomadaire muet depuis 15 jours EST en retard', () => {
+        // Le silence est plus court en jours que le cas precedent une fois
+        // rapporte a l'habitude... non: il vaut 2 rendez-vous manques.
+        const c = {
+            nom: 'Hebdo', ca_fenetre: 300000,
+            passages: [
+                { date: '2026-07-07', ca: 60000 }, { date: '2026-07-14', ca: 60000 },
+                { date: '2026-07-21', ca: 60000 }, { date: '2026-07-28', ca: 60000 }
+            ]
+        };
+        const h = P.habitude(c.passages, '2026-08-11');
+        expect(h.intervalleMedian).toBe(7);
+        expect(h.retardRelatif).toBeCloseTo(14 / 7, 6);
+        const r = P.clientsARelancer({ clients: [c], dateAnalyse: '2026-08-11' });
+        expect(r).toHaveLength(1);
+        expect(r[0].nom).toBe('Hebdo');
+    });
+
+    test('la mediane resiste a une longue absence isolee', () => {
+        // Moyenne = (7+7+40+7)/4 = 15,25 j, mediane = 7 j. Avec la moyenne, ce
+        // client regulier passerait pour un client mensuel.
+        const passages = [
+            { date: '2026-06-01' }, { date: '2026-06-08' }, { date: '2026-06-15' },
+            { date: '2026-07-25' }, { date: '2026-08-01' }
+        ];
+        expect(P.habitude(passages, '2026-08-02').intervalleMedian).toBe(7);
+    });
+
+    test('deux achats le meme jour comptent pour UNE visite', () => {
+        const h = P.habitude([
+            { date: '2026-08-01' }, { date: '2026-08-01' }, { date: '2026-08-08' }
+        ], '2026-08-08');
+        expect(h.nbVisites).toBe(2);
+        expect(h.intervalleMedian).toBe(7);
+    });
+
+    test('moins de trois visites: aucune habitude affirmee', () => {
+        const h = P.habitude([{ date: '2026-08-01' }, { date: '2026-08-08' }], '2026-08-20');
+        expect(h.habitudeEtablie).toBe(false);
+        expect(h.retardRelatif).toBeNull();
+        expect(P.clientsARelancer({
+            clients: [{ nom: 'Inconnu', ca_fenetre: 999999, passages: [{ date: '2026-08-01' }, { date: '2026-08-08' }] }],
+            dateAnalyse: '2026-08-30'
+        })).toHaveLength(0);
+    });
+
+    describe('gros clients du mois dernier, muets ce mois-ci', () => {
+        const CLIENTS = [
+            {
+                nom: 'Gros parti', ca_fenetre: 900000,
+                passages: [
+                    { date: '2026-07-03', ca: 300000 }, { date: '2026-07-10', ca: 300000 },
+                    { date: '2026-07-17', ca: 300000 }
+                ]
+            },
+            {
+                nom: 'Petit parti', ca_fenetre: 50000,
+                passages: [{ date: '2026-07-05', ca: 50000 }]
+            },
+            {
+                nom: 'Toujours la', ca_fenetre: 800000,
+                passages: [
+                    { date: '2026-07-10', ca: 400000 }, { date: '2026-08-05', ca: 400000 }
+                ]
+            }
+        ];
+
+        test('classe par le CA du mois dernier, et exclut ceux revenus', () => {
+            const r = P.clientsPerdus({ clients: CLIENTS, dateAnalyse: '2026-08-12' });
+            expect(r.map((x) => x.nom)).toEqual(['Gros parti', 'Petit parti']);
+            expect(r[0].caMoisDernier).toBe(900000);
+        });
+
+        test('un rythme plus long que le mois entame vaut « pas encore en retard »', () => {
+            // Client mensuel: au 12, 12 jours ecoules < 30 j d'habitude.
+            const mensuel = {
+                nom: 'Mensuel', ca_fenetre: 600000,
+                passages: [
+                    { date: '2026-05-15', ca: 200000 }, { date: '2026-06-14', ca: 200000 },
+                    { date: '2026-07-14', ca: 200000 }
+                ]
+            };
+            const r = P.clientsPerdus({ clients: [mensuel], dateAnalyse: '2026-08-12' });
+            expect(r[0].premature).toBe(true);
+            // Au 25, les 30 jours sont largement depasses.
+            expect(P.clientsPerdus({ clients: [mensuel], dateAnalyse: '2026-08-25' })[0].premature).toBe(false);
+        });
+
+        test('sans habitude etablie, on ne conclut ni dans un sens ni dans l autre', () => {
+            // Un seul passage, 36 jours de silence: on ne PEUT pas dire s'il
+            // est en retard. premature reste vrai (pas d'alarme), mais
+            // habitudeEtablie dit a l'ecran de ne pas affirmer le contraire.
+            const r = P.clientsPerdus({
+                clients: [{ nom: 'Vu une fois', ca_fenetre: 84000, passages: [{ date: '2026-07-08', ca: 84000 }] }],
+                dateAnalyse: '2026-08-13'
+            });
+            expect(r[0].habitudeEtablie).toBe(false);
+            expect(r[0].silence).toBe(36);
+            expect(r[0].intervalle).toBeNull();
+        });
+
+        test('le passage de janvier remonte bien a decembre de l annee d avant', () => {
+            const c = {
+                nom: 'Nouvel an', ca_fenetre: 100000,
+                passages: [
+                    { date: '2025-12-05', ca: 50000 }, { date: '2025-12-12', ca: 30000 },
+                    { date: '2025-12-19', ca: 20000 }
+                ]
+            };
+            const r = P.clientsPerdus({ clients: [c], dateAnalyse: '2026-01-20' });
+            expect(r).toHaveLength(1);
+            expect(r[0].caMoisDernier).toBe(100000);
+        });
+    });
+
+    test('la relance sort du rythme de chaque client, pas d un seuil fixe', () => {
+        // Les deux se taisent depuis 14 jours. Seul l'hebdomadaire est en
+        // retard - deux rendez-vous manques; pour l'autre, c'est a peine la
+        // moitie de son cycle. Un seuil unique en jours les aurait tous les
+        // deux relances, ou aucun.
+        const hebdo = {
+            nom: 'Hebdo', ca_fenetre: 400000,
+            passages: [
+                { date: '2026-07-10', ca: 100000 }, { date: '2026-07-17', ca: 100000 },
+                { date: '2026-07-24', ca: 100000 }, { date: '2026-07-31', ca: 100000 }
+            ]
+        };
+        const mensuel = {
+            nom: 'Mensuel', ca_fenetre: 400000,
+            passages: [
+                { date: '2026-05-31', ca: 130000 }, { date: '2026-06-30', ca: 130000 },
+                { date: '2026-07-31', ca: 140000 }
+            ]
+        };
         const r = P.recommandations({
             plCentral: 100, produits: [], margeDe: () => null,
-            topClients: [
-                { nom: 'Client A', ca: 500000, dernier: '2026-08-01' },
-                { nom: 'Client B', ca: 400000, dernier: '2026-08-11' }
-            ],
-            dateAnalyse: '2026-08-12'
+            clientsHistorique: [hebdo, mensuel],
+            dateAnalyse: '2026-08-14'
         });
         const relances = r.filter((x) => x.type === 'client');
         expect(relances).toHaveLength(1);
-        expect(relances[0].titre).toMatch(/Client A/);
+        expect(relances[0].titre).toMatch(/Hebdo/);
+        expect(relances[0].detail).toMatch(/tous les 7 jours/);
+    });
+
+    test('sans historique de clients, aucune relance inventee', () => {
+        const r = P.recommandations({
+            plCentral: 100, produits: [], margeDe: () => null, dateAnalyse: '2026-08-12'
+        });
+        expect(r.filter((x) => x.type === 'client')).toHaveLength(0);
     });
 });
