@@ -1491,14 +1491,36 @@ router.get('/simulation', async (req, res) => {
             prixAchatDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
                 if (c && c.qte > 0) return c.pondere / c.qte;
-                // Produit sans vente sur la periode: aucune ponderation
-                // possible, on rend le prix de fin de periode plutot que rien.
+                // AUCUNE journee ponderable. Deux cas distincts tombent ici,
+                // et le repli sur la fin de periode convient aux deux:
+                //  - produit sans vente: rien a ponderer;
+                //  - produit vendu dont aucune journee n'avait de cout connu -
+                //    par exemple un prix d'achat saisi APRES la periode, ou un
+                //    produit entre dans la famille poulet apres coup.
+                // Rendre null dans le second cas priverait l'ecran d'une marge
+                // qu'il peut estimer; le prix de fin de periode est le
+                // meilleur substitut disponible, et prix_achat_origine dit
+                // d'ou il vient.
                 return finDePeriode.prixAchat(nom);
             };
+            // UNE seule valeur, jamais une composee. La moyenne ponderee peut
+            // melanger des journees resolues differemment - un prix propre
+            // apparu en cours de mois apres des journees en repli de famille -
+            // et rendre "famille_poulet+propre" faisait sortir la sortie de
+            // son contrat documente, que le client aiguille par egalite.
+            //
+            // Quand les origines different, on rend la MOINS sure des trois:
+            // c'est celle qui doit alerter, et c'est aussi la seule lecture
+            // honnete d'un prix qui n'a pas la meme provenance tous les jours.
+            const RANG = { propre: 0, famille_poulet: 1, repli_poulet: 2 };
             origineDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
-                if (c && c.origines.size) return Array.from(c.origines).sort().join('+');
-                return finDePeriode.origine(nom);
+                if (!c || !c.origines.size) return finDePeriode.origine(nom);
+                let pire = null;
+                for (const o of c.origines) {
+                    if (pire === null || (RANG[o] ?? 99) > (RANG[pire] ?? 99)) pire = o;
+                }
+                return pire;
             };
         }
 
@@ -1727,7 +1749,8 @@ async function computePl(dateDebut, dateFin) {
         let avancesEtat = 'ok';
         let avancesRaison = null;
         try {
-            const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+            const { fetchCreanceCdb, estConfigure } = require('../lib/depenses-creance-client');
+            const configure = estConfigure();
             const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
             // L'ETAT SE DEDUIT DE LA VALEUR DE RETOUR, PAS DU catch.
             //
@@ -1741,14 +1764,33 @@ async function computePl(dateDebut, dateFin) {
             // de tout le montant des avances. Mesure sur le 1er au 10 aout
             // 2026: 1 825 273 F d'avances, soit largement de quoi faire passer
             // un resultat negatif pour un resultat positif.
-            if (!cdb) {
+            // TROIS etats, et non deux. La distinction est ce qui manquait:
+            //
+            //  - 'non_configure': ce deploiement n'utilise pas MataBanq. Mode
+            //    explicitement supporte (.env.example). Les avances valent
+            //    legitimement zero, le PL est COMPLET, le figeage est permis.
+            //    Confondre ce cas avec une panne rendait le figeage impossible
+            //    a jamais sur ces tenants: recette, nouveau point de vente,
+            //    poste de developpement.
+            //
+            //  - 'indisponible': la source est configuree mais muette. Il
+            //    manque un poste, le PL est faux, on refuse de le graver.
+            //
+            //  - 'ok': lue.
+            if (!configure) {
+                avancesEtat = 'non_configure';
+                avancesRaison = 'MataBanq n\'est pas configuré sur ce déploiement';
+            } else if (!cdb) {
                 avancesEtat = 'indisponible';
-                avancesRaison = 'MataBanq injoignable ou non configuré '
-                    + '(DEPENSES_API_BASE_URL / DEPENSES_API_KEY)';
-            } else if (!Array.isArray(cdb.details) || !cdb.details[0]
-                || !Array.isArray(cdb.details[0].operations)) {
+                avancesRaison = 'MataBanq configuré mais injoignable';
+            } else if (!Array.isArray(cdb.details)) {
+                // `details` ABSENT est une anomalie; `details` vide ne l'est
+                // pas. Une reponse saine sans client rapproche pour ce label
+                // rend un tableau vide, et l'ecran la traite deja comme
+                // normale (js/finance.js). L'exiger non vide bloquait le
+                // figeage sur une reponse pourtant valide.
                 avancesEtat = 'indisponible';
-                avancesRaison = 'réponse MataBanq sans liste d\'opérations';
+                avancesRaison = 'réponse MataBanq sans bloc de détails';
             }
             const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
                 && Array.isArray(cdb.details[0].operations))
@@ -1965,7 +2007,11 @@ async function computePl(dateDebut, dateFin) {
                 // refuser de graver un PL ampute.
                 sources: {
                     avances: { etat: avancesEtat, raison: avancesRaison },
-                    fiable: avancesEtat === 'ok'
+                    // 'non_configure' est FIABLE: le poste vaut zero parce
+                    // qu'il n'existe pas sur ce deploiement, pas parce qu'on
+                    // n'a pas pu le lire. Seule une source configuree et
+                    // muette rend le PL incomplet.
+                    fiable: avancesEtat !== 'indisponible'
                 },
                 // Part non-boucherie du chiffre d'affaires, pour information.
                 // Un produit sans famille connue compte comme hors boucherie:
@@ -2020,10 +2066,16 @@ async function computePl(dateDebut, dateFin) {
                     variation_boucherie: round2(variationBoucherie),
                     variation_hors_boucherie: round2(variationHorsBoucherie),
                     // variation_bovin + variation_ovin + variation_autre_boucherie
-                    // == variation_boucherie. 'autre' recueille la volaille, le
-                    // caprin et tout produit dont l'espece est inconnue: le
-                    // ranger d'office dans une espece fausserait le taux qu'on
-                    // lui appliquera.
+                    // == variation_boucherie AVANT arrondi. Les quatre champs
+                    // etant arrondis SEPAREMENT a deux decimales, leur somme
+                    // peut differer du total de quelques centimes: c'est un
+                    // artefact d'affichage, pas un ecart de calcul, et un
+                    // controle qui exigerait l'egalite stricte sur ces valeurs
+                    // signalerait a tort.
+                    //
+                    // 'autre' recueille la volaille, le caprin et tout produit
+                    // dont l'espece est inconnue: le ranger d'office dans une
+                    // espece fausserait le taux qu'on lui appliquera.
                     variation_bovin: round2(variationBovin),
                     variation_ovin: round2(variationOvin),
                     variation_autre_boucherie: round2(variationAutreBoucherie),
@@ -2072,12 +2124,48 @@ router.get('/pl', async (req, res) => {
     }
 });
 
-// Fige le PL du jour: calcul FRAIS (pas le memo) sur la periode par defaut
-// (1er du mois -> aujourd'hui), une ligne par date, la derniere ecrase.
-// Le cron du soir ecrit la meme chose avec source='cron'.
+// Fige le PL: calcul FRAIS (pas le memo), une ligne par date, la derniere
+// ecrase. Le cron du soir ecrit la meme chose avec source='cron'.
+//
+// Body optionnel { date } pour RATTRAPER une journee passee. Sans lui, la
+// periode par defaut (1er du mois -> aujourd'hui), comportement d'origine.
+//
+// Ce rattrapage est le pendant obligatoire du refus ci-dessous: sans lui, une
+// nuit ou la source ne repond pas laissait un trou DEFINITIF, puisque
+// periodePlParDefaut() construit sa date a partir de l'instant present et que
+// la date est cle primaire. Poser une garde sans fournir son remede, c'est
+// echanger un chiffre faux contre une donnee manquante et irrecuperable.
 router.post('/pl/snapshot', async (req, res) => {
     try {
-        const { dateDebut, dateFin } = periodePlParDefaut();
+        const defaut = periodePlParDefaut();
+        let dateDebut = defaut.dateDebut;
+        let dateFin = defaut.dateFin;
+        let source = 'manuel';
+
+        const brut = req.body && req.body.date;
+        if (brut !== undefined && brut !== null && String(brut).trim() !== '') {
+            const iso = parseDateVersISO(String(brut));
+            if (!iso) {
+                const err = new Error('date invalide (attendu YYYY-MM-DD ou DD-MM-YYYY)');
+                err.statusHttp = 400;
+                throw err;
+            }
+            // Une date FUTURE figerait une periode vide en se faisant passer
+            // pour un resultat. computePl ne borne que la LONGUEUR de la
+            // periode, pas sa position.
+            if (iso > defaut.dateFin) {
+                const err = new Error(`date future refusée : ${iso} est après aujourd'hui`);
+                err.statusHttp = 400;
+                throw err;
+            }
+            // Meme convention que tout l'historique: un PL fige est un cumul
+            // du 1er du mois a la date figee. Rattraper avec une autre borne
+            // rendrait la ligne incomparable aux autres.
+            dateDebut = iso.slice(0, 8) + '01';
+            dateFin = iso;
+            source = 'rattrapage';
+        }
+
         const data = await computePl(dateDebut, dateFin);
 
         // REFUS DE FIGER UN PL AMPUTE.
@@ -2111,13 +2199,13 @@ router.post('/pl/snapshot', async (req, res) => {
             periode_fin: dateFin,
             pl: data.pl,
             total_ventes: data.total_ventes,
-            source: 'manuel',
+            source,
             created_by: username,
             payload: data,
             updated_at: new Date()
         });
-        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source: 'manuel' });
-        res.json({ success: true, data: { date: dateFin, pl: data.pl } });
+        audit.log(req, 'pl_snapshot.save', { date: dateFin, pl: data.pl, source });
+        res.json({ success: true, data: { date: dateFin, pl: data.pl, source } });
     } catch (e) {
         if (!e.statusHttp) console.error('POST /api/finance/pl/snapshot:', e);
         res.status(e.statusHttp || 500).json({ success: false, error: e.message });
@@ -2499,7 +2587,19 @@ router.get('/config', async (req, res) => {
     try {
         const rows = await FinanceConfig.findAll();
         const config = {};
-        for (const r of rows) config[r.key] = r.value;
+        // Les cles de Simulation 2.0 ne sortent PAS par ici. Cette route rend
+        // toute la table sans filtre, et elle est gardee par
+        // checkAdvancedAccess, qui laisse passer superviseur et
+        // superutilisateur. Elles fuitaient donc a des roles auxquels
+        // /api/simulation-v2/reglages refuse expressement de les montrer:
+        // deux routes qui disent le contraire l'une de l'autre sur les memes
+        // donnees. Leur seule porte de lecture est le routeur v2.
+        const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
+        const reserveesV2 = new Set(Object.values(CLES_V2));
+        for (const r of rows) {
+            if (reserveesV2.has(r.key)) continue;
+            config[r.key] = r.value;
+        }
 
         const mois = req.query.mois;
         if (mois) {

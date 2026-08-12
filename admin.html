@@ -1325,8 +1325,13 @@
             <div id="simulation-v2-section" class="admin-section">
                 <h2><i class="bi bi-sliders me-2"></i>Simulation 2.0</h2>
                 <p class="text-muted">
-                    Le second onglet Simulation apparaît à côté de l'actuel, qui n'est pas modifié.
-                    Les deux se comparent sur la même période. <b>Inactif par défaut.</b>
+                    <b>Inactif par défaut.</b> Une fois activé, ce réglage change les chiffres de
+                    l'onglet <b>Simulation</b> existant : le prix d'achat devient une moyenne de la
+                    période pondérée par les quantités vendues, au lieu du prix du dernier jour, et
+                    les produits de la famille poulet reçoivent enfin un coût, donc une marge.
+                    <br>
+                    Le résultat du PL, lui, ne bouge pas : ces règles ne s'appliquent qu'à la
+                    simulation. Désactiver ce réglage rétablit exactement le comportement précédent.
                 </p>
 
                 <div class="card mb-4">
@@ -1836,6 +1841,6 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js"></script>
-    <script src="admin.js?v=20260808-revue84"></script>
+    <script src="admin.js?v=20260812-socle-v2"></script>
 </body>
 </html> 

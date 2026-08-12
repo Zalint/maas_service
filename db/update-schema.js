@@ -1318,14 +1318,41 @@ async function updateSchema() {
         //
         // Le compose (date, point_vente) sert les ventilations par point de
         // vente, qui filtrent d'abord sur la periode.
+        // UN SEUL index, sur (date) seule. J'avais d'abord ajoute un compose
+        // (date, point_vente) "pour les ventilations par point de vente", puis
+        // envisage de supprimer le simple comme redondant. Les deux idees sont
+        // fausses, et le planificateur les refute:
+        //
+        //   aucun index                    Seq Scan            cout 79,14
+        //   compose (date, point_vente)    Bitmap Heap Scan    cout 71,34
+        //   simple (date)                  Index Scan          cout 43,53
+        //   les deux                       Index Scan          cout 43,53
+        //
+        // Le compose n'apporte presque rien a la requete qui compte - il est
+        // plus large, donc moins de tuples par page - et il n'apporte RIEN de
+        // plus quand le simple existe. Il aurait coute une ecriture d'index a
+        // chaque vente pour un gain nul. On ne l'ajoutera que le jour ou une
+        // requete filtrera reellement sur les deux colonnes.
+        //
+        // lock_timeout: CREATE INDEX sans CONCURRENTLY prend un SHARE lock qui
+        // bloque les ECRITURES sur ventes le temps de la construction. Ce bloc
+        // tourne au demarrage, et une autre instance peut servir le POS
+        // pendant ce temps. Plutot que de bloquer indefiniment, on abandonne
+        // au bout de 5 s: IF NOT EXISTS fait que le boot suivant reessaiera.
+        // CONCURRENTLY n'est pas utilisable ici: il refuse de s'executer dans
+        // une transaction et laisse un index invalide en cas d'echec.
         if (await checkTableExists('ventes')) {
-            await sequelize.query(`
-                CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)
-            `);
-            await sequelize.query(`
-                CREATE INDEX IF NOT EXISTS idx_ventes_date_pv ON ventes (date, point_vente)
-            `);
-            console.log('Index ventes.date verifies (idx_ventes_date, idx_ventes_date_pv)');
+            try {
+                await sequelize.query(`SET lock_timeout = '5s'`);
+                await sequelize.query(`
+                    CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes (date)
+                `);
+                console.log('Index idx_ventes_date verifie');
+            } catch (e) {
+                console.warn(`Index idx_ventes_date non cree (${e.message}) - nouvelle tentative au prochain demarrage`);
+            } finally {
+                await sequelize.query(`SET lock_timeout = DEFAULT`);
+            }
         }
 
         // Categories de depenses (ADMIN > Categories depenses). Remplace la
