@@ -320,75 +320,20 @@
     }
 
     // ============================================================ CALCUL
-    // Source UNIQUE de la formule. Le tableau, l'equilibre, la matrice et le
-    // mode debug appellent tous ceci: aucune n'ecrit sa propre version, et la
-    // matrice n'a donc pas besoin de supposer que les leviers s'additionnent.
-    function levierDe(p) {
-        var l = etat.leviers[p.nom];
-        return l || { prix: 0, unite: 'F', vol: 0 };
-    }
-    function margeAvec(p, dPa) {
-        if (p.prix_moyen === null || p.prix_moyen === undefined) return null;
-        var pa = p.prix_achat;
-        if (pa === null || pa === undefined) return null;
-        return p.prix_moyen - (pa + (estBoeuf(p) ? dPa : 0));
-    }
-    function estBoeuf(p) { return /^(boeuf|veau)/.test(norm(p.nom)); }
+    // TOUT le calcul vit dans js/simulation-v2-moteur.js, un module PUR teste
+    // par Jest (tests/simulation-v2-moteur.test.js). Ces enrobages ne font
+    // que lui passer les donnees de la periode: aucune formule n'est ecrite
+    // ici, donc ce que l'ecran affiche est exactement ce que les tests
+    // verifient.
+    var M = (typeof window !== 'undefined' && window.Sim2Moteur) || null;
 
-    function effetProduit(p, s) {
-        var e = s.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
-        var q = nb(p.quantite), ca = nb(p.ca);
-        var xUnit = e.unite === '%' ? (nb(p.prix_moyen) * e.prix / 100) : e.prix;
-        var dPrix = e.unite === '%' ? (ca * e.prix / 100) : e.prix * q;
-        var m = margeAvec(p, s.globaux.dPa);
-        var dVol = (m === null) ? 0 : m * e.vol;
-        // Terme croise: le prix supplementaire vaut aussi sur ce qu'on vend en
-        // plus. L'oublier sous-estime tout scenario qui combine les deux.
-        return dPrix + dVol + xUnit * e.vol;
-    }
+    function donnees() { return { produits: etat.produits, contexte: etat.contexte }; }
+    function estBoeuf(p) { return M.estBoeuf(p); }
+    function margeAvec(p, s) { return M.margeAvec(p, s, etat.contexte); }
+    function effetProduit(p, s) { return M.effetProduit(p, s, etat.contexte); }
+    function effetsGlobaux(s) { return M.effetsGlobaux(donnees(), s); }
+    function effetTotal(s) { return M.effetTotal(donnees(), s); }
 
-    function effetsGlobaux(s) {
-        var c = etat.contexte, g = s.globaux;
-        var ch = -nb(g.charges);
-        var dp = -nb(g.dep);
-        // La commission est proportionnelle a son taux: on met le montant reel
-        // a l'echelle plutot que d'approcher son assiette.
-        var co = c.commissionPct > 0
-            ? -(c.commission * (nb(g.com) / c.commissionPct - 1)) : 0;
-        // Chaque taux de parage ne porte que sur la variation de stock de SON
-        // espece. Le PL n'a qu'un coefficient, mais il expose la ventilation.
-        var pab = -((nb(g.parBov) - c.parageBase) / 100) * c.varBovin;
-        var pao = -((nb(g.parOvi) - c.parageBase) / 100) * c.varOvin;
-        // Prix d'achat du boeuf. TROIS chemins, et le premier est le dominant:
-        //
-        //  1. LE COUT DES VENTES. Chaque unite bovine vendue sur la periode
-        //     aurait ete achetee delta de moins: -delta x quantites vendues.
-        //     C'est le terme que la premiere version OUBLIAIT - elle ne
-        //     comptait que le stock, et -400 F sur le prix d'achat ne bougeait
-        //     le resultat que de 6 080 F la ou l'economie reelle porte sur
-        //     plus de 1 150 unites. Hypothese assumee, affichee en debug: les
-        //     achats de la periode suivent les ventes (les avances et
-        //     paiements auraient ete moindres d'autant).
-        //  2. le stock: la carcasse est valorisee a ce prix aux DEUX bornes,
-        //     seule la difference de quantite compte, sous le coefficient de
-        //     parage bovin du scenario.
-        //  3. la marge des unites AJOUTEES par un levier volume - portee par
-        //     effetProduit via margeAvec, pas ici, sinon comptee deux fois.
-        var qBovinsVendus = 0;
-        etat.produits.forEach(function (p) { if (estBoeuf(p)) qBovinsVendus += nb(p.quantite); });
-        var pbVentes = -nb(g.dPa) * qBovinsVendus;
-        var pbStock = (1 - nb(g.parBov) / 100) * nb(g.dPa) * (c.boeuf.soir - c.boeuf.matin);
-        var pb = pbVentes + pbStock;
-        return { ch: ch, dp: dp, co: co, pab: pab, pao: pao,
-                 pb: pb, pbVentes: pbVentes, pbStock: pbStock, qBovins: qBovinsVendus,
-                 total: ch + dp + co + pab + pao + pb };
-    }
-
-    function effetTotal(s) {
-        var t = effetsGlobaux(s).total;
-        etat.produits.forEach(function (p) { t += effetProduit(p, s); });
-        return t;
-    }
 
     function snapshotEtat() {
         return {
@@ -478,7 +423,7 @@
         var c = etat.contexte;
         var lignes = etat.produits.map(function (p, i) {
             var l = s.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
-            var m = margeAvec(p, s.globaux.dPa);
+            var m = margeAvec(p, s);
             var e = effetProduit(p, s);
             return '<tr>'
                 + '<td>' + esc(p.nom)
@@ -517,19 +462,19 @@
             + glob('dep', 'Dépenses', s.globaux.dep, 10000, 'FCFA', g.dp)
             + glob('com', 'Commission fournisseur', s.globaux.com, 0.5, '%', g.co)
             + glob('parBov', 'Taux de parage bœuf', s.globaux.parBov, 0.5, '%', g.pab,
-                   'stock bovin ' + fmt(etat.contexte.varBovin) + ' F')
+                   fmt(g.det.qBovins) + ' u vendues · stock ' + fmt(etat.contexte.varBovin) + ' F')
             + glob('parOvi', 'Taux de parage agneau', s.globaux.parOvi, 0.5, '%', g.pao,
-                   'stock ovin ' + fmt(etat.contexte.varOvin) + ' F')
+                   fmt(g.det.qOvins) + ' u vendues · stock ' + fmt(etat.contexte.varOvin) + ' F')
             + glob('dPa', 'Prix d\'achat du bœuf', s.globaux.dPa, 100, 'FCFA', g.pb,
-                   fmt(g.qBovins) + ' unités bovines vendues · carcasse '
+                   fmt(g.det.qBovins) + ' unités bovines vendues · carcasse '
                    + fmt(etat.contexte.boeuf.matin) + ' → ' + fmt(etat.contexte.boeuf.soir))
             + '</tbody></table></div>'
-            + '<div class="small text-muted mt-2">Le prix d\'achat du bœuf agit par trois chemins : '
-            + 'le coût de <strong>toutes</strong> les unités bovines vendues sur la période '
-            + '(le terme dominant — on suppose que les achats suivent les ventes), la revalorisation '
-            + 'du stock de carcasse aux deux bornes, et la marge unitaire, donc le levier volume et '
-            + 'le volume d\'équilibre. Ce dernier est porté par la colonne Marge du tableau, pas par '
-            + 'cette ligne, pour ne pas le compter deux fois.</div>'
+            + '<div class="small text-muted mt-2"><strong>Hypothèse du modèle</strong> : les achats '
+            + 'suivent les ventes, au taux de parage — vendre une unité consomme 1/(1−parage) de '
+            + 'carcasse. Le prix d\'achat et les taux de parage agissent donc d\'abord sur le coût '
+            + 'de <strong>toutes</strong> les unités vendues de leur espèce, ensuite sur le stock. '
+            + 'La marge affichée est <strong>nette de parage</strong> ; la version actuelle affiche '
+            + 'la marge brute (prix moyen − prix carcasse).</div>'
             + '</details>';
     }
 
@@ -556,7 +501,7 @@
         var totCa = 0, tot100 = 0;
         var lignes = etat.produits.map(function (p) {
             var q = nb(p.quantite), ca = nb(p.ca), c100 = 100 * q;
-            var m = margeAvec(p, s.globaux.dPa);
+            var m = margeAvec(p, s);
             var e = effetProduit(p, s);
             totCa += ca; tot100 += c100;
             var part = b.ventes > 0 ? (ca / b.ventes) * 100 : 0;
@@ -589,7 +534,8 @@
             + '<th class="text-end ' + cls(total) + '">' + esc(signe(total)) + '</th></tr></tfoot>'
             + '</table></div>'
             + '<div class="small text-muted mb-3"><strong>CFA 100</strong> : ce que rapporterait 100 FCFA '
-            + 'de plus sur le prix unitaire, à quantités inchangées.</div>';
+            + 'de plus sur le prix unitaire, à quantités inchangées. '
+            + '<strong>Marge</strong> : nette de parage — prix moyen − prix carcasse ÷ (1 − parage).</div>';
     }
 
     function equilibre(s) {
@@ -605,7 +551,7 @@
         var sansPilote = snapshotEtat();
         sansPilote.leviers[p.nom] = { prix: 0, unite: 'F', vol: 0 };
         var base = etat.base.pl + effetTotal(sansPilote);
-        var q = nb(p.quantite), m = margeAvec(p, s.globaux.dPa);
+        var q = nb(p.quantite), m = margeAvec(p, s);
         var hausse = -base / q, prixEq = nb(p.prix_moyen) + hausse;
         var dq = (m === null || m === 0) ? null : -base / m;
 
@@ -628,7 +574,7 @@
             : (dq < -q
                 ? carte('Volume d\'équilibre', 'hors d\'atteinte',
                         'il faudrait vendre ' + fmt(-dq) + ' de moins pour ' + fmt(q) + ' vendues', 'text-muted fs-5')
-                : carte('Volume d\'équilibre', signe(dq), 'à prix inchangé, via la marge',
+                : carte('Volume d\'équilibre', signe(dq), 'à prix inchangé, via la marge nette',
                         m < 0 ? 'text-danger' : (dq > 0 ? 'text-danger' : 'text-success')));
 
         return '<h6 class="fin-subheading">Point d\'équilibre — ' + esc(p.nom) + '</h6>'
@@ -673,6 +619,7 @@
         var A = axes();
         var xk = (etat.matX && A[etat.matX]) ? etat.matX : 'pa';
         var yk = (etat.matY && A[etat.matY]) ? etat.matY : 'vol';
+        etat.matX = xk; etat.matY = yk;
         var ax = A[xk], ay = A[yk];
         var etiq = function (a, v) { return (a.abs ? v : (v > 0 ? '+' + v : v)) + ' ' + a.u; };
         var opt = function (sel) {
@@ -689,7 +636,7 @@
             + '<thead><tr><th class="text-muted small">' + esc(ay.lib) + ' \\ ' + esc(ax.lib) + '</th>';
         ax.vals.forEach(function (x) { h += '<th class="text-end small">' + esc(etiq(ax, x)) + '</th>'; });
         h += '</tr></thead><tbody>';
-        ay.vals.forEach(function (y) {
+        ay.vals.forEach(function (y, j) {
             h += '<tr><th class="small">' + esc(etiq(ay, y)) + '</th>';
             var vals = ax.vals.map(function (x) {
                 var c = snapshotEtat();
@@ -699,17 +646,63 @@
             var best = 0;
             vals.forEach(function (v, k) { if (Math.abs(v) < Math.abs(vals[best])) best = k; });
             vals.forEach(function (v, k) {
-                h += '<td class="text-end ' + (v >= 0 ? 'text-success' : 'text-danger') + '"'
-                   + (k === best ? ' style="outline:2px solid var(--bs-primary);outline-offset:-2px"' : '')
+                var style = (k === best ? 'outline:2px solid var(--bs-primary);outline-offset:-2px;' : '')
+                    + (etat.debug ? 'cursor:pointer;' : '');
+                h += '<td class="text-end ' + (v >= 0 ? 'text-success' : 'text-danger')
+                   + (etat.debug ? ' sim2-case' : '') + '" data-mi="' + j + '" data-mj="' + k + '"'
+                   + (style ? ' style="' + style + '"' : '')
+                   + (etat.debug ? ' title="Cliquer pour le détail du calcul"' : '')
                    + '>' + esc(fmt(v)) + '</td>';
             });
             h += '</tr>';
         });
         return h + '</tbody></table></div>'
-            + '<div class="small text-muted mb-3">Chaque case rejoue le scénario entier sous les deux '
+            + '<div class="small text-muted mb-2">Chaque case rejoue le scénario entier sous les deux '
             + 'leviers croisés, en plus de ceux du panneau. La case cerclée est la plus proche de '
-            + 'l\'équilibre sur sa ligne.</div>';
+            + 'l\'équilibre sur sa ligne.'
+            + (etat.debug ? ' <strong>Mode debug : cliquez une case pour la dérivation complète de son calcul.</strong>' : '')
+            + '</div>'
+            + '<div id="sim2-mat-detail" class="mb-3"></div>';
     }
+
+    // Le detail d'UNE case, au clic: la meme derivation que le bloc debug,
+    // mais pour le scenario de la case — le panneau courant PLUS les deux
+    // axes. C'est la reponse a "d'ou sort ce nombre ?" sans avoir a
+    // reproduire la case dans le panneau. Les formules viennent du moteur:
+    // ce qui est montre est ce qui a ete calcule, pas une reconstitution.
+    function detailCase(j, k) {
+        var A = axes();
+        var ax = A[etat.matX], ay = A[etat.matY];
+        if (!ax || !ay) return;
+        var x = ax.vals[k], y = ay.vals[j];
+        var c = snapshotEtat();
+        ay.set(c, y); ax.set(c, x);
+        var ex = M.expliquer(donnees(), c);
+        var b = etat.base;
+        var pad = function (t, n) { t = String(t); return t + ' '.repeat(Math.max(0, n - t.length)); };
+        var padL = function (t, n) { t = String(t); return ' '.repeat(Math.max(0, n - t.length)) + t; };
+        var h = 'CASE  ' + ay.lib + ' = ' + y + ' ' + ay.u + '   ×   ' + ax.lib + ' = ' + x + ' ' + ax.u + '\n\n';
+        if (!ex.lignes.length) {
+            h += '   aucun levier actif : la case vaut le résultat de référence\n\n';
+        } else {
+            ex.lignes.forEach(function (l) {
+                h += '   ' + pad(l.libelle, 30) + pad(l.formule, 52) + padL(signe(l.valeur), 13) + '\n';
+            });
+            h += '   ' + pad('', 82) + padL('─────────────', 13) + '\n';
+            h += '   ' + pad('effet total', 82) + padL(signe(ex.total), 13) + '\n\n';
+        }
+        h += '   ' + pad('résultat de référence', 30) + padL(fmt(b.pl), 14) + '\n';
+        h += '   ' + pad('case affichée', 30) + padL(fmt(b.pl + ex.total), 14) + '\n';
+        h += '   contrôle de bouclage : ' + ex.controle.ecart.toFixed(2) + ' F'
+           + (ex.controle.ok ? '  ✓' : '  ✗ ÉCART — formules et explication ont divergé') + '\n';
+        var zone = document.getElementById('sim2-mat-detail');
+        if (zone) {
+            zone.innerHTML = '<pre class="small border rounded p-2 mb-0" style="background:#f8fafc;overflow-x:auto">'
+                + esc(h) + '</pre>';
+            zone.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
 
     // ---- Mode debug. Il ne recalcule RIEN: il imprime la derivation du
     // chiffre deja affiche. Un mode debug qui referait le calcul par un autre
@@ -753,40 +746,18 @@
         h += '   ' + pad('coefficient de parage', 24) + padL(c.coeff, 12) + '\n\n';
 
         h += '5. EFFET DE CHAQUE LEVIER\n';
-        var lignes = [];
-        etat.produits.forEach(function (p) {
-            var l = s.leviers[p.nom]; if (!l || (!l.prix && !l.vol)) return;
-            var m = margeAvec(p, s.globaux.dPa);
-            var xUnit = l.unite === '%' ? (nb(p.prix_moyen) * l.prix / 100) : l.prix;
-            if (l.prix) lignes.push([p.nom + ' · prix',
-                l.unite === '%' ? (l.prix + ' % × ' + fmt(p.ca)) : (fmt(l.prix) + ' × ' + nb(p.quantite)),
-                l.unite === '%' ? (nb(p.ca) * l.prix / 100) : l.prix * nb(p.quantite)]);
-            if (l.vol) {
-                lignes.push([p.nom + ' · volume',
-                    'marge ' + (m === null ? 'inconnue' : fmt(m)) + ' × ' + fmt(l.vol),
-                    m === null ? 0 : m * l.vol]);
-                if (l.prix) lignes.push([p.nom + ' · croisé', fmt(xUnit) + ' × ' + fmt(l.vol), xUnit * l.vol]);
-            }
-        });
-        if (g.ch) lignes.push(['Charges fixes', '−' + fmt(-g.ch), g.ch]);
-        if (g.dp) lignes.push(['Dépenses', '−' + fmt(-g.dp), g.dp]);
-        if (g.co) lignes.push(['Commission', 'mise à l\'échelle de ' + fmt(c.commission), g.co]);
-        if (g.pab) lignes.push(['Parage bœuf', '−(' + s.globaux.parBov + ' − ' + c.parageBase + ')/100 × ' + fmt(c.varBovin), g.pab]);
-        if (g.pao) lignes.push(['Parage agneau', '−(' + s.globaux.parOvi + ' − ' + c.parageBase + ')/100 × ' + fmt(c.varOvin), g.pao]);
-        if (g.pbVentes) lignes.push(['Prix d\'achat bœuf · ventes',
-            '−(' + fmt(s.globaux.dPa) + ') × ' + fmt(g.qBovins) + ' unités bovines vendues', g.pbVentes]);
-        if (g.pbStock) lignes.push(['Prix d\'achat bœuf · stock',
-            '(1 − ' + s.globaux.parBov + '/100) × ' + fmt(s.globaux.dPa) + ' × (' + fmt(c.boeuf.soir) + ' − ' + fmt(c.boeuf.matin) + ')', g.pbStock]);
-
-        if (!lignes.length) { h += '   scénario vide\n'; }
+        var ex = M.expliquer(donnees(), s);
+        if (!ex.lignes.length) { h += '   scénario vide\n'; }
         else {
-            var sTot = 0;
-            lignes.forEach(function (l) { sTot += l[2]; h += '   ' + pad(l[0], 26) + pad(l[1], 42) + padL(signe(l[2]), 13) + '\n'; });
-            h += '   ' + pad('', 68) + padL('─────────────', 13) + '\n';
-            h += '   ' + pad('total', 68) + padL(signe(sTot), 13) + '\n';
-            h += '   contrôle : total des lignes − effet appliqué = ' + (sTot - total).toFixed(2)
-               + (Math.abs(sTot - total) < 0.01 ? '  ✓' : '  ✗') + '\n';
+            ex.lignes.forEach(function (l) {
+                h += '   ' + pad(l.libelle, 30) + pad(l.formule, 52) + padL(signe(l.valeur), 13) + '\n';
+            });
+            h += '   ' + pad('', 82) + padL('─────────────', 13) + '\n';
+            h += '   ' + pad('total', 82) + padL(signe(ex.total), 13) + '\n';
+            h += '   contrôle : somme des lignes − effet appliqué = ' + ex.controle.ecart.toFixed(2)
+               + (ex.controle.ok ? '  ✓' : '  ✗') + '\n';
         }
+
         h += '\n6. RÉSULTAT SIMULÉ\n';
         h += '   ' + pad('référence', 26) + padL(fmt(b.pl), 14) + '\n';
         h += '   ' + pad('effet du scénario', 26) + padL(signe(total), 14) + '\n';
@@ -812,6 +783,13 @@
                 onLevier();
             });
         });
+        // Le detail au clic n'existe qu'en mode debug: c'est un outil de
+        // verification, pas un element de l'ecran courant.
+        document.querySelectorAll('.sim2-case').forEach(function (el) {
+            el.addEventListener('click', function () {
+                detailCase(+el.dataset.mi, +el.dataset.mj);
+            });
+        });
         var mx = document.getElementById('sim2-matx'), my = document.getElementById('sim2-maty');
         if (mx) mx.addEventListener('change', function () { etat.matX = mx.value; rendre(); });
         if (my) my.addEventListener('change', function () { etat.matY = my.value; rendre(); });
@@ -825,6 +803,9 @@
     function amorcer() {
         if (demande) return;
         demande = true;
+        // Sans moteur (script non charge), ne rien injecter: la v1 reste
+        // seule, intacte.
+        if (!M) return;
         var u = window.currentUser || {};
         var role = String(u.role || '').toLowerCase();
         // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme pas les
