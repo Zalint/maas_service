@@ -1445,6 +1445,13 @@ router.get('/simulation', async (req, res) => {
         let resolveurPrix;
         let prixAchatDe;
         let origineDe = () => null;
+        // Prix de VENTE catalogue des carcasses, expose en v2 seulement.
+        // C'est l'assiette reelle de la commission MaaS (commissionPct x prix
+        // catalogue x quantites livrees, cf routes/finance-creances.js): le
+        // moteur de l'ecran en a besoin pour faire suivre la commission aux
+        // achats que les leviers volume et parage induisent - sans quoi le
+        // levier volume etait surestime d'environ 20 %.
+        let catalogueV2 = null;
 
         if (!v2) {
             const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
@@ -1455,6 +1462,19 @@ router.get('/simulation', async (req, res) => {
             resolveurPrix = await creerResolveurPrixAchatSimulation({
                 dateMax: dateFin, reglages: reglagesSim
             });
+
+            const { FournisseurPrix } = require('../db/models');
+            const rowsPv = await FournisseurPrix.findAll({ raw: true });
+            const pvDe = (cle) => {
+                const r = rowsPv.find((x) => normaliserNomProduit(x.produit) === cle);
+                const v = r ? parseFloat(r.prix_vente) : NaN;
+                return Number.isFinite(v) && v > 0 ? v : null;
+            };
+            catalogueV2 = {
+                pv_boeuf: pvDe('boeuf'),
+                pv_agneau: pvDe('agneau'),
+                pv_poulet: pvDe('poulet')
+            };
 
             // Un resolveur par JOURNEE, memoise: pourDate relit tout
             // l'historique a chaque appel, et il y a une ligne de vente par
@@ -1589,6 +1609,8 @@ router.get('/simulation', async (req, res) => {
                 // porte les chiffres, elle ne peut donc pas etre en desaccord
                 // avec eux.
                 version: v2 ? 2 : 1,
+                // null hors v2: la notion n'y sert a rien.
+                catalogue: catalogueV2,
                 prix_achat: {
                     // 'periode' dit que le cout est une moyenne ponderee par
                     // les quantites vendues; 'fin_de_periode' qu'il est fige

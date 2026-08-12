@@ -8,27 +8,32 @@
  *
  * UMD minimal: window.Sim2Moteur au navigateur, module.exports sous Node.
  *
- * LE MODELE DE COUT, et son hypothese centrale.
+ * LE MODELE DE COUT, et ses hypotheses. Chacune est ASSUMEE et affichee:
  *
- * Les achats suivent les ventes, au taux de parage:
+ *  1. Les achats suivent les ventes, au taux de parage:
+ *         carcasse achetee = quantites vendues / (1 - parage)
+ *     Vendre 1 kg de detail consomme 1/(1-p) kg de carcasse. Impose par deux
+ *     constats d'utilisateur, tous deux justes: -400 F de prix d'achat doit
+ *     porter sur toutes les unites achetees (pas sur le seul stock), et un
+ *     parage a 10 % doit couter cher (~258 000 F sur juillet, pas 674).
  *
- *     carcasse achetee = quantites vendues / (1 - parage)
+ *  2. La COMMISSION SUIT LES ACHATS. Elle est assise sur les quantites
+ *     livrees au prix catalogue fournisseur (3 % x prix catalogue x livre):
+ *     un levier qui fait vendre ou parer plus fait livrer plus, donc
+ *     commissionne plus. L'oublier surestimait le levier volume de ~20 %.
  *
- * Vendre 1 kg de detail consomme 1/(1-p) kg de carcasse: le parage est une
- * perte de decoupe, pas une ecriture comptable. Ce modele a ete impose par
- * deux constats de l'utilisateur, tous deux justes:
+ *  3. Le changement de prix d'achat est un NIVEAU, pas un a-coup: il vaut
+ *     pour tous les achats de la periode, y compris les unites qui ont
+ *     construit le stock. L'effet stock net = achat du surplus a l'autre
+ *     prix, moins sa revalorisation au coefficient de parage.
  *
- *  - "-400 F sur le prix d'achat ne peut pas ne rapporter que 6 080 F":
- *    l'economie porte sur TOUTES les unites achetees, pas sur le seul stock.
- *  - "un taux de parage a 10 % doit avoir beaucoup de perte": passer de 5 a
- *    10 % de perte de decoupe rencherit chaque unite vendue de
- *    pa x (1/0,90 - 1/0,95), soit ~224 F/unite sur le boeuf - environ
- *    258 000 F sur juillet, pas 674 F.
+ *  4. Les taux de parage simules sont PAR ESPECE (bovin, ovin). La volaille
+ *     et le reste de la boucherie restent au taux actuel.
  *
- * CONSEQUENCE ASSUMEE: la marge affichee ici est NETTE DE PARAGE
+ * CONSEQUENCE ASSUMEE: la marge affichee est NETTE DE PARAGE
  * (prix moyen - prix carcasse / (1 - parage)), la ou la version actuelle et
- * le PL affichent la marge brute (prix moyen - prix carcasse). Sur le boeuf
- * de juillet: 691 F nets contre 893 F bruts. L'ecran le dit.
+ * le PL affichent la marge brute. Sur le boeuf de juillet: 691 F nets contre
+ * 893 F bruts. L'ecran le dit.
  *
  * Le PL de reference n'entre JAMAIS ici: ce moteur ne rend que des EFFETS,
  * a ajouter au PL que le serveur a calcule. Il ne peut donc pas devenir une
@@ -37,7 +42,8 @@
  * ENTREES
  *   donnees  = { produits: [{nom, quantite, ca, prix_moyen, prix_achat}...],
  *                contexte: { varBovin, varOvin, parageBase, boeuf:{matin,soir},
- *                            commission, commissionPct } }
+ *                            commission, commissionPct,
+ *                            pv: {bovin, ovin, volaille} } }
  *   scenario = { leviers: { [nom]: {prix, unite, vol} },
  *                globaux: { charges, dep, com, parBov, parOvi, dPa } }
  */
@@ -104,9 +110,8 @@
      * Effet d'UN produit sous le scenario. Trois termes:
      *   prix   : x par unite sur les quantites VENDUES (1 F de CA = 1 F de
      *            resultat, coefficient MESURE cote serveur);
-     *   volume : marge nette x unites ajoutees — vendre une unite de plus
-     *            consomme 1/(1-parage) de carcasse, achetee au prix du
-     *            scenario;
+     *   volume : marge nette x unites ajoutees (la commission sur la carcasse
+     *            livree pour ces unites est portee par effetsGlobaux);
      *   croise : le prix supplementaire vaut aussi sur les unites ajoutees.
      */
     function effetProduit(p, scenario, contexte) {
@@ -120,25 +125,19 @@
     }
 
     /**
-     * Cout des ventes d'une famille: quantites vendues x prix carcasse
-     * effectif / (1 - parage). C'est le canal DOMINANT des leviers parage et
-     * prix d'achat — celui que les deux premieres versions oubliaient.
-     */
-    function coutFamille(qte, pa, taux) {
-        var d = 1 - nb(taux) / 100;
-        if (d <= 0 || pa === null) return null;
-        return nb(qte) * nb(pa) / d;
-    }
-
-    /**
      * Effets des leviers GLOBAUX, avec leur decomposition.
      *
-     * L'attribution aux lignes du panneau est exacte et sans double compte:
-     *   parage boeuf  = [cout des ventes a (pa, parage') - a (pa, parage0)] + stock parage
-     *   prix d'achat  = [cout des ventes a (pa+d, parage') - a (pa, parage')] + stock dPa
-     *   parage agneau = idem ovin
-     * La somme des trois vaut la variation totale du cout des ventes plus les
-     * effets stock: rien n'est compte deux fois, rien n'est perdu.
+     * L'attribution est exacte et sans double compte:
+     *   parage boeuf  = cout des ventes a (pa, parage') - a (pa, parage0),
+     *                   plus la decote du stock de l'espece;
+     *   prix d'achat  = dPa applique a la carcasse des ventes au parage du
+     *                   scenario (dPa x q/(1-p'), qui n'exige PAS de connaitre
+     *                   le prix de base - un prix inconnu n'inverse plus le
+     *                   signe du levier), plus le stock net (hypothese 3);
+     *   commission    = changement de taux sur le montant reel, plus la
+     *                   commission sur les achats INDUITS par les leviers
+     *                   volume et parage (hypothese 2).
+     * La somme vaut la variation totale: rien n'est compte deux fois (teste).
      */
     function effetsGlobaux(donnees, scenario) {
         var c = donnees.contexte;
@@ -147,62 +146,98 @@
         var pB = g.parBov !== undefined ? nb(g.parBov) : p0;
         var pO = g.parOvi !== undefined ? nb(g.parOvi) : p0;
         var dPa = nb(g.dPa);
+        var d0 = 1 - p0 / 100;
+        var dB = 1 - pB / 100;
+        var dO = 1 - pO / 100;
 
         var ch = -nb(g.charges);
         var dp = -nb(g.dep);
-        var co = nb(c.commissionPct) > 0
+        var coTaux = nb(c.commissionPct) > 0
             ? -(nb(c.commission) * (nb(g.com) / nb(c.commissionPct) - 1)) : 0;
 
-        // Agregats par famille: quantites vendues et prix carcasse. Le prix
-        // est celui des produits de la famille, qui partagent la carcasse par
-        // construction (lib/prix-achat-date.js).
+        // Agregats par famille: quantites vendues, volumes ajoutes par les
+        // leviers, et prix carcasse (partage par construction,
+        // lib/prix-achat-date.js).
         var qB = 0, qO = 0, paB = null, paO = null;
+        var volB = 0, volO = 0, volV = 0;
         (donnees.produits || []).forEach(function (p) {
+            var vol = nb(levierDe(scenario, p.nom).vol);
+            // Un levier volume sur un produit a marge inconnue est INERTE
+            // (effetProduit rend 0, l'ecran le dit): sa livraison ne doit pas
+            // etre commissionnee non plus, sinon on facture le cout d'une
+            // vente dont on refuse de chiffrer le produit.
+            if (vol && margeAvec(p, scenario, c) === null) vol = 0;
             if (estBoeuf(p)) {
                 qB += nb(p.quantite);
+                volB += vol;
                 if (paB === null && p.prix_achat !== null && p.prix_achat !== undefined) paB = nb(p.prix_achat);
             } else if (estOvin(p)) {
                 qO += nb(p.quantite);
+                volO += vol;
                 if (paO === null && p.prix_achat !== null && p.prix_achat !== undefined) paO = nb(p.prix_achat);
+            } else {
+                volV += vol;
             }
         });
 
-        // Cout des ventes bovines aux trois points qui separent les leviers.
-        var cB00 = coutFamille(qB, paB, p0);          // reference
-        var cB0p = coutFamille(qB, paB, pB);          // parage seul
-        var cBdp = coutFamille(qB, paB === null ? null : paB + dPa, pB); // parage + dPa
-        var cvParageB = (cB0p === null || cB00 === null) ? 0 : -(cB0p - cB00);
-        var cvDPa = (cBdp === null || cB0p === null) ? 0 : -(cBdp - cB0p);
+        // PARAGE, canal cout des ventes: la carcasse necessaire aux memes
+        // ventes change avec le taux. Exige le prix carcasse; s'il est
+        // inconnu, la part reste non chiffree (0) et expliquer le dit.
+        var cvParageB = (paB !== null && dB > 0 && d0 > 0)
+            ? -(qB * paB / dB - qB * paB / d0) : 0;
+        var cvParageO = (paO !== null && dO > 0 && d0 > 0)
+            ? -(qO * paO / dO - qO * paO / d0) : 0;
 
-        var cO0 = coutFamille(qO, paO, p0);
-        var cOp = coutFamille(qO, paO, pO);
-        var cvParageO = (cOp === null || cO0 === null) ? 0 : -(cOp - cO0);
+        // PRIX D'ACHAT, canal ventes: dPa sur chaque unite de carcasse des
+        // ventes, au parage du scenario. NE depend PAS du prix de base:
+        // (pa+d)/x - pa/x = d/x. C'est ce qui corrige l'inversion de signe
+        // quand le prix bovin etait inconnu (le levier tombait a l'effet
+        // stock seul, -6 080 au lieu de +485 495).
+        var cvDPa = dB > 0 ? -(dPa * qB / dB) : 0;
 
-        // Effets STOCK, seconds par l'ampleur mais reels:
-        //  - le taux de parage change la decote de la variation de stock de
-        //    son espece (le PL fait coeff x variation boucherie);
-        //  - le prix d'achat revalorise la carcasse aux deux bornes, seule la
-        //    difference de quantite compte.
+        // STOCK. Decote de la variation d'espece par le taux simule; et pour
+        // dPa, effet NET de la constitution du stock (hypothese 3): le
+        // surplus (soir - matin) est achete au nouveau prix ET revalorise au
+        // coefficient - net = -dPa x surplus x parage.
+        var dQ = nb(c.boeuf && c.boeuf.soir) - nb(c.boeuf && c.boeuf.matin);
         var stB = -((pB - p0) / 100) * nb(c.varBovin);
         var stO = -((pO - p0) / 100) * nb(c.varOvin);
-        var stPa = (1 - pB / 100) * dPa
-            * (nb(c.boeuf && c.boeuf.soir) - nb(c.boeuf && c.boeuf.matin));
+        var stPa = -(dPa * dQ * (pB / 100));
+
+        // COMMISSION INDUITE (hypothese 2): les leviers volume et parage font
+        // livrer de la carcasse en plus, commissionnee au prix CATALOGUE
+        // fournisseur (l'assiette reelle de la commission MaaS), au taux du
+        // scenario.
+        var pv = c.pv || {};
+        var addB = (dB > 0 && d0 > 0) ? (volB / dB + qB * (1 / dB - 1 / d0)) : 0;
+        var addO = (dO > 0 && d0 > 0) ? (volO / dO + qO * (1 / dO - 1 / d0)) : 0;
+        var addV = volV;
+        var pvManquants = [];
+        var assiette = 0;
+        if (addB) { if (pv.bovin) assiette += nb(pv.bovin) * addB; else pvManquants.push('bovin'); }
+        if (addO) { if (pv.ovin) assiette += nb(pv.ovin) * addO; else pvManquants.push('ovin'); }
+        if (addV) { if (pv.volaille) assiette += nb(pv.volaille) * addV; else pvManquants.push('volaille'); }
+        var coInduite = -(nb(g.com) / 100) * assiette;
 
         // -0 est un zero: JavaScript les distingue (Object.is), et -(x - x)
         // rend -0. Un effet nul doit se comparer a 0, pas surprendre un test
         // ou un affichage.
         var z = function (v) { return v === 0 ? 0 : v; };
+        var co = z(coTaux + coInduite);
         var pab = z(cvParageB + stB);
         var pao = z(cvParageO + stO);
         var pb = z(cvDPa + stPa);
 
         return {
-            ch: z(ch), dp: z(dp), co: z(co), pab: pab, pao: pao, pb: pb,
+            ch: z(ch), dp: z(dp), co: co, pab: pab, pao: pao, pb: pb,
             total: z(ch + dp + co + pab + pao + pb),
             det: {
                 qBovins: qB, qOvins: qO, paBovin: paB, paOvin: paO,
                 cvParageB: z(cvParageB), cvParageO: z(cvParageO), cvDPa: z(cvDPa),
-                stB: z(stB), stO: z(stO), stPa: z(stPa),
+                stB: z(stB), stO: z(stO), stPa: z(stPa), dQ: dQ,
+                coTaux: z(coTaux), coInduite: z(coInduite),
+                addB: z(addB), addO: z(addO), addV: z(addV),
+                assiette: z(assiette), pvManquants: pvManquants,
                 parageBase: p0, parBov: pB, parOvi: pO, dPa: dPa
             }
         };
@@ -266,11 +301,23 @@
 
         if (glob.ch) lignes.push({ libelle: 'Charges fixes', formule: '−' + fmt(nb(g.charges)), valeur: glob.ch });
         if (glob.dp) lignes.push({ libelle: 'Dépenses', formule: '−' + fmt(nb(g.dep)), valeur: glob.dp });
-        if (glob.co) lignes.push({
-            libelle: 'Commission',
+        if (d.coTaux) lignes.push({
+            libelle: 'Commission · taux',
             formule: '−' + fmt(nb(c.commission)) + ' × (' + g.com + '/' + c.commissionPct + ' − 1)',
-            valeur: glob.co
+            valeur: d.coTaux
         });
+        if (d.coInduite) lignes.push({
+            libelle: 'Commission · achats induits',
+            formule: '−' + g.com + ' % × ' + fmt(d.assiette)
+                + ' F de livraisons supplémentaires (au prix catalogue)',
+            valeur: d.coInduite
+        });
+        if (!d.coInduite && d.pvManquants.length) lignes.push({
+            libelle: 'Commission · achats induits',
+            formule: 'prix catalogue inconnu (' + d.pvManquants.join(', ') + ') : part non chiffrée',
+            valeur: 0
+        });
+
         // Les formules du parage sont ecrites avec leurs ETAPES, pas en
         // notation compacte: "1/(1-p)" a du etre explique a l'utilisateur.
         // La carcasse necessaire aux deux taux dit la meme chose et se
@@ -314,8 +361,9 @@
         });
         if (d.stPa) lignes.push({
             libelle: 'Prix d\'achat bœuf · stock',
-            formule: '(1 − ' + d.parBov + '/100) × ' + fmt(d.dPa) + ' × ('
-                + fmt(nb(c.boeuf && c.boeuf.soir)) + ' − ' + fmt(nb(c.boeuf && c.boeuf.matin)) + ')',
+            formule: 'surplus de stock ' + (d.dQ > 0 ? '+' : '') + fmt(d.dQ)
+                + ' u : acheté à ' + fmt(d.dPa) + ' F près, revalorisé à '
+                + (100 - d.parBov) + ' % — net ' + d.parBov + ' % de l\'écart',
             valeur: d.stPa
         });
 

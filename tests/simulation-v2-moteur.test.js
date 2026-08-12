@@ -24,10 +24,12 @@ const PRODUITS = [
     { nom: 'Poulet en gros', quantite: 35, ca: 122500, prix_moyen: 3500, prix_achat: 3000 },
     { nom: 'Agneau', quantite: 0, ca: 0, prix_moyen: null, prix_achat: 4500 }
 ];
+// Prix de VENTE catalogue des carcasses: l'assiette de la commission MaaS.
+const PV = { bovin: 4800, ovin: 5300, volaille: 3500 };
 const CONTEXTE = {
     varBovin: 13480, varOvin: -6200, varAutre: 0,
     parageBase: 5, boeuf: { matin: 46, soir: 62 },
-    commission: 194138.55, commissionPct: 3
+    commission: 194138.55, commissionPct: 3, pv: PV
 };
 const DONNEES = { produits: PRODUITS, contexte: CONTEXTE };
 const QB = 842.05 + 311; // unites bovines vendues
@@ -85,7 +87,10 @@ describe('leviers par produit', () => {
     test('scenario vide: effet strictement nul', () => {
         expect(M.effetTotal(DONNEES, S())).toBe(0);
     });
-    test('prix +100 F sur le detail: 100 x 842,05', () => {
+    test('prix +100 F sur le detail: 100 x 842,05, sans commission induite', () => {
+        // Le levier PRIX ne change pas les quantites livrees: la commission
+        // de ce PL est assise sur le prix catalogue fournisseur, pas sur le
+        // prix de vente du tenant.
         const s = S({ 'Boeuf en détail': { prix: 100, unite: 'F', vol: 0 } });
         expect(M.effetTotal(DONNEES, s)).toBeCloseTo(84205, 6);
     });
@@ -93,16 +98,23 @@ describe('leviers par produit', () => {
         const s = S({ 'Boeuf en détail': { prix: 10, unite: '%', vol: 0 } });
         expect(M.effetTotal(DONNEES, s)).toBeCloseTo(398129, 6);
     });
-    test('volume +50: marge NETTE x 50', () => {
+    test('volume +50: marge nette x 50, MOINS la commission sur la carcasse livree', () => {
+        // Vendre 50 de plus fait livrer 50/0,95 de carcasse, commissionnee a
+        // 3 % du prix catalogue (4 800). L'oublier surestimait le levier
+        // volume d'environ 20 %.
         const s = S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } });
-        expect(M.effetTotal(DONNEES, s)).toBeCloseTo((PM_DETAIL - 3835 / 0.95) * 50, 6);
+        const attendu = (PM_DETAIL - 3835 / 0.95) * 50 - 0.03 * 4800 * (50 / 0.95);
+        expect(M.effetTotal(DONNEES, s)).toBeCloseTo(attendu, 6);
     });
     test('prix et volume ensemble: le terme croise est compte', () => {
         const s = S({ 'Boeuf en détail': { prix: 100, unite: 'F', vol: 50 } });
-        const attendu = 84205 + (PM_DETAIL - 3835 / 0.95) * 50 + 100 * 50;
+        const attendu = 84205 + (PM_DETAIL - 3835 / 0.95) * 50 + 100 * 50
+            - 0.03 * 4800 * (50 / 0.95);
         expect(M.effetTotal(DONNEES, s)).toBeCloseTo(attendu, 6);
     });
-    test('volume sur un produit a marge inconnue: aucun effet, pas un zero deguise', () => {
+    test('volume sur un produit a marge inconnue: levier INERTE, commission comprise', () => {
+        // Ni effet volume (marge inconnue), ni commission induite: facturer
+        // la livraison d'une vente qu'on refuse de chiffrer serait pire.
         const s = S({ 'Agneau': { prix: 0, unite: 'F', vol: 100 } });
         expect(M.effetTotal(DONNEES, s)).toBe(0);
     });
@@ -114,12 +126,20 @@ describe('taux de parage: le cout des ventes est le canal dominant', () => {
     // -674 F; le cout des ventes en rend ~-258 600.
     const coutVentes = (taux) => -(QB * (3835 / (1 - taux / 100) - 3835 / 0.95));
 
-    test('10 % de parage: environ -259 000, pas -674', () => {
+    test('10 % de parage: environ -259 000 sur pab, pas -674', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 10 }));
         expect(g.det.cvParageB).toBeCloseTo(coutVentes(10), 4);
         expect(g.det.stB).toBeCloseTo(-(5 / 100) * 13480, 6);
         expect(g.pab).toBeCloseTo(coutVentes(10) - 674, 4);
         expect(g.pab).toBeLessThan(-250000);
+    });
+    test('10 % de parage: la carcasse supplementaire est aussi commissionnee', () => {
+        // 67,4 u de carcasse livree en plus, a 3 % du prix catalogue.
+        const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 10 }));
+        const addB = QB * (1 / 0.90 - 1 / 0.95);
+        expect(g.det.addB).toBeCloseTo(addB, 6);
+        expect(g.det.coInduite).toBeCloseTo(-0.03 * 4800 * addB, 4);
+        expect(g.co).toBeCloseTo(-0.03 * 4800 * addB, 4);
     });
     test('0 % de parage: une economie massive, symetrique', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 0 }));
@@ -138,45 +158,104 @@ describe('taux de parage: le cout des ventes est le canal dominant', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 5, parOvi: 5 }));
         expect(g.pab).toBe(0);
         expect(g.pao).toBe(0);
+        expect(g.co).toBe(0);
     });
 });
 
 describe('prix d achat du boeuf: toutes les unites vendues, pas le seul stock', () => {
-    test('-400 F: l economie porte sur 1 153 unites, via 1/(1-parage)', () => {
+    test('-400 F: l economie porte sur la carcasse des ventes, via 1/(1-parage)', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { dPa: -400 }));
         expect(g.det.cvDPa).toBeCloseTo(QB * 400 / 0.95, 4);
-        expect(g.det.stPa).toBeCloseTo(0.95 * -400 * 16, 6);
-        expect(g.pb).toBeCloseTo(QB * 400 / 0.95 - 6080, 4);
+        // Stock NET (hypothese "niveau de prix"): le surplus de 16 u est
+        // achete 400 F moins cher ET revalorise a 95 % - net 5 % de l'ecart.
+        expect(g.det.stPa).toBeCloseTo(400 * 16 * 0.05, 6);
+        expect(g.pb).toBeCloseTo(QB * 400 / 0.95 + 320, 4);
+    });
+    test('prix bovin INCONNU: le levier garde son signe et son ordre de grandeur', () => {
+        // Regression jugee majeure par la revue: cvDPa exigeait le prix de
+        // base et tombait a 0, ne laissant que l'effet stock - le levier
+        // affichait -6 080 pour une economie reelle de +485 000. Or
+        // (pa+d)/x - pa/x = d/x: le prix de base n'est pas necessaire.
+        const sansPa = {
+            produits: PRODUITS.map((p) => M.estBoeuf(p) ? Object.assign({}, p, { prix_achat: null }) : p),
+            contexte: CONTEXTE
+        };
+        const g = M.effetsGlobaux(sansPa, S({}, { dPa: -400 }));
+        expect(g.det.cvDPa).toBeCloseTo(QB * 400 / 0.95, 4);
+        expect(g.pb).toBeGreaterThan(400000);
     });
     test('le scenario de l utilisateur: vol +30 % et dPa -400 rend le PL positif', () => {
         const vol = 842.05 * 0.30;
         const s = S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: vol } }, { dPa: -400 });
         const margeEff = PM_DETAIL - 3435 / 0.95;
-        const attendu = QB * 400 / 0.95 - 6080 + margeEff * vol;
+        const attendu = QB * 400 / 0.95 + 320 + margeEff * vol
+            - 0.03 * 4800 * (vol / 0.95);
         const total = M.effetTotal(DONNEES, s);
         expect(total).toBeCloseTo(attendu, 4);
         // PL de reference -379 568,55: le scenario le rend largement positif.
         expect(-379568.55 + total).toBeGreaterThan(300000);
     });
     test('l attribution parage/prix ne compte rien deux fois', () => {
-        // pab + pb doit valoir exactement la variation totale du cout des
-        // ventes plus les deux effets stock, quel que soit le croisement.
+        // pab + pb doit valoir la variation totale du cout des ventes plus
+        // les deux effets stock, recalcules ici INDEPENDAMMENT.
         const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 10, dPa: -400 }));
         const coutTotal = QB * ((3835 - 400) / 0.90 - 3835 / 0.95);
-        const attendu = -coutTotal + g.det.stB + g.det.stPa;
-        expect(g.pab + g.pb).toBeCloseTo(attendu, 4);
+        const stB = -(5 / 100) * 13480;
+        const stPa = 400 * 16 * 0.10; // au parage du SCENARIO, pas de base
+        expect(g.pab + g.pb).toBeCloseTo(-coutTotal + stB + stPa, 4);
+    });
+    test('la revalorisation du stock suit le parage du scenario', () => {
+        // Mutation ciblee par la revue: stPa lisant le taux de BASE au lieu
+        // de celui du scenario ne faisait rougir aucun test.
+        const g = M.effetsGlobaux(DONNEES, S({}, { parBov: 12, dPa: -400 }));
+        expect(g.det.stPa).toBeCloseTo(400 * 16 * 0.12, 6);
+    });
+});
+
+describe('famille ovine avec des ventes: les branches que juillet laissait mortes', () => {
+    // La revue a montre que qO = 0 dans les fixtures laissait cvParageO et la
+    // marge ovine sans AUCUNE contrainte: deux mutations survivaient.
+    const AGNEAU = { nom: 'Agneau', quantite: 40, ca: 212000, prix_moyen: 5300, prix_achat: 4500 };
+    const D2 = { produits: PRODUITS.map((p) => M.estOvin(p) ? AGNEAU : p), contexte: CONTEXTE };
+
+    test('marge ovine nette du parage OVIN du scenario', () => {
+        const m = M.margeAvec(AGNEAU, S({}, { parOvi: 8 }), CONTEXTE);
+        expect(m).toBeCloseTo(5300 - 4500 / 0.92, 6);
+    });
+    test('le parage agneau paie la carcasse ovine des ventes', () => {
+        const g = M.effetsGlobaux(D2, S({}, { parOvi: 8 }));
+        expect(g.det.cvParageO).toBeCloseTo(-(40 * 4500 / 0.92 - 40 * 4500 / 0.95), 4);
+        expect(g.pao).toBeCloseTo(g.det.cvParageO + -(3 / 100) * -6200, 4);
+    });
+    test('un volume agneau est commissionne au prix catalogue ovin', () => {
+        const s = S({ 'Agneau': { prix: 0, unite: 'F', vol: 10 } });
+        const g = M.effetsGlobaux(D2, s);
+        expect(g.det.addO).toBeCloseTo(10 / 0.95, 6);
+        expect(g.det.coInduite).toBeCloseTo(-0.03 * 5300 * (10 / 0.95), 4);
     });
 });
 
 describe('leviers simples', () => {
-    test('commission: le montant reel est mis a l echelle du taux', () => {
+    test('commission: le changement de taux est mis a l echelle du montant reel', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { com: 4 }));
-        expect(g.co).toBeCloseTo(-(194138.55 * (4 / 3 - 1)), 6);
+        expect(g.det.coTaux).toBeCloseTo(-(194138.55 * (4 / 3 - 1)), 6);
+        expect(g.co).toBeCloseTo(g.det.coTaux, 6);
     });
     test('charges et depenses: franc pour franc, en moins', () => {
         const g = M.effetsGlobaux(DONNEES, S({}, { charges: 50000, dep: 20000 }));
         expect(g.ch).toBe(-50000);
         expect(g.dp).toBe(-20000);
+    });
+    test('prix catalogue inconnu: la commission induite reste non chiffree, et nommee', () => {
+        const sansPv = { produits: PRODUITS, contexte: Object.assign({}, CONTEXTE, { pv: {} }) };
+        const s = S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } });
+        const g = M.effetsGlobaux(sansPv, s);
+        expect(g.det.coInduite).toBe(0);
+        expect(g.det.pvManquants).toContain('bovin');
+        const ex = M.expliquer(sansPv, s);
+        const ligne = ex.lignes.filter((l) => l.libelle === 'Commission · achats induits')[0];
+        expect(ligne.formule).toMatch(/prix catalogue inconnu/);
+        expect(ligne.valeur).toBe(0);
     });
 });
 
@@ -189,7 +268,6 @@ describe('expliquer: ce qui est montre est ce qui est calcule', () => {
         const ex = M.expliquer(DONNEES, s);
         expect(ex.controle.ok).toBe(true);
         expect(ex.total).toBeCloseTo(M.effetTotal(DONNEES, s), 9);
-        // Chaque ligne porte un libelle, une formule substituee et une valeur.
         ex.lignes.forEach((l) => {
             expect(l.libelle.length).toBeGreaterThan(0);
             expect(l.formule.length).toBeGreaterThan(0);
@@ -202,10 +280,18 @@ describe('expliquer: ce qui est montre est ce qui est calcule', () => {
         expect(ex.total).toBe(0);
         expect(ex.controle.ok).toBe(true);
     });
-    test('les deux canaux du parage apparaissent comme des lignes distinctes', () => {
-        const ex = M.expliquer(DONNEES, S({}, { parBov: 10 }));
+    test('les canaux apparaissent en lignes distinctes, formules en toutes lettres', () => {
+        const ex = M.expliquer(DONNEES, S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } }, { parBov: 10 }));
         const libs = ex.lignes.map((l) => l.libelle);
         expect(libs).toContain('Parage bœuf · coût des ventes');
         expect(libs).toContain('Parage bœuf · stock');
+        expect(libs).toContain('Commission · achats induits');
+        // La formule du parage montre la carcasse aux deux taux, pas une
+        // notation compacte qui a deja du etre expliquee.
+        const parage = ex.lignes.filter((l) => l.libelle === 'Parage bœuf · coût des ventes')[0];
+        expect(parage.formule).toMatch(/carcasse pour/);
+        // Le separateur de milliers de fr-FR est une espace insecable etroite
+        // (U+202F) sous Node: le test accepte toute espace entre 1 et 153.
+        expect(parage.formule).toMatch(/1[\s  ]153/);
     });
 });

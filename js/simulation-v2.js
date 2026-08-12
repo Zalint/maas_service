@@ -268,9 +268,15 @@
         // Quantite de carcasse bovine aux deux bornes. Le prix d'achat du
         // boeuf valorise ces deux photos: seule leur DIFFERENCE bouge le
         // resultat.
+        // Seules les lignes valorisees AU PRIX D'ACHAT comptent: une ligne
+        // restee au prix de vente (cout inconnu a cette borne) n'est pas
+        // revalorisee par un changement de prix d'achat. Et la famille est
+        // bovine, pas la seule graphie 'boeuf': le stock de Veau y entre.
         var qBoeuf = function (detail) {
             var t = 0;
-            (detail || []).forEach(function (l) { if (norm(l.produit) === 'boeuf') t += nb(l.quantite); });
+            (detail || []).forEach(function (l) {
+                if (l.base === 'achat' && /^(boeuf|veau)/.test(norm(l.produit))) t += nb(l.quantite);
+            });
             return t;
         };
         etat.base = {
@@ -278,7 +284,30 @@
             periode: pl.periode || {}, sources: pl.sources || null, stock: stock,
             postes: postesDe(pl)
         };
-        etat.produits = (sim.produits || []).map(function (p) { return p; });
+        var produits = (sim.produits || []).map(function (p) { return p; });
+        if (estFige && pl.volumes && Array.isArray(pl.volumes.produits)) {
+            // MODE FIGE: les volumes viennent du SNAPSHOT, jamais du calcul
+            // vivant. Sans cette superposition, la garde sur payload.volumes
+            // ne protegeait RIEN: les quantites affichees venaient de
+            // /simulation d'aujourd'hui, melees a un resultat fige. Les prix
+            // d'achat, eux, restent ceux resolus pour la meme periode.
+            var figes = {};
+            pl.volumes.produits.forEach(function (v) { figes[v.cle] = v; });
+            produits = produits.map(function (p) {
+                var v = figes[norm(p.nom)];
+                if (!v) {
+                    return Object.assign({}, p, {
+                        quantite: 0, ca: 0, prix_moyen: null, nb_lignes: 0, sans_vente: true
+                    });
+                }
+                return Object.assign({}, p, {
+                    quantite: nb(v.quantite), ca: nb(v.ca),
+                    prix_moyen: (v.prix_moyen === null || v.prix_moyen === undefined) ? null : nb(v.prix_moyen),
+                    nb_lignes: v.nb_lignes, sans_vente: nb(v.quantite) === 0
+                });
+            });
+        }
+        etat.produits = produits;
         etat.sim = sim;
         var parageBase = nb(stock.pertes_decoupe_pct);
         etat.contexte = {
@@ -289,8 +318,26 @@
             parageBase: parageBase,
             boeuf: { matin: qBoeuf(stock.matin_detail), soir: qBoeuf(stock.soir_detail) },
             commission: nb(pl.commission_maas),
-            commissionPct: nb(cfg.commission_pct) || 3
+            commissionPct: nb(cfg.commission_pct) || 3,
+            // Prix de VENTE catalogue des carcasses: l'assiette de la
+            // commission MaaS. Le moteur en a besoin pour faire suivre la
+            // commission aux achats que les leviers induisent.
+            pv: {
+                bovin: sim.catalogue ? sim.catalogue.pv_boeuf : null,
+                ovin: sim.catalogue ? sim.catalogue.pv_agneau : null,
+                volaille: sim.catalogue ? sim.catalogue.pv_poulet : null
+            }
         };
+        etat.base.avertissements = [];
+        if (estFige && stock.variation_bovin === undefined) {
+            // Snapshot fige entre l'arrivee des volumes et celle de la
+            // ventilation par espece: les effets stock du parage valent 0,
+            // et le dire vaut mieux que laisser croire a un zero mesure.
+            etat.base.avertissements.push(
+                'Ce PL figé ne porte pas la ventilation du stock par espèce : '
+                + 'les effets stock des taux de parage ne sont pas chiffrables dessus.'
+            );
+        }
         if (!etat.globaux) reinitGlobaux();
     }
 
@@ -364,6 +411,11 @@
         if (b) { b.classList.remove('btn-warning'); b.classList.add('btn-primary'); b.innerHTML = '<i class="bi bi-calculator"></i> Calculer'; }
 
         var s = snapshotEtat();
+        // La matrice et son detail au clic doivent decrire le MEME scenario:
+        // en mode manuel, des saisies en attente ne sont pas encore rendues,
+        // et cliquer une case doit expliquer la case affichee, pas l'etat
+        // des champs.
+        etat.scenarioRendu = s;
         var g = effetsGlobaux(s);
         var total = effetTotal(s);
         var n = nbActifs(s);
@@ -401,6 +453,10 @@
             h += '<div class="alert alert-secondary py-2 small mb-2"><i class="bi bi-info-circle"></i> '
                + 'MataBanq n\'est pas configuré ici : les avances valent zéro, ce qui est normal sur ce déploiement.</div>';
         }
+        (b.avertissements || []).forEach(function (a) {
+            h += '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle"></i> '
+               + esc(a) + '</div>';
+        });
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
         h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
            + 'Résultat <strong>' + esc(b.source) + '</strong>, du ' + esc(b.periode.dateDebut || '')
@@ -444,9 +500,10 @@
         }).join('');
 
         var glob = function (id, lib, val, step, suffixe, effet, note) {
+            var bornes = (id === 'parBov' || id === 'parOvi') ? ' min="0" max="99"' : '';
             return '<tr><td>' + lib + (note ? ' <span class="text-muted small">' + note + '</span>' : '') + '</td>'
                 + '<td class="text-end" colspan="2"><input type="number" class="form-control form-control-sm sim2-glob" '
-                + 'data-g="' + id + '" value="' + val + '" step="' + step + '" style="width:9rem;margin-left:auto"></td>'
+                + 'data-g="' + id + '" value="' + val + '" step="' + step + '"' + bornes + ' style="width:9rem;margin-left:auto"></td>'
                 + '<td class="text-end ' + cls(effet) + '">' + (effet ? esc(signe(effet)) : '0')
                 + ' <span class="text-muted small">' + suffixe + '</span></td></tr>';
         };
@@ -474,7 +531,9 @@
             + 'carcasse. Le prix d\'achat et les taux de parage agissent donc d\'abord sur le coût '
             + 'de <strong>toutes</strong> les unités vendues de leur espèce, ensuite sur le stock. '
             + 'La marge affichée est <strong>nette de parage</strong> ; la version actuelle affiche '
-            + 'la marge brute (prix moyen − prix carcasse).</div>'
+            + 'la marge brute (prix moyen − prix carcasse). Les taux simulés sont par espèce : '
+            + 'la volaille et le reste de la boucherie restent au taux actuel. '
+            + 'La commission suit les livraisons que les leviers induisent.</div>'
             + '</details>';
     }
 
@@ -675,7 +734,9 @@
         var ax = A[etat.matX], ay = A[etat.matY];
         if (!ax || !ay) return;
         var x = ax.vals[k], y = ay.vals[j];
-        var c = snapshotEtat();
+        var c = etat.scenarioRendu
+            ? JSON.parse(JSON.stringify(etat.scenarioRendu))
+            : snapshotEtat();
         ay.set(c, y); ax.set(c, x);
         var ex = M.expliquer(donnees(), c);
         var b = etat.base;
@@ -747,7 +808,11 @@
 
         h += '5. EFFET DE CHAQUE LEVIER\n';
         var ex = M.expliquer(donnees(), s);
-        if (!ex.lignes.length) { h += '   scénario vide\n'; }
+        if (!ex.lignes.length) {
+            h += nbActifs(s)
+                ? '   leviers actifs sans effet chiffrable (marge ou prix inconnus)\n'
+                : '   scénario vide\n';
+        }
         else {
             ex.lignes.forEach(function (l) {
                 h += '   ' + pad(l.libelle, 30) + pad(l.formule, 52) + padL(signe(l.valeur), 13) + '\n';
@@ -779,7 +844,14 @@
         });
         document.querySelectorAll('.sim2-glob').forEach(function (el) {
             el.addEventListener('input', function () {
-                etat.globaux[el.dataset.g] = nb(el.value);
+                var v = nb(el.value);
+                // Un parage a 100 % ou plus n'a pas de sens (rien n'est
+                // vendable) et faisait s'effondrer le cout au lieu de
+                // l'exploser: borne a 99, coherente avec le garde du moteur.
+                if (el.dataset.g === 'parBov' || el.dataset.g === 'parOvi') {
+                    v = Math.min(99, Math.max(0, v));
+                }
+                etat.globaux[el.dataset.g] = v;
                 onLevier();
             });
         });
