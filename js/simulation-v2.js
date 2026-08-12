@@ -286,7 +286,8 @@
         etat.base = {
             pl: nb(pl.pl), ventes: nb(pl.total_ventes), source: source, fige: estFige,
             periode: pl.periode || {}, sources: pl.sources || null, stock: stock,
-            postes: postesDe(pl)
+            postes: postesDe(pl),
+            ventesDateFin: pl.ventes_date_fin || null
         };
         // Le payload BRUT sert a la projection fin de mois: elle a besoin des
         // postes nommes et du total mensuel des charges, pas du tableau
@@ -466,6 +467,18 @@
             h += '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle"></i> '
                + esc(a) + '</div>';
         });
+        // Derniere journee sans vente: la simulation part du meme PL, elle
+        // herite donc du meme resultat tronque. Le taire ici ferait raisonner
+        // sur des leviers appliques a une periode incomplete.
+        var vdf = b.ventesDateFin;
+        if (vdf && vdf.aucune_vente === true) {
+            h += '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-calendar-x"></i> '
+               + '<strong>Aucune vente saisie le ' + esc(vdf.date) + '</strong>, dernier jour de la période. '
+               + (vdf.derniere_date_avec_vente
+                   ? 'Dernière journée avec des ventes : ' + esc(vdf.derniere_date_avec_vente) + '. '
+                   : 'Aucune vente sur toute la période. ')
+               + 'Le résultat de référence est incomplet, et les leviers s\'y appliquent tels quels.</div>';
+        }
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
         h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
            + 'Résultat <strong>' + esc(b.source) + '</strong>, du ' + esc(b.periode.dateDebut || '')

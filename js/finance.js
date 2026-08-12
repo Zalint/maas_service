@@ -2554,6 +2554,24 @@
                </div>`
             : '';
 
+        // DERNIERE JOURNEE SANS VENTE. Une date de fin posee au-dela de la
+        // derniere saisie donne un PL qui a l'air complet: meme nombre de
+        // jours, memes charges proratisees, un total simplement plus bas. Le
+        // dire evite de lire un resultat tronque comme un mauvais resultat.
+        const vdf = d.ventes_date_fin;
+        const plBandeauSansVente = (vdf && vdf.aucune_vente === true)
+            ? `<div class="alert alert-warning py-2 small mb-3">
+                 <i class="bi bi-calendar-x"></i>
+                 <strong>Aucune vente saisie le ${esc(fmtDateFr(vdf.date))}</strong>, dernier jour de la période.
+                 ${vdf.derniere_date_avec_vente
+                    ? `La dernière journée avec des ventes est le
+                       <strong>${esc(fmtDateFr(vdf.derniere_date_avec_vente))}</strong>.`
+                    : 'Aucune vente sur toute la période.'}
+                 Les charges sont proratisées sur ${esc(d.periode.nb_jours)} jours, cette journée comprise :
+                 le résultat est donc <strong>incomplet</strong>, pas seulement mauvais.
+               </div>`
+            : '';
+
         const stockSignNet = stock.variation_nette >= 0 ? '+' : '−';
         const stockColorNet = stock.variation_nette >= 0 ? 'success' : 'danger';
 
@@ -2602,6 +2620,7 @@
                 </div>` : '';
 
         resultEl.innerHTML = `
+            ${plBandeauSansVente}
             ${plBandeauEstimation}
             <!-- Cartes PL et marge brute -->
             <div class="row g-2 mb-3">

@@ -1979,7 +1979,9 @@ async function computePl(dateDebut, dateFin) {
             // supplementaire, alors que faire calculer les volumes ailleurs en
             // aurait coute un, sur les memes lignes, avec le risque de deux
             // filtres de dates qui divergent.
-            attributes: ['montant', 'produit', 'nombre']
+            //
+            // 'date' sert a reperer une DERNIERE JOURNEE SANS VENTE (plus bas).
+            attributes: ['montant', 'produit', 'nombre', 'date']
         });
         // totalVentes = somme des Vente.montant REELLES uniquement.
         // Les commandes envoyees au CDC sont prises en compte ailleurs dans
@@ -1993,6 +1995,40 @@ async function computePl(dateDebut, dateFin) {
         // plutot que ceux d'aujourd'hui.
         const { agregerVolumes } = require('../lib/volumes-vendus');
         const volumesVendus = agregerVolumes(ventes);
+
+        // DERNIERE JOURNEE SANS VENTE.
+        //
+        // Une periode qui se termine sur une journee vide se lit exactement
+        // comme une periode complete: le total, les charges proratisees et le
+        // nombre de jours comptent tous cette journee. Le cas usuel n'est pas
+        // une journee reellement sans chiffre d'affaires - c'est une date de
+        // fin posee plus loin que la derniere saisie, et le resultat parait
+        // alors simplement mauvais au lieu d'etre signale comme incomplet.
+        //
+        // On compte les LIGNES, pas le montant: une journee dont les ventes
+        // s'annulent a zero a bien ete saisie, et ne doit rien declencher.
+        let nbLignesDateFin = 0;
+        let montantDateFin = 0;
+        let derniereDateAvecVente = null;
+        for (const v of ventes) {
+            const iso = parseDateVersISO(v.date);
+            if (!iso) continue;
+            if (iso === dateFin) {
+                nbLignesDateFin += 1;
+                montantDateFin += parseFloat(v.montant) || 0;
+            }
+            if (!derniereDateAvecVente || iso > derniereDateAvecVente) derniereDateAvecVente = iso;
+        }
+        const ventesDateFin = {
+            date: dateFin,
+            nb_lignes: nbLignesDateFin,
+            montant: round2(montantDateFin),
+            aucune_vente: nbLignesDateFin === 0,
+            // La derniere journee de la PERIODE qui porte des ventes. Dit a
+            // l'utilisateur ou ramener sa date de fin, plutot que de le laisser
+            // la chercher. Null si la periode entiere est vide.
+            derniere_date_avec_vente: derniereDateAvecVente
+        };
 
         // 2. Commission MaaS + Marge CDC via computeCreances
         const { computeCreances } = require('./finance-creances');
@@ -2318,6 +2354,11 @@ async function computePl(dateDebut, dateFin) {
                 // celui des postes: au-dela du centime, l'ecart est un signal
                 // de defaut; en deca, c'est l'arrondi.
                 volumes: volumesVendus,
+                // Etat de la DERNIERE JOURNEE de la periode: une date de fin
+                // posee au-dela de la derniere saisie donne un PL qui a l'air
+                // complet. L'ecran le dit plutot que de laisser croire a un
+                // mauvais resultat.
+                ventes_date_fin: ventesDateFin,
                 // ETAT DES SOURCES, a cote des montants et jamais confondu
                 // avec eux. `fiable` est faux des qu'un poste repose sur une
                 // source muette: c'est ce que POST /pl/snapshot regarde pour
