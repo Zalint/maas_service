@@ -454,30 +454,47 @@
                 ? volumeRequis / nb(args.joursRestants) : null
         };
 
-        // ---- Le plan cumule.
+        // ---- Le plan cumule, sur les PLUS FORTES MARGES.
+        //
+        // Le classement se fait sur la marge UNITAIRE, pas sur la capacite
+        // marge x volume: pondérer par le volume revenait a designer les
+        // produits qui se vendent deja beaucoup, alors que l'effort doit aller
+        // la ou chaque unite vendue rapporte le plus. Le produit principal
+        // reste en tete, c'est celui qu'on a choisi de piloter.
         var choisis = eligibles.slice().sort(function (a, b) {
             if (a === principal) return -1;
             if (b === principal) return 1;
-            return (b.marge * b.volumeRestant) - (a.marge * a.volumeRestant);
+            return b.marge - a.marge;
         }).slice(0, args.nbProduits || 5);
 
-        var capaciteTotale = choisis.reduce(function (s, x) {
-            return s + x.marge * x.volumeRestant;
-        }, 0);
-        var hausseCommune = capaciteTotale > 0 ? manque / capaciteTotale : null;
+        // Part de chacun PROPORTIONNELLE A SA MARGE. La consequence est le
+        // coeur du plan: le nombre d'unites supplementaires est alors le MEME
+        // pour tous, et ce sont les fortes marges qui rapportent le plus a
+        // effort egal. Un seul chiffre a transmettre - "+N unites de chacun" -
+        // et l'argent suit la marge sans qu'on ait a l'expliquer.
+        var sommeMarges = choisis.reduce(function (s, x) { return s + x.marge; }, 0);
+        var unitesCommunes = sommeMarges > 0 ? manque / sommeMarges : null;
 
         var plan = choisis.map(function (x) {
-            var part = capaciteTotale > 0 ? manque * (x.marge * x.volumeRestant) / capaciteTotale : 0;
-            var unites = x.marge > 0 ? part / x.marge : 0;
+            var unites = unitesCommunes === null ? 0 : unitesCommunes;
             return {
                 nom: x.nom, marge: x.marge,
                 volumeRestant: x.volumeRestant,
                 volumeAdditionnel: unites,
-                part: part,
+                part: unites * x.marge,
                 haussePct: x.volumeRestant > 0 ? (unites / x.volumeRestant) * 100 : null,
-                parJour: nb(args.joursRestants) > 0 ? unites / nb(args.joursRestants) : null
+                parJour: nb(args.joursRestants) > 0 ? unites / nb(args.joursRestants) : null,
+                // Demander plus que le volume deja attendu, c'est demander de
+                // faire mieux que doubler: signale, pas cache.
+                exigeant: x.volumeRestant > 0 && unites > x.volumeRestant
             };
         });
+
+        // Ce que les produits retenus peuvent porter si chacun DOUBLE son
+        // volume attendu: au-dela, l'equilibre ne se joue pas sur le volume.
+        var capaciteTotale = choisis.reduce(function (s, x) {
+            return s + x.marge * x.volumeRestant;
+        }, 0);
 
         return {
             manque: manque,
@@ -485,9 +502,9 @@
             proportion: proportion,
             seul: seul,
             plan: plan,
-            // Meme hausse relative pour tous, par construction de la
-            // ponderation: le chiffre a retenir pour toute l'equipe.
-            haussePctCommune: hausseCommune !== null ? hausseCommune * 100 : null,
+            // Meme nombre d'unites pour tous, par construction: le chiffre a
+            // retenir pour toute l'equipe.
+            unitesCommunes: unitesCommunes,
             capaciteTotale: capaciteTotale,
             // Le plan ne suffit pas si meme +100 % de volume ne comble pas le
             // manque: on le DIT plutot que d'afficher un objectif intenable.

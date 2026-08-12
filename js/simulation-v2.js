@@ -965,9 +965,9 @@
 
             if (eq.plan.length > 1) {
                 h += '<details class="mb-2" open><summary class="small fw-medium">'
-                    + 'Réparti sur ' + eq.plan.length + ' produits'
-                    + (eq.haussePctCommune !== null
-                        ? ' — <strong>+' + eq.haussePctCommune.toFixed(1) + ' % de volume sur chacun</strong>'
+                    + 'Réparti sur ' + eq.plan.length + ' produits, les plus fortes marges d\'abord'
+                    + (eq.unitesCommunes !== null
+                        ? ' — <strong>+' + esc(fmt(eq.unitesCommunes)) + ' u de chacun</strong>'
                         : '')
                     + '</summary>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
@@ -977,18 +977,23 @@
                     + '<th class="text-end">Par jour</th>'
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
                     + eq.plan.map(function (x) {
-                        return '<tr><td>' + esc(x.nom) + '</td>'
+                        return '<tr><td>' + esc(x.nom)
+                            + (x.exigeant ? ' <span class="badge bg-warning text-dark">plus que doubler</span>' : '')
+                            + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
                             + '<td class="text-end">' + esc(fmt(x.volumeRestant)) + ' u</td>'
-                            + '<td class="text-end"><strong>+' + esc(fmt(x.volumeAdditionnel)) + ' u</strong></td>'
+                            + '<td class="text-end"><strong>+' + esc(fmt(x.volumeAdditionnel)) + ' u</strong>'
+                            + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
+                            + '</td>'
                             + '<td class="text-end">' + (x.parJour !== null ? esc(fmt(x.parJour)) + ' u' : '—') + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
                     + '<tr class="table-light fw-bold"><td colspan="5">Total</td>'
                     + '<td class="text-end">' + esc(fmt(eq.manque)) + ' F</td></tr>'
                     + '</tbody></table></div>'
-                    + '<div class="small text-muted">La part de chacun suit sa marge × son volume attendu : '
-                    + 'c\'est ce qui rend la hausse relative identique pour tous, donc transmissible.</div>'
+                    + '<div class="small text-muted">Les produits sont pris par marge unitaire décroissante, '
+                    + 'et la part de chacun suit sa marge : le nombre d\'unités à vendre en plus est donc '
+                    + 'le même partout, et à effort égal ce sont les fortes marges qui rapportent le plus.</div>'
                     + '</details>';
             }
             if (!eq.atteignable) {

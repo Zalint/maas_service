@@ -347,13 +347,31 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         });
     });
 
-    test('la hausse relative demandee est la MEME pour tous les produits', () => {
-        // C'est la propriete de la ponderation marge x volume, et ce qui rend
-        // le plan transmissible: un seul pourcentage a retenir.
+    test('les produits sont pris par MARGE unitaire, pas par volume', () => {
+        // Yell (200 F/u, 50 u) doit passer devant un gros volume a faible
+        // marge s'il en existait: c'est la marge qui classe, jamais marge x
+        // volume - sinon on redesigne les produits qui se vendent deja.
         const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        // Le principal reste en tete, le reste par marge decroissante.
+        expect(r.plan.map((x) => x.nom)).toEqual([
+            'Boeuf en détail', 'Boeuf en gros', 'Agneau', 'Poulet en détail', 'Yell'
+        ]);
+        const suite = r.plan.slice(1).map((x) => x.marge);
+        expect(suite).toEqual([...suite].sort((a, b) => b - a));
+    });
+
+    test('meme nombre d unites pour tous, et les fortes marges rapportent plus', () => {
+        // La part suit la marge, donc les unites s'egalisent: un seul chiffre
+        // a transmettre, et l'argent suit la marge sans explication.
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        const somme = 900 + 700 + 500 + 300 + 200;
+        expect(r.unitesCommunes).toBeCloseTo(450000 / somme, 6);
         r.plan.forEach((x) => {
-            expect(x.haussePct).toBeCloseTo(r.haussePctCommune, 6);
+            expect(x.volumeAdditionnel).toBeCloseTo(r.unitesCommunes, 6);
+            expect(x.part).toBeCloseTo(r.unitesCommunes * x.marge, 4);
         });
+        // A effort egal en unites, le plus forte marge apporte le plus.
+        expect(r.plan[0].part).toBeGreaterThan(r.plan[4].part);
     });
 
     test('un produit sans marge connue, nulle ou negative ne porte rien', () => {
@@ -361,6 +379,17 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         expect(r.plan.map((x) => x.nom)).not.toContain('Sans marge');
         expect(r.plan).toHaveLength(5);
         expect(r.plan[0].nom).toBe('Boeuf en détail');
+    });
+
+    test('demander plus que doubler un produit est signale', () => {
+        // Yell n'attend que 50 u: un objectif de 173 u le fait plus que
+        // tripler. L'ecran doit le dire plutot que de le presenter comme
+        // acquis.
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        const yell = r.plan.filter((x) => x.nom === 'Yell')[0];
+        expect(yell.volumeRestant).toBeCloseTo(50, 6);
+        expect(yell.exigeant).toBe(true);
+        expect(r.plan[0].exigeant).toBe(false); // 432 u attendus sur le boeuf
     });
 
     test('un objectif hors d atteinte est annonce comme tel', () => {
