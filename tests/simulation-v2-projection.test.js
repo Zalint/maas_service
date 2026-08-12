@@ -288,6 +288,104 @@ describe('confiance: bon, moyen ou faible - et pourquoi', () => {
     });
 });
 
+describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => {
+    // Volumes du mois ecoule; le CA projete vaut le double du realise, donc
+    // on attend encore autant qu'on a deja vendu: volumeRestant = quantite.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 1000, ca: 5000000 },
+        { nom: 'Boeuf en gros', quantite: 500, ca: 2400000 },
+        { nom: 'Agneau', quantite: 200, ca: 1000000 },
+        { nom: 'Poulet en détail', quantite: 100, ca: 350000 },
+        { nom: 'Yell', quantite: 50, ca: 150000 },
+        { nom: 'Sans marge', quantite: 400, ca: 400000 }
+    ];
+    const MARGES = {
+        'Boeuf en détail': 900, 'Boeuf en gros': 700, 'Agneau': 500,
+        'Poulet en détail': 300, 'Yell': 200, 'Sans marge': null
+    };
+    const margeDe = (p) => MARGES[p.nom];
+    const BASE = {
+        produits: PRODUITS, margeDe: margeDe,
+        caRealise: 8900000, caProjete: 17800000, joursRestants: 18
+    };
+
+    test('les leviers portent sur le volume RESTANT, pas sur le mois ecoule', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        // caRestant / caRealise = 1 -> on attend encore 1 000 u de boeuf.
+        expect(r.seul.volumeRestant).toBeCloseTo(1000, 6);
+        expect(r.seul.nom).toBe('Boeuf en détail');
+        expect(r.joursRestants).toBe(18);
+    });
+
+    test('a volume inchange: la marge au kilo requise, et son montant', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        // 450 000 a combler sur 1 000 u -> +450 F/u, soit 1 350 F/u.
+        expect(r.seul.hausseMarge).toBeCloseTo(450, 6);
+        expect(r.seul.margeRequise).toBeCloseTo(1350, 6);
+        expect(r.seul.montantMarge).toBeCloseTo(450000, 6);
+        // Controle: la hausse appliquee au volume restant rend bien le manque.
+        expect(r.seul.hausseMarge * r.seul.volumeRestant).toBeCloseTo(450000, 6);
+    });
+
+    test('a marge inchangee: le volume a vendre, au total et par jour', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        // 450 000 / 900 = 500 u de plus.
+        expect(r.seul.volumeAdditionnel).toBeCloseTo(500, 6);
+        expect(r.seul.volumeTotal).toBeCloseTo(1500, 6);
+        expect(r.seul.hausseVolumePct).toBeCloseTo(50, 6);
+        expect(r.seul.parJour).toBeCloseTo(500 / 18, 6);
+        expect(r.seul.volumeAdditionnel * r.seul.marge).toBeCloseTo(450000, 6);
+    });
+
+    test('le plan cumule comble EXACTEMENT le manque, et pas davantage', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        const somme = r.plan.reduce((s, x) => s + x.part, 0);
+        expect(somme).toBeCloseTo(450000, 4);
+        // Chaque part vaut bien ses unites x sa marge.
+        r.plan.forEach((x) => {
+            expect(x.volumeAdditionnel * x.marge).toBeCloseTo(x.part, 4);
+        });
+    });
+
+    test('la hausse relative demandee est la MEME pour tous les produits', () => {
+        // C'est la propriete de la ponderation marge x volume, et ce qui rend
+        // le plan transmissible: un seul pourcentage a retenir.
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        r.plan.forEach((x) => {
+            expect(x.haussePct).toBeCloseTo(r.haussePctCommune, 6);
+        });
+    });
+
+    test('un produit sans marge connue, nulle ou negative ne porte rien', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        expect(r.plan.map((x) => x.nom)).not.toContain('Sans marge');
+        expect(r.plan).toHaveLength(5);
+        expect(r.plan[0].nom).toBe('Boeuf en détail');
+    });
+
+    test('un objectif hors d atteinte est annonce comme tel', () => {
+        // Capacite = somme(marge x volume restant) = 900000+350000+100000+30000+10000
+        // = 1 390 000. Un manque superieur ne se comble pas par le volume.
+        const r = P.planEquilibre(Object.assign({ plCentral: -2000000 }, BASE));
+        expect(r.capaciteTotale).toBeCloseTo(1390000, 4);
+        expect(r.atteignable).toBe(false);
+        const ok = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
+        expect(ok.atteignable).toBe(true);
+    });
+
+    test('un resultat deja positif ne demande aucun effort', () => {
+        expect(P.planEquilibre(Object.assign({ plCentral: 1 }, BASE))).toBeNull();
+        expect(P.planEquilibre(Object.assign({ plCentral: 0 }, BASE))).toBeNull();
+    });
+
+    test('un mois deja fini n a plus de volume a vendre: pas de plan', () => {
+        const r = P.planEquilibre(Object.assign({}, BASE, {
+            plCentral: -450000, caProjete: 8900000, joursRestants: 0
+        }));
+        expect(r).toBeNull();
+    });
+});
+
 describe('recommandations: des gestes chiffres, pas des generalites', () => {
     const PRODUITS = [
         { nom: 'Boeuf en détail', quantite: 800, ca: 3800000 },

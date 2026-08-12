@@ -921,12 +921,89 @@
             + carte('Haut (CA +10 %)', scen.haut, '')
             + '</div>';
 
+        // Le scenario CENTRAL sert a la fois au plan d'equilibre ci-dessous et
+        // a la decomposition plus bas: declare ici, avant son premier usage.
+        var d0 = scen.central;
+
+        // ---- CE QU'IL FAUT FAIRE D'ICI LA FIN DU MOIS pour revenir a zero.
+        //
+        // Les leviers portent sur le volume RESTANT, pas sur le volume deja
+        // vendu: le mois ecoule ne se rejoue pas.
+        var eq = PJ.planEquilibre({
+            plCentral: d0.pl, produits: etat.produits, margeDe: margeBase,
+            caRealise: b.ventes, caProjete: ca.caProjete,
+            joursRestants: ca.restants.P1 + ca.restants.P2,
+            principal: 'Boeuf en détail', nbProduits: 5
+        });
+        if (eq) {
+            var s0 = eq.seul;
+            h += '<h6 class="small fw-medium mb-1">Revenir à l\'équilibre d\'ici le '
+                + esc(ca.finMois) + ' — ' + eq.joursRestants + ' jours restants</h6>'
+                + '<div class="alert alert-light border py-2 small mb-2">'
+                + 'Manque à combler : <strong>' + esc(fmt(eq.manque)) + ' F</strong>. '
+                + 'Sur ces ' + eq.joursRestants + ' jours, on attend encore <strong>'
+                + esc(fmt(s0.volumeRestant)) + ' u</strong> de ' + esc(s0.nom)
+                + ' (marge nette actuelle ' + esc(fmt(s0.marge)) + ' F/u).</div>';
+
+            h += '<div class="row g-2 mb-2">'
+                + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
+                + '<div class="small text-muted mb-1">À volume inchangé — monter la marge</div>'
+                + '<div class="h5 mb-1">' + esc(fmt(s0.margeRequise)) + ' F/u</div>'
+                + '<div class="small text-muted">soit <strong>+' + esc(fmt(s0.hausseMarge))
+                + ' F par unité</strong> sur ' + esc(fmt(s0.volumeRestant)) + ' u → '
+                + esc(fmt(s0.montantMarge)) + ' F de marge en plus</div>'
+                + '</div></div></div>'
+                + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
+                + '<div class="small text-muted mb-1">À marge inchangée — vendre plus</div>'
+                + '<div class="h5 mb-1">+' + esc(fmt(s0.volumeAdditionnel)) + ' u</div>'
+                + '<div class="small text-muted">soit <strong>' + esc(fmt(s0.volumeTotal))
+                + ' u au total</strong> (+' + s0.hausseVolumePct.toFixed(0) + ' %)'
+                + (s0.parJour !== null ? ', ' + esc(fmt(s0.parJour)) + ' u/jour de plus' : '')
+                + ' → ' + esc(fmt(s0.montantVolume)) + ' F</div>'
+                + '</div></div></div>'
+                + '</div>';
+
+            if (eq.plan.length > 1) {
+                h += '<details class="mb-2" open><summary class="small fw-medium">'
+                    + 'Réparti sur ' + eq.plan.length + ' produits'
+                    + (eq.haussePctCommune !== null
+                        ? ' — <strong>+' + eq.haussePctCommune.toFixed(1) + ' % de volume sur chacun</strong>'
+                        : '')
+                    + '</summary>'
+                    + '<div class="table-responsive"><table class="table table-sm mb-1">'
+                    + '<thead><tr><th>Produit</th><th class="text-end">Marge nette</th>'
+                    + '<th class="text-end">Attendu d\'ici la fin</th>'
+                    + '<th class="text-end">À vendre en plus</th>'
+                    + '<th class="text-end">Par jour</th>'
+                    + '<th class="text-end">Apport</th></tr></thead><tbody>'
+                    + eq.plan.map(function (x) {
+                        return '<tr><td>' + esc(x.nom) + '</td>'
+                            + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
+                            + '<td class="text-end">' + esc(fmt(x.volumeRestant)) + ' u</td>'
+                            + '<td class="text-end"><strong>+' + esc(fmt(x.volumeAdditionnel)) + ' u</strong></td>'
+                            + '<td class="text-end">' + (x.parJour !== null ? esc(fmt(x.parJour)) + ' u' : '—') + '</td>'
+                            + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
+                    }).join('')
+                    + '<tr class="table-light fw-bold"><td colspan="5">Total</td>'
+                    + '<td class="text-end">' + esc(fmt(eq.manque)) + ' F</td></tr>'
+                    + '</tbody></table></div>'
+                    + '<div class="small text-muted">La part de chacun suit sa marge × son volume attendu : '
+                    + 'c\'est ce qui rend la hausse relative identique pour tous, donc transmissible.</div>'
+                    + '</details>';
+            }
+            if (!eq.atteignable) {
+                h += '<div class="alert alert-danger py-2 small mb-2"><i class="bi bi-exclamation-octagon"></i> '
+                    + 'Même en doublant le volume de ces produits, la marge dégagée ('
+                    + esc(fmt(eq.capaciteTotale)) + ' F) ne comble pas le manque : '
+                    + 'l\'équilibre ne se joue pas sur le seul volume ce mois-ci.</div>';
+            }
+        }
+
         // ---- La decomposition du scenario central, chaque regle nommee.
         var lig = function (lib, v, regle) {
             return '<tr><td>' + lib + ' <span class="text-muted small">' + regle + '</span></td>'
                 + '<td class="text-end">' + esc(fmt(v)) + '</td></tr>';
         };
-        var d0 = scen.central;
         h += '<details class="mb-2"><summary class="small fw-medium">Décomposition du scénario central</summary>'
             + '<div class="table-responsive"><table class="table table-sm mb-1">'
             + '<tbody>'

@@ -366,6 +366,136 @@
     }
 
     /**
+     * CE QU'IL FAUT FAIRE D'ICI LA FIN DU MOIS POUR REVENIR A L'EQUILIBRE.
+     *
+     * Le manque a combler est le PL projete (negatif). Il ne se rattrape que
+     * sur les jours qui RESTENT: c'est donc au volume restant, pas au volume
+     * deja vendu, que les leviers s'appliquent - une erreur d'assiette
+     * classique qui rendrait l'effort trop facile a l'ecran.
+     *
+     * Volume attendu d'ici la fin, par produit: on fait suivre au produit la
+     * meme proportion que le CA, seule hypothese deja portee par le reste du
+     * moteur (les leviers globaux marchent ainsi).
+     *
+     * DEUX LECTURES du meme manque, sur le produit principal:
+     *   - a volume inchange, de combien monter la MARGE au kilo;
+     *   - a marge inchangee, combien de KILOS vendre en plus.
+     *
+     * PUIS UN PLAN CUMULE sur plusieurs produits, chacun portant une part
+     * proportionnelle a ce qu'il peut reellement porter - sa marge FOIS son
+     * volume attendu. Cette ponderation a une propriete utile: la hausse
+     * relative demandee est alors la MEME pour tous ("vendre X % de plus sur
+     * ces cinq produits"), ce qui se transmet a une equipe, la ou cinq
+     * objectifs differents ne se retiennent pas.
+     *
+     * @param {object} args
+     * @param {number} args.plCentral      PL projete (negatif = manque)
+     * @param {Array}  args.produits       lignes de sensibilite
+     * @param {Function} args.margeDe      (produit) => marge nette F/u ou null
+     * @param {number} args.caRealise
+     * @param {number} args.caProjete
+     * @param {number} args.joursRestants
+     * @param {string} [args.principal]    produit mis en avant
+     * @param {number} [args.nbProduits]   taille du plan cumule (defaut 5)
+     */
+    function planEquilibre(args) {
+        var plCentral = args.plCentral;
+        if (plCentral === null || plCentral === undefined || plCentral >= 0) return null;
+        var manque = -plCentral;
+        var caRealise = nb(args.caRealise);
+        var caRestant = nb(args.caProjete) - caRealise;
+        if (caRealise <= 0 || caRestant <= 0) return null;
+        var proportion = caRestant / caRealise;
+
+        // Un produit ne peut porter l'effort que si sa marge est connue ET
+        // positive: vendre plus a marge nulle ou negative creuse le trou.
+        var eligibles = (args.produits || [])
+            .map(function (p) {
+                var m = args.margeDe(p);
+                return {
+                    nom: p.nom, marge: m,
+                    volumeRestant: nb(p.quantite) * proportion,
+                    quantiteActuelle: nb(p.quantite)
+                };
+            })
+            .filter(function (x) {
+                return x.marge !== null && x.marge > 0 && x.volumeRestant > 0;
+            });
+        if (!eligibles.length) return null;
+
+        var nomPrincipal = args.principal || 'Boeuf en détail';
+        var cle = function (s) { return String(s || '').trim().toLowerCase(); };
+        var principal = eligibles.filter(function (x) { return cle(x.nom) === cle(nomPrincipal); })[0]
+            || eligibles.slice().sort(function (a, b) {
+                return (b.marge * b.volumeRestant) - (a.marge * a.volumeRestant);
+            })[0];
+
+        // ---- Les deux leviers sur le produit principal.
+        var margeRequise = principal.marge + manque / principal.volumeRestant;
+        var volumeRequis = manque / principal.marge;
+
+        var seul = {
+            nom: principal.nom,
+            marge: principal.marge,
+            volumeRestant: principal.volumeRestant,
+            // (a) meme volume, marge plus haute.
+            margeRequise: margeRequise,
+            hausseMarge: margeRequise - principal.marge,
+            // Le montant que cette marge supplementaire degage: c'est le
+            // manque lui-meme, et l'ecrire evite d'avoir a le recalculer de
+            // tete pour verifier que le compte tombe juste.
+            montantMarge: manque,
+            // (b) meme marge, volume plus haut.
+            volumeAdditionnel: volumeRequis,
+            volumeTotal: principal.volumeRestant + volumeRequis,
+            hausseVolumePct: (volumeRequis / principal.volumeRestant) * 100,
+            montantVolume: manque,
+            parJour: nb(args.joursRestants) > 0
+                ? volumeRequis / nb(args.joursRestants) : null
+        };
+
+        // ---- Le plan cumule.
+        var choisis = eligibles.slice().sort(function (a, b) {
+            if (a === principal) return -1;
+            if (b === principal) return 1;
+            return (b.marge * b.volumeRestant) - (a.marge * a.volumeRestant);
+        }).slice(0, args.nbProduits || 5);
+
+        var capaciteTotale = choisis.reduce(function (s, x) {
+            return s + x.marge * x.volumeRestant;
+        }, 0);
+        var hausseCommune = capaciteTotale > 0 ? manque / capaciteTotale : null;
+
+        var plan = choisis.map(function (x) {
+            var part = capaciteTotale > 0 ? manque * (x.marge * x.volumeRestant) / capaciteTotale : 0;
+            var unites = x.marge > 0 ? part / x.marge : 0;
+            return {
+                nom: x.nom, marge: x.marge,
+                volumeRestant: x.volumeRestant,
+                volumeAdditionnel: unites,
+                part: part,
+                haussePct: x.volumeRestant > 0 ? (unites / x.volumeRestant) * 100 : null,
+                parJour: nb(args.joursRestants) > 0 ? unites / nb(args.joursRestants) : null
+            };
+        });
+
+        return {
+            manque: manque,
+            joursRestants: nb(args.joursRestants),
+            proportion: proportion,
+            seul: seul,
+            plan: plan,
+            // Meme hausse relative pour tous, par construction de la
+            // ponderation: le chiffre a retenir pour toute l'equipe.
+            haussePctCommune: hausseCommune !== null ? hausseCommune * 100 : null,
+            capaciteTotale: capaciteTotale,
+            // Le plan ne suffit pas si meme +100 % de volume ne comble pas le
+            // manque: on le DIT plutot que d'afficher un objectif intenable.
+            atteignable: capaciteTotale >= manque
+        };
+    }
+
+    /**
      * L'HABITUDE d'achat d'un client, lue sur ses passages.
      *
      * Un delai fixe se trompe des deux cotes: il harcele le client bimensuel
@@ -551,6 +681,7 @@
         commandesRentables: commandesRentables,
         habitude: habitude,
         clientsARelancer: clientsARelancer,
-        clientsPerdus: clientsPerdus
+        clientsPerdus: clientsPerdus,
+        planEquilibre: planEquilibre
     };
 }));
