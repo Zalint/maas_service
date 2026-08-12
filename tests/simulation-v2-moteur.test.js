@@ -253,9 +253,56 @@ describe('leviers simples', () => {
         expect(g.det.coInduite).toBe(0);
         expect(g.det.pvManquants).toContain('bovin');
         const ex = M.expliquer(sansPv, s);
-        const ligne = ex.lignes.filter((l) => l.libelle === 'Commission · achats induits')[0];
+        const ligne = ex.lignes.filter((l) => /part non chiffrée/.test(l.libelle))[0];
         expect(ligne.formule).toMatch(/prix catalogue inconnu/);
         expect(ligne.valeur).toBe(0);
+    });
+
+    test('cas MIXTE: une espece chiffree et une autre non, les deux sont dites', () => {
+        // Le defaut corrige: la condition !coInduite taisait l'avertissement
+        // des qu'UNE espece avait son prix catalogue. L'ecran annoncait alors
+        // une commission induite « au prix catalogue » en omettant en silence
+        // la part de l'autre espece.
+        // L'Agneau des fixtures ne se vend pas: sans quantite ovine, le levier
+        // de parage n'induit aucune livraison ovine et le cas mixte ne peut
+        // pas se produire. On lui donne donc un volume vendu.
+        const mixte = {
+            produits: PRODUITS.map((p) => (p.nom === 'Agneau'
+                ? { nom: 'Agneau', quantite: 200, ca: 1060000, prix_moyen: 5300, prix_achat: 4500 }
+                : p)),
+            contexte: Object.assign({}, CONTEXTE, { pv: { bovin: 4800 } }) // ovin ABSENT
+        };
+        const s = S(
+            { 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } },
+            { parBov: 10, parOvi: 10 }
+        );
+        const g = M.effetsGlobaux(mixte, s);
+        // Les deux etats coexistent: c'est toute la question.
+        expect(g.det.coInduite).not.toBe(0);
+        expect(g.det.pvManquants).toContain('ovin');
+
+        const ex = M.expliquer(mixte, s);
+        const chiffree = ex.lignes.filter((l) => l.libelle === 'Commission · achats induits');
+        const manquante = ex.lignes.filter((l) => /part non chiffrée/.test(l.libelle));
+        expect(chiffree).toHaveLength(1);
+        expect(manquante).toHaveLength(1);
+        expect(manquante[0].valeur).toBe(0);
+        // La ligne d'avertissement vaut zero: le bouclage doit tenir.
+        expect(ex.controle.ok).toBe(true);
+    });
+
+    test('un scenario sans taux de commission decrit un taux INCHANGE', () => {
+        // globaux vide: nb(undefined) valait 0, donc coTaux rendait
+        // -(commission x (0/3 - 1)) = +commission, soit un gain fantome de
+        // +194 139 F sur ces fixtures. Atteignable depuis l'ecran par le
+        // bouton Reinitialiser.
+        expect(M.effetTotal(DONNEES, { leviers: {}, globaux: {} })).toBe(0);
+        expect(M.effetsGlobaux(DONNEES, { leviers: {}, globaux: {} }).co).toBe(0);
+        // Et la formule affichee ne doit pas imprimer « undefined ».
+        const ex = M.expliquer(DONNEES, { leviers: {}, globaux: {} });
+        expect(JSON.stringify(ex.lignes)).not.toMatch(/undefined/);
+        // Le meme scenario, taux ecrit explicitement, donne le meme resultat.
+        expect(M.effetTotal(DONNEES, S({}, {}))).toBe(0);
     });
 });
 

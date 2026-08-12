@@ -1593,7 +1593,9 @@ router.get('/simulation', async (req, res) => {
                 dateMax: dateFin, reglages: reglagesSim
             });
 
-            const { FournisseurPrix } = require('../db/models');
+            // FournisseurPrix vient de l'import de tete de fichier: le require
+            // local rendait le MEME objet (cache de Node) et n'etait que du
+            // bruit.
             const rowsPv = await FournisseurPrix.findAll({ raw: true });
             const pvDe = (cle) => {
                 const r = rowsPv.find((x) => normaliserNomProduit(x.produit) === cle);

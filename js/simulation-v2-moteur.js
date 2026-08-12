@@ -57,9 +57,12 @@
     var nb = function (v) { var n = parseFloat(v); return isFinite(n) ? n : 0; };
     // Meme normalisation que le serveur (lib/parage.js): accents et casse
     // ignores.
+    // Les marques combinantes sont ecrites en ECHAPPEMENTS unicode, pas en
+    // caracteres litteraux: litterales, elles sont invisibles a la relecture
+    // et une passe d'encodage ou de minification les abime en silence.
     var norm = function (s) {
         return String(s == null ? '' : s).normalize('NFD')
-            .replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+            .replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
     };
     var fmt = function (v) {
         if (v === null || v === undefined || isNaN(v)) return '—';
@@ -145,6 +148,13 @@
         var p0 = nb(c.parageBase);
         var pB = g.parBov !== undefined ? nb(g.parBov) : p0;
         var pO = g.parOvi !== undefined ? nb(g.parOvi) : p0;
+        // MEME repli que le parage, et pour la meme raison: un scenario qui
+        // omet `com` decrit un taux INCHANGE, pas un taux nul. Sans ce repli,
+        // nb(undefined) valait 0 et coTaux rendait -(commission x (0/3 - 1))
+        // = +commission, soit un gain fantome egal a TOUTE la commission
+        // (+194 139 F sur juillet) sur un scenario pourtant vide. Le controle
+        // de bouclage ne l'attrapait pas: expliquer() portait le meme fantome.
+        var com = g.com !== undefined ? nb(g.com) : nb(c.commissionPct);
         var dPa = nb(g.dPa);
         var d0 = 1 - p0 / 100;
         var dB = 1 - pB / 100;
@@ -153,7 +163,7 @@
         var ch = -nb(g.charges);
         var dp = -nb(g.dep);
         var coTaux = nb(c.commissionPct) > 0
-            ? -(nb(c.commission) * (nb(g.com) / nb(c.commissionPct) - 1)) : 0;
+            ? -(nb(c.commission) * (com / nb(c.commissionPct) - 1)) : 0;
 
         // Agregats par famille: quantites vendues, volumes ajoutes par les
         // leviers, et prix carcasse (partage par construction,
@@ -217,7 +227,7 @@
         if (addB) { if (pv.bovin) assiette += nb(pv.bovin) * addB; else pvManquants.push('bovin'); }
         if (addO) { if (pv.ovin) assiette += nb(pv.ovin) * addO; else pvManquants.push('ovin'); }
         if (addV) { if (pv.volaille) assiette += nb(pv.volaille) * addV; else pvManquants.push('volaille'); }
-        var coInduite = -(nb(g.com) / 100) * assiette;
+        var coInduite = -(com / 100) * assiette;
 
         // -0 est un zero: JavaScript les distingue (Object.is), et -(x - x)
         // rend -0. Un effet nul doit se comparer a 0, pas surprendre un test
@@ -238,6 +248,10 @@
                 coTaux: z(coTaux), coInduite: z(coInduite),
                 addB: z(addB), addO: z(addO), addV: z(addV),
                 assiette: z(assiette), pvManquants: pvManquants,
+                // Le taux NORMALISE, pas g.com brut: expliquer() l'imprimait
+                // tel quel et affichait « undefined » quand le scenario
+                // l'omettait.
+                com: com,
                 parageBase: p0, parBov: pB, parOvi: pO, dPa: dPa
             }
         };
@@ -303,17 +317,23 @@
         if (glob.dp) lignes.push({ libelle: 'Dépenses', formule: '−' + fmt(nb(g.dep)), valeur: glob.dp });
         if (d.coTaux) lignes.push({
             libelle: 'Commission · taux',
-            formule: '−' + fmt(nb(c.commission)) + ' × (' + g.com + '/' + c.commissionPct + ' − 1)',
+            formule: '−' + fmt(nb(c.commission)) + ' × (' + d.com + '/' + c.commissionPct + ' − 1)',
             valeur: d.coTaux
         });
         if (d.coInduite) lignes.push({
             libelle: 'Commission · achats induits',
-            formule: '−' + g.com + ' % × ' + fmt(d.assiette)
+            formule: '−' + d.com + ' % × ' + fmt(d.assiette)
                 + ' F de livraisons supplémentaires (au prix catalogue)',
             valeur: d.coInduite
         });
-        if (!d.coInduite && d.pvManquants.length) lignes.push({
-            libelle: 'Commission · achats induits',
+        // Sans !d.coInduite: les deux etats ne s'excluent PAS. Une espece au
+        // prix catalogue connu et une autre sans, avec un levier sur les deux,
+        // donnait une commission induite non nulle ET une part manquante - et
+        // seule la premiere s'affichait. La formule laissait alors croire que
+        // l'assiette couvrait toutes les livraisons induites, alors qu'il en
+        // manquait jusqu'a 23 % sur le cas mesure.
+        if (d.pvManquants.length) lignes.push({
+            libelle: 'Commission · achats induits (part non chiffrée)',
             formule: 'prix catalogue inconnu (' + d.pvManquants.join(', ') + ') : part non chiffrée',
             valeur: 0
         });

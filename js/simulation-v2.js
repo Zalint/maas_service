@@ -196,7 +196,13 @@
         $('calc').addEventListener('click', rendre);
         $('reset').addEventListener('click', function () {
             etat.leviers = {};
-            etat.globaux = null;
+            // reinitGlobaux(), PAS null. Poser null laissait nbActifs() lire
+            // s.globaux.charges sur null: le bouton levait une TypeError et
+            // l'ecran ne bougeait pas - une remise a zero qui ne remettait
+            // rien. Et si le rendu avait survecu, globauxDe() aurait lu {},
+            // donc com absent, donc un gain fantome egal a TOUTE la
+            // commission (+194 139 F sur juillet).
+            reinitGlobaux();
             rendre();
         });
         // Le mode debug revele l'etat courant, il n'est pas un levier: il
@@ -217,7 +223,17 @@
             var plD = document.getElementById('fin-pl-date-debut');
             var plF = document.getElementById('fin-pl-date-fin');
             var t = new Date();
-            var iso = function (x) { return x.toISOString().slice(0, 10); };
+            // Construite depuis les composants LOCAUX, jamais par
+            // toISOString(): celui-ci serialise en UTC une date creee a minuit
+            // local, donc a Paris en ete le 1er du mois ressortait au 31 du
+            // mois precedent, et la periode par defaut englobait un jour de
+            // juillet dans « le mois en cours ». A Dakar (UTC+0) les deux
+            // formes coincident, ce qui rendait le defaut invisible ici.
+            var iso = function (x) {
+                return x.getFullYear() + '-'
+                    + String(x.getMonth() + 1).padStart(2, '0') + '-'
+                    + String(x.getDate()).padStart(2, '0');
+            };
             if (!d.value) d.value = (plD && plD.value) || iso(new Date(t.getFullYear(), t.getMonth(), 1));
             if (!f.value) f.value = (plF && plF.value) || iso(t);
         }
@@ -1461,8 +1477,13 @@
     }
 
     function cablerLeviers() {
+        // 'change' et non 'input' sur TOUS les controles qui declenchent un
+        // rendu: rendre() reconstruit $('corps').innerHTML, donc il DETRUIT le
+        // champ en cours de saisie. En mode automatique - le mode par defaut -
+        // taper « 12 » dans un levier de prix perdait le focus des le « 1 », et
+        // le « 2 » partait dans le vide: le levier valait 1 au lieu de 12.
         document.querySelectorAll('.sim2-lev').forEach(function (el) {
-            el.addEventListener('input', function () {
+            el.addEventListener('change', function () {
                 var p = etat.produits[+el.dataset.p];
                 if (!p) return;
                 var l = etat.leviers[p.nom] || { prix: 0, unite: 'F', vol: 0 };
@@ -1472,7 +1493,7 @@
             });
         });
         document.querySelectorAll('.sim2-glob').forEach(function (el) {
-            el.addEventListener('input', function () {
+            el.addEventListener('change', function () {
                 var v = nb(el.value);
                 // Un parage a 100 % ou plus n'a pas de sens (rien n'est
                 // vendable) et faisait s'effondrer le cout au lieu de

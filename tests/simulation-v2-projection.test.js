@@ -339,6 +339,40 @@ describe('confiance: bon, moyen ou faible - et pourquoi', () => {
         }));
         expect(c.niveau).toBe('bon');
     });
+
+    test('le classement suit genres, pas le libelle affiche', () => {
+        // Le defaut que `genres` corrige: reformuler une phrase a l'ecran
+        // deplacait le niveau de confiance en silence. Ici le libelle est
+        // volontairement meconnaissable, le genre reste lisible.
+        const c = P.confiance(Object.assign({}, base, {
+            rythmes: {
+                genres: { P1: 'melange', P2: 'converti' },
+                sources: { P1: 'peu importe', P2: 'formulation totalement réécrite' }
+            }
+        }));
+        expect(c.niveau).toBe('faible');
+        expect(c.notes.join(' ')).toMatch(/conversion/);
+    });
+
+    test('bout en bout: la sortie reelle de rythmesRetenus alimente confiance', () => {
+        // Les tests precedents fabriquent des rythmes a la main; celui-ci
+        // branche les deux fonctions, seul moyen d'attraper une divergence
+        // entre ce que l'une produit et ce que l'autre attend.
+        const ca = {};
+        for (let j = 1; j <= 12; j++) ca['2026-08-' + String(j).padStart(2, '0')] = 100000;
+        const r = P.rythmesRetenus({
+            caParJour: ca, debutMois: '2026-08-01', dateAnalyse: '2026-08-12',
+            histo: null, coeff: 1.3
+        });
+        // P1 observe (12 j), P2 non observe -> converti depuis P1.
+        expect(r.genres.P1).toBe('reel_seul');
+        expect(r.genres.P2).toBe('converti');
+        const c = P.confiance({
+            rythmes: r, restants: { P1: 7, P2: 12 },
+            sourcesFiables: true, histoDisponible: false
+        });
+        expect(c.niveau).toBe('faible');
+    });
 });
 
 describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => {
@@ -571,7 +605,9 @@ describe('recommandations: des gestes chiffres, pas des generalites', () => {
         });
         const volume = r.filter((x) => x.type === 'volume')[0];
         expect(volume.titre).toMatch(/Boeuf en détail/);
-        expect(volume.detail).toMatch(/100/); // 69 100 / 691 = 100 u
+        // Le nombre SUIVI de « u », pas un 100 quelconque: la chaine contient
+        // deja « 69 100 F », donc /100/ passait meme si le calcul etait faux.
+        expect(volume.detail).toMatch(/\b100\s*u\b/); // 69 100 / 691 = 100 u
         const prix = r.filter((x) => x.type === 'prix' && /ajuster/.test(x.titre))[0];
         expect(prix.detail).toMatch(/86/); // 69 100 / 800 = 86,4 F par unite
     });

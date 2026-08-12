@@ -155,30 +155,41 @@
             ? rythmeParType(args.histo.ca_par_jour, args.histo.debut, args.histo.fin, sansDim)
             : { P1: null, P2: null };
 
-        var retenu = { P1: null, P2: null, sources: {}, reel: reel, histo: histo };
+        // `sources` est ce qui s'AFFICHE, `genres` ce qui se DECIDE. Les deux
+        // etaient confondus: confiance() reclassifiait par indexOf sur les
+        // libelles, donc reformuler une phrase a l'ecran aurait change le
+        // niveau de confiance sans que rien ne le dise.
+        var retenu = {
+            P1: null, P2: null, sources: {}, genres: {}, reel: reel, histo: histo
+        };
         ['P1', 'P2'].forEach(function (t) {
             var observes = reel.jours[t];
             if (observes >= minJours && reel[t] !== null) {
                 if (histo[t] !== null) {
                     retenu[t] = poidsReel * reel[t] + (1 - poidsReel) * histo[t];
+                    retenu.genres[t] = 'melange';
                     retenu.sources[t] = Math.round(poidsReel * 100) + ' % réel + '
                         + Math.round((1 - poidsReel) * 100) + ' % historique';
                 } else {
                     retenu[t] = reel[t];
+                    retenu.genres[t] = 'reel_seul';
                     retenu.sources[t] = 'réel seul (pas d\'historique)';
                 }
             } else if (histo[t] !== null) {
                 retenu[t] = histo[t];
+                retenu.genres[t] = 'historique';
                 retenu.sources[t] = 'historique (' + observes + ' j observés < ' + minJours + ')';
             }
         });
         // Conversion croisee en dernier recours: P1 = P2 x coeff, P2 = P1 / coeff.
         if (retenu.P1 === null && retenu.P2 !== null) {
             retenu.P1 = retenu.P2 * coeff;
+            retenu.genres.P1 = 'converti';
             retenu.sources.P1 = 'converti depuis P2 × coefficient ' + coeff.toFixed(3);
         }
         if (retenu.P2 === null && retenu.P1 !== null) {
             retenu.P2 = retenu.P1 / coeff;
+            retenu.genres.P2 = 'converti';
             retenu.sources.P2 = 'converti depuis P1 ÷ coefficient ' + coeff.toFixed(3);
         }
         return retenu;
@@ -298,12 +309,20 @@
             if (n === 'faible' || niveau === 'faible') niveau = 'faible';
             else niveau = 'moyen';
         };
+        // Classement sur `genres`, jamais sur les libelles d'affichage: une
+        // phrase reformulee a l'ecran ne doit pas deplacer le niveau de
+        // confiance. Repli sur les libelles pour un rythmes construit par un
+        // appelant plus ancien, qui ne porte pas encore `genres`.
         ['P1', 'P2'].forEach(function (t) {
-            var src = (args.rythmes.sources || {})[t] || '';
             if ((args.restants[t] || 0) === 0) return; // periode finie: sans objet
-            if (src.indexOf('converti') === 0) abaisser('faible', 'rythme ' + t + ' obtenu par conversion, jamais observé');
-            else if (src.indexOf('historique (') === 0) abaisser('moyen', 'rythme ' + t + ' pris sur l\'historique, période trop peu observée');
-            else if (src.indexOf('réel seul') === 0) abaisser('moyen', 'pas d\'historique pour lisser le rythme ' + t);
+            var src = (args.rythmes.sources || {})[t] || '';
+            var genre = (args.rythmes.genres || {})[t]
+                || (src.indexOf('converti') === 0 ? 'converti'
+                    : (src.indexOf('historique (') === 0 ? 'historique'
+                        : (src.indexOf('réel seul') === 0 ? 'reel_seul' : 'melange')));
+            if (genre === 'converti') abaisser('faible', 'rythme ' + t + ' obtenu par conversion, jamais observé');
+            else if (genre === 'historique') abaisser('moyen', 'rythme ' + t + ' pris sur l\'historique, période trop peu observée');
+            else if (genre === 'reel_seul') abaisser('moyen', 'pas d\'historique pour lisser le rythme ' + t);
         });
         if (args.sourcesFiables === false) abaisser('faible', 'une source du PL est indisponible : le réalisé lui-même est incomplet');
         if (!args.histoDisponible) abaisser('moyen', 'aucun historique : coefficient non calibré');
