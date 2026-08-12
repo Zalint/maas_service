@@ -271,10 +271,19 @@
             formule: '−' + fmt(nb(c.commission)) + ' × (' + g.com + '/' + c.commissionPct + ' − 1)',
             valeur: glob.co
         });
+        // Les formules du parage sont ecrites avec leurs ETAPES, pas en
+        // notation compacte: "1/(1-p)" a du etre explique a l'utilisateur.
+        // La carcasse necessaire aux deux taux dit la meme chose et se
+        // comprend seule: le parage est une perte sur ce qu'on ACHETE, donc
+        // vendre autant exige d'acheter plus.
+        var carc = function (qte, taux) { return nb(qte) / (1 - nb(taux) / 100); };
         if (d.cvParageB) lignes.push({
             libelle: 'Parage bœuf · coût des ventes',
-            formule: '−' + fmt(d.qBovins) + ' u × ' + fmt(d.paBovin)
-                + ' × (1/(1−' + d.parBov + '%) − 1/(1−' + d.parageBase + '%))',
+            formule: 'carcasse pour ' + fmt(d.qBovins) + ' u vendues : '
+                + fmt(carc(d.qBovins, d.parageBase)) + ' u à ' + d.parageBase + ' % → '
+                + fmt(carc(d.qBovins, d.parBov)) + ' u à ' + d.parBov + ' %, soit '
+                + fmt(carc(d.qBovins, d.parBov) - carc(d.qBovins, d.parageBase))
+                + ' u × ' + fmt(d.paBovin) + ' F',
             valeur: d.cvParageB
         });
         if (d.stB) lignes.push({
@@ -284,8 +293,11 @@
         });
         if (d.cvParageO) lignes.push({
             libelle: 'Parage agneau · coût des ventes',
-            formule: '−' + fmt(d.qOvins) + ' u × ' + fmt(d.paOvin)
-                + ' × (1/(1−' + d.parOvi + '%) − 1/(1−' + d.parageBase + '%))',
+            formule: 'carcasse pour ' + fmt(d.qOvins) + ' u vendues : '
+                + fmt(carc(d.qOvins, d.parageBase)) + ' u à ' + d.parageBase + ' % → '
+                + fmt(carc(d.qOvins, d.parOvi)) + ' u à ' + d.parOvi + ' %, soit '
+                + fmt(carc(d.qOvins, d.parOvi) - carc(d.qOvins, d.parageBase))
+                + ' u × ' + fmt(d.paOvin) + ' F',
             valeur: d.cvParageO
         });
         if (d.stO) lignes.push({
@@ -295,7 +307,9 @@
         });
         if (d.cvDPa) lignes.push({
             libelle: 'Prix d\'achat bœuf · ventes',
-            formule: '−(' + fmt(d.dPa) + ') × ' + fmt(d.qBovins) + ' u / (1−' + d.parBov + '%)',
+            formule: fmt(d.dPa) + ' F sur chacune des ' + fmt(carc(d.qBovins, d.parBov))
+                + ' u de carcasse (' + fmt(d.qBovins) + ' u vendues à '
+                + d.parBov + ' % de parage)',
             valeur: d.cvDPa
         });
         if (d.stPa) lignes.push({
