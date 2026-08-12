@@ -1097,25 +1097,49 @@
     }
 
     // ============================================================ BOOTSTRAP
-    // Le drapeau est demande au PREMIER clic sur Finance, pas au chargement de
-    // la page: inutile d'ajouter un aller-retour au demarrage pour tous les
-    // utilisateurs, dont ceux qui n'ouvriront jamais cet ecran.
+    // window.currentUser est pose par checkAuth() (script.js), asynchrone et
+    // hors du controle de ce fichier - son propre commentaire dit "environ
+    // deux secondes en local, davantage sur Render". Un setTimeout fixe a
+    // 1200 ms lisait donc le role AVANT qu'il soit connu sur Render: le role
+    // retombait a '', la bascule ne s'injectait jamais, et comme `demande`
+    // passait a true des la premiere tentative, meme un clic ulterieur sur
+    // Finance ne retentait rien - l'echec etait definitif pour toute la
+    // page. On attend le role au lieu de deviner combien de temps il met.
     var demande = false;
     function amorcer() {
         if (demande) return;
-        demande = true;
         // Sans moteur (script non charge), ne rien injecter: la v1 reste
-        // seule, intacte.
-        if (!M) return;
-        var u = window.currentUser || {};
-        var role = String(u.role || '').toLowerCase();
-        // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme pas les
-        // reglages a un role qui ne peut pas lire le PL. Les routes refont le
-        // controle de toute facon.
-        if (['admin', 'superviseur'].indexOf(role) < 0) return;
-        jsonOu('/api/simulation-v2/reglages', null).then(function (d) {
-            if (d && d.actif) injecter();
+        // seule, intacte. Ce cas ne depend d'aucune attente.
+        if (!M) { demande = true; return; }
+        attendreRole(function (role) {
+            demande = true;
+            // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme
+            // pas les reglages a un role qui ne peut pas lire le PL. Les
+            // routes refont le controle de toute facon.
+            if (['admin', 'superviseur'].indexOf(role) < 0) return;
+            jsonOu('/api/simulation-v2/reglages', null).then(function (d) {
+                if (d && d.actif) injecter();
+            });
         });
+    }
+
+    /**
+     * Attend que checkAuth() ait pose window.currentUser avant de lire le
+     * role. Sonde toutes les 250 ms jusqu'a 20 s - un cold start Render peut
+     * largement depasser l'ancien delai fixe de 1200 ms; au-dela, rend le
+     * role tel quel (vide si l'utilisateur n'a toujours pas ete identifie).
+     */
+    function attendreRole(suite) {
+        var tentatives = 0;
+        (function essayer() {
+            var u = window.currentUser;
+            if (u || tentatives >= 80) {
+                suite(String((u && u.role) || '').toLowerCase());
+                return;
+            }
+            tentatives++;
+            setTimeout(essayer, 250);
+        }());
     }
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -1123,6 +1147,10 @@
         if (lien) lien.addEventListener('click', amorcer);
         // Filet: si l'onglet Finance est deja ouvert (retour arriere, lien
         // direct), le sous-menu existe deja et personne ne cliquera dessus.
-        if (document.getElementById('finance-subnav')) setTimeout(amorcer, 1200);
+        // finance-subnav est un element STATIQUE du markup: cette condition
+        // est vraie a CHAQUE chargement de page, donc ce n'est pas un cas
+        // rare mais le chemin normal - attendreRole() est ce qui rend cet
+        // appel systematique sans risque de course.
+        if (document.getElementById('finance-subnav')) amorcer();
     });
 })();
