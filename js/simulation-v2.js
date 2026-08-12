@@ -70,7 +70,10 @@
         // reference du document.
         proj: {
             coeff: null, poidsReel: 0.7, minJours: 5,
-            stockOption: 'garder', depensesOption: 'realise'
+            stockOption: 'garder', depensesOption: 'realise',
+            // Combien de fois le rythme mensuel d'un produit on s'autorise a
+            // lui demander, dans le plan d'equilibre.
+            facteurMax: 3
         }
     };
 
@@ -1037,6 +1040,7 @@
             plCentral: d0.pl, produits: universEq, margeDe: margeBase,
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
+            jours: jours, facteurMax: etat.proj.facteurMax,
             principal: 'Boeuf en détail', nbProduits: 5
         });
         if (eq) {
@@ -1074,9 +1078,19 @@
                         ? ' — <strong>+' + esc(fmt(eq.unitesCommunes)) + ' u de chacun</strong>'
                         : '')
                     + '</summary>'
+                    + '<div class="d-flex align-items-center gap-2 mb-2 small">'
+                    + '<label class="text-muted">Plafond par produit : au plus</label>'
+                    + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
+                    + 'data-k="facteurMax" style="width:5rem" min="1" max="20" step="0.5" value="'
+                    + esc(String(eq.facteurMax)) + '">'
+                    + '<span class="text-muted">× son rythme mensuel — soit '
+                    + '<em>vendu × (' + jours.mois + ' j ÷ ' + jours.ecoules + ' j) × '
+                    + esc(String(eq.facteurMax)) + '</em></span>'
+                    + '</div>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
                     + '<thead><tr><th>Produit</th><th class="text-end">Marge nette</th>'
                     + '<th class="text-end">Attendu d\'ici la fin</th>'
+                    + '<th class="text-end">Plafond</th>'
                     + '<th class="text-end">À vendre en plus</th>'
                     + '<th class="text-end">Par jour</th>'
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
@@ -1086,13 +1100,14 @@
                             + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
                             + '<td class="text-end">' + esc(fmt(x.volumeRestant)) + ' u</td>'
+                            + '<td class="text-end text-muted">' + esc(fmt(x.plafond)) + ' u</td>'
                             + '<td class="text-end"><strong>+' + esc(fmt(x.volumeAdditionnel)) + ' u</strong>'
                             + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
                             + '</td>'
                             + '<td class="text-end">' + (x.parJour !== null ? esc(fmt(x.parJour)) + ' u' : '—') + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
-                    + '<tr class="table-light fw-bold"><td colspan="5">Total</td>'
+                    + '<tr class="table-light fw-bold"><td colspan="6">Total</td>'
                     + '<td class="text-end">' + esc(fmt(eq.manque)) + ' F</td></tr>'
                     + '</tbody></table></div>'
                     + '<div class="small text-muted">Les produits sont pris par marge unitaire décroissante, '
@@ -1365,11 +1380,16 @@
         });
         var sauve = document.getElementById('sim2-suivi-save');
         if (sauve) sauve.addEventListener('click', enregistrerProduitsSuivis);
+        // 'change' et non 'input': ces controles declenchent un rendu complet,
+        // qui remplace le champ en cours de saisie. Sur un nombre tape chiffre
+        // par chiffre - 1, puis 12 - le focus etait perdu des le premier. Un
+        // select emet 'change' des la selection, rien n'y est retarde.
         document.querySelectorAll('.sim2-proj-ctl').forEach(function (el) {
-            el.addEventListener('input', function () {
+            el.addEventListener('change', function () {
                 var k = el.dataset.k;
                 if (k === 'stockOption') etat.proj.stockOption = el.value;
                 else if (k === 'depensesOption') etat.proj.depensesOption = el.value;
+                else if (k === 'facteurMax') etat.proj.facteurMax = Math.max(1, nb(el.value) || 1);
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);
                 rendre();

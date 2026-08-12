@@ -304,10 +304,14 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         'Poulet en détail': 300, 'Yell': 200, 'Sans marge': null
     };
     const margeDe = (p) => MARGES[p.nom];
+    // 13 jours ecoules sur 31: le rythme mensuel vaut donc 31/13 fois le
+    // realise, et le plafond par defaut trois fois ce rythme.
     const BASE = {
         produits: PRODUITS, margeDe: margeDe,
-        caRealise: 8900000, caProjete: 17800000, joursRestants: 18
+        caRealise: 8900000, caProjete: 17800000, joursRestants: 18,
+        jours: { ecoules: 13, mois: 31 }
     };
+    const MOIS = 31 / 13;
 
     test('les leviers portent sur le volume RESTANT, pas sur le mois ecoule', () => {
         const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
@@ -376,35 +380,60 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
         expect(r.plan[0].part).toBeGreaterThan(r.plan[4].part);
     });
 
-    test('un produit ne peut pas plus que doubler: le reste va aux autres', () => {
-        // Yell n'attend que 50 u, plafond +50 u. A 450 000 F de manque, la
-        // part egale (172 u) le depasserait: il est plafonne a 50 u, et son
-        // reliquat se reporte sur les produits qui peuvent l'absorber.
+    test('le plafond vient du RYTHME MENSUEL, pas du volume restant', () => {
+        // Yell: 50 u vendues en 13 j -> 119,2 u sur le mois -> plafond 357,7 u.
+        // Plafonner sur le volume restant (50 u) aurait puni un produit
+        // observe tot, dont le reliquat de mois est court.
         const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
         const yell = r.plan.filter((x) => x.nom === 'Yell')[0];
-        expect(yell.plafonne).toBe(true);
-        expect(yell.volumeAdditionnel).toBeCloseTo(50, 6);
-        expect(yell.haussePct).toBeCloseTo(100, 6);
-        // Aucun produit ne depasse son volume attendu.
-        r.plan.forEach((x) => { expect(x.volumeAdditionnel).toBeLessThanOrEqual(x.volumeRestant + 1e-9); });
-        // Le compte tombe toujours juste.
+        expect(yell.volumeMois).toBeCloseTo(50 * MOIS, 6);
+        expect(yell.plafond).toBeCloseTo(50 * MOIS * 3, 6);
+    });
+
+    test('le facteur du plafond est un parametre, pas une constante', () => {
+        const un = P.planEquilibre(Object.assign({ plCentral: -450000, facteurMax: 1 }, BASE));
+        const dix = P.planEquilibre(Object.assign({ plCentral: -450000, facteurMax: 10 }, BASE));
+        const yellUn = un.plan.filter((x) => x.nom === 'Yell')[0];
+        const yellDix = dix.plan.filter((x) => x.nom === 'Yell')[0];
+        expect(yellDix.plafond).toBeCloseTo(yellUn.plafond * 10, 6);
+        expect(un.facteurMax).toBe(1);
+        expect(dix.facteurMax).toBe(10);
+        // Un plafond plus large laisse porter davantage aux petits produits.
+        expect(yellDix.volumeAdditionnel).toBeGreaterThanOrEqual(yellUn.volumeAdditionnel);
+    });
+
+    test('le compte tombe juste, plafonds compris', () => {
+        const r = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
         expect(r.plan.reduce((s, x) => s + x.part, 0)).toBeCloseTo(450000, 3);
+        r.plan.forEach((x) => {
+            expect(x.volumeAdditionnel).toBeLessThanOrEqual(x.plafond + 1e-9);
+        });
         expect(r.atteignable).toBe(true);
         expect(r.resteACouvrir).toBe(0);
     });
 
-    test('un produit qui ne se vend presque pas ne porte presque rien', () => {
-        // La plus forte marge du lot, mais un demi-kilo attendu: le classement
-        // par marge seule en aurait fait le pilier du plan.
+    test('un produit qui ne se vend presque pas reste borne par son rythme', () => {
+        // 0,5 u en 13 jours = 1,19 u sur le mois, donc au plus 3,58 u
+        // demandees. Le classement par marge seule en aurait fait le pilier du
+        // plan avec 172 u.
         const r = P.planEquilibre(Object.assign({}, BASE, {
             plCentral: -450000,
             produits: BASE.produits.concat([{ nom: 'Rarissime', quantite: 0.5, ca: 5000 }]),
             margeDe: (p) => (p.nom === 'Rarissime' ? 5000 : MARGES[p.nom])
         }));
         const rare = r.plan.filter((x) => x.nom === 'Rarissime')[0];
+        expect(rare.plafond).toBeCloseTo(0.5 * MOIS * 3, 6);
         expect(rare.plafonne).toBe(true);
-        expect(rare.volumeAdditionnel).toBeCloseTo(0.5, 6);
-        expect(rare.part).toBeCloseTo(2500, 6);
+        expect(rare.volumeAdditionnel).toBeCloseTo(0.5 * MOIS * 3, 6);
+    });
+
+    test('sans calendrier exploitable, le plafond retombe sur le volume attendu', () => {
+        const r = P.planEquilibre(Object.assign({}, BASE, {
+            plCentral: -450000, jours: { ecoules: 0, mois: 31 }, facteurMax: 1
+        }));
+        const yell = r.plan.filter((x) => x.nom === 'Yell')[0];
+        expect(yell.volumeMois).toBeNull();
+        expect(yell.plafond).toBeCloseTo(yell.volumeRestant, 6);
     });
 
     test('un produit sans marge connue, nulle ou negative ne porte rien', () => {
@@ -415,21 +444,23 @@ describe('plan d equilibre: ce qu il reste a faire avant la fin du mois', () => 
     });
 
     test('un manque hors de portee du volume laisse un reste, et le dit', () => {
-        // Capacite au plafond = somme(marge x volume attendu) = 1 390 000.
-        const r = P.planEquilibre(Object.assign({ plCentral: -2000000 }, BASE));
+        // Capacite = somme(marge x plafond), plafond = vendu x (31/13) x 3.
+        const capacite = (900 * 1000 + 700 * 500 + 500 * 200 + 300 * 100 + 200 * 50) * MOIS * 3;
+        const r = P.planEquilibre(Object.assign({ plCentral: -(capacite + 1000000) }, BASE));
+        expect(r.capaciteTotale).toBeCloseTo(capacite, 3);
         expect(r.atteignable).toBe(false);
-        expect(r.resteACouvrir).toBeCloseTo(2000000 - 1390000, 3);
+        expect(r.resteACouvrir).toBeCloseTo(1000000, 3);
         r.plan.forEach((x) => { expect(x.plafonne).toBe(true); });
     });
 
-    test('un objectif hors d atteinte est annonce comme tel', () => {
-        // Capacite = somme(marge x volume restant) = 900000+350000+100000+30000+10000
-        // = 1 390 000. Un manque superieur ne se comble pas par le volume.
-        const r = P.planEquilibre(Object.assign({ plCentral: -2000000 }, BASE));
-        expect(r.capaciteTotale).toBeCloseTo(1390000, 4);
-        expect(r.atteignable).toBe(false);
-        const ok = P.planEquilibre(Object.assign({ plCentral: -450000 }, BASE));
-        expect(ok.atteignable).toBe(true);
+    test('un plafond plus serre peut rendre le meme manque inatteignable', () => {
+        // Le facteur decide de ce qui est jouable: a 3x le rythme mensuel les
+        // 2 000 000 F passent, a 1x ils ne passent plus.
+        const large = P.planEquilibre(Object.assign({ plCentral: -2000000 }, BASE));
+        expect(large.atteignable).toBe(true);
+        const serre = P.planEquilibre(Object.assign({ plCentral: -2000000, facteurMax: 0.5 }, BASE));
+        expect(serre.capaciteTotale).toBeCloseTo(1390000 * MOIS * 0.5, 3);
+        expect(serre.atteignable).toBe(false);
     });
 
     test('un resultat deja positif ne demande aucun effort', () => {

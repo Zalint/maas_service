@@ -481,9 +481,28 @@
         // volume attendu (1 = au plus doubler), et ce qu'il ne peut pas porter
         // est redistribue sur les autres - un remplissage par paliers, jusqu'a
         // ce que le manque soit couvert ou que tout soit plafonne.
-        var facteurMax = args.facteurMax === undefined ? 1 : args.facteurMax;
+        // PLAFOND = volume vendu ramene au MOIS ENTIER, puis multiplie par
+        // facteurMax (3 par defaut).
+        //
+        //   plafond = vendu x (jours du mois / jours ecoules) x facteurMax
+        //
+        // Le ramener au mois avant de le multiplier est ce qui rend le plafond
+        // juste en debut de mois: 0,5 u vendue en 13 jours ne vaut pas 0,5 u
+        // de potentiel, elle vaut 1,2 u sur le mois - et on accepte d'en
+        // demander jusqu'a trois fois autant. Plafonner sur le seul volume
+        // RESTANT punissait au contraire les produits observes tot, dont le
+        // reliquat de mois est court.
+        var facteurMax = args.facteurMax === undefined ? 3 : args.facteurMax;
+        var joursEcoules = nb(args.jours && args.jours.ecoules);
+        var joursMois = nb(args.jours && args.jours.mois);
+        var facteurMois = (joursEcoules > 0 && joursMois > 0) ? joursMois / joursEcoules : null;
         var etats = choisis.map(function (x) {
-            return { p: x, plafond: x.volumeRestant * facteurMax, unites: 0, plafonne: false };
+            // Sans calendrier exploitable, on retombe sur le volume attendu
+            // d'ici la fin: une borne connue vaut mieux qu'aucune borne.
+            var plafond = facteurMois !== null
+                ? x.quantiteActuelle * facteurMois * facteurMax
+                : x.volumeRestant * facteurMax;
+            return { p: x, plafond: plafond, unites: 0, plafonne: false };
         });
         var reste = manque;
         var unitesCommunes = null;
@@ -518,14 +537,19 @@
                 parJour: nb(args.joursRestants) > 0 ? e.unites / nb(args.joursRestants) : null,
                 // Le produit donne tout ce qu'il peut raisonnablement donner:
                 // c'est le signe que l'effort doit aller ailleurs.
-                plafonne: e.plafonne
+                plafonne: e.plafonne,
+                plafond: e.plafond,
+                // Le volume vendu ramene au mois entier: la base du plafond,
+                // affichee pour que le chiffre se verifie a l'ecran.
+                volumeMois: facteurMois !== null ? x.quantiteActuelle * facteurMois : null
             };
         }).sort(function (a, b) { return b.part - a.part; });
 
         // Ce que les produits retenus peuvent porter au plafond: au-dela,
-        // l'equilibre ne se joue pas sur le volume.
-        var capaciteTotale = choisis.reduce(function (s, x) {
-            return s + x.marge * x.volumeRestant * facteurMax;
+        // l'equilibre ne se joue pas sur le volume. Lit les MEMES plafonds que
+        // l'allocation, sinon les deux se contrediraient.
+        var capaciteTotale = etats.reduce(function (s, e) {
+            return s + e.p.marge * e.plafond;
         }, 0);
 
         return {
