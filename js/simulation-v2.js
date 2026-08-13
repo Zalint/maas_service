@@ -76,6 +76,11 @@
         enAttente: false,
         debug: false,
         chargement: false,
+        // Lire le resultat SANS la variation de stock. Sur aout, le stock pese
+        // 148 742 F pour un PL de -51 196: le mois se lit alors comme une photo
+        // de stock plutot que comme une exploitation. La case permet de voir ce
+        // que vaut l'exploitation seule.
+        horsStock: false,
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
@@ -185,6 +190,11 @@
         +     '<button class="btn btn-sm btn-primary" id="sim2-calc"><i class="bi bi-calculator"></i> Calculer</button>'
         +     '<button class="btn btn-sm btn-outline-secondary" id="sim2-reset">Réinitialiser</button>'
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
+        +       '<input class="form-check-input" type="checkbox" id="sim2-hors-stock">'
+        +       '<label class="form-check-label small ms-1" for="sim2-hors-stock" '
+        +         'title="Retire la variation de stock du résultat, pour lire l\'exploitation seule">'
+        +         'Hors stock</label></div>'
+        +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-debug">'
         +       '<label class="form-check-label small ms-1" for="sim2-debug">Debug</label></div>'
         +   '</div></div>'
@@ -216,6 +226,12 @@
         // s'affiche immediatement meme en calcul manuel.
         $('debug').addEventListener('change', function () {
             etat.debug = $('debug').checked;
+            rendre();
+        });
+        // Comme le debug: revele une autre lecture du meme resultat, sans
+        // toucher aux leviers. S'applique donc immediatement, meme en manuel.
+        $('hors-stock').addEventListener('change', function () {
+            etat.horsStock = $('hors-stock').checked;
             rendre();
         });
     }
@@ -465,6 +481,21 @@
         };
     }
 
+    /**
+     * Le resultat de reference, eventuellement PRIVE de la variation de stock.
+     *
+     * Aucun recalcul: on retranche un poste que le serveur a lui-meme publie
+     * (stock.variation_nette), exactement comme les leviers s'ajoutent a ce
+     * qu'il a etabli. Le PL brut reste disponible pour le controle de bouclage
+     * du mode debug, qui doit continuer a se comparer au chiffre du serveur.
+     */
+    function plRef() {
+        var b = etat.base;
+        if (!b) return 0;
+        if (!etat.horsStock) return b.pl;
+        return b.pl - nb((b.stock || {}).variation_nette);
+    }
+
     function nbActifs(s) {
         var c = etat.contexte, n = 0;
         etat.produits.forEach(function (p) {
@@ -545,6 +576,15 @@
                    ? 'Dernière journée avec des ventes : ' + esc(vdf.derniere_date_avec_vente) + '. '
                    : 'Aucune vente sur toute la période. ')
                + 'Le résultat de référence est incomplet, et les leviers s\'y appliquent tels quels.</div>';
+        }
+        // Un resultat ampute d'un poste ne doit JAMAIS pouvoir se lire comme le
+        // PL: le dire est la condition pour offrir cette lecture.
+        if (etat.horsStock) {
+            h += '<div class="alert alert-info py-2 small mb-2"><i class="bi bi-eye"></i> '
+               + '<strong>Lecture hors stock.</strong> La variation de stock ('
+               + esc(fmt(nb(st.variation_nette))) + ' F) est retirée du résultat de référence : '
+               + 'ce n\'est plus le PL, c\'est l\'exploitation seule. Le PL réel reste '
+               + esc(fmt(b.pl)) + ' F.</div>';
         }
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
         h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
@@ -628,8 +668,9 @@
 
     function kpis(total, n) {
         var b = etat.base;
-        var apres = b.pl + total;
-        var pct = b.pl ? (total / Math.abs(b.pl)) * 100 : 0;
+        var ref = plRef();
+        var apres = ref + total;
+        var pct = ref ? (total / Math.abs(ref)) * 100 : 0;
         var carte = function (lab, val, hint, c) {
             return '<div class="col-md-4"><div class="card h-100"><div class="card-body text-center py-3">'
                 + '<h6 class="card-subtitle mb-2 text-muted">' + lab + '</h6>'
@@ -637,7 +678,8 @@
                 + '<div class="small text-muted mt-1">' + hint + '</div></div></div></div>';
         };
         return '<div class="row g-2 mb-3">'
-            + carte('Résultat de référence', fmt(b.pl), esc(b.source), cls(b.pl))
+            + carte('Résultat de référence', fmt(ref),
+                esc(b.source) + (etat.horsStock ? ' · hors stock' : ''), cls(ref))
             + carte('Effet du scénario', total ? signe(total) : '0',
                     n === 0 ? 'scénario vide' : n + ' levier(s) actif(s)', cls(total))
             + carte('Résultat simulé', fmt(apres), pct.toFixed(2) + ' % de variation', cls(apres))
@@ -698,7 +740,7 @@
         // hypotheses, le pilote remis a zero.
         var sansPilote = snapshotEtat();
         sansPilote.leviers[p.nom] = { prix: 0, unite: 'F', vol: 0 };
-        var base = etat.base.pl + effetTotal(sansPilote);
+        var base = plRef() + effetTotal(sansPilote);
         var q = nb(p.quantite), m = margeAvec(p, s);
         var hausse = -base / q, prixEq = nb(p.prix_moyen) + hausse;
         var dq = (m === null || m === 0) ? null : -base / m;
@@ -789,7 +831,7 @@
             var vals = ax.vals.map(function (x) {
                 var c = snapshotEtat();
                 ay.set(c, y); ax.set(c, x);
-                return etat.base.pl + effetTotal(c);
+                return plRef() + effetTotal(c);
             });
             var best = 0;
             vals.forEach(function (v, k) { if (Math.abs(v) < Math.abs(vals[best])) best = k; });
@@ -841,8 +883,8 @@
             h += '   ' + pad('', 82) + padL('─────────────', 13) + '\n';
             h += '   ' + pad('effet total', 82) + padL(signe(ex.total), 13) + '\n\n';
         }
-        h += '   ' + pad('résultat de référence', 30) + padL(fmt(b.pl), 14) + '\n';
-        h += '   ' + pad('case affichée', 30) + padL(fmt(b.pl + ex.total), 14) + '\n';
+        h += '   ' + pad('résultat de référence', 30) + padL(fmt(plRef()), 14) + '\n';
+        h += '   ' + pad('case affichée', 30) + padL(fmt(plRef() + ex.total), 14) + '\n';
         h += '   contrôle de bouclage : ' + ex.controle.ecart.toFixed(2) + ' F'
            + (ex.controle.ok ? '  ✓' : '  ✗ ÉCART — formules et explication ont divergé') + '\n';
         var zone = document.getElementById('sim2-mat-detail');
@@ -1675,10 +1717,10 @@
         }
 
         h += '\n6. RÉSULTAT SIMULÉ\n';
-        h += '   ' + pad('référence', 26) + padL(fmt(b.pl), 14) + '\n';
+        h += '   ' + pad('référence', 26) + padL(fmt(plRef()), 14) + '\n';
         h += '   ' + pad('effet du scénario', 26) + padL(signe(total), 14) + '\n';
         h += '   ' + pad('', 26) + padL('──────────────', 14) + '\n';
-        h += '   ' + pad('simulé', 26) + padL(fmt(b.pl + total), 14) + '\n';
+        h += '   ' + pad('simulé', 26) + padL(fmt(plRef() + total), 14) + '\n';
         return h + '</pre>';
     }
 
