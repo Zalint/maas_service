@@ -1535,7 +1535,7 @@ router.get('/simulation', async (req, res) => {
         // commandes a multiplier), mais les porter ici ne coute que deux
         // colonnes sur la meme requete.
         const lignes = await sequelize.query(
-            `SELECT produit, nombre, montant, date, nom_client, commande_id
+            `SELECT produit, nombre, montant, date, nom_client, commande_id, prix_unit, id
                FROM ventes
               WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
@@ -1868,6 +1868,66 @@ router.get('/simulation', async (req, res) => {
             )
             : PRODUITS_SIMULATION;
 
+        // ---- PRIX RETENU POUR LA SUITE DU MOIS.
+        //
+        // Le prix MOYEN explique le passe: il melange les tarifs successifs et
+        // les remises. Il ne dit rien de ce qui sera facture demain. Or les
+        // jours qui restent se vendront au tarif COURANT - c'est lui qui doit
+        // servir a projeter, sans quoi le plan reclame un effort calcule sur
+        // des prix qu'on ne pratique plus.
+        //
+        // Regle posee par le proprietaire du produit: parmi les lignes de la
+        // DERNIERE JOURNEE vendue, le prix MAJORITAIRE. La derniere ligne seule
+        // se laisserait dicter par une vente exceptionnelle; le majoritaire du
+        // jour resiste a une remise isolee.
+        //
+        // A egalite de nombre de lignes: le plus gros volume, puis le prix le
+        // plus haut - un depart arbitraire mais STABLE d'un appel a l'autre.
+        const prixRetenuParCle = new Map();
+        {
+            const parCle = new Map();
+            for (const l of lignes) {
+                const iso = parseDateVersISO(l.date);
+                const pu = parseFloat(l.prix_unit);
+                if (!iso || !Number.isFinite(pu) || pu <= 0) continue;
+                const cle = normaliserNomProduit(l.produit);
+                if (!cle) continue;
+                if (!parCle.has(cle)) parCle.set(cle, new Map());
+                const parDate = parCle.get(cle);
+                if (!parDate.has(iso)) parDate.set(iso, new Map());
+                const parPrix = parDate.get(iso);
+                const e = parPrix.get(pu) || { nb: 0, q: 0 };
+                e.nb += 1;
+                e.q += parseFloat(l.nombre) || 0;
+                parPrix.set(pu, e);
+            }
+            for (const [cle, parDate] of parCle) {
+                const derniere = Array.from(parDate.keys()).sort().pop();
+                const parPrix = parDate.get(derniere);
+                let meilleur = null;
+                for (const [prix, e] of parPrix) {
+                    if (!meilleur
+                        || e.nb > meilleur.nb
+                        || (e.nb === meilleur.nb && e.q > meilleur.q)
+                        || (e.nb === meilleur.nb && e.q === meilleur.q && prix > meilleur.prix)) {
+                        meilleur = { prix, nb: e.nb, q: e.q };
+                    }
+                }
+                if (meilleur) {
+                    prixRetenuParCle.set(cle, {
+                        prix: round2(meilleur.prix),
+                        date: derniere,
+                        nb_lignes: meilleur.nb,
+                        // Combien de prix DIFFERENTS ce jour-la: au-dela de un,
+                        // le majoritaire est un choix, et l'ecran doit pouvoir
+                        // le dire plutot que de le presenter comme une evidence.
+                        nb_prix_ce_jour: parPrix.size
+                    });
+                }
+            }
+        }
+        const prixRetenuDe = (nom) => prixRetenuParCle.get(normaliserNomProduit(nom)) || null;
+
         const produits = listeSuivie.map((nom) => {
             const agg = trouverProduit(volumes.produits, nom)
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
@@ -1888,6 +1948,9 @@ router.get('/simulation', async (req, res) => {
                 // Prix MOYEN constate, et non prix de catalogue: c'est celui-la
                 // qui explique le chiffre d'affaires de la periode.
                 prix_moyen: agg.quantite > 0 ? round2(agg.ca / agg.quantite) : null,
+                // Le prix qui sera pratique demain, pour projeter. Null si le
+                // produit n'a rien vendu sur la periode.
+                prix_retenu: prixRetenuDe(nom),
                 nb_lignes: agg.nb_lignes,
                 // Deja triees par agregerVolumes. Ne pas retrier ici: .sort()
                 // trie EN PLACE, donc sur le tableau porte par volumes.produits.
@@ -1943,6 +2006,7 @@ router.get('/simulation', async (req, res) => {
                         quantite: round2(a.quantite),
                         ca: round2(a.ca),
                         prix_moyen: a.prix_moyen === null ? null : round2(a.prix_moyen),
+                        prix_retenu: prixRetenuDe(nom),
                         prix_achat: prixAchat,
                         nb_lignes: a.nb_lignes,
                         sans_vente: false,

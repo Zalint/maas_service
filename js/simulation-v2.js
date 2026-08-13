@@ -85,6 +85,13 @@
             // Combien de fois le rythme mensuel d'un produit on s'autorise a
             // lui demander, dans le plan d'equilibre.
             facteurMax: 3,
+            // Prix de vente retenu pour les jours qui RESTENT, par produit.
+            // Vide = celui que le serveur propose (majoritaire du dernier jour
+            // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
+            // jamais ete pratique sur la periode - le boeuf en gros est passe a
+            // 5 200 alors que la seule vente du dernier jour etait a 5 100,
+            // exceptionnellement consentie a une cliente.
+            prixSuite: {},
             // La boucherie ne vend pas le dimanche: le compter comme une
             // journee a zero diluerait le rythme et gonflerait les jours
             // restants. Actif par defaut, decochable ici.
@@ -877,6 +884,34 @@
      * cout, et le plan reste alors optimiste - comme le reste de l'ecran, qui
      * signale deja cette part non chiffree.
      */
+    /**
+     * Le prix de vente retenu pour les jours qui RESTENT.
+     *
+     * Le prix moyen explique le passe: il melange les tarifs successifs et les
+     * remises consenties. Les jours a venir se vendront au tarif COURANT, et
+     * c'est lui qui doit servir a projeter. Par defaut le majoritaire du
+     * dernier jour vendu (calcule par le serveur); une saisie a l'ecran le
+     * remplace, car un tarif tout juste releve peut n'avoir jamais ete
+     * pratique sur la periode.
+     */
+    function prixSuiteDe(p) {
+        var saisi = etat.proj.prixSuite[p.nom];
+        if (saisi !== undefined && saisi !== null && saisi !== '' && nb(saisi) > 0) return nb(saisi);
+        var pr = p.prix_retenu;
+        if (pr && nb(pr.prix) > 0) return nb(pr.prix);
+        return (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
+    }
+
+    /** Le produit vu au prix de la SUITE du mois, pas au prix moyen passe. */
+    function auPrixDeLaSuite(p) {
+        var px = prixSuiteDe(p);
+        if (px === null) return p;
+        var copie = {};
+        Object.keys(p).forEach(function (k) { copie[k] = p[k]; });
+        copie.prix_moyen = px;
+        return copie;
+    }
+
     function margeApresCommission(p) {
         var m = margeBase(p);
         if (m === null) return null;
@@ -1228,11 +1263,16 @@
         // dans produits_vendus - toujours calcule sur la periode vivante -
         // faisait cohabiter sur le meme ecran un tableau de sensibilite fige
         // et un plan d'equilibre bati sur d'autres volumes.
-        var universEq = (!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+        // Les produits sont vus AU PRIX DE LA SUITE: le prix retenu gouverne
+        // les jours qui restent, donc la marge de l'effort ET le prix
+        // d'equilibre a atteindre. Le tableau de sensibilite au-dessus garde
+        // le prix moyen: lui decrit ce qui s'est passe.
+        var universEq = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
             ? etat.sim.produits_vendus
-            : etat.produits;
+            : etat.produits).map(auPrixDeLaSuite);
         var eq = PJ.planEquilibre({
-            plCentral: d0.pl, produits: universEq, margeDe: margeApresCommission,
+            plCentral: d0.pl, produits: universEq,
+            margeDe: margeApresCommission,
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
@@ -1315,6 +1355,7 @@
                     + '</div>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
                     + '<thead><tr><th>Produit</th>'
+                    + '<th class="text-end">Prix pour la suite</th>'
                     + '<th class="text-end">Marge nette</th>'
                     + '<th class="text-end">Déjà attendu</th>'
                     + '<th class="text-end">À vendre en plus</th>'
@@ -1325,8 +1366,34 @@
                     + eq.plan.map(function (x) {
                         var total = x.volumeRestant + x.volumeAdditionnel;
                         var totalJour = eq.joursRestants > 0 ? total / eq.joursRestants : null;
+                        // Le prix qui gouverne les jours restants, MODIFIABLE.
+                        // Le defaut est le majoritaire du dernier jour vendu,
+                        // mais un tarif tout juste releve peut n'avoir jamais
+                        // ete pratique: le boeuf en gros est passe a 5 200 F
+                        // quand la seule vente du dernier jour etait a 5 100,
+                        // consentie exceptionnellement a une cliente.
+                        var src = (universEq.filter(function (u) { return u.nom === x.nom; })[0]) || {};
+                        var pr = src.prix_retenu || null;
+                        var saisi = etat.proj.prixSuite[x.nom];
+                        var modifie = saisi !== undefined && saisi !== null && saisi !== '';
+                        var titre = pr
+                            ? 'Majoritaire du ' + pr.date + ' (' + pr.nb_lignes + ' ligne(s)'
+                              + (pr.nb_prix_ce_jour > 1 ? ' sur ' + pr.nb_prix_ce_jour + ' prix ce jour-là' : '') + ')'
+                            : 'Aucune vente : prix moyen de la période';
                         return '<tr><td>' + esc(x.nom)
                             + (x.plafonne ? ' <span class="badge bg-secondary">plafond atteint</span>' : '')
+                            + '</td>'
+                            + '<td class="text-end">'
+                            + '<input type="number" class="form-control form-control-sm text-end d-inline-block sim2-prix-suite" '
+                            + 'style="width:6.5rem" step="50" min="0" data-nom="' + esc(x.nom) + '" '
+                            + 'title="' + esc(titre) + '" value="'
+                            + esc(String(Math.round(nb(src.prix_moyen)))) + '">'
+                            + (modifie
+                                ? ' <span class="badge bg-info text-dark">ajusté</span>'
+                                : (pr && pr.nb_prix_ce_jour > 1
+                                    ? ' <span class="badge bg-light text-dark border" title="'
+                                      + esc(titre) + '">majoritaire</span>'
+                                    : ''))
                             + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
                             + '<td class="text-end text-muted">' + esc(fmt(x.volumeRestant)) + ' u</td>'
@@ -1343,7 +1410,7 @@
                     // et la colonne somme moins que le manque: afficher le
                     // manque en pied faisait mentir le total de sa propre
                     // colonne, d'un ecart mesure a 1 772 728 F.
-                    + '<tr class="table-light fw-bold"><td colspan="7">Total de l\'effort'
+                    + '<tr class="table-light fw-bold"><td colspan="8">Total de l\'effort'
                     + (eq.resteACouvrir > 0
                         ? ' <span class="text-danger small">(reste ' + esc(fmt(eq.resteACouvrir))
                           + ' F à trouver ailleurs)</span>'
@@ -1434,10 +1501,11 @@
         // ---- Les recommandations: des gestes chiffres.
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
-            plCentral: d0.pl, produits: etat.produits,
-            // MEME marge que le plan d'equilibre: les deux blocs annoncent des
-            // volumes a vendre pour le meme manque, ils ne peuvent pas les
-            // chiffrer sur deux marges differentes.
+            plCentral: d0.pl,
+            // MEMES produits et MEME marge que le plan d'equilibre: les deux
+            // blocs annoncent des volumes a vendre pour le meme manque, ils ne
+            // peuvent pas les chiffrer sur deux prix ni deux marges.
+            produits: etat.produits.map(auPrixDeLaSuite),
             margeDe: margeApresCommission,
             // Part du CA restant a faire: c'est l'assiette d'une hausse de
             // prix, pas le volume deja vendu.
@@ -1649,6 +1717,17 @@
             el.addEventListener('change', function () {
                 if (!etat.proj.suivis) etat.proj.suivis = {};
                 etat.proj.suivis[String(el.value).trim().toLowerCase()] = el.checked;
+            });
+        });
+        // Prix de la suite du mois: 'change', comme les autres controles qui
+        // declenchent un rendu complet - sinon le champ disparait sous les
+        // doigts a la premiere frappe.
+        document.querySelectorAll('.sim2-prix-suite').forEach(function (el) {
+            el.addEventListener('change', function () {
+                var v = el.value;
+                if (v === '' || !(nb(v) > 0)) delete etat.proj.prixSuite[el.dataset.nom];
+                else etat.proj.prixSuite[el.dataset.nom] = nb(v);
+                rendre();
             });
         });
         var sauve = document.getElementById('sim2-suivi-save');
