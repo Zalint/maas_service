@@ -10384,14 +10384,32 @@ function afficherContributeursParage(parageMois, kg) {
     };
 
     const html = bloc('bovin', 'Composition du parage bœuf') + bloc('ovin', 'Composition du parage agneau');
+    // REPLIE par defaut: c'est une piece a conviction, pas une lecture
+    // quotidienne. On l'ouvre quand un taux surprend.
+    //
+    // L'etat vit dans une VARIABLE, pas dans le DOM: la zone est videe pendant
+    // le chargement, donc la relire au moment du rendu rendait toujours
+    // "ferme" - ouvrir le bloc puis cocher une exclusion le refermait sous les
+    // doigts.
+    const ouvert = window.__parageContributeursOuvert === true;
     zone.innerHTML = html
-        ? '<div class="small text-muted mb-1">Produits qui composent les taux ci-dessus, '
+        ? '<details class="mb-1"' + (ouvert ? ' open' : '') + '>'
+          + '<summary class="small fw-medium" style="cursor:pointer">'
+          + 'Composition des taux de parage — quels produits les portent</summary>'
+          + '<div class="small text-muted mb-1 mt-1">Produits qui composent les taux ci-dessus, '
           + 'par poids décroissant dans le <strong>stock théorique</strong> — le dénominateur. '
           + 'Le stock est tenu sous le nom de la carcasse et les ventes sortent sous les noms '
           + 'de découpe : les deux colonnes ne se correspondent donc pas ligne à ligne. '
           + 'Les exclusions configurées en administration sont déjà retirées.'
-          + '</div><div class="row g-2">' + html + '</div>'
+          + '</div><div class="row g-2">' + html + '</div></details>'
         : '';
+
+    const det = zone.querySelector('details');
+    if (det) {
+        det.addEventListener('toggle', () => {
+            window.__parageContributeursOuvert = det.open;
+        });
+    }
 }
 
 function afficherParageMois(parageMois) {
