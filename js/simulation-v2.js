@@ -1167,6 +1167,74 @@
         return h;
     }
 
+    /**
+     * Enregistre - ou efface - la calibration du coefficient P1/P2.
+     *
+     * Le client envoie la VALEUR et la FENETRE sur laquelle il l'a calculee.
+     * Il n'envoie ni l'auteur ni la date: la route les pose elle-meme depuis
+     * la session, faute de quoi n'importe qui pourrait signer une calibration
+     * au nom d'un autre, ou l'antidater - et la signature ne vaudrait rien.
+     *
+     * @param {number|null} valeur  null = effacer, retour au calcul en direct
+     */
+    function enregistrerCalibration(valeur, bouton) {
+        var pj = (etat.sim && etat.sim.projection) || {};
+        var hi = pj.historique || {};
+        var sansDim = etat.proj.exclureDimanche;
+        var corps = valeur === null ? { coeffP1P2: null } : {
+            coeffP1P2: {
+                valeur: valeur,
+                fenetre: (hi.debut || '?') + ' → ' + (hi.fin || '?'),
+                // Les jours REELLEMENT mesures, pas les jours du calendrier.
+                // calibrerCoeff() moyenne sur joursOuvres(..., exclureDimanche):
+                // annoncer 92 quand la mesure porte sur 79 decrit un autre
+                // echantillon que celui qui a produit le coefficient.
+                jours: (hi.debut && hi.fin) ? PJ.joursOuvres(hi.debut, hi.fin, sansDim).length : null,
+                // Le reglage sous lequel la mesure a ete faite. Sans lui, deux
+                // calibrations menees avec des reglages opposes s'enregistrent
+                // sous des signatures indiscernables, et l'alerte de derive
+                // compare deux nombres qui ne mesurent pas la meme chose.
+                dimanches: sansDim ? 'exclus' : 'comptes'
+            }
+        };
+        var libelle = bouton ? bouton.innerHTML : '';
+        if (bouton) { bouton.disabled = true; bouton.textContent = 'Enregistrement…'; }
+        fetch('/api/simulation-v2/reglages', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(corps)
+        }).then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+                if (!j || !j.success) {
+                    if (bouton) { bouton.disabled = false; bouton.innerHTML = libelle; }
+                    if (typeof showToast === 'function') {
+                        showToast((j && j.error) || 'Calibration refusée', 'danger');
+                    }
+                    return;
+                }
+                // Le serveur rend la calibration telle qu'il l'a ecrite,
+                // signature comprise: on la pose dans l'etat et on re-rend,
+                // plutot que de recharger toute la simulation pour un nombre.
+                // La saisie manuelle est levee, sans quoi elle continuerait de
+                // masquer la valeur qu'on vient justement d'enregistrer.
+                if (etat.sim && etat.sim.projection) {
+                    etat.sim.projection.coeff_enregistre = (j.data && j.data.coeff_p1_p2) || null;
+                }
+                etat.proj.coeff = null;
+                if (typeof showToast === 'function') {
+                    showToast(valeur === null
+                        ? 'Calibration effacée : coefficient recalculé en direct.'
+                        : 'Coefficient calibré à ' + valeur.toFixed(3) + ' et enregistré.', 'success');
+                }
+                rendre();
+            })
+            .catch(function (e) {
+                if (bouton) { bouton.disabled = false; bouton.innerHTML = libelle; }
+                if (typeof showToast === 'function') showToast('Erreur : ' + e.message, 'danger');
+            });
+    }
+
     function enregistrerProduitsSuivis() {
         var noms = [];
         document.querySelectorAll('.sim2-suivi').forEach(function (el) {
@@ -1228,6 +1296,149 @@
             + '</details>';
     }
 
+    /**
+     * '2026-08-13T09:12:00Z' -> '13/08/2026'.
+     *
+     * Delegue a lib/dates-fr.js, servi au navigateur par index.html: une
+     * quatrieme conversion de date locale a ce depot serait un quatrieme
+     * endroit ou les formats pourraient diverger.
+     */
+    function dateCourte(iso) {
+        var s = String(iso || '');
+        var r = window.datesFr ? window.datesFr.enFrancais(s) : s;
+        return r === s && !/^\d{4}-\d{2}-\d{2}/.test(s) ? '' : r;
+    }
+
+    /**
+     * Le bouton de calibration, reserve a l'administrateur.
+     *
+     * Pourquoi un BOUTON alors que le coefficient se calcule deja tout seul:
+     * parce qu'il se calculait tout seul DANS CHAQUE NAVIGATEUR, sur une
+     * fenetre glissante de trois mois. Personne ne decidait rien, personne ne
+     * signait rien, et la valeur changeait sans qu'aucun ecran ne le dise.
+     * Calibrer devient un acte: date, auteur, fenetre.
+     *
+     * Reserve a l'administrateur parce que la valeur enregistree s'applique a
+     * TOUT LE TENANT - c'est le meme regime que les produits suivis juste en
+     * dessous, et la route PUT /api/simulation-v2/reglages refait le controle.
+     */
+    function boutonCalibrer(calibre, enr, sansDim) {
+        var u = window.currentUser || {};
+        if (String(u.role || '').toLowerCase() !== 'admin') return '';
+
+        var h = '<div class="mt-1 d-flex gap-1 align-items-center flex-wrap">';
+        if (calibre === null) {
+            // Moins de 28 jours d'historique, ou un rythme P2 nul: calibrerCoeff
+            // rend null plutot que de diviser par du vide. Le dire, plutot que
+            // d'offrir un bouton qui echouerait.
+            h += '<button type="button" class="btn btn-sm btn-outline-secondary" disabled '
+                + 'title="Historique insuffisant pour calibrer (moins de 28 jours, ou aucune vente en P2).">'
+                + '<i class="bi bi-sliders"></i> Recalibrer</button>';
+        } else {
+            h += '<button type="button" class="btn btn-sm btn-outline-primary" id="sim2-calibrer" '
+                + 'data-valeur="' + calibre.toFixed(6) + '" '
+                + 'title="Calcule le coefficient sur les 3 derniers mois et l\'enregistre pour tout le point de vente.">'
+                + '<i class="bi bi-sliders"></i> Recalibrer (' + calibre.toFixed(3) + ')</button>';
+        }
+        h += '<span class="badge bg-secondary">admin</span>';
+        if (enr) {
+            h += '<button type="button" class="btn btn-sm btn-outline-secondary" id="sim2-calibrer-effacer" '
+                + 'title="Supprime la calibration enregistrée : le coefficient repasse au calcul en direct.">'
+                + 'Effacer</button>';
+        }
+        h += '</div>';
+
+        // DERIVE. Une calibration enregistree ne se met pas a jour toute seule
+        // - c'est tout son interet - mais si la fenetre a bouge au point que
+        // le calcul en direct s'en ecarte, il faut le VOIR, sinon on garde des
+        // mois durant un coefficient qui ne decrit plus rien.
+        //
+        // Encore faut-il comparer deux mesures COMPARABLES. Le calcul en
+        // direct suit la case « Exclure les dimanches » de l'ecran; la valeur
+        // enregistree porte le reglage sous lequel elle a ete faite. Les
+        // opposer sans le verifier faisait crier a la derive des qu'on
+        // touchait a la case, alors que rien n'avait bouge.
+        if (enr && calibre !== null) {
+            var memeReglage = !enr.dimanches
+                || enr.dimanches === (sansDim ? 'exclus' : 'comptes');
+            if (!memeReglage) {
+                h += '<div class="form-text text-muted">'
+                    + 'calibrée dimanches ' + esc(enr.dimanches)
+                    + ' : non comparable au calcul en direct tant que la case ci-dessous diffère.'
+                    + '</div>';
+            } else {
+                var ecart = Math.abs(calibre - nb(enr.valeur)) / Math.max(0.001, Math.abs(nb(enr.valeur)));
+                if (ecart > 0.02) {
+                    h += '<div class="form-text text-warning-emphasis">'
+                        + 'le calcul en direct donne aujourd\'hui ' + calibre.toFixed(3)
+                        + ', soit ' + (ecart * 100).toFixed(0) + ' % d\'écart avec la valeur enregistrée.'
+                        + '</div>';
+                }
+            }
+        }
+        return h;
+    }
+
+    /**
+     * Ce que la ponderation fait, avec les nombres du mois sous les yeux.
+     *
+     * Une regle expliquee dans l'abstrait ne se verifie pas. Le tableau montre
+     * les deux sources, le resultat, et la phrase qui les relie: on peut y
+     * refaire le calcul de tete et constater que le chiffre projete en
+     * decoule.
+     */
+    function explicationPonderation(rythmes, poidsReel, minJours, coeff, pj) {
+        var r = rythmes || {};
+        var reel = r.reel || { jours: {} };
+        var histo = r.histo || {};
+        var pct = Math.round(nb(poidsReel) * 100);
+
+        var ligne = function (t, libelle) {
+            return '<tr><td>' + libelle + '</td>'
+                + '<td class="text-end">' + esc(fmt(reel[t])) + ' F/j'
+                + '<span class="text-muted small"> · ' + ((reel.jours || {})[t] || 0) + ' j</span></td>'
+                + '<td class="text-end">' + esc(fmt(histo[t])) + ' F/j</td>'
+                + '<td class="text-end fw-medium">' + esc(fmt(r[t])) + ' F/j</td>'
+                + '<td class="small text-muted">' + esc((r.sources || {})[t] || '—') + '</td></tr>';
+        };
+
+        var hi = pj && pj.historique ? pj.historique : {};
+        return '<details class="mb-2"><summary class="small fw-medium">'
+            + '<i class="bi bi-question-circle"></i> D\'où vient le rythme projeté — pondération et coefficient'
+            + '</summary><div class="border rounded p-2 mt-1 small">'
+
+            + '<p class="mb-2">Projeter les jours qui restent demande un <strong>rythme journalier</strong> : '
+            + 'ce qu\'une journée rapporte en moyenne. Deux sources le donnent, et aucune ne suffit seule.</p>'
+            + '<ul class="mb-2">'
+            + '<li><strong>Le réel</strong> — la moyenne des jours déjà écoulés ce mois-ci. Il porte ce que '
+            + 'l\'historique ignore : un prix qui a changé, un gros client parti. Mais sur une dizaine de jours, '
+            + 'une seule grosse commande le déforme.</li>'
+            + '<li><strong>L\'historique</strong> — la même moyenne sur les 3 mois précédents'
+            + (hi.debut ? ' (' + esc(dateCourte(hi.debut)) + ' → ' + esc(dateCourte(hi.fin)) + ')' : '')
+            + '. Il est stable, mais aveugle à ce qui a changé ce mois-ci.</li>'
+            + '</ul>'
+            + '<p class="mb-2">La <strong>pondération</strong> dit combien on accorde à chacune : '
+            + '<code>rythme = ' + pct + ' % × réel + ' + (100 - pct) + ' % × historique</code>. '
+            + 'Le mélange n\'a lieu qu\'à partir de <strong>' + minJours + ' jours observés</strong> dans la période ; '
+            + 'en dessous, l\'historique seul — deux jours ne font pas une moyenne.</p>'
+
+            + '<p class="mb-2">Deux rythmes séparés, parce que le mois n\'est pas homogène : '
+            + '<strong>P1</strong> = jours 1 à 10 et 25 à la fin (autour des paies, on vend plus), '
+            + '<strong>P2</strong> = jours 11 à 24. Le <strong>coefficient P1/P2</strong> ('
+            + coeff.toFixed(3) + ') mesure de combien P1 dépasse P2 ; il ne sert qu\'en dernier recours, '
+            + 'pour déduire une période de l\'autre quand l\'une n\'a aucune donnée.</p>'
+
+            + '<div class="table-responsive"><table class="table table-sm table-bordered mb-0">'
+            + '<thead><tr><th>Période</th><th class="text-end">Réel ce mois</th>'
+            + '<th class="text-end">Historique</th><th class="text-end">Retenu</th><th>Source</th></tr></thead>'
+            + '<tbody>' + ligne('P1', 'P1 · jours 1-10 et 25-fin') + ligne('P2', 'P2 · jours 11-24')
+            + '</tbody></table></div>'
+            + '<div class="text-muted mt-1">Les dimanches sont '
+            + (etat.proj.exclureDimanche ? 'exclus' : 'comptés')
+            + ' des deux moyennes, comme du décompte des jours restants.</div>'
+            + '</div></details>';
+    }
+
     function projectionCorps() {
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
@@ -1243,10 +1454,35 @@
 
         var sansDim = etat.proj.exclureDimanche;
         var calibre = PJ.calibrerCoeff(pj.historique, sansDim);
-        var coeff = etat.proj.coeff !== null ? etat.proj.coeff
-            : (calibre !== null ? calibre : nb(pj.coeff_defaut));
-        var origineCoeff = etat.proj.coeff !== null ? 'ajusté à la main'
-            : (calibre !== null ? 'calibré sur vos 3 derniers mois' : 'référence du document');
+
+        // ORDRE DE PRIORITE du coefficient, du plus explicite au plus general:
+        // la saisie a la main, puis la calibration ENREGISTREE par un
+        // administrateur, puis le calcul en direct, puis la reference du
+        // document. Chaque cran est un choix plus delibere que le suivant.
+        //
+        // La calibration enregistree passe devant le calcul en direct parce
+        // que ce dernier repose sur une fenetre de trois mois qui GLISSE: sans
+        // elle, le coefficient bougeait tout seul d'un jour a l'autre, sans
+        // date ni auteur, et deux personnes comparant leurs projections a une
+        // semaine d'ecart ne pouvaient pas savoir laquelle avait raison.
+        var enr = (pj.coeff_enregistre && isFinite(parseFloat(pj.coeff_enregistre.valeur)))
+            ? pj.coeff_enregistre : null;
+        var coeff, origineCoeff;
+        if (etat.proj.coeff !== null) {
+            coeff = etat.proj.coeff;
+            origineCoeff = 'ajusté à la main';
+        } else if (enr) {
+            coeff = nb(enr.valeur);
+            origineCoeff = 'calibration enregistrée'
+                + (enr.le ? ' le ' + dateCourte(enr.le) : '')
+                + (enr.par ? ' par ' + enr.par : '');
+        } else if (calibre !== null) {
+            coeff = calibre;
+            origineCoeff = 'calibré en direct sur vos 3 derniers mois';
+        } else {
+            coeff = nb(pj.coeff_defaut);
+            origineCoeff = 'référence du document';
+        }
 
         var ca = PJ.projeterCA({
             caParJour: pj.ca_par_jour, debutMois: debut, dateAnalyse: fin,
@@ -1310,14 +1546,16 @@
             + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" data-k="coeff" '
             + 'value="' + (Math.round(coeff * 1000) / 1000) + '" step="0.01" min="0.5" max="3">'
             + '<div class="form-text">' + esc(origineCoeff)
-            + (calibre !== null ? ' · calibré : ' + calibre.toFixed(3) : '')
-            + ' · document : ' + nb(pj.coeff_defaut).toFixed(3) + '</div></div>'
+            + (calibre !== null ? ' · calibré en direct : ' + calibre.toFixed(3) : '')
+            + ' · document : ' + nb(pj.coeff_defaut).toFixed(3) + '</div>'
+            + boutonCalibrer(calibre, enr, sansDim) + '</div>'
             + '<div class="col-md-3"><label class="form-label small">Pondération réel / historique</label>'
             + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="poidsReel">'
             + '<option value="0.7"' + (etat.proj.poidsReel === 0.7 ? ' selected' : '') + '>70 % réel + 30 % historique</option>'
             + '<option value="0.5"' + (etat.proj.poidsReel === 0.5 ? ' selected' : '') + '>50 / 50</option>'
             + '<option value="1"' + (etat.proj.poidsReel === 1 ? ' selected' : '') + '>100 % réel</option>'
-            + '</select></div>'
+            + '</select>'
+            + '<div class="form-text">poids du mois en cours face aux 3 mois précédents</div></div>'
             + '<div class="col-md-3"><label class="form-label small">Variation de stock projetée</label>'
             + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="stockOption">'
             + '<option value="garder"' + (etat.proj.stockOption === 'garder' ? ' selected' : '') + '>Garder la variation actuelle</option>'
@@ -1344,6 +1582,8 @@
             + '<span class="badge bg-' + (conf.niveau === 'bon' ? 'success' : (conf.niveau === 'moyen' ? 'warning text-dark' : 'danger'))
             + '">' + conf.niveau + '</span></div></div>'
             + '</div>';
+
+        h += explicationPonderation(ca.rythmes, etat.proj.poidsReel, etat.proj.minJours, coeff, pj);
 
         // ---- Le CA projete et ses rythmes, toujours dits.
         h += '<div class="alert alert-light border py-2 small mb-2">'
@@ -1965,6 +2205,35 @@
                 rendre();
             });
         });
+        var btnCal = document.getElementById('sim2-calibrer');
+        if (btnCal) {
+            btnCal.addEventListener('click', function () {
+                enregistrerCalibration(nb(btnCal.dataset.valeur), btnCal);
+            });
+        }
+        var btnCalX = document.getElementById('sim2-calibrer-effacer');
+        if (btnCalX) {
+            // On CONFIRME avant d'effacer: la calibration vaut pour tout le
+            // point de vente, elle porte une signature qu'on ne retrouvera
+            // pas, et le bouton est a un centimetre de « Recalibrer ». Un clic
+            // de travers ne doit pas defaire une decision prise par quelqu'un
+            // d'autre, un autre jour.
+            btnCalX.addEventListener('click', function () {
+                var question = 'Supprimer la calibration enregistrée ? Le coefficient '
+                    + 'repassera au calcul en direct, pour tout le point de vente. '
+                    + 'La date et l\'auteur de la calibration actuelle seront perdus.';
+                if (typeof showConfirmModal === 'function') {
+                    showConfirmModal(question, {
+                        title: 'Effacer la calibration', okLabel: 'Effacer', okVariant: 'danger'
+                    }).then(function (ok) {
+                        if (ok) enregistrerCalibration(null, btnCalX);
+                    });
+                } else if (confirm(question)) {
+                    enregistrerCalibration(null, btnCalX);
+                }
+            });
+        }
+
         // Le detail au clic n'existe qu'en mode debug: c'est un outil de
         // verification, pas un element de l'ecran courant.
         document.querySelectorAll('.sim2-case').forEach(function (el) {

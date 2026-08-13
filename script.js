@@ -142,6 +142,86 @@ const isDebugMode = true;
 const reconciliationCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes en millisecondes
 
+// Le cache SURVIT au rechargement de la page.
+//
+// Un mois coute une quinzaine d'allers-retours par journee - ventes, stock,
+// transferts, parage, cash. Le refaire parce qu'on a rafraichi l'onglet ou
+// navigue ailleurs n'apporte rien: la meme fenetre de 5 minutes s'applique,
+// on ne fait que la respecter au-dela de la duree de vie du Map.
+//
+// sessionStorage et non localStorage: la donnee est un instantane de travail,
+// pas une preference. Fermer l'onglet doit la laisser partir.
+//
+// LA CLE PORTE L'UTILISATEUR. La deconnexion ne fait qu'un
+// `window.location.href = 'login.html'`: sessionStorage y survit. Sans ce
+// cloisonnement, l'utilisateur suivant sur un poste partage relisait, pendant
+// les 5 minutes de la fenetre, les lignes du precedent - y compris celles d'un
+// point de vente auquel le serveur ne lui donne pas acces.
+const CACHE_STORAGE_PREFIXE = 'reconciliation-mois-cache';
+
+// A INCREMENTER des que la forme d'une entree change. sessionStorage survit au
+// deploiement: sans ce numero, une entree ecrite par la version d'avant serait
+// relue par celle d'apres, qui n'y trouverait pas ce qu'elle attend.
+const CACHE_VERSION = 2;
+
+function identiteCache() {
+    return String((window.currentUser || {}).username || '');
+}
+
+function cleStockageCache() {
+    return CACHE_STORAGE_PREFIXE + ':' + identiteCache();
+}
+
+// La restauration est PARESSEUSE, et non faite au chargement du module:
+// checkAuth() pose window.currentUser de facon asynchrone, donc l'identite
+// n'est pas connue a l'evaluation du fichier. Restaurer trop tot reviendrait a
+// lire le cache de « personne », c'est-a-dire de n'importe qui.
+let cacheRestaurePour = null;
+
+function assurerCacheRestaure() {
+    const id = identiteCache();
+    // Tant que l'identite est inconnue, on ne restaure RIEN: le doute ferme.
+    if (!id || cacheRestaurePour === id) return;
+    cacheRestaurePour = id;
+    reconciliationCache.clear();
+    try {
+        const brut = JSON.parse(sessionStorage.getItem(cleStockageCache()) || '{}');
+        Object.keys(brut).forEach((k) => {
+            const e = brut[k];
+            // La FORME est verifiee, pas seulement la fraicheur. Ces lignes
+            // alimentent desormais tous les chiffres du mois: une entree
+            // ecrite par une version anterieure - le champ `totaux` y vivait
+            // encore - ou tronquee par un quota doit repartir au calcul, pas
+            // produire des totaux a partir d'une structure qu'on ne reconnait
+            // plus. Le numero de version rend ce refus explicite plutot que
+            // dependant de ce qui plante en premier.
+            if (!e || e.version !== CACHE_VERSION) return;
+            if (!e.timestamp || (Date.now() - e.timestamp) >= CACHE_DURATION) return;
+            if (!Array.isArray(e.data)) return;
+            reconciliationCache.set(k, e);
+        });
+    } catch (e) {
+        console.warn('Cache de reconciliation illisible:', e && e.message);
+    }
+}
+
+function persisterCacheReconciliation() {
+    const id = identiteCache();
+    if (!id) return; // rien a ecrire tant qu'on ne sait pas pour qui
+    try {
+        const brut = {};
+        reconciliationCache.forEach((v, k) => { brut[k] = v; });
+        sessionStorage.setItem(cleStockageCache(), JSON.stringify(brut));
+    } catch (e) {
+        // Quota depasse sur un gros mois. On EFFACE plutot que de laisser en
+        // place la valeur precedemment ecrite: survivre a un echec d'ecriture
+        // ferait restaurer, au prochain rechargement, un instantane que la
+        // session courante croyait remplace.
+        console.warn('Cache de reconciliation non persiste:', e && e.message);
+        try { sessionStorage.removeItem(cleStockageCache()); } catch (e2) { /* rien de plus a faire */ }
+    }
+}
+
 // Fonctions pour gérer le spinner de chargement
 function showLoadingSpinner() {
     const overlay = document.getElementById('loading-overlay');
@@ -9807,6 +9887,7 @@ function initReconciliationMensuelle() {
                 // Forcer le recalcul en supprimant le cache pour cette période
                 const cacheKey = `${mois}-${annee}`;
                 reconciliationCache.delete(cacheKey);
+                persisterCacheReconciliation();
                 console.log(`Cache supprimé pour ${mois}/${annee}, recalcul forcé`);
                 chargerReconciliationMensuelle(true); // true = force recalcul
             } else {
@@ -9841,6 +9922,7 @@ function initReconciliationMensuelle() {
         btnViderCache.addEventListener('click', function() {
             const cacheSize = reconciliationCache.size;
             reconciliationCache.clear();
+            persisterCacheReconciliation();
             console.log(`Cache vidé - ${cacheSize} entrées supprimées`);
             alert(`Cache vidé avec succès (${cacheSize} entrées supprimées)`);
         });
@@ -9923,19 +10005,15 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // --- Réinitialiser l'estimation ---
         afficherParageMois(null); // tiret, pas le taux du mois precedent
 
-        // --- Initialiser les variables de calcul des totaux ---
-        let totalVentesTheoriquesMois = 0;
-        let totalVentesSaisiesMois = 0;
-        let totalCreancesMois = 0;
-        let totalVersementsMois = 0;
+        // Les lignes calculees, seule matiere premiere des metriques du mois:
+        // agregerReconciliationMois() en tire les totaux ET les deux parages,
+        // au chargement comme au clic sur une case.
         const lignesCalculees = [];
         // Parage cumule du mois: on somme les KILOS, pas les pourcentages.
         // Moyenner les taux journaliers donnerait le meme poids a une journee
         // de 2 kg qu'a une journee de 200 kg.
-        const parageMois = {
-            bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } },
-            ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } }
-        };
+        // parageMois est desormais rendu par agregerReconciliationMois, une
+        // fois toutes les journees chargees: voir plus bas.
         // --- Fin initialisation totaux ---
 
         if (!moisSelect || !anneeSelect) {
@@ -9948,14 +10026,24 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
         console.log(`Chargement des données de réconciliation pour ${mois}/${annee}`);
 
+        // Le cache de la session, restaure au premier usage: c'est ici que
+        // l'identite de l'utilisateur est enfin connue.
+        assurerCacheRestaure();
+
+        // Les exclusions viennent du SERVEUR, et le mois auquel elles se
+        // rapportent est FIGE ici - pas relu des menus deroulants au moment
+        // d'un clic, qui pourraient avoir bouge depuis. Avant toute agregation:
+        // les deux chemins, cache et calcul complet, en dependent.
+        await chargerExclusionsReconciliation(`${mois}-${annee}`);
+
         // Vérifier le cache si on ne force pas le recalcul
         if (!forceRecalcul) {
             const cacheKey = `${mois}-${annee}`;
             const cachedData = reconciliationCache.get(cacheKey);
-            
+
             if (cachedData && (Date.now() - cachedData.timestamp) < CACHE_DURATION) {
                 console.log(`Données trouvées en cache pour ${mois}/${annee}`);
-                
+
                 // Afficher les données en cache
                 afficherDonneesReconciliationMensuelle(cachedData.data);
 
@@ -9966,19 +10054,16 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 // vente, le menu deroulant continuant d'en annoncer un seul.
                 filtrerTableauReconciliationMensuelle();
 
-                // Mettre à jour les totaux
-                if (cachedData.totaux) {
-                    const totalVentesTheoriquesEl = document.getElementById('total-ventes-theoriques-mois');
-                    const totalVentesSaisiesEl = document.getElementById('total-ventes-saisies-mois');
-                    const totalVersementsEl = document.getElementById('total-versements-mois');
-                                
-                    if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(cachedData.totaux.ventesTheoriques);
-                    if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(cachedData.totaux.ventesSaisies);
-                    if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(cachedData.totaux.versements);
-                    // Sans cette ligne, revenir sur l'ecran depuis le cache
-                    // laissait les deux cartes de parage a leur tiret initial.
-                    afficherParageMois(cachedData.totaux.parage);
-                }
+                // Les totaux NE SONT PLUS relus du cache: ils y ont ete
+                // ecrits avant que l'utilisateur ne coche ses exclusions, et
+                // les reposer ici ECRASAIT ceux qu'afficherDonnees... vient de
+                // recalculer en les respectant. Revenir par le cache annulait
+                // donc visuellement les exclusions, alors que les cases
+                // restaient cochees.
+                //
+                // agregerReconciliationMois() les rejoue sur les lignes du
+                // cache, sans un seul appel reseau: c'est une boucle sur une
+                // trentaine de lignes, pas un calcul a economiser.
                 
                 isLoadingReconciliationMensuelle = false;
                 return;
@@ -9996,7 +10081,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
             console.warn("Aucun mois valide sélectionné. Arrêt du chargement.");
             const row = document.createElement('tr');
             const cell = document.createElement('td');
-            cell.colSpan = 15; // Date, PV, 10 valeurs, 2 parage, commentaire
+            cell.colSpan = 16; // Date, Exclure, PV, 10 valeurs, 2 parage, commentaire
             cell.textContent = 'Aucun mois sélectionné ou aucune donnée pour cette année.';
             cell.className = 'text-center';
             row.appendChild(cell);
@@ -10178,36 +10263,11 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                     dailyReconciliation[pointVente].parageBovinDetail = p ? p.bovin : null;
                     dailyReconciliation[pointVente].parageOvinDetail = p ? p.ovin : null;
 
-                    // Cumul du mois. Une journee sans rien a mesurer (0/0)
-                    // n'ajoute rien des deux cotes: elle ne peut donc ni
-                    // gonfler ni diluer le taux du mois.
-                    ['bovin', 'ovin'].forEach((cat) => {
-                        const d = p && p[cat];
-                        // Seules les journees SANS matiere sont ignorees
-                        // (ratio null: theorique nul ou negatif). Elles
-                        // n'apporteraient rien au numerateur comme au
-                        // denominateur, et un theorique negatif fausserait la
-                        // somme.
-                        //
-                        // Une journee ou du stock est sorti SANS vente compte,
-                        // elle: ses kilos ont bel et bien disparu, et le cumul
-                        // du mois doit les porter.
-                        if (!d || d.ratio === null || d.ratio === undefined) return;
-                        parageMois[cat].vendu += parseFloat(d.vendu) || 0;
-                        parageMois[cat].theorique += parseFloat(d.theorique) || 0;
-                        // Le bilan dechet suit les MEMES journees mesurables
-                        // que le taux: meme denominateur, donc au mois aussi
-                        // perte globale = dechet + deperdition, exactement.
-                        // On cumule chaque terme, pas seulement le produit:
-                        // la formule (soir + vendu + jete − matin − transferts)
-                        // reste vraie sur les sommes, et l'infobulle du mois
-                        // peut la montrer terme a terme comme celle du jour.
-                        if (d.dechet) {
-                            const t = parageMois[cat].dechet;
-                            ['matin', 'transferts', 'soir', 'vendu', 'jete', 'produit']
-                                .forEach((c) => { t[c] += parseFloat(d.dechet[c]) || 0; });
-                        }
-                    });
+                                        // Le cumul du mois n'est PLUS fait ici: il est rejoue par
+                    // agregerReconciliationMois() sur les lignes retenues, une
+                    // fois toutes les journees chargees. Le detail par journee
+                    // reste porte par parageBovinDetail / parageOvinDetail
+                    // ci-dessus, qui lui sert de source.
                 });
             } else {
                 Object.keys(dailyReconciliation).forEach(pointVente => {
@@ -10218,14 +10278,10 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 });
             }
 
-             // --- Accumuler les totaux pour ce jour ---
-             Object.values(dailyReconciliation).forEach(data => {
-                 totalVentesTheoriquesMois += parseFloat(data.ventes) || 0;
-                 totalVentesSaisiesMois += parseFloat(data.ventesSaisies) || 0;
-                 totalCreancesMois += parseFloat(data.creances) || 0;
-                 totalVersementsMois += parseFloat(data.cashPayment) || 0;
-             });
-             // --- Fin accumulation totaux ---
+             // Les totaux et le parage du mois ne sont plus accumules ici:
+             // agregerReconciliationMois() les recalcule sur les lignes
+             // RETENUES, une fois la boucle finie. Un seul chemin de calcul,
+             // donc, que la page vienne de charger ou qu'on coche une case.
 
             // 6. Generate table rows for this date
             Object.keys(dailyReconciliation).forEach(pointVente => {
@@ -10243,15 +10299,22 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         }
 
 
-        // Parage cumule du mois (cartes du haut).
-        afficherParageMois(parageMois);
+        // Les lignes CALCULEES deviennent la source des metriques du mois:
+        // l'agregateur les relit, en sautant celles qu'on a exclues, et
+        // repeint totaux et cartes. Meme chemin au chargement et au clic.
+        // L'agregation elle-meme est faite par appliquerExclusionsReconciliation()
+        // plus bas: UN SEUL chemin qui pose les totaux et repeint les cartes,
+        // que la page vienne de charger ou qu'une case change. La faire ici
+        // AUSSI, dans quatre variables aussitot reecrites par cet appel,
+        // n'ajoutait qu'un second endroit ou la regle pouvait diverger.
+        window.__lignesReconciliationMois = lignesCalculees;
 
 
         // If after checking all days, no data was found, display a message
         if (!hasAnyData) {
              const row = document.createElement('tr');
              const cell = document.createElement('td');
-             cell.colSpan = 15; // Date, PV, 10 valeurs, 2 parage, commentaire
+             cell.colSpan = 16; // Date, Exclure, PV, 10 valeurs, 2 parage, commentaire
              cell.textContent = 'Aucune donnée trouvée pour ce mois.';
              cell.className = 'text-center';
              row.appendChild(cell);
@@ -10264,28 +10327,27 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                   afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         } else {
-            // --- Mettre à jour les totaux affichés si des données existent ---
-            if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(totalVentesTheoriquesMois);
-            if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(totalVentesSaisiesMois);
-            if (totalCreancesEl) totalCreancesEl.textContent = formatMonetaire(totalCreancesMois);
-            if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(totalVersementsMois);
-            // Estimation déjà mise à jour ci-dessus
+            // Agrege sur les lignes RETENUES, pose les quatre totaux, repeint
+            // les deux cartes de parage, coche et grise les lignes exclues et
+            // affiche leur compte. C'est le seul endroit ou tout cela se fait.
+            appliquerExclusionsReconciliation();
         }
 
         // Sauvegarder dans le cache
         const cacheKey = `${mois}-${annee}`;
 
+        // Seules les LIGNES sont mises en cache, pas les totaux. Un total est un
+        // resultat d'agregation, et l'agregation depend des exclusions cochees
+        // APRES coup: le garder ici en ferait un chiffre perime que quelqu'un
+        // finirait par relire. agregerReconciliationMois() le recalcule sur ces
+        // lignes, sans appel reseau.
         const cacheData = {
+            version: CACHE_VERSION,
             data: lignesCalculees,
-            totaux: {
-                ventesTheoriques: totalVentesTheoriquesMois,
-                ventesSaisies: totalVentesSaisiesMois,
-                versements: totalVersementsMois,
-                parage: parageMois
-            },
             timestamp: Date.now()
         };
         reconciliationCache.set(cacheKey, cacheData);
+        persisterCacheReconciliation();
         console.log(`Données sauvegardées en cache pour ${mois}/${annee}`);
         
         // Mettre à jour l'indicateur de cache
@@ -10298,19 +10360,34 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
     } catch (error) {
         console.error('Erreur majeure lors du chargement des données mensuelles:', error);
-        tableBody.innerHTML = `
-            <tr>
-                <td colspan="15" class="text-center text-danger">
-                    Une erreur majeure est survenue: ${error.message}
-                </td>
-            </tr>
-        `;
+        // Le tbody est RE-INTERROGE ici: `tableBody` est declare dans le try,
+        // donc invisible du catch. Toute erreur de chargement levait alors un
+        // second << tableBody is not defined >> qui MASQUAIT la premiere, et
+        // l'ecran restait vide sans jamais dire pourquoi.
+        const tableBody = document.querySelector('#reconciliation-mois-table tbody');
+        if (!tableBody) return;
+        // textContent et non innerHTML: error.message peut porter du texte
+        // venu du serveur ou d'une reponse tierce. L'injecter dans un gabarit
+        // le ferait interpreter comme du balisage - dans le message d'erreur,
+        // c'est-a-dire a l'endroit le moins surveille de l'ecran.
+        tableBody.innerHTML = '';
+        const ligneErreur = document.createElement('tr');
+        const celluleErreur = document.createElement('td');
+        celluleErreur.colSpan = 16;
+        celluleErreur.className = 'text-center text-danger';
+        celluleErreur.textContent = `Une erreur majeure est survenue: ${error.message}`;
+        ligneErreur.appendChild(celluleErreur);
+        tableBody.appendChild(ligneErreur);
         // --- Réinitialiser les totaux en cas d'erreur majeure ---
-        if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(0);
-        if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(0);
-        if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(0);
+        // Re-interroges ici pour la meme raison que le tbody: ces constantes
+        // vivent dans le try et sont invisibles du catch.
+        ['total-ventes-theoriques-mois', 'total-ventes-saisies-mois',
+            'total-creances-mois', 'total-versements-mois'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = formatMonetaire(0);
+        });
         // --- Reset estimation en cas d'erreur majeure ---
-          afficherParageMois(null); // tiret, pas le taux du mois precedent
+        afficherParageMois(null); // tiret, pas le taux du mois precedent
     } finally { // Add finally block
         isLoadingReconciliationMensuelle = false;
         const loadingIndicator = document.getElementById('loading-indicator-reconciliation-mois'); // Ensure indicator is hidden
@@ -10350,6 +10427,85 @@ function filtrerTableauReconciliationMensuelle() {
  * Un denominateur nul n'affiche PAS 0% - qui se lirait "aucune perte" - mais
  * un tiret: il n'y avait rien a mesurer.
  */
+/**
+ * Les produits qui COMPOSENT chaque taux de parage, du plus lourd au plus
+ * leger.
+ *
+ * Le taux est un rapport entre deux sommes de kilos, et rien a l'ecran ne
+ * disait sur QUOI il portait. Un produit range par erreur dans une espece y
+ * entrait sans qu'on puisse le voir: 48 kg de Laxass classe en Ovin faisaient
+ * afficher 83 % de perte sur l'agneau, qui n'avait pourtant rien vendu ce
+ * jour-la. La liste rend la composition verifiable d'un coup d'oeil.
+ *
+ * Les exclusions du parage (Administration -> Parage : exclusions) sont deja
+ * appliquees en amont: ce qui apparait ici est exactement ce qui compte.
+ */
+function afficherContributeursParage(parageMois, kg) {
+    const zone = document.getElementById('parage-contributeurs');
+    if (!zone) return;
+    if (!parageMois) { zone.innerHTML = ''; return; }
+
+    const bloc = (cat, titre) => {
+        const d = parageMois[cat];
+        const pp = (d && d.parProduit) || {};
+        const noms = Object.keys(pp).sort((a, b) => (pp[b].theorique || 0) - (pp[a].theorique || 0));
+        if (!noms.length) return '';
+        const total = noms.reduce((s, n) => s + (pp[n].theorique || 0), 0);
+        // PAS de badge "rien vendu": un stock sans vente est la NORME ici. Le
+        // stock est tenu sous le nom de la carcasse ("Boeuf", 532 kg) tandis
+        // que les ventes sortent sous les noms de decoupe ("Boeuf en detail",
+        // 355 kg). Les deux colonnes ne s'alignent donc pas produit par
+        // produit, et signaler cet ecart aurait appris a ignorer l'alerte.
+        // Le nom du produit vient de la base et s'edite en administration:
+        // rien ne garantit qu'il ne contient pas d'esperluette ni de chevron.
+        // Les kilos et la part, eux, sont produits ici a partir de nombres.
+        const echapper = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+        const lignes = noms.map((n) => {
+            const part = total > 0 ? (pp[n].theorique / total) * 100 : 0;
+            return '<tr>'
+                + `<td>${echapper(n)}</td>`
+                + `<td class="text-end">${kg(pp[n].theorique)}</td>`
+                + `<td class="text-end">${kg(pp[n].vendu || 0)}</td>`
+                + `<td class="text-end text-muted">${part.toFixed(0)} %</td></tr>`;
+        }).join('');
+        return `<div class="col-md-6"><div class="small fw-medium mb-1">${titre}</div>`
+            + '<table class="table table-sm table-bordered mb-2"><thead><tr>'
+            + '<th>Produit</th><th class="text-end">Stock théorique</th>'
+            + '<th class="text-end">Vendu</th><th class="text-end">Part</th>'
+            + `</tr></thead><tbody>${lignes}</tbody></table></div>`;
+    };
+
+    const html = bloc('bovin', 'Composition du parage bœuf') + bloc('ovin', 'Composition du parage agneau');
+    // REPLIE par defaut: c'est une piece a conviction, pas une lecture
+    // quotidienne. On l'ouvre quand un taux surprend.
+    //
+    // L'etat vit dans une VARIABLE, pas dans le DOM: la zone est videe pendant
+    // le chargement, donc la relire au moment du rendu rendait toujours
+    // "ferme" - ouvrir le bloc puis cocher une exclusion le refermait sous les
+    // doigts.
+    const ouvert = window.__parageContributeursOuvert === true;
+    zone.innerHTML = html
+        ? '<details class="mb-1"' + (ouvert ? ' open' : '') + '>'
+          + '<summary class="small fw-medium" style="cursor:pointer">'
+          + 'Composition des taux de parage — quels produits les portent</summary>'
+          + '<div class="small text-muted mb-1 mt-1">Produits qui composent les taux ci-dessus, '
+          + 'par poids décroissant dans le <strong>stock théorique</strong> — le dénominateur. '
+          + 'Le stock est tenu sous le nom de la carcasse et les ventes sortent sous les noms '
+          + 'de découpe : les deux colonnes ne se correspondent donc pas ligne à ligne. '
+          + 'Les exclusions configurées en administration sont déjà retirées.'
+          + '</div><div class="row g-2">' + html + '</div></details>'
+        : '';
+
+    const det = zone.querySelector('details');
+    if (det) {
+        det.addEventListener('toggle', () => {
+            window.__parageContributeursOuvert = det.open;
+        });
+    }
+}
+
 function afficherParageMois(parageMois) {
     // LA definition du taux vit dans lib/parage.js, charge par index.html et
     // expose en window.parageLib. Ce fichier en recopiait la formule ET le
@@ -10368,6 +10524,8 @@ function afficherParageMois(parageMois) {
         { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
     ];
     const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg`;
+
+    afficherContributeursParage(parageMois, kg);
 
     cartes.forEach(({ cat, valeur, detail }) => {
         const elValeur = document.getElementById(valeur);
@@ -10450,12 +10608,231 @@ function afficherParageMois(parageMois) {
  * -302 800 F CFA et un "Ecart %" a -100,00%. Une seule fabrique rend cette
  * divergence impossible.
  */
+/**
+ * JOURNEES EXCLUES du mois, par mois et par ligne.
+ *
+ * Une journee dont l'inventaire du soir n'a pas ete saisi produit un parage
+ * absurde - 77,7 % au 13 aout, contre 17,5 % sur le mois - et le cumul du mois
+ * en herite, puisqu'il somme les kilos. L'exclure ne corrige pas la donnee: ca
+ * dit au calcul de ne pas la lire.
+ *
+ * La cle porte la date ET le point de vente: le tableau montre une ligne par
+ * couple, et l'utilisateur coche une LIGNE, pas une journee entiere de tous
+ * les points de vente.
+ *
+ * SERVEUR, et non localStorage. La premiere version rangeait ces exclusions
+ * dans le navigateur: deux personnes lisaient alors deux parages differents
+ * pour le meme mois sans qu'aucun ecran ne le dise, et sur un poste partage
+ * l'exclusion posee par l'un s'appliquait en silence aux totaux de l'autre.
+ * Voir lib/reconciliation-exclusions.js pour le stockage et sa signature.
+ *
+ * L'ETAT EN MEMOIRE porte le mois auquel il se rapporte. Il etait auparavant
+ * relu depuis les menus deroulants a chaque clic: changer le menu sans
+ * recalculer, puis cocher une case, ecrivait l'exclusion sous le mois affiche
+ * au menu et non sous celui des lignes a l'ecran.
+ */
+const exclusionsEtat = { mois: '', ensemble: new Set(), detail: new Map(), echec: '' };
+
+function cleExclusion(dateStr, pointVente) {
+    return String(dateStr) + '|' + String(pointVente);
+}
+
+/** Les exclusions du mois CHARGE, jamais celles du menu deroulant courant. */
+function lireExclusions() {
+    return exclusionsEtat.ensemble;
+}
+
+/**
+ * Recharge les exclusions du serveur pour un mois donne, et FIGE ce mois.
+ *
+ * Un echec ne bloque pas l'ecran: on repart d'aucune exclusion, l'etat par
+ * defaut. Mais il se DIT, en toutes lettres et pas seulement dans la console:
+ * un mois dont les exclusions n'ont pas pu etre lues affiche exactement les
+ * memes totaux qu'un mois sans exclusion. Se taire laisserait croire que le
+ * 13 aout est bien pris en compte alors qu'il ne l'est pas.
+ */
+async function chargerExclusionsReconciliation(mois) {
+    exclusionsEtat.mois = String(mois || '');
+    exclusionsEtat.ensemble = new Set();
+    exclusionsEtat.detail = new Map();
+    exclusionsEtat.echec = '';
+    try {
+        const res = await fetch('/api/reconciliation/exclusions', { credentials: 'include' });
+        const j = await res.json();
+        if (!j || !j.success) throw new Error((j && j.message) || 'réponse invalide');
+        (j.data[exclusionsEtat.mois] || []).forEach((e) => {
+            exclusionsEtat.ensemble.add(e.cle);
+            exclusionsEtat.detail.set(e.cle, e);
+        });
+    } catch (e) {
+        const motif = (e && e.message) || 'erreur inconnue';
+        console.warn('Exclusions de reconciliation illisibles:', motif);
+        exclusionsEtat.echec = 'Exclusions non chargées (' + motif
+            + ') : les totaux ci-dessous comptent TOUTES les journées.';
+        if (typeof showToast === 'function') showToast(exclusionsEtat.echec, 'danger');
+    }
+    return exclusionsEtat.ensemble;
+}
+
+/**
+ * Bascule UNE exclusion cote serveur, puis repeint.
+ *
+ * L'etat local n'est mis a jour qu'APRES la reponse: un affichage optimiste
+ * ferait croire l'exclusion enregistree alors qu'un compte en lecture seule
+ * vient de se voir refuser l'ecriture.
+ */
+async function basculerExclusionReconciliation(cle, exclure, caseACocher) {
+    if (caseACocher) caseACocher.disabled = true;
+    try {
+        const res = await fetch('/api/reconciliation/exclusions', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mois: exclusionsEtat.mois, cle, exclure })
+        });
+        const j = await res.json();
+        if (!j || !j.success) throw new Error((j && j.message) || 'refusé');
+        exclusionsEtat.ensemble = new Set();
+        exclusionsEtat.detail = new Map();
+        (j.data || []).forEach((e) => {
+            exclusionsEtat.ensemble.add(e.cle);
+            exclusionsEtat.detail.set(e.cle, e);
+        });
+    } catch (e) {
+        // La case revient a l'etat que le SERVEUR connait, pas a celui qu'on
+        // vient de cliquer: elle ne doit jamais annoncer une exclusion qui
+        // n'a pas ete enregistree.
+        if (typeof showToast === 'function') {
+            showToast('Exclusion non enregistrée : ' + (e && e.message), 'danger');
+        } else {
+            console.warn('Exclusion non enregistrée:', e && e.message);
+        }
+    }
+    if (caseACocher) caseACocher.disabled = false;
+    appliquerExclusionsReconciliation();
+}
+
+/**
+ * Les totaux du mois et le parage cumule, calcules sur les lignes RETENUES.
+ *
+ * Extrait de la boucle de chargement pour pouvoir etre rejoue sans refaire un
+ * seul appel reseau quand une case change. Les regles d'origine sont
+ * conservees mot pour mot: on somme les KILOS et non les pourcentages, et une
+ * journee sans matiere (ratio null) n'entre ni au numerateur ni au
+ * denominateur.
+ */
+function agregerReconciliationMois(lignes, exclusions) {
+    const totaux = { ventesTheoriques: 0, ventesSaisies: 0, creances: 0, versements: 0 };
+    const parage = {
+        bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 }, parProduit: {} },
+        ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 }, parProduit: {} }
+    };
+    let retenues = 0;
+    (lignes || []).forEach((l) => {
+        if (exclusions && exclusions.has(cleExclusion(l.date, l.pointVente))) return;
+        retenues += 1;
+        totaux.ventesTheoriques += parseFloat(l.ventes) || 0;
+        totaux.ventesSaisies += parseFloat(l.ventesSaisies) || 0;
+        totaux.creances += parseFloat(l.creances) || 0;
+        totaux.versements += parseFloat(l.cashPayment) || 0;
+        [['bovin', 'parageBovinDetail'], ['ovin', 'parageOvinDetail']].forEach(([cat, champ]) => {
+            const d = l[champ];
+            if (!d || d.ratio === null || d.ratio === undefined) return;
+            parage[cat].vendu += parseFloat(d.vendu) || 0;
+            parage[cat].theorique += parseFloat(d.theorique) || 0;
+            if (d.dechet) {
+                const t = parage[cat].dechet;
+                ['matin', 'transferts', 'soir', 'vendu', 'jete', 'produit']
+                    .forEach((c) => { t[c] += parseFloat(d.dechet[c]) || 0; });
+            }
+            // QUI compose le pool. Sans cette liste, un produit range par
+            // erreur dans une espece reste invisible: le 13 aout, 48 kg de
+            // Laxass classe en Ovin portaient un taux de 83 % attribue a
+            // l'agneau, qui n'avait rien vendu ce jour-la.
+            const pp = d.parProduit || {};
+            Object.keys(pp).forEach((nom) => {
+                const cible = parage[cat].parProduit[nom]
+                    || (parage[cat].parProduit[nom] = { theorique: 0, vendu: 0 });
+                cible.theorique += parseFloat(pp[nom].theorique) || 0;
+                cible.vendu += parseFloat(pp[nom].vendu) || 0;
+            });
+        });
+    });
+    return { totaux, parage, retenues, exclues: (lignes || []).length - retenues };
+}
+
+/** Rejoue l'agregation et repeint les cartes, sans aucun appel reseau. */
+function appliquerExclusionsReconciliation() {
+    const lignes = window.__lignesReconciliationMois || [];
+    const exclusions = lireExclusions();
+    const r = agregerReconciliationMois(lignes, exclusions);
+
+    const poser = (id, v) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = formatMonetaire(v);
+    };
+    poser('total-ventes-theoriques-mois', r.totaux.ventesTheoriques);
+    poser('total-ventes-saisies-mois', r.totaux.ventesSaisies);
+    poser('total-creances-mois', r.totaux.creances);
+    poser('total-versements-mois', r.totaux.versements);
+    afficherParageMois(r.parage);
+
+    // La ligne ecartee reste LISIBLE mais se voit: la masquer ferait douter
+    // de ce que le tableau montre.
+    document.querySelectorAll('#reconciliation-mois-table tbody tr').forEach((tr) => {
+        const c = tr.querySelector('.recon-exclure');
+        if (!c) return;
+        const off = exclusions.has(c.dataset.cle);
+        c.checked = off;
+        tr.style.opacity = off ? '0.45' : '';
+        tr.style.textDecoration = off ? 'line-through' : '';
+    });
+
+    const info = document.getElementById('recon-exclusions-info');
+    if (info) {
+        // QUI a exclu, et QUAND. Une exclusion change les totaux que tout le
+        // monde lit: la subir sans savoir d'ou elle vient, c'est douter du
+        // tableau entier.
+        const qui = Array.from(exclusions)
+            .map((c) => exclusionsEtat.detail.get(c))
+            .filter((e) => e && e.par)
+            .map((e) => e.par + (e.le ? ' le ' + String(e.le).slice(8, 10)
+                + '/' + String(e.le).slice(5, 7) : ''));
+        const auteurs = Array.from(new Set(qui));
+        // « ligne » et non « journée »: la cle porte la date ET le point de
+        // vente. Sur un mois a plusieurs points de vente, ecarter une ligne
+        // n'ecarte pas la journee - annoncer « 1 journée exclue » ferait
+        // chercher un ecart la ou il n'y en a pas.
+        info.textContent = r.exclues
+            ? r.exclues + ' ligne(s) exclue(s) des totaux et du parage'
+              + (auteurs.length ? ' — par ' + auteurs.join(', ') : '')
+            // Un echec de chargement produit zero exclusion, comme un mois
+            // sans exclusion: sans ce message, les deux sont indiscernables.
+            : (exclusionsEtat.echec || '');
+    }
+    return r;
+}
+
 function construireLigneReconciliationMois(dateStr, pointVente, data) {
     const row = document.createElement('tr');
 
     // Cellule Date
     let cell = document.createElement('td');
     cell.textContent = dateStr;
+    row.appendChild(cell);
+
+    // Cellule Exclure: retire la ligne de TOUTES les metriques du mois.
+    cell = document.createElement('td');
+    cell.className = 'text-center';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.className = 'form-check-input recon-exclure';
+    chk.dataset.cle = cleExclusion(dateStr, pointVente);
+    chk.title = 'Exclure cette ligne (cette date, ce point de vente) des totaux et du parage du mois';
+    chk.addEventListener('change', function () {
+        basculerExclusionReconciliation(chk.dataset.cle, chk.checked, chk);
+    });
+    cell.appendChild(chk);
     row.appendChild(cell);
 
     // Cellule Point de Vente
@@ -10620,7 +10997,7 @@ function afficherDonneesReconciliationMensuelle(reconciliationData) {
     if (!reconciliationData || !reconciliationData.length) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
-        cell.colSpan = 15;
+        cell.colSpan = 16;
         cell.textContent = 'Aucune donnée disponible pour cette période.';
         cell.className = 'text-center';
         row.appendChild(cell);
@@ -10633,6 +11010,12 @@ function afficherDonneesReconciliationMensuelle(reconciliationData) {
             construireLigneReconciliationMois(entry.date, entry.pointVente, entry)
         );
     });
+
+    // MEME agregation que le chargement complet. Sans cela, revenir par le
+    // cache reaffichait les totaux d'origine, exclusions ignorees - deux
+    // chiffres differents pour le meme mois selon le chemin emprunte.
+    window.__lignesReconciliationMois = reconciliationData;
+    appliquerExclusionsReconciliation();
 }
 
 

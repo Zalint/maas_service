@@ -5874,6 +5874,54 @@ app.get('/api/parage/produits', checkAuth, checkReadAccess, async (req, res) => 
     }
 });
 
+/**
+ * Journees ECARTEES du cumul mensuel, par mois.
+ *
+ * En LECTURE pour tous ceux qui peuvent lire l'ecran: l'exclusion change les
+ * totaux et les deux parages affiches, elle ne peut pas etre invisible a ceux
+ * qui les lisent.
+ */
+app.get('/api/reconciliation/exclusions', checkAuth, checkReadAccess, async (req, res) => {
+    try {
+        const { lireExclusions } = require('./lib/reconciliation-exclusions');
+        res.json({ success: true, data: await lireExclusions() });
+    } catch (error) {
+        console.error('GET /api/reconciliation/exclusions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+/**
+ * Exclure une journee, ou la reintegrer.
+ *
+ * En ECRITURE: c'est une decision qui change les chiffres que TOUT LE MONDE
+ * lit sur ce mois, pas une preference d'affichage. Un compte en lecture seule
+ * ne doit pas pouvoir modifier le parage du point de vente.
+ *
+ * L'auteur et l'horodatage sont poses ICI, jamais acceptes du client: les
+ * recevoir permettrait de signer une exclusion au nom d'un autre, et leur
+ * seul interet est de pouvoir s'y fier.
+ */
+app.post('/api/reconciliation/exclusions', checkAuth, checkWriteAccess, async (req, res) => {
+    try {
+        const { basculerExclusion } = require('./lib/reconciliation-exclusions');
+        const { mois, cle, exclure } = req.body || {};
+        if (typeof exclure !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'exclure doit être un booléen' });
+        }
+        const r = await basculerExclusion({
+            mois, cle, exclure,
+            par: (req.session && req.session.user && req.session.user.username) || null,
+            le: new Date().toISOString()
+        });
+        if (!r.ok) return res.status(400).json({ success: false, message: r.erreur });
+        res.json({ success: true, data: r.mois });
+    } catch (error) {
+        console.error('POST /api/reconciliation/exclusions:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const dateBrute = req.query.date;

@@ -417,10 +417,7 @@
             if (typeof showToast === 'function') showToast('Aucune donnée à exporter', 'warning');
             return;
         }
-        const fmtDateFr = (iso) => {
-            const m = typeof iso === 'string' && iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-        };
+        const fmtDateFr = (iso) => window.datesFr.enFrancais(iso);
         const rows = src.map((d) => ({
             'Date': fmtDateFr(d.date),
             'Produit': d.produit,
@@ -459,11 +456,7 @@
     function renderDetailParDate(data) {
         const tbodyDate = document.querySelector('#fin-creances-detail-date tbody');
         if (!tbodyDate) return;
-        const fmtDateFr = (iso) => {
-            if (!iso || typeof iso !== 'string') return iso;
-            const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-        };
+        const fmtDateFr = (iso) => window.datesFr.enFrancais(iso);
         const r2 = (n) => Math.round((n || 0) * 100) / 100;
         const tiret = '<span class="text-muted">—</span>';
         const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
@@ -2058,10 +2051,9 @@
         }
     }
 
-    const fmtDateFr = (iso) => {
-        const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-        return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
-    };
+    // Le String() conserve le repli d'origine: null rend '' et non 'null',
+    // qui s'afficherait tel quel dans les cellules du tableau.
+    const fmtDateFr = (iso) => window.datesFr.enFrancais(String(iso == null ? '' : iso));
 
     // ===== Export Excel du PL (tout ce que montre l'ecran) =====
     // Construit depuis plDernieresDonnees: on exporte EXACTEMENT ce qui est
@@ -2197,6 +2189,182 @@
 
     // ===== Snapshots: figer le PL du jour + historique =====
 
+    // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
+    // n'existait pas ?". C'est une SIMULATION d'affichage: rien n'est envoye au
+    // serveur, rien n'est enregistre, et le PL reel reste affiche a cote.
+    //
+    // Declare ICI, avant majDeltaJourPl qui le lit. Il vivait 170 lignes plus
+    // bas: le code fonctionnait parce que rien n'appelle renderPl() pendant
+    // l'evaluation du module, mais le premier appel plus precoce - un rendu
+    // optimiste, un test qui importe le fichier - aurait leve
+    // « Cannot access before initialization » et emporte tout l'ecran PL.
+    const plPostesNeutralises = new Set();
+
+    // PL DU JOUR: la difference entre deux cumuls voisins.
+    //
+    // Un PL fige court du 1er du mois a sa date. C'est un CUMUL, pas une
+    // journee: lu tel quel il dit ou en est le mois, jamais ce que la veille a
+    // produit. La difference entre deux cumuls isole la journee - a condition
+    // qu'ils partent du MEME jour. Deux mois ne se soustraient pas, le cumul
+    // repartant de zero au 1er; et une periode choisie a la main (du 5 au 13)
+    // ne se compare a aucun snapshot, tous ancres au 1er.
+    //
+    // D'ou la comparaison sur periode_debut plutot que sur le mois: c'est la
+    // condition exacte, et elle se lit sans reflechir.
+
+    // Le jour et l'ecart en jours viennent de lib/dates-fr.js, servi au
+    // navigateur par index.html - comme lib/parage.js l'est pour la formule du
+    // parage. Trois conversions locales de plus dans ce fichier, chacune avec
+    // sa propre tolerance aux entrees, etaient trois endroits ou la prochaine
+    // divergence de format pouvait naitre.
+    const isoDeSnapshot = (v) => window.datesFr.jourISO(v);
+    const joursEntreIso = (a, b) => window.datesFr.ecartEnJours(a, b);
+
+    /**
+     * Le PL fige le plus recent qui precede `dateRef` sur la MEME periode.
+     *
+     * UNE seule definition de « le precedent », partagee par le tableau de
+     * l'historique et par la carte du PL. Ils en avaient deux: le tableau
+     * prenait le voisin immediat dans la liste triee, la carte filtrait puis
+     * retenait le maximum. Un snapshot de periode_debut differente intercale
+     * entre deux dates suffisait a les faire diverger - tiret d'un cote,
+     * chiffre de l'autre, pour la meme journee au meme instant.
+     */
+    function snapshotPrecedent(rows, dateRef, periodeDebut) {
+        let meilleur = null;
+        for (const s of rows) {
+            if (isoDeSnapshot(s.periode_debut) !== periodeDebut) continue;
+            const d = isoDeSnapshot(s.date);
+            if (!d || d >= dateRef) continue;
+            if (!meilleur || d > isoDeSnapshot(meilleur.date)) meilleur = s;
+        }
+        return meilleur;
+    }
+
+    /**
+     * Le PL de chaque journee, indexe par date ISO.
+     *
+     * Le premier jour de la periode fait exception: son cumul EST sa journee.
+     * Sans ce cas, la ligne du 1er resterait vide alors qu'elle est justement
+     * la seule dont la valeur se lit directement.
+     *
+     * @param {Array} rows snapshots, dans n'importe quel ordre
+     * @returns {Map<string, {valeur:number, jours:number, depuis:string|null}>}
+     */
+    function plParJournee(rows) {
+        const out = new Map();
+        for (const cur of rows) {
+            const dateCur = isoDeSnapshot(cur.date);
+            const debutCur = isoDeSnapshot(cur.periode_debut);
+            if (!dateCur || !debutCur) continue;
+            const prec = snapshotPrecedent(rows, dateCur, debutCur);
+            if (prec) {
+                const datePrec = isoDeSnapshot(prec.date);
+                out.set(dateCur, {
+                    valeur: (parseFloat(cur.pl) || 0) - (parseFloat(prec.pl) || 0),
+                    jours: joursEntreIso(datePrec, dateCur),
+                    depuis: datePrec
+                });
+            } else if (dateCur === debutCur) {
+                out.set(dateCur, { valeur: parseFloat(cur.pl) || 0, jours: 1, depuis: null });
+            }
+            // Sinon: aucun point de comparaison. Un tiret, plutot que la
+            // soustraction de deux periodes qui ne se recouvrent pas.
+        }
+        return out;
+    }
+
+    // La liste des PL figes, gardee en memoire: renderPl est rappele a chaque
+    // neutralisation de poste, et l'historique ne bouge pas entre deux clics.
+    let plSnapshotsListe = null;
+    // Compteur d'invalidations. Une requete partie AVANT une invalidation ne
+    // doit pas reposer son resultat apres elle: figer le PL du jour vide le
+    // cache, et une reponse en vol depuis dix secondes y remettrait la liste
+    // d'avant - donc un historique amputé du snapshot qu'on vient de creer.
+    let plSnapshotsGen = 0;
+
+    function invaliderSnapshotsPl() {
+        plSnapshotsListe = null;
+        plSnapshotsGen += 1;
+    }
+
+    async function listeSnapshotsPl(force) {
+        if (!force && plSnapshotsListe) return plSnapshotsListe;
+        const gen = plSnapshotsGen;
+        const res = await fetch('/api/finance/pl/snapshots', { credentials: 'include' });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Erreur');
+        const rows = j.data || [];
+        // Le resultat sert TOUJOURS a l'appelant - il vient de l'obtenir, il
+        // est frais pour lui. Seule la mise en cache est abandonnee quand une
+        // invalidation est passee entre-temps.
+        if (gen === plSnapshotsGen) plSnapshotsListe = rows;
+        return rows;
+    }
+
+    /**
+     * « Journee du ... : +X » sous le montant du PL.
+     *
+     * Rempli APRES le rendu, pas pendant: renderPl est synchrone et rappele a
+     * chaque clic sur un poste. Aller chercher l'historique dans son corps
+     * l'aurait rendu asynchrone pour un complement d'information.
+     *
+     * Rien ne s'affiche si aucun PL fige ne partage la date de depart de
+     * l'ecran. Un nombre faux est pire qu'une case vide.
+     */
+    async function majDeltaJourPl(d) {
+        const cible = document.getElementById('fin-pl-delta-jour');
+        if (!cible || !d || !d.periode) return;
+        // PL simule: le comparer a un PL fige reel melangerait deux
+        // definitions du meme mot.
+        if (plPostesNeutralises.size > 0) return;
+        try {
+            const debut = isoDeSnapshot(d.periode.dateDebut);
+            const fin = isoDeSnapshot(d.periode.dateFin);
+            if (!debut || !fin) return;
+            const estime = !!(d.stock && d.stock.soir_estime === true);
+            const noteEstime = estime
+                ? '<div class="text-muted fst-italic">stock du soir estimé : ce delta bougera au comptage.</div>'
+                : '';
+
+            // PREMIER JOUR DE LA PERIODE: son cumul EST sa journee, il n'y a
+            // rien a soustraire. Meme exception que la colonne du tableau, qui
+            // affiche bien la valeur du 1er - sans ce cas, la carte restait
+            // muette ce jour-la pendant que le tableau, lui, chiffrait.
+            if (debut === fin) {
+                const v = parseFloat(d.pl) || 0;
+                cible.innerHTML = `
+                    <span class="text-muted">Journée du ${esc(fmtDateFr(fin))} :</span>
+                    <strong class="text-${v >= 0 ? 'success' : 'danger'}">${v >= 0 ? '+' : ''}${esc(fmtMoney(v))}</strong>
+                    <div class="text-muted">premier jour de la période : le cumul est la journée</div>
+                    ${noteEstime}`;
+                return;
+            }
+
+            const rows = await listeSnapshotsPl(false);
+            // MEME regle que la colonne « PL du jour » du tableau: une seule
+            // definition de « le precedent », donc deux ecrans qui ne peuvent
+            // pas se contredire.
+            const prec = snapshotPrecedent(rows, fin, debut);
+            if (!prec) return;
+            const datePrec = isoDeSnapshot(prec.date);
+            const delta = (parseFloat(d.pl) || 0) - (parseFloat(prec.pl) || 0);
+            const jours = joursEntreIso(datePrec, fin);
+            const couleur = delta >= 0 ? 'success' : 'danger';
+            cible.innerHTML = `
+                <span class="text-muted">${jours === 1
+                    ? 'Journée du ' + esc(fmtDateFr(fin))
+                    : esc(String(jours)) + ' jours depuis le ' + esc(fmtDateFr(datePrec))} :</span>
+                <strong class="text-${couleur}">${delta >= 0 ? '+' : ''}${esc(fmtMoney(delta))}</strong>
+                <div class="text-muted">écart avec le PL figé du ${esc(fmtDateFr(datePrec))}
+                    (${esc(fmtMoney(prec.pl))})</div>
+                ${noteEstime}`;
+        } catch (e) {
+            // Un complement d'information ne doit pas abimer le PL lui-meme.
+            cible.innerHTML = '';
+        }
+    }
+
     // Reflete l'etat du PL affiche sur le bouton "Figer". Le serveur reste
     // l'autorite (il refuse en 409): ceci n'est qu'un confort, d'autant que la
     // route fige TOUJOURS la periode par defaut, pas celle affichee a l'ecran.
@@ -2224,6 +2392,9 @@
             if (typeof showToast === 'function') {
                 showToast(`PL du ${fmtDateFr(j.data.date)} figé : ${fmtMoney(j.data.pl)}`, 'success');
             }
+            // Le PL du jour se lit contre le dernier snapshot: en garder un
+            // perime ferait comparer l'ecran a l'avant-dernier.
+            invaliderSnapshotsPl();
             // Panneau historique ouvert: il montre tout de suite la nouvelle ligne.
             const panel = document.getElementById('fin-pl-historique-panel');
             if (panel && panel.style.display !== 'none') chargerHistoriquePl();
@@ -2248,25 +2419,43 @@
         if (!panel) return;
         panel.innerHTML = '<div class="text-muted small"><i class="bi bi-hourglass-split"></i> Chargement…</div>';
         try {
-            const res = await fetch('/api/finance/pl/snapshots', { credentials: 'include' });
-            const j = await res.json();
-            if (!j.success) throw new Error(j.error || 'Erreur');
-            if (!j.data.length) {
+            // force: on ouvre le panneau pour VOIR l'historique. Le cron du
+            // soir a pu ecrire depuis que la page est ouverte.
+            const rows = await listeSnapshotsPl(true);
+            if (!rows.length) {
                 panel.innerHTML = '<div class="alert alert-secondary py-2 small mb-0">Aucun PL figé pour l\'instant — le bouton « Figer le PL du jour » ou le cron du soir en créera.</div>';
                 return;
             }
-            const lignes = j.data.map((s) => `<tr data-snap-date="${esc(s.date)}" style="cursor:pointer" title="Afficher ce PL figé">
+            const parJournee = plParJournee(rows);
+            const lignes = rows.map((s) => {
+                const dj = parJournee.get(isoDeSnapshot(s.date));
+                const celluleJour = dj
+                    ? `<td class="text-end fw-medium ${dj.valeur >= 0 ? 'text-success' : 'text-danger'}"
+                           title="${esc(dj.depuis
+                                ? 'Écart avec le PL figé du ' + fmtDateFr(dj.depuis)
+                                : 'Premier jour de la période : le cumul est la journée')}">
+                        ${dj.valeur >= 0 ? '+' : ''}${esc(fmtMoney(dj.valeur))}
+                        ${dj.jours > 1
+                            ? `<span class="badge bg-warning text-dark ms-1"
+                                     title="Aucun PL figé les jours intermédiaires : cet écart couvre ${esc(String(dj.jours))} jours, pas un.">sur ${esc(String(dj.jours))} j</span>`
+                            : ''}
+                       </td>`
+                    : '<td class="text-end text-muted" title="Aucun PL figé antérieur dans la même période : la journée ne peut pas être isolée.">—</td>';
+                return `<tr data-snap-date="${esc(s.date)}" style="cursor:pointer" title="Afficher ce PL figé">
                 <td>${esc(fmtDateFr(s.date))}</td>
                 <td class="text-end fw-medium ${parseFloat(s.pl) >= 0 ? 'text-success' : 'text-danger'}">${esc(fmtMoney(s.pl))}</td>
+                ${celluleJour}
                 <td class="text-end">${esc(fmtMoney(s.total_ventes || 0))}</td>
                 <td class="text-center"><span class="badge bg-${s.source === 'cron' ? 'secondary' : 'primary'}">${esc(s.source)}</span></td>
                 <td class="small text-muted">${esc(s.created_by || '—')}</td>
-            </tr>`).join('');
+            </tr>`;
+            }).join('');
             panel.innerHTML = `<div class="card"><div class="card-body p-2">
-                <div class="small text-muted mb-1">Un PL figé par date — cliquer une ligne pour l'afficher. La période figée court du 1ᵉʳ du mois à la date.</div>
+                <div class="small text-muted mb-1">Un PL figé par date — cliquer une ligne pour l'afficher. La période figée court du 1ᵉʳ du mois à la date.
+                <strong>PL du jour</strong> = écart avec le PL figé précédent, donc ce que la journée seule a produit.</div>
                 <div class="table-responsive" style="max-height:300px; overflow:auto;">
                 <table class="table table-sm table-hover mb-0">
-                    <thead><tr><th>Date</th><th class="text-end">PL</th><th class="text-end">Ventes</th><th class="text-center">Source</th><th>Par</th></tr></thead>
+                    <thead><tr><th>Date</th><th class="text-end">PL cumulé</th><th class="text-end">PL du jour</th><th class="text-end">Ventes</th><th class="text-center">Source</th><th>Par</th></tr></thead>
                     <tbody>${lignes}</tbody>
                 </table></div></div></div>`;
             panel.querySelectorAll('[data-snap-date]').forEach((tr) => {
@@ -2314,10 +2503,6 @@
         }
     }
 
-    // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
-    // n'existait pas ?". C'est une SIMULATION d'affichage: rien n'est envoye au
-    // serveur, rien n'est enregistre, et le PL reel reste affiche a cote.
-    const plPostesNeutralises = new Set();
     let plDernieresDonnees = null;
 
     function renderPl(d) {
@@ -2632,6 +2817,9 @@
                                 (${esc(d.periode.dateDebut)} → ${esc(d.periode.dateFin)}, ${esc(d.periode.nb_jours)} jours)
                             </h6>
                             <h2 class="text-${plColor} mb-0">${pl >= 0 ? '+' : ''}${esc(fmtMoney(pl))}</h2>
+                            <!-- Rempli apres le rendu par majDeltaJourPl(): l'ecart
+                                 avec le dernier PL fige, soit la journee seule. -->
+                            <div id="fin-pl-delta-jour" class="small mt-2"></div>
                             ${simulation ? `<div class="small text-muted mt-2">
                                 PL réel <strong class="text-${plColor0}">${esc(fmtMoney(d.pl || 0))}</strong>
                                 &nbsp;·&nbsp; écart <strong class="text-${ecart >= 0 ? 'success' : 'danger'}">${ecart >= 0 ? '+' : ''}${esc(fmtMoney(ecart))}</strong>
@@ -2745,6 +2933,10 @@
                 </table>
             </div>
         `;
+
+        // L'ecart avec le dernier PL fige, en asynchrone: il demande
+        // l'historique, et renderPl doit rester synchrone.
+        majDeltaJourPl(d);
 
         // Delegation apres le rendu: ce fichier est une IIFE, un onclick inline
         // ne trouverait pas la fonction. Un seul ecouteur pour tout le tableau,

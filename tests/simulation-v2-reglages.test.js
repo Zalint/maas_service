@@ -234,3 +234,120 @@ describe('deduplication de la famille', () => {
         expect(v.aEcrire[0].value).toBe('Poulet en détail,Cuisse de poulet');
     });
 });
+
+describe('calibration du coefficient P1/P2', () => {
+    beforeEach(() => { jest.clearAllMocks(); });
+
+    test('absente par defaut : le coefficient reste calcule en direct', async () => {
+        FinanceConfig.findAll.mockResolvedValue([]);
+        expect((await reglages.lireReglages()).coeffP1P2).toBeNull();
+    });
+
+    test('relue avec sa signature', async () => {
+        FinanceConfig.findAll.mockResolvedValue([{
+            key: 'simulation_coeff_p1_p2',
+            value: JSON.stringify({
+                valeur: 0.959, le: '2026-08-13T10:00:00.000Z', par: 'Saliou',
+                fenetre: '2026-05-01 → 2026-07-31', jours: 92
+            })
+        }]);
+        const c = (await reglages.lireReglages()).coeffP1P2;
+        expect(c).toEqual({
+            valeur: 0.959, le: '2026-08-13T10:00:00.000Z', par: 'Saliou',
+            fenetre: '2026-05-01 → 2026-07-31', jours: 92, dimanches: null
+        });
+    });
+
+    test('une valeur EFFACEE ne passe pas pour une valeur illisible', async () => {
+        // C'est ainsi que l'ecran annule une calibration: signaler une anomalie
+        // ferait douter d'un geste parfaitement legitime.
+        FinanceConfig.findAll.mockResolvedValue([{ key: 'simulation_coeff_p1_p2', value: '' }]);
+        const r = await reglages.lireReglages();
+        expect(r.coeffP1P2).toBeNull();
+        expect(r.avertissements.some((a) => a.includes('simulation_coeff_p1_p2'))).toBe(false);
+    });
+
+    test('un JSON casse degrade en direct, et le DIT', async () => {
+        FinanceConfig.findAll.mockResolvedValue([{ key: 'simulation_coeff_p1_p2', value: '{pas du json' }]);
+        const r = await reglages.lireReglages();
+        expect(r.coeffP1P2).toBeNull();
+        expect(r.avertissements.some((a) => a.includes('simulation_coeff_p1_p2'))).toBe(true);
+    });
+
+    test('une valeur hors bornes est refusee a la LECTURE aussi', async () => {
+        // Une ligne ecrite par une version anterieure, ou a la main en base,
+        // ne doit pas piloter la projection.
+        for (const v of [0.4, 3.5, 0, -1]) {
+            FinanceConfig.findAll.mockResolvedValue([
+                { key: 'simulation_coeff_p1_p2', value: JSON.stringify({ valeur: v }) }
+            ]);
+            expect((await reglages.lireReglages()).coeffP1P2).toBeNull();
+        }
+    });
+
+    test('les bornes de saisie sont celles du champ a l ecran', () => {
+        expect(reglages.valider({ coeffP1P2: { valeur: 0.5 } }).ok).toBe(true);
+        expect(reglages.valider({ coeffP1P2: { valeur: 3 } }).ok).toBe(true);
+        expect(reglages.valider({ coeffP1P2: { valeur: 0.49 } }).ok).toBe(false);
+        expect(reglages.valider({ coeffP1P2: { valeur: 3.01 } }).ok).toBe(false);
+        expect(reglages.valider({ coeffP1P2: { valeur: 'abc' } }).ok).toBe(false);
+        expect(reglages.valider({ coeffP1P2: [1.2] }).ok).toBe(false);
+    });
+
+    test('null efface, en ecrivant une valeur vide', () => {
+        const v = reglages.valider({ coeffP1P2: null });
+        expect(v.ok).toBe(true);
+        expect(v.aEcrire).toEqual([{ key: 'simulation_coeff_p1_p2', value: '' }]);
+    });
+
+    test('seuls six champs partent en base, et ils sont bornes', () => {
+        // Sans ce filtre, un client pourrait faire grossir la ligne de config
+        // a volonte - la colonne est en TEXT et n'oppose aucune limite.
+        const v = reglages.valider({
+            coeffP1P2: {
+                valeur: 1.2, par: 'x'.repeat(500), fenetre: 'y'.repeat(500),
+                jours: 92, dimanches: 'exclus', charge_utile: 'z'.repeat(9000)
+            }
+        });
+        const o = JSON.parse(v.aEcrire[0].value);
+        expect(Object.keys(o).sort()).toEqual(['dimanches', 'fenetre', 'jours', 'le', 'par', 'valeur']);
+        expect(o.par).toHaveLength(80);
+        expect(o.fenetre).toHaveLength(60);
+    });
+});
+
+describe('le reglage des dimanches accompagne la calibration', () => {
+    beforeEach(() => { jest.clearAllMocks(); });
+
+    test('les deux etats sont acceptes et relus', async () => {
+        for (const v of ['exclus', 'comptes']) {
+            const val = reglages.valider({ coeffP1P2: { valeur: 0.959, dimanches: v } });
+            expect(JSON.parse(val.aEcrire[0].value).dimanches).toBe(v);
+            FinanceConfig.findAll.mockResolvedValue([
+                { key: 'simulation_coeff_p1_p2', value: val.aEcrire[0].value }
+            ]);
+            expect((await reglages.lireReglages()).coeffP1P2.dimanches).toBe(v);
+        }
+    });
+
+    test('toute autre valeur est ramenee a null, jamais stockee telle quelle', () => {
+        // C'est un reglage a DEUX etats: l'ecran s'en sert pour decider si deux
+        // coefficients sont comparables. Un troisieme etat le ferait mentir.
+        for (const v of ['oui', '', 0, true, {}, 'EXCLUS']) {
+            const val = reglages.valider({ coeffP1P2: { valeur: 1, dimanches: v } });
+            expect(JSON.parse(val.aEcrire[0].value).dimanches).toBeNull();
+        }
+    });
+
+    test('une calibration anterieure a ce champ reste utilisable', async () => {
+        // Sans ce repli, une valeur enregistree avant cette version cesserait
+        // de piloter la projection pour une metadonnee absente.
+        FinanceConfig.findAll.mockResolvedValue([{
+            key: 'simulation_coeff_p1_p2',
+            value: JSON.stringify({ valeur: 0.959, par: 'ADMIN' })
+        }]);
+        const c = (await reglages.lireReglages()).coeffP1P2;
+        expect(c.valeur).toBe(0.959);
+        expect(c.dimanches).toBeNull();
+    });
+});
