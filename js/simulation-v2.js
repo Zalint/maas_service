@@ -526,18 +526,24 @@
      */
     function echelleParage(taux) {
         var t = Math.max(0, nb(taux));
-        var pas = t >= 10 ? 3 : 2;
+        var pasHaut = t >= 10 ? 3 : 2;
+        // COTE BAS, le pas se resserre. Avec un pas fixe de 2, un taux mesure a
+        // 3,96 % donnait trois valeurs negatives ramenees a zero; les
+        // dedupliquer raccourcissait la ligne et faisait GLISSER le taux hors
+        // du centre - la fonction ne tenait plus la promesse de ce commentaire.
+        // On repartit plutot les trois crans entre 0 et le taux: ils restent
+        // distincts, la ligne garde ses sept colonnes, et le taux applique
+        // reste au milieu.
+        var pasBas = Math.min(pasHaut, t / 3);
+        var arr = function (v) { return Math.round(Math.max(0, v) * 100) / 100; };
         var out = [];
-        for (var i = -3; i <= 3; i++) {
-            // La colonne du MILIEU porte le taux EXACT, non arrondi. Arrondi a
-            // 4 % quand le defaut vaut 3,96, elle aurait compte comme un levier
-            // actif des qu'on la clique - le scenario « je ne change rien »
-            // serait devenu impossible a retrouver.
-            out.push(i === 0 ? t : Math.max(0, Math.round((t + i * pas) * 100) / 100));
-        }
-        // Un taux bas colle plusieurs valeurs a zero: on ne garde qu'un zero,
-        // sinon la matrice repete trois fois la meme colonne.
-        return out.filter(function (v, i) { return i === 0 || v !== out[i - 1]; });
+        for (var i = -3; i < 0; i++) out.push(arr(t + i * pasBas));
+        // Le taux EXACT, non arrondi: arrondi a 4 % quand il vaut 3,96, cliquer
+        // la colonne du milieu aurait compte comme un levier actif et rendu le
+        // scenario « je ne change rien » introuvable.
+        out.push(t);
+        for (var j = 1; j <= 3; j++) out.push(arr(t + j * pasHaut));
+        return out;
     }
 
     function reinitGlobaux() {
@@ -1781,9 +1787,14 @@
             var bovin = nb(etat.contexte.parageBovin), ovin = nb(etat.contexte.parageOvin);
             var hautB = Math.min(99, bovin + ep), hautO = Math.min(99, ovin + ep);
             var basB = Math.max(0, bovin - ep), basO = Math.max(0, ovin - ep);
-            sensis.push({ lib: 'Parage +' + fmt(ep) + ' pts (bœuf ' + pct2(hautB) + ' %)',
+            // Le libelle nomme les DEUX taux, parce que l'effet deplace les
+            // deux. N'annoncer que le boeuf laissait attribuer a la seule
+            // espece bovine un chiffre qui porte aussi l'agneau.
+            sensis.push({ lib: 'Parage +' + fmt(ep) + ' pts (bœuf ' + pct2(hautB)
+                    + ' %, agneau ' + pct2(hautO) + ' %)',
                 effet: effetSurLaSuite(univSens, propSuite, { parBov: hautB, parOvi: hautO }) });
-            sensis.push({ lib: 'Parage −' + fmt(ep) + ' pts (bœuf ' + pct2(basB) + ' %)',
+            sensis.push({ lib: 'Parage −' + fmt(ep) + ' pts (bœuf ' + pct2(basB)
+                    + ' %, agneau ' + pct2(basO) + ' %)',
                 effet: effetSurLaSuite(univSens, propSuite, { parBov: basB, parOvi: basO }) });
         }
         if (sensis.length) {
