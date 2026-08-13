@@ -1612,10 +1612,23 @@ router.get('/simulation', async (req, res) => {
                 const v = r ? parseFloat(r.prix_vente) : NaN;
                 return Number.isFinite(v) && v > 0 ? v : null;
             };
+            // Le prix catalogue de CHAQUE produit, pas seulement des trois
+            // carcasses. L'ecran rangeait d'office tout produit ni bovin ni
+            // ovin dans la volaille: le Laxass, vendu 200 F, se voyait
+            // commissionne sur les 3 500 F du poulet - 105 F l'unite - et
+            // ressortait a -62 F de marge nette quand il en gagne 43.
+            const pvParProduit = {};
+            for (const r of rowsPv) {
+                const v = parseFloat(r.prix_vente);
+                if (Number.isFinite(v) && v > 0) {
+                    pvParProduit[normaliserNomProduit(r.produit)] = v;
+                }
+            }
             catalogueV2 = {
                 pv_boeuf: pvDe('boeuf'),
                 pv_agneau: pvDe('agneau'),
-                pv_poulet: pvDe('poulet')
+                pv_poulet: pvDe('poulet'),
+                par_produit: pvParProduit
             };
 
             // ---- Donnees de PROJECTION fin de mois (methode P1/P2).

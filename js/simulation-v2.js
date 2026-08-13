@@ -464,7 +464,10 @@
             pv: {
                 bovin: sim.catalogue ? sim.catalogue.pv_boeuf : null,
                 ovin: sim.catalogue ? sim.catalogue.pv_agneau : null,
-                volaille: sim.catalogue ? sim.catalogue.pv_poulet : null
+                volaille: sim.catalogue ? sim.catalogue.pv_poulet : null,
+                // Le prix catalogue de chaque produit qui en a un: c'est lui
+                // qui prime sur la carcasse de l'espece.
+                par_produit: (sim.catalogue && sim.catalogue.par_produit) || {}
             }
         };
         etat.base.avertissements = [];
@@ -1187,6 +1190,79 @@
         return M.effetsGlobaux({ produits: restants, contexte: ctxSansStock }, sc).total;
     }
 
+    /**
+     * L'ASSIETTE de la commission pour un produit: son prix de vente au
+     * catalogue fournisseur.
+     *
+     * Son propre prix d'abord, la carcasse de son espece ensuite, rien du
+     * tout en dernier. L'ancienne regle disait « bovin, sinon ovin, sinon
+     * VOLAILLE » - un `else` qui rangeait d'office dans le poulet tout ce
+     * qu'elle ne reconnaissait pas. Le Laxass, vendu 200 F, se voyait ainsi
+     * commissionne sur les 3 500 F de la carcasse de poulet: 105 F l'unite,
+     * de quoi le faire ressortir a -62 F de marge nette quand il en gagne 43.
+     * Un produit declare a perte, c'est un produit qu'on arrete.
+     *
+     * Les noms de decoupe (« Boeuf en detail ») n'ont pas de ligne au
+     * catalogue: c'est la carcasse qui porte le prix, d'ou le repli par
+     * espece. Les produits qui ont leur PROPRE ligne - Laxass, Foie, Cuisse
+     * de poulet - sont desormais servis par elle.
+     */
+    function prixCatalogueDe(p) {
+        var c = etat.contexte || {};
+        var pv = c.pv || {};
+        var propre = (pv.par_produit || {})[M.normaliserNom(p && p.nom)];
+        if (nb(propre) > 0) return nb(propre);
+        if (M.estBoeuf(p)) return pv.bovin;
+        if (M.estOvin(p)) return pv.ovin;
+        if (M.estVolaille(p)) return pv.volaille;
+        return null;
+    }
+
+    /**
+     * Les produits ABSENTS du catalogue fournisseur.
+     *
+     * Leur marge nette vaut leur marge brute, et c'est EXACT: un produit hors
+     * catalogue ne genere aucune commission. routes/finance-creances.js le
+     * tranche a la source - `if (!prix) continue;` - et ne facture rien.
+     *
+     * A NE PAS CONFONDRE avec la regle de lib/valorisation-stock.js, ou un
+     * prix d'ACHAT manquant fait retomber sur le prix de vente: la, il faut
+     * bien valoriser des kilos qui existent, donc une approximation vaut mieux
+     * qu'un zero. Ici la commission n'est pas inconnue, elle est NULLE -
+     * substituer le prix de vente inventerait une facture que MaaS n'emet pas.
+     *
+     * On les nomme quand meme, comme le stock nomme les siens: lire « marge
+     * nette » sans savoir qu'aucune commission n'a ete deduite laisse croire
+     * a une comparaison a armes egales avec les produits qui, eux, en portent.
+     */
+    function produitsHorsCatalogue(univers) {
+        var vus = {};
+        var out = [];
+        (univers || []).forEach(function (p) {
+            if (p.sans_vente) return;
+            if (prixCatalogueDe(p)) return;
+            var n = String(p.nom || '');
+            if (vus[n]) return;
+            vus[n] = true;
+            out.push(n);
+        });
+        return out;
+    }
+
+    /** Le bandeau qui NOMME les produits sans commission, ou rien. */
+    function noteHorsCatalogue(univers) {
+        var noms = produitsHorsCatalogue(univers);
+        if (!noms.length) return '';
+        return '<div class="small text-muted mb-2">'
+            + '<i class="bi bi-info-circle"></i> '
+            + noms.map(esc).join(', ')
+            + (noms.length > 1 ? ' sont absents' : ' est absent')
+            + ' du catalogue fournisseur : aucune commission n\'est facturée sur '
+            + (noms.length > 1 ? 'leurs livraisons' : 'ses livraisons')
+            + ', leur marge nette vaut donc leur marge brute. Ce n\'est pas une '
+            + 'estimation manquante — c\'est zéro.</div>';
+    }
+
     function margeApresCommission(p) {
         var m = margeBase(p);
         if (m === null) return null;
@@ -1194,8 +1270,10 @@
         var pv = c.pv || {};
         var taux = nb(c.commissionPct) / 100;
         if (!taux) return m;
-        var prixCatalogue = M.estBoeuf(p) ? pv.bovin
-            : (M.estOvin(p) ? pv.ovin : pv.volaille);
+        var prixCatalogue = prixCatalogueDe(p);
+        // Prix catalogue inconnu: on rend la marge BRUTE de parage plutot que
+        // d'inventer un cout. C'est la regle deja suivie ailleurs pour les
+        // prix manquants, et l'ecran signale cette part non chiffree.
         if (!prixCatalogue) return m;
         // Meme diviseur de parage que la marge elle-meme: le taux MESURE de
         // l'espece, pas le parametre. Deux diviseurs differents dans le meme
@@ -1896,6 +1974,7 @@
             var s0 = eq.seul;
             h += '<h6 class="small fw-medium mb-1">Revenir à l\'équilibre d\'ici le '
                 + esc(ca.finMois) + ' — ' + eq.joursRestants + ' jours restants</h6>'
+                + noteHorsCatalogue(universEq)
                 + '<div class="alert alert-light border py-2 small mb-2">'
                 + 'Manque à combler : <strong>' + esc(fmt(eq.manque)) + ' F</strong>. '
                 + 'Sur ces ' + eq.joursRestants + ' jours, on attend encore <strong>'

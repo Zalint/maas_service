@@ -420,3 +420,37 @@ describe('parage MESURE par espece, a la place du parametre fixe', () => {
         expect(e.det.parageRefO).toBe(5);
     });
 });
+
+describe('la volaille se NOMME, elle n est pas le reste du monde', () => {
+    // L'assiette de la commission disait « bovin, sinon ovin, sinon VOLAILLE ».
+    // Ce `else` rangeait d'office dans le poulet tout ce qu'il ne reconnaissait
+    // pas: le Laxass, vendu 200 F, se voyait commissionne sur les 3 500 F de la
+    // carcasse de poulet - 105 F l'unite - et ressortait a -62 F de marge nette
+    // quand il en gagne 37. Un produit declare a perte, c'est un produit qu'on
+    // arrete.
+    test.each([
+        ['Poulet en détail', true], ['Poulet en gros', true], ['Volaille', true],
+        ['Laxass', false], ['Foie', false], ['Cuisse de poulet', false],
+        ['Boeuf en détail', false], ['Agneau', false], ['Dorade', false]
+    ])('%s -> volaille: %s', (nom, attendu) => {
+        expect(M.estVolaille({ nom })).toBe(attendu);
+    });
+
+    test('les trois familles restent exclusives', () => {
+        for (const nom of ['Boeuf en détail', 'Veau', 'Agneau', 'Mouton', 'Poulet en gros']) {
+            const p = { nom };
+            const n = [M.estBoeuf(p), M.estOvin(p), M.estVolaille(p)].filter(Boolean).length;
+            expect(n).toBe(1);
+        }
+    });
+
+    test('normaliserNom est expose et accorde avec le serveur', () => {
+        // Le client cherche le prix catalogue par nom normalise; une
+        // normalisation divergente ferait echouer le lookup en silence et
+        // ramenerait le repli par famille.
+        const { normaliserNom } = require('../lib/parage');
+        for (const nom of ['Laxass', 'Déchet 400', 'Cuisse de poulet', 'Boeuf']) {
+            expect(M.normaliserNom(nom)).toBe(normaliserNom(nom));
+        }
+    });
+});

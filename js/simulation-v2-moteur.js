@@ -73,6 +73,10 @@
     /** Memes familles que le serveur: bovine par regex, ovine par prefixe. */
     function estBoeuf(p) { return /^(boeuf|veau)/.test(norm(p && p.nom)); }
     function estOvin(p) { return /^(agneau|mouton)/.test(norm(p && p.nom)); }
+    // La volaille se NOMME, elle n'est plus le fourre-tout de « ni bovin ni
+    // ovin ». Ce sous-entendu faisait commissionner le Laxass, vendu 200 F,
+    // sur les 3 500 F de la carcasse de poulet.
+    function estVolaille(p) { return /^(poulet|volaille|poule|dinde)/.test(norm(p && p.nom)); }
 
     function levierDe(scenario, nom) {
         var l = scenario && scenario.leviers && scenario.leviers[nom];
@@ -421,6 +425,8 @@
     return {
         estBoeuf: estBoeuf,
         estOvin: estOvin,
+        estVolaille: estVolaille,
+        normaliserNom: norm,
         // Expose pour que l'ecran affiche le cout REELLEMENT soustrait
         // (prix carcasse / (1 - parage)) a cote du prix carcasse, avec le
         // MEME diviseur que la marge - le recalculer la-bas en ferait une
