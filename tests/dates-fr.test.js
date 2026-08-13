@@ -79,3 +79,41 @@ describe('ecartEnJours', () => {
         expect(d.ecartEnJours(new Date(), new Date())).toBeNull();
     });
 });
+
+describe('les dates qui ont la FORME sans exister', () => {
+    // Le motif ISO ne dit rien du calendrier. Une date impossible qui passe se
+    // propage jusque dans une soustraction de jours, ou elle rend un ecart
+    // faux plutot que le null qui aurait alerte.
+    test('le 30 fevrier est refuse', () => {
+        expect(d.jourISO('2026-02-30')).toBe('');
+        expect(d.ecartEnJours('2026-02-01', '2026-02-30')).toBeNull();
+    });
+
+    test('le 29 fevrier est refuse hors annee bissextile, accepte dedans', () => {
+        expect(d.jourISO('2027-02-29')).toBe('');   // 2027 n'est pas bissextile
+        expect(d.jourISO('2028-02-29')).toBe('2028-02-29');
+        // 1900 est divisible par 4 mais PAS bissextile: siecle non divisible
+        // par 400. C'est le cas que les implementations naives ratent.
+        expect(d.jourISO('1900-02-29')).toBe('');
+        expect(d.jourISO('2000-02-29')).toBe('2000-02-29');
+    });
+
+    test('le 31 d un mois de 30 jours est refuse', () => {
+        for (const m of ['04', '06', '09', '11']) {
+            expect(d.jourISO(`2026-${m}-31`)).toBe('');
+        }
+        for (const m of ['01', '03', '05', '07', '08', '10', '12']) {
+            expect(d.jourISO(`2026-${m}-31`)).toBe(`2026-${m}-31`);
+        }
+    });
+
+    test('le mois 00 ou 13, et le jour 00, sont refuses', () => {
+        expect(d.jourISO('2026-00-10')).toBe('');
+        expect(d.jourISO('2026-13-10')).toBe('');
+        expect(d.jourISO('2026-08-00')).toBe('');
+    });
+
+    test('une date valide reste intacte, instant compris', () => {
+        expect(d.jourISO('2026-08-31T23:00:00Z')).toBe('2026-08-31');
+    });
+});

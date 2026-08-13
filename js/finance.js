@@ -2277,14 +2277,29 @@
     // La liste des PL figes, gardee en memoire: renderPl est rappele a chaque
     // neutralisation de poste, et l'historique ne bouge pas entre deux clics.
     let plSnapshotsListe = null;
+    // Compteur d'invalidations. Une requete partie AVANT une invalidation ne
+    // doit pas reposer son resultat apres elle: figer le PL du jour vide le
+    // cache, et une reponse en vol depuis dix secondes y remettrait la liste
+    // d'avant - donc un historique amputé du snapshot qu'on vient de creer.
+    let plSnapshotsGen = 0;
+
+    function invaliderSnapshotsPl() {
+        plSnapshotsListe = null;
+        plSnapshotsGen += 1;
+    }
 
     async function listeSnapshotsPl(force) {
         if (!force && plSnapshotsListe) return plSnapshotsListe;
+        const gen = plSnapshotsGen;
         const res = await fetch('/api/finance/pl/snapshots', { credentials: 'include' });
         const j = await res.json();
         if (!j.success) throw new Error(j.error || 'Erreur');
-        plSnapshotsListe = j.data || [];
-        return plSnapshotsListe;
+        const rows = j.data || [];
+        // Le resultat sert TOUJOURS a l'appelant - il vient de l'obtenir, il
+        // est frais pour lui. Seule la mise en cache est abandonnee quand une
+        // invalidation est passee entre-temps.
+        if (gen === plSnapshotsGen) plSnapshotsListe = rows;
+        return rows;
     }
 
     /**
@@ -2304,19 +2319,38 @@
         // definitions du meme mot.
         if (plPostesNeutralises.size > 0) return;
         try {
-            const rows = await listeSnapshotsPl(false);
             const debut = isoDeSnapshot(d.periode.dateDebut);
             const fin = isoDeSnapshot(d.periode.dateFin);
+            if (!debut || !fin) return;
+            const estime = !!(d.stock && d.stock.soir_estime === true);
+            const noteEstime = estime
+                ? '<div class="text-muted fst-italic">stock du soir estimé : ce delta bougera au comptage.</div>'
+                : '';
+
+            // PREMIER JOUR DE LA PERIODE: son cumul EST sa journee, il n'y a
+            // rien a soustraire. Meme exception que la colonne du tableau, qui
+            // affiche bien la valeur du 1er - sans ce cas, la carte restait
+            // muette ce jour-la pendant que le tableau, lui, chiffrait.
+            if (debut === fin) {
+                const v = parseFloat(d.pl) || 0;
+                cible.innerHTML = `
+                    <span class="text-muted">Journée du ${esc(fmtDateFr(fin))} :</span>
+                    <strong class="text-${v >= 0 ? 'success' : 'danger'}">${v >= 0 ? '+' : ''}${esc(fmtMoney(v))}</strong>
+                    <div class="text-muted">premier jour de la période : le cumul est la journée</div>
+                    ${noteEstime}`;
+                return;
+            }
+
+            const rows = await listeSnapshotsPl(false);
             // MEME regle que la colonne « PL du jour » du tableau: une seule
             // definition de « le precedent », donc deux ecrans qui ne peuvent
             // pas se contredire.
-            const prec = (debut && fin) ? snapshotPrecedent(rows, fin, debut) : null;
+            const prec = snapshotPrecedent(rows, fin, debut);
             if (!prec) return;
             const datePrec = isoDeSnapshot(prec.date);
             const delta = (parseFloat(d.pl) || 0) - (parseFloat(prec.pl) || 0);
             const jours = joursEntreIso(datePrec, fin);
             const couleur = delta >= 0 ? 'success' : 'danger';
-            const estime = !!(d.stock && d.stock.soir_estime === true);
             cible.innerHTML = `
                 <span class="text-muted">${jours === 1
                     ? 'Journée du ' + esc(fmtDateFr(fin))
@@ -2324,7 +2358,7 @@
                 <strong class="text-${couleur}">${delta >= 0 ? '+' : ''}${esc(fmtMoney(delta))}</strong>
                 <div class="text-muted">écart avec le PL figé du ${esc(fmtDateFr(datePrec))}
                     (${esc(fmtMoney(prec.pl))})</div>
-                ${estime ? '<div class="text-muted fst-italic">stock du soir estimé : ce delta bougera au comptage.</div>' : ''}`;
+                ${noteEstime}`;
         } catch (e) {
             // Un complement d'information ne doit pas abimer le PL lui-meme.
             cible.innerHTML = '';
@@ -2360,7 +2394,7 @@
             }
             // Le PL du jour se lit contre le dernier snapshot: en garder un
             // perime ferait comparer l'ecran a l'avant-dernier.
-            plSnapshotsListe = null;
+            invaliderSnapshotsPl();
             // Panneau historique ouvert: il montre tout de suite la nouvelle ligne.
             const panel = document.getElementById('fin-pl-historique-panel');
             if (panel && panel.style.display !== 'none') chargerHistoriquePl();

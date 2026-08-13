@@ -2213,8 +2213,24 @@
         }
         var btnCalX = document.getElementById('sim2-calibrer-effacer');
         if (btnCalX) {
+            // On CONFIRME avant d'effacer: la calibration vaut pour tout le
+            // point de vente, elle porte une signature qu'on ne retrouvera
+            // pas, et le bouton est a un centimetre de « Recalibrer ». Un clic
+            // de travers ne doit pas defaire une decision prise par quelqu'un
+            // d'autre, un autre jour.
             btnCalX.addEventListener('click', function () {
-                enregistrerCalibration(null, btnCalX);
+                var question = 'Supprimer la calibration enregistrée ? Le coefficient '
+                    + 'repassera au calcul en direct, pour tout le point de vente. '
+                    + 'La date et l\'auteur de la calibration actuelle seront perdus.';
+                if (typeof showConfirmModal === 'function') {
+                    showConfirmModal(question, {
+                        title: 'Effacer la calibration', okLabel: 'Effacer', okVariant: 'danger'
+                    }).then(function (ok) {
+                        if (ok) enregistrerCalibration(null, btnCalX);
+                    });
+                } else if (confirm(question)) {
+                    enregistrerCalibration(null, btnCalX);
+                }
             });
         }
 

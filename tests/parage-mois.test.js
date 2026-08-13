@@ -7,8 +7,6 @@
  * recopier la logique: une copie diverge, et c'est une duplication de rendu qui
  * avait deja fait afficher a ce tableau 11 colonnes sous un en-tete de 15.
  */
-const fs = require('fs');
-const path = require('path');
 
 // La fonction lit desormais window.parageLib - la formule du taux, ecrite une
 // seule fois dans lib/parage.js et servie au navigateur par index.html. En
@@ -16,27 +14,19 @@ const path = require('path');
 // balise <script> en production. C'est le cablage reel, pas un bouchon.
 require('../lib/parage');
 
-/** Le texte d'une fonction de premier niveau, de sa signature a son '}' seul. */
-function extraire(source, signature) {
-    const debut = source.indexOf(signature);
-    if (debut === -1) throw new Error(`${signature} introuvable dans script.js`);
-    const fin = source.indexOf('\n}', debut) + 2;
-    return source.slice(debut, fin);
-}
+const { chargerDepuisScript } = require('./helpers/extraire-fonction');
 
-function charger() {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
-    // afficherParageMois APPELLE afficherContributeursParage, qui liste les
-    // produits composant chaque taux. N'extraire que la premiere rendait une
-    // fonction qui levait ReferenceError des le premier appel: l'extraction
-    // doit suivre les dependances, sinon elle teste un code qui n'existe pas.
-    const code = extraire(source, 'function afficherContributeursParage(parageMois, kg)')
-        + '\n' + extraire(source, 'function afficherParageMois(parageMois)');
-    // eslint-disable-next-line no-new-func
-    return new Function(`${code}\nreturn afficherParageMois;`)();
-}
-
-const afficher = charger();
+// afficherParageMois APPELLE afficherContributeursParage, qui liste les
+// produits composant chaque taux. N'extraire que la premiere rendait une
+// fonction qui levait ReferenceError des le premier appel: l'extraction doit
+// suivre les dependances, sinon elle teste un code qui n'existe pas.
+const afficher = chargerDepuisScript(
+    [
+        'function afficherContributeursParage(parageMois, kg)',
+        'function afficherParageMois(parageMois)'
+    ],
+    'afficherParageMois'
+);
 
 function poser() {
     // #parage-contributeurs manquait: afficherContributeursParage() sortait
@@ -298,5 +288,38 @@ describe('composition des taux: quels produits les portent', () => {
         expect(zone().innerHTML).not.toBe('');
         afficher(null);
         expect(zone().innerHTML).toBe('');
+    });
+});
+
+describe('le nom du produit est ECHAPPE', () => {
+    // Il vient de la base et s'edite en administration: rien ne garantit qu'il
+    // ne contient ni esperluette ni chevron. Interpole tel quel, il sortait du
+    // gabarit et faisait interpreter du balisage.
+    const zone = () => document.getElementById('parage-contributeurs');
+
+    test('les chevrons ne produisent pas de balise', () => {
+        afficher({
+            bovin: {
+                vendu: 5, theorique: 10,
+                parProduit: { '<img src=x onerror=alert(1)>': { theorique: 10, vendu: 5 } }
+            },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        expect(zone().querySelector('img')).toBeNull();
+        // Le nom reste LISIBLE, il est seulement inerte.
+        expect(zone().querySelector('tbody tr td').textContent)
+            .toBe('<img src=x onerror=alert(1)>');
+    });
+
+    test('esperluettes et guillemets survivent au rendu', () => {
+        afficher({
+            bovin: {
+                vendu: 1, theorique: 2,
+                parProduit: { 'Foie & rognons "premium"': { theorique: 2, vendu: 1 } }
+            },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        expect(zone().querySelector('tbody tr td').textContent)
+            .toBe('Foie & rognons "premium"');
     });
 });

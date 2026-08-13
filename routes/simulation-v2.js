@@ -87,7 +87,14 @@ router.get('/reglages', async (req, res) => {
 /**
  * PUT /api/simulation-v2/reglages
  * Body: { actif?: boolean, famillePoulet?: string[]|string,
- *         prixPouletDefaut?: number, produitsSuivis?: string[]|string }
+ *         prixPouletDefaut?: number, produitsSuivis?: string[]|string,
+ *         coeffP1P2?: {valeur: number, fenetre?: string, jours?: number,
+ *                      dimanches?: 'exclus'|'comptes'} | number | null }
+ *
+ * coeffP1P2 accepte trois formes: l'objet de calibration ci-dessus, une
+ * valeur numerique nue - normalisee en {valeur} juste en dessous - ou null,
+ * qui EFFACE la calibration et rend la main au calcul en direct. Les champs
+ * `par` et `le` sont poses par cette route et ignores s'ils sont envoyes.
  */
 router.put('/reglages', adminStrict, async (req, res) => {
     try {

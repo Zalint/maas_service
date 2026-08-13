@@ -4,15 +4,28 @@
  * @jest-environment node
  */
 
-jest.mock('../db/models', () => ({ FinanceConfig: { findOne: jest.fn(), upsert: jest.fn() } }));
+// La bascule ecrit sous VERROU: elle cree la ligne si besoin, la relit avec
+// lock: t.LOCK.UPDATE, puis la met a jour - le tout dans une transaction. Le
+// faux sequelize execute le callback tel quel, ce qui laisse les assertions
+// porter sur ce qui a REELLEMENT ete ecrit.
+jest.mock('../db/models', () => ({
+    FinanceConfig: {
+        findOne: jest.fn(), findOrCreate: jest.fn(), update: jest.fn()
+    },
+    sequelize: { transaction: (fn) => fn({ LOCK: { UPDATE: 'UPDATE' } }) }
+}));
 
 const { FinanceConfig } = require('../db/models');
 const lib = require('../lib/reconciliation-exclusions');
 
 const poser = (valeur) => FinanceConfig.findOne.mockResolvedValue(valeur === null ? null : { value: valeur });
-const ecrit = () => JSON.parse(FinanceConfig.upsert.mock.calls.at(-1)[0].value);
+const ecrit = () => JSON.parse(FinanceConfig.update.mock.calls.at(-1)[0].value);
 
-beforeEach(() => { jest.clearAllMocks(); FinanceConfig.upsert.mockResolvedValue([{}, true]); });
+beforeEach(() => {
+    jest.clearAllMocks();
+    FinanceConfig.findOrCreate.mockResolvedValue([{}, false]);
+    FinanceConfig.update.mockResolvedValue([1]);
+});
 
 describe('lecture', () => {
     test('aucune ligne en base: aucune exclusion', async () => {
@@ -111,14 +124,14 @@ describe('bascule', () => {
             const r = await lib.basculerExclusion({ mois, cle: 'x|y', exclure: true });
             expect(r.ok).toBe(false);
         }
-        expect(FinanceConfig.upsert).not.toHaveBeenCalled();
+        expect(FinanceConfig.update).not.toHaveBeenCalled();
     });
 
     test('une cle vide ou demesuree est refusee', async () => {
         poser(null);
         expect((await lib.basculerExclusion({ mois: '08-2026', cle: '', exclure: true })).ok).toBe(false);
         expect((await lib.basculerExclusion({ mois: '08-2026', cle: 'x'.repeat(200), exclure: true })).ok).toBe(false);
-        expect(FinanceConfig.upsert).not.toHaveBeenCalled();
+        expect(FinanceConfig.update).not.toHaveBeenCalled();
     });
 
     test('le plafond par mois est oppose, pas silencieusement depasse', async () => {
@@ -126,22 +139,24 @@ describe('bascule', () => {
         poser(JSON.stringify({ '08-2026': pleine }));
         const r = await lib.basculerExclusion({ mois: '08-2026', cle: 'nouvelle|Mbao', exclure: true });
         expect(r.ok).toBe(false);
-        expect(FinanceConfig.upsert).not.toHaveBeenCalled();
+        expect(FinanceConfig.update).not.toHaveBeenCalled();
     });
 
     test('les mois les plus anciens sortent quand la liste deborde', async () => {
         // Sans purge, la ligne grossit indefiniment: personne ne reintegrera a
         // la main une journee de 2024 pour faire de la place.
+        // La fixture est derivee de la constante, avec UN mois de trop: figer
+        // 60 ici ferait passer ce test au vert le jour ou le plafond bougerait.
         const vieux = {};
-        for (let a = 2020; a < 2025; a++) {
-            for (let m = 1; m <= 12; m++) {
-                vieux[String(m).padStart(2, '0') + '-' + a] = [{ cle: `x|${a}${m}`, par: null, le: null }];
-            }
+        for (let i = 0; i <= lib.MAX_MOIS; i++) {
+            const a = 2020 + Math.floor(i / 12);
+            const m = String((i % 12) + 1).padStart(2, '0');
+            vieux[m + '-' + a] = [{ cle: `x|${a}${m}`, par: null, le: null }];
         }
         poser(JSON.stringify(vieux));
         await lib.basculerExclusion({ mois: '08-2026', cle: '13/08/2026|Mbao', exclure: true });
         const apres = ecrit();
-        expect(Object.keys(apres).length).toBeLessThanOrEqual(60);
+        expect(Object.keys(apres).length).toBeLessThanOrEqual(lib.MAX_MOIS);
         // Le mois qu'on vient d'ecrire survit, le plus ancien non.
         expect(apres['08-2026']).toBeDefined();
         expect(apres['01-2020']).toBeUndefined();

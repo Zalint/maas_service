@@ -2,18 +2,18 @@
 // les caches dont le nom differe: sans ce bump, les anciennes URL versionnees
 // (script.js?v=..., pos.js?v=...) resteraient stockees indefiniment, aucune
 // regle ne les evincant.
-const CACHE_NAME = 'mata-pos-v81';
+const CACHE_NAME = 'mata-pos-v82';
 const urlsToCache = [
   '/pos.html',
   '/pos.css',
   '/pos-mobile.css',
   '/pos.js',
   '/pos-modal-details.js',
-  '/lib/dates-fr.js?v=20260813-dates',
-  '/js/finance.js?v=20260814-revue',
+  '/lib/dates-fr.js?v=20260814-revue2',
+  '/js/finance.js?v=20260814-revue2',
   '/js/simulation-v2-moteur.js?v=20260813-sim-v4',
   '/js/simulation-v2-projection.js?v=20260813-sim-v4',
-  '/js/simulation-v2.js?v=20260814-revue',
+  '/js/simulation-v2.js?v=20260814-revue2',
   'https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css',
   'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css',
   'https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js',

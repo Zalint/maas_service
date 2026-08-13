@@ -10,25 +10,15 @@
  * Comme parage-mois.test.js, on charge la VRAIE fonction depuis script.js par
  * extraction plutot que d'en recopier la logique: une copie diverge.
  */
-const fs = require('fs');
-const path = require('path');
+const { chargerDepuisScript } = require('./helpers/extraire-fonction');
 
-function extraire(source, signature) {
-    const debut = source.indexOf(signature);
-    if (debut === -1) throw new Error(`${signature} introuvable dans script.js`);
-    const fin = source.indexOf('\n}', debut) + 2;
-    return source.slice(debut, fin);
-}
-
-function charger() {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
-    const code = extraire(source, 'function cleExclusion(dateStr, pointVente)')
-        + '\n' + extraire(source, 'function agregerReconciliationMois(lignes, exclusions)');
-    // eslint-disable-next-line no-new-func
-    return new Function(`${code}\nreturn { agreger: agregerReconciliationMois, cle: cleExclusion };`)();
-}
-
-const { agreger, cle } = charger();
+const { agreger, cle } = chargerDepuisScript(
+    [
+        'function cleExclusion(dateStr, pointVente)',
+        'function agregerReconciliationMois(lignes, exclusions)'
+    ],
+    '{ agreger: agregerReconciliationMois, cle: cleExclusion }'
+);
 
 /** Une journee mesurable: du theorique, du vendu, et un ratio non nul. */
 const jour = (date, pv, opts = {}) => ({

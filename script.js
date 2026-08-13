@@ -159,6 +159,11 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes en millisecondes
 // point de vente auquel le serveur ne lui donne pas acces.
 const CACHE_STORAGE_PREFIXE = 'reconciliation-mois-cache';
 
+// A INCREMENTER des que la forme d'une entree change. sessionStorage survit au
+// deploiement: sans ce numero, une entree ecrite par la version d'avant serait
+// relue par celle d'apres, qui n'y trouverait pas ce qu'elle attend.
+const CACHE_VERSION = 2;
+
 function identiteCache() {
     return String((window.currentUser || {}).username || '');
 }
@@ -183,9 +188,17 @@ function assurerCacheRestaure() {
         const brut = JSON.parse(sessionStorage.getItem(cleStockageCache()) || '{}');
         Object.keys(brut).forEach((k) => {
             const e = brut[k];
-            if (e && e.timestamp && (Date.now() - e.timestamp) < CACHE_DURATION) {
-                reconciliationCache.set(k, e);
-            }
+            // La FORME est verifiee, pas seulement la fraicheur. Ces lignes
+            // alimentent desormais tous les chiffres du mois: une entree
+            // ecrite par une version anterieure - le champ `totaux` y vivait
+            // encore - ou tronquee par un quota doit repartir au calcul, pas
+            // produire des totaux a partir d'une structure qu'on ne reconnait
+            // plus. Le numero de version rend ce refus explicite plutot que
+            // dependant de ce qui plante en premier.
+            if (!e || e.version !== CACHE_VERSION) return;
+            if (!e.timestamp || (Date.now() - e.timestamp) >= CACHE_DURATION) return;
+            if (!Array.isArray(e.data)) return;
+            reconciliationCache.set(k, e);
         });
     } catch (e) {
         console.warn('Cache de reconciliation illisible:', e && e.message);
@@ -9992,11 +10005,9 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // --- Réinitialiser l'estimation ---
         afficherParageMois(null); // tiret, pas le taux du mois precedent
 
-        // --- Initialiser les variables de calcul des totaux ---
-        let totalVentesTheoriquesMois = 0;
-        let totalVentesSaisiesMois = 0;
-        let totalCreancesMois = 0;
-        let totalVersementsMois = 0;
+        // Les lignes calculees, seule matiere premiere des metriques du mois:
+        // agregerReconciliationMois() en tire les totaux ET les deux parages,
+        // au chargement comme au clic sur une case.
         const lignesCalculees = [];
         // Parage cumule du mois: on somme les KILOS, pas les pourcentages.
         // Moyenner les taux journaliers donnerait le meme poids a une journee
@@ -10291,14 +10302,12 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // Les lignes CALCULEES deviennent la source des metriques du mois:
         // l'agregateur les relit, en sautant celles qu'on a exclues, et
         // repeint totaux et cartes. Meme chemin au chargement et au clic.
+        // L'agregation elle-meme est faite par appliquerExclusionsReconciliation()
+        // plus bas: UN SEUL chemin qui pose les totaux et repeint les cartes,
+        // que la page vienne de charger ou qu'une case change. La faire ici
+        // AUSSI, dans quatre variables aussitot reecrites par cet appel,
+        // n'ajoutait qu'un second endroit ou la regle pouvait diverger.
         window.__lignesReconciliationMois = lignesCalculees;
-        const agr = agregerReconciliationMois(lignesCalculees, lireExclusions());
-        const parageMois = agr.parage;
-        totalVentesTheoriquesMois = agr.totaux.ventesTheoriques;
-        totalVentesSaisiesMois = agr.totaux.ventesSaisies;
-        totalCreancesMois = agr.totaux.creances;
-        totalVersementsMois = agr.totaux.versements;
-        afficherParageMois(parageMois);
 
 
         // If after checking all days, no data was found, display a message
@@ -10318,12 +10327,9 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                   afficherParageMois(null); // tiret, pas le taux du mois precedent
 
         } else {
-            // --- Mettre à jour les totaux affichés si des données existent ---
-            if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(totalVentesTheoriquesMois);
-            if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(totalVentesSaisiesMois);
-            if (totalCreancesEl) totalCreancesEl.textContent = formatMonetaire(totalCreancesMois);
-            if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(totalVersementsMois);
-            // Coche et grise les lignes deja exclues, et affiche leur compte.
+            // Agrege sur les lignes RETENUES, pose les quatre totaux, repeint
+            // les deux cartes de parage, coche et grise les lignes exclues et
+            // affiche leur compte. C'est le seul endroit ou tout cela se fait.
             appliquerExclusionsReconciliation();
         }
 
@@ -10336,6 +10342,7 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // finirait par relire. agregerReconciliationMois() le recalcule sur ces
         // lignes, sans appel reseau.
         const cacheData = {
+            version: CACHE_VERSION,
             data: lignesCalculees,
             timestamp: Date.now()
         };
@@ -10359,13 +10366,18 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // l'ecran restait vide sans jamais dire pourquoi.
         const tableBody = document.querySelector('#reconciliation-mois-table tbody');
         if (!tableBody) return;
-        tableBody.innerHTML = `
-            <tr>
-                <td colspan="16" class="text-center text-danger">
-                    Une erreur majeure est survenue: ${error.message}
-                </td>
-            </tr>
-        `;
+        // textContent et non innerHTML: error.message peut porter du texte
+        // venu du serveur ou d'une reponse tierce. L'injecter dans un gabarit
+        // le ferait interpreter comme du balisage - dans le message d'erreur,
+        // c'est-a-dire a l'endroit le moins surveille de l'ecran.
+        tableBody.innerHTML = '';
+        const ligneErreur = document.createElement('tr');
+        const celluleErreur = document.createElement('td');
+        celluleErreur.colSpan = 16;
+        celluleErreur.className = 'text-center text-danger';
+        celluleErreur.textContent = `Une erreur majeure est survenue: ${error.message}`;
+        ligneErreur.appendChild(celluleErreur);
+        tableBody.appendChild(ligneErreur);
         // --- Réinitialiser les totaux en cas d'erreur majeure ---
         // Re-interroges ici pour la meme raison que le tbody: ces constantes
         // vivent dans le try et sont invisibles du catch.
@@ -10444,10 +10456,16 @@ function afficherContributeursParage(parageMois, kg) {
         // que les ventes sortent sous les noms de decoupe ("Boeuf en detail",
         // 355 kg). Les deux colonnes ne s'alignent donc pas produit par
         // produit, et signaler cet ecart aurait appris a ignorer l'alerte.
+        // Le nom du produit vient de la base et s'edite en administration:
+        // rien ne garantit qu'il ne contient pas d'esperluette ni de chevron.
+        // Les kilos et la part, eux, sont produits ici a partir de nombres.
+        const echapper = (s) => String(s).replace(/[&<>"']/g, (c) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
         const lignes = noms.map((n) => {
             const part = total > 0 ? (pp[n].theorique / total) * 100 : 0;
             return '<tr>'
-                + `<td>${n}</td>`
+                + `<td>${echapper(n)}</td>`
                 + `<td class="text-end">${kg(pp[n].theorique)}</td>`
                 + `<td class="text-end">${kg(pp[n].vendu || 0)}</td>`
                 + `<td class="text-end text-muted">${part.toFixed(0)} %</td></tr>`;
@@ -10613,16 +10631,10 @@ function afficherParageMois(parageMois) {
  * recalculer, puis cocher une case, ecrivait l'exclusion sous le mois affiche
  * au menu et non sous celui des lignes a l'ecran.
  */
-const exclusionsEtat = { mois: '', ensemble: new Set(), detail: new Map() };
+const exclusionsEtat = { mois: '', ensemble: new Set(), detail: new Map(), echec: '' };
 
 function cleExclusion(dateStr, pointVente) {
     return String(dateStr) + '|' + String(pointVente);
-}
-
-function moisCourantReconciliation() {
-    const m = document.getElementById('mois-reconciliation');
-    const a = document.getElementById('annee-reconciliation');
-    return (m && a) ? (m.value + '-' + a.value) : '';
 }
 
 /** Les exclusions du mois CHARGE, jamais celles du menu deroulant courant. */
@@ -10634,13 +10646,16 @@ function lireExclusions() {
  * Recharge les exclusions du serveur pour un mois donne, et FIGE ce mois.
  *
  * Un echec ne bloque pas l'ecran: on repart d'aucune exclusion, l'etat par
- * defaut, et on le signale. Mieux vaut un total qui compte tout - et qui le
- * dit - qu'un ecran vide.
+ * defaut. Mais il se DIT, en toutes lettres et pas seulement dans la console:
+ * un mois dont les exclusions n'ont pas pu etre lues affiche exactement les
+ * memes totaux qu'un mois sans exclusion. Se taire laisserait croire que le
+ * 13 aout est bien pris en compte alors qu'il ne l'est pas.
  */
 async function chargerExclusionsReconciliation(mois) {
     exclusionsEtat.mois = String(mois || '');
     exclusionsEtat.ensemble = new Set();
     exclusionsEtat.detail = new Map();
+    exclusionsEtat.echec = '';
     try {
         const res = await fetch('/api/reconciliation/exclusions', { credentials: 'include' });
         const j = await res.json();
@@ -10650,7 +10665,11 @@ async function chargerExclusionsReconciliation(mois) {
             exclusionsEtat.detail.set(e.cle, e);
         });
     } catch (e) {
-        console.warn('Exclusions de reconciliation illisibles:', e && e.message);
+        const motif = (e && e.message) || 'erreur inconnue';
+        console.warn('Exclusions de reconciliation illisibles:', motif);
+        exclusionsEtat.echec = 'Exclusions non chargées (' + motif
+            + ') : les totaux ci-dessous comptent TOUTES les journées.';
+        if (typeof showToast === 'function') showToast(exclusionsEtat.echec, 'danger');
     }
     return exclusionsEtat.ensemble;
 }
@@ -10780,10 +10799,16 @@ function appliquerExclusionsReconciliation() {
             .map((e) => e.par + (e.le ? ' le ' + String(e.le).slice(8, 10)
                 + '/' + String(e.le).slice(5, 7) : ''));
         const auteurs = Array.from(new Set(qui));
+        // « ligne » et non « journée »: la cle porte la date ET le point de
+        // vente. Sur un mois a plusieurs points de vente, ecarter une ligne
+        // n'ecarte pas la journee - annoncer « 1 journée exclue » ferait
+        // chercher un ecart la ou il n'y en a pas.
         info.textContent = r.exclues
-            ? r.exclues + ' journée(s) exclue(s) des totaux et du parage'
+            ? r.exclues + ' ligne(s) exclue(s) des totaux et du parage'
               + (auteurs.length ? ' — par ' + auteurs.join(', ') : '')
-            : '';
+            // Un echec de chargement produit zero exclusion, comme un mois
+            // sans exclusion: sans ce message, les deux sont indiscernables.
+            : (exclusionsEtat.echec || '');
     }
     return r;
 }
@@ -10803,7 +10828,7 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
     chk.type = 'checkbox';
     chk.className = 'form-check-input recon-exclure';
     chk.dataset.cle = cleExclusion(dateStr, pointVente);
-    chk.title = 'Exclure cette journée des totaux et du parage du mois';
+    chk.title = 'Exclure cette ligne (cette date, ce point de vente) des totaux et du parage du mois';
     chk.addEventListener('change', function () {
         basculerExclusionReconciliation(chk.dataset.cle, chk.checked, chk);
     });
