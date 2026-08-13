@@ -76,6 +76,24 @@
         enAttente: false,
         debug: false,
         chargement: false,
+        // Lire le resultat SANS la variation de stock.
+        //
+        // ATTENTION a ce que ce mode veut dire, et a ce qu'il ne veut PAS dire.
+        // La variation de stock n'est pas un gain fictif: elle est dans le PL
+        // pour ne pas passer en charge une marchandise achetee mais pas encore
+        // vendue. Ce stock partira, et sa marge avec. Le PL AVEC stock reste
+        // donc la bonne mesure du mois.
+        //
+        // Ce mode mesure une EXPOSITION: sur aout, 148 742 F de variation pour
+        // un PL de -51 196, soit 175 % du resultat suspendus a un comptage et a
+        // une valorisation. Une erreur de 10 % sur l'inventaire deplace le PL
+        // de 15 000 F. Le voir sans le stock dit de combien on depend de cette
+        // mesure - pas ce que vaut l'exploitation.
+        horsStock: false,
+        // La projection est la partie qu'on vient consulter: ouverte par
+        // defaut. L'etat est MEMORISE, sinon chaque rendu - et il y en a un a
+        // chaque frappe de levier - la refermerait sous les doigts.
+        projOuverte: true,
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
@@ -85,6 +103,13 @@
             // Combien de fois le rythme mensuel d'un produit on s'autorise a
             // lui demander, dans le plan d'equilibre.
             facteurMax: 3,
+            // Prix de vente retenu pour les jours qui RESTENT, par produit.
+            // Vide = celui que le serveur propose (majoritaire du dernier jour
+            // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
+            // jamais ete pratique sur la periode - le boeuf en gros est passe a
+            // 5 200 alors que la seule vente du dernier jour etait a 5 100,
+            // exceptionnellement consentie a une cliente.
+            prixSuite: {},
             // La boucherie ne vend pas le dimanche: le compter comme une
             // journee a zero diluerait le rythme et gonflerait les jours
             // restants. Actif par defaut, decochable ici.
@@ -178,6 +203,12 @@
         +     '<button class="btn btn-sm btn-primary" id="sim2-calc"><i class="bi bi-calculator"></i> Calculer</button>'
         +     '<button class="btn btn-sm btn-outline-secondary" id="sim2-reset">Réinitialiser</button>'
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
+        +       '<input class="form-check-input" type="checkbox" id="sim2-hors-stock">'
+        +       '<label class="form-check-label small ms-1" for="sim2-hors-stock" '
+        +         'title="Retire la variation de stock : montre la part du résultat qui repose '
+        +           'sur de la marchandise encore invendue. Ce n\'est pas le résultat réel.">'
+        +         'Hors stock</label></div>'
+        +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-debug">'
         +       '<label class="form-check-label small ms-1" for="sim2-debug">Debug</label></div>'
         +   '</div></div>'
@@ -209,6 +240,12 @@
         // s'affiche immediatement meme en calcul manuel.
         $('debug').addEventListener('change', function () {
             etat.debug = $('debug').checked;
+            rendre();
+        });
+        // Comme le debug: revele une autre lecture du meme resultat, sans
+        // toucher aux leviers. S'applique donc immediatement, meme en manuel.
+        $('hors-stock').addEventListener('change', function () {
+            etat.horsStock = $('hors-stock').checked;
             rendre();
         });
     }
@@ -458,6 +495,21 @@
         };
     }
 
+    /**
+     * Le resultat de reference, eventuellement PRIVE de la variation de stock.
+     *
+     * Aucun recalcul: on retranche un poste que le serveur a lui-meme publie
+     * (stock.variation_nette), exactement comme les leviers s'ajoutent a ce
+     * qu'il a etabli. Le PL brut reste disponible pour le controle de bouclage
+     * du mode debug, qui doit continuer a se comparer au chiffre du serveur.
+     */
+    function plRef() {
+        var b = etat.base;
+        if (!b) return 0;
+        if (!etat.horsStock) return b.pl;
+        return b.pl - nb((b.stock || {}).variation_nette);
+    }
+
     function nbActifs(s) {
         var c = etat.contexte, n = 0;
         etat.produits.forEach(function (p) {
@@ -488,6 +540,13 @@
         var g = effetsGlobaux(s);
         var total = effetTotal(s);
         var n = nbActifs(s);
+
+        // Repli de la projection: lu SUR LE DOM juste avant de le remplacer,
+        // pas depuis l'evenement 'toggle'. Celui-ci est asynchrone: un rendu
+        // declenche dans la foulee d'un clic lisait encore l'ancien etat, et la
+        // section se rouvrait toute seule.
+        var sect0 = document.getElementById('sim2-proj-section');
+        if (sect0) etat.projOuverte = sect0.open;
 
         $('bandeaux').innerHTML = bandeaux();
         $('corps').innerHTML = ''
@@ -538,6 +597,18 @@
                    ? 'Dernière journée avec des ventes : ' + esc(vdf.derniere_date_avec_vente) + '. '
                    : 'Aucune vente sur toute la période. ')
                + 'Le résultat de référence est incomplet, et les leviers s\'y appliquent tels quels.</div>';
+        }
+        // Un resultat ampute d'un poste ne doit JAMAIS pouvoir se lire comme le
+        // PL: le dire est la condition pour offrir cette lecture.
+        if (etat.horsStock) {
+            h += '<div class="alert alert-info py-2 small mb-2"><i class="bi bi-eye"></i> '
+               + '<strong>Lecture hors stock — mesure d\'exposition, pas le résultat.</strong> '
+               + 'La variation de stock (' + esc(fmt(nb(st.variation_nette))) + ' F) est retirée. '
+               + 'Elle n\'est pas un gain fictif : elle est dans le PL pour ne PAS passer en charge '
+               + 'une marchandise achetée mais pas encore vendue — ce stock partira, et sa marge avec. '
+               + 'Ce que ce mode montre, c\'est la part de votre résultat qui repose sur une '
+               + 'marchandise encore invendue, donc sur un comptage et une valorisation : le PL réel '
+               + 'reste <strong>' + esc(fmt(b.pl)) + ' F</strong>.</div>';
         }
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
         h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
@@ -621,8 +692,9 @@
 
     function kpis(total, n) {
         var b = etat.base;
-        var apres = b.pl + total;
-        var pct = b.pl ? (total / Math.abs(b.pl)) * 100 : 0;
+        var ref = plRef();
+        var apres = ref + total;
+        var pct = ref ? (total / Math.abs(ref)) * 100 : 0;
         var carte = function (lab, val, hint, c) {
             return '<div class="col-md-4"><div class="card h-100"><div class="card-body text-center py-3">'
                 + '<h6 class="card-subtitle mb-2 text-muted">' + lab + '</h6>'
@@ -630,7 +702,8 @@
                 + '<div class="small text-muted mt-1">' + hint + '</div></div></div></div>';
         };
         return '<div class="row g-2 mb-3">'
-            + carte('Résultat de référence', fmt(b.pl), esc(b.source), cls(b.pl))
+            + carte('Résultat de référence', fmt(ref),
+                esc(b.source) + (etat.horsStock ? ' · hors stock' : ''), cls(ref))
             + carte('Effet du scénario', total ? signe(total) : '0',
                     n === 0 ? 'scénario vide' : n + ' levier(s) actif(s)', cls(total))
             + carte('Résultat simulé', fmt(apres), pct.toFixed(2) + ' % de variation', cls(apres))
@@ -691,7 +764,7 @@
         // hypotheses, le pilote remis a zero.
         var sansPilote = snapshotEtat();
         sansPilote.leviers[p.nom] = { prix: 0, unite: 'F', vol: 0 };
-        var base = etat.base.pl + effetTotal(sansPilote);
+        var base = plRef() + effetTotal(sansPilote);
         var q = nb(p.quantite), m = margeAvec(p, s);
         var hausse = -base / q, prixEq = nb(p.prix_moyen) + hausse;
         var dq = (m === null || m === 0) ? null : -base / m;
@@ -782,7 +855,7 @@
             var vals = ax.vals.map(function (x) {
                 var c = snapshotEtat();
                 ay.set(c, y); ax.set(c, x);
-                return etat.base.pl + effetTotal(c);
+                return plRef() + effetTotal(c);
             });
             var best = 0;
             vals.forEach(function (v, k) { if (Math.abs(v) < Math.abs(vals[best])) best = k; });
@@ -834,8 +907,8 @@
             h += '   ' + pad('', 82) + padL('─────────────', 13) + '\n';
             h += '   ' + pad('effet total', 82) + padL(signe(ex.total), 13) + '\n\n';
         }
-        h += '   ' + pad('résultat de référence', 30) + padL(fmt(b.pl), 14) + '\n';
-        h += '   ' + pad('case affichée', 30) + padL(fmt(b.pl + ex.total), 14) + '\n';
+        h += '   ' + pad('résultat de référence', 30) + padL(fmt(plRef()), 14) + '\n';
+        h += '   ' + pad('case affichée', 30) + padL(fmt(plRef() + ex.total), 14) + '\n';
         h += '   contrôle de bouclage : ' + ex.controle.ecart.toFixed(2) + ' F'
            + (ex.controle.ok ? '  ✓' : '  ✗ ÉCART — formules et explication ont divergé') + '\n';
         var zone = document.getElementById('sim2-mat-detail');
@@ -877,6 +950,34 @@
      * cout, et le plan reste alors optimiste - comme le reste de l'ecran, qui
      * signale deja cette part non chiffree.
      */
+    /**
+     * Le prix de vente retenu pour les jours qui RESTENT.
+     *
+     * Le prix moyen explique le passe: il melange les tarifs successifs et les
+     * remises consenties. Les jours a venir se vendront au tarif COURANT, et
+     * c'est lui qui doit servir a projeter. Par defaut le majoritaire du
+     * dernier jour vendu (calcule par le serveur); une saisie a l'ecran le
+     * remplace, car un tarif tout juste releve peut n'avoir jamais ete
+     * pratique sur la periode.
+     */
+    function prixSuiteDe(p) {
+        var saisi = etat.proj.prixSuite[p.nom];
+        if (saisi !== undefined && saisi !== null && saisi !== '' && nb(saisi) > 0) return nb(saisi);
+        var pr = p.prix_retenu;
+        if (pr && nb(pr.prix) > 0) return nb(pr.prix);
+        return (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
+    }
+
+    /** Le produit vu au prix de la SUITE du mois, pas au prix moyen passe. */
+    function auPrixDeLaSuite(p) {
+        var px = prixSuiteDe(p);
+        if (px === null) return p;
+        var copie = {};
+        Object.keys(p).forEach(function (k) { copie[k] = p[k]; });
+        copie.prix_moyen = px;
+        return copie;
+    }
+
     function margeApresCommission(p) {
         var m = margeBase(p);
         if (m === null) return null;
@@ -1062,15 +1163,39 @@
             });
     }
 
+    /**
+     * L'enveloppe: une section a part, visible et repliable.
+     *
+     * La projection etait un simple sous-titre noye entre la matrice et le
+     * debug, alors que c'est la partie qu'on vient consulter. Elle a
+     * desormais son propre encadre, avec le CA projete et le PL central
+     * lisibles depuis l'entete meme quand le contenu est replie.
+     */
     function projection() {
+        var corps = projectionCorps();
+        if (!corps) return '';
+        var resume = etat.projResume || '';
+        return '<details class="card border-primary mb-3" id="sim2-proj-section"'
+            + (etat.projOuverte ? ' open' : '') + '>'
+            + '<summary class="card-header bg-primary bg-opacity-10 fw-medium" '
+            + 'style="cursor:pointer;list-style:revert">'
+            + '<i class="bi bi-calendar-check me-1"></i> Projection fin de mois'
+            + (resume ? '<span class="small text-muted ms-2">' + resume + '</span>' : '')
+            + '</summary>'
+            + '<div class="card-body py-3">' + corps + '</div>'
+            + '</details>';
+    }
+
+    function projectionCorps() {
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
         var b = etat.base;
         var debut = b.periode.dateDebut || '';
         var fin = b.periode.dateFin || '';
-        var h = '<h6 class="fin-subheading">Projection fin de mois</h6>';
+        var h = '';
+        etat.projResume = '';
         if (!/^\d{4}-\d{2}-01$/.test(debut) || fin.slice(0, 7) !== debut.slice(0, 7)) {
-            return h + '<div class="alert alert-secondary py-2 small mb-3">Projection disponible '
+            return '<div class="alert alert-secondary py-2 small mb-0">Projection disponible '
                 + 'sur une période du 1er du mois au jour d\'analyse.</div>';
         }
 
@@ -1093,7 +1218,7 @@
             // dans le bloc masque enfermait l'utilisateur - le seul reglage
             // capable de reafficher la projection etait invisible.
             var restentCalendaires = PJ.joursOuvres(fin, ca.finMois, false).length - 1;
-            return h + '<div class="alert alert-secondary py-2 small mb-3">'
+            return h + '<div class="alert alert-secondary py-2 small mb-0">'
                 + (restentCalendaires > 0 && sansDim
                     ? 'Il ne reste que ' + restentCalendaires + ' jour(s) avant la fin du mois, '
                       + 'tous des dimanches : plus rien à projeter à jours d\'ouverture constants. '
@@ -1190,7 +1315,7 @@
         if (!scen || !scen.central) {
             // Regle du document: sans realise exploitable, on ne projette que
             // le CA et on le DIT.
-            return h + '<div class="alert alert-warning py-2 small mb-3">'
+            return h + '<div class="alert alert-warning py-2 small mb-0">'
                 + 'P&L incomplet — données de coût insuffisantes : seule la projection de CA est rendue.</div>';
         }
 
@@ -1213,6 +1338,11 @@
         // a la decomposition plus bas: declare ici, avant son premier usage.
         var d0 = scen.central;
 
+        // Le RESUME que l'entete porte, lisible section repliee: on vient ici
+        // pour ces deux nombres, ils ne doivent pas exiger un depliage.
+        etat.projResume = '· CA ' + fmt(ca.caProjete) + ' F · PL '
+            + fmt(d0.pl) + ' F · confiance ' + conf.niveau;
+
         // ---- CE QU'IL FAUT FAIRE D'ICI LA FIN DU MOIS pour revenir a zero.
         //
         // Les leviers portent sur le volume RESTANT, pas sur le volume deja
@@ -1228,11 +1358,16 @@
         // dans produits_vendus - toujours calcule sur la periode vivante -
         // faisait cohabiter sur le meme ecran un tableau de sensibilite fige
         // et un plan d'equilibre bati sur d'autres volumes.
-        var universEq = (!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+        // Les produits sont vus AU PRIX DE LA SUITE: le prix retenu gouverne
+        // les jours qui restent, donc la marge de l'effort ET le prix
+        // d'equilibre a atteindre. Le tableau de sensibilite au-dessus garde
+        // le prix moyen: lui decrit ce qui s'est passe.
+        var universEq = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
             ? etat.sim.produits_vendus
-            : etat.produits;
+            : etat.produits).map(auPrixDeLaSuite);
         var eq = PJ.planEquilibre({
-            plCentral: d0.pl, produits: universEq, margeDe: margeApresCommission,
+            plCentral: d0.pl, produits: universEq,
+            margeDe: margeApresCommission,
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
@@ -1273,10 +1408,17 @@
                 + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
                 + '<div class="small text-muted mb-1">À marge inchangée — vendre plus</div>'
                 + '<div class="h5 mb-1">+' + esc(fmt(s0.volumeAdditionnel)) + ' u</div>'
+                // LES DEUX cadences, toujours, et nommees. N'en donner qu'une
+                // ici et l'autre dans le tableau faisait cohabiter deux « par
+                // jour » qui ne mesuraient pas la meme chose.
                 + '<div class="small text-muted">soit <strong>' + esc(fmt(s0.volumeTotal))
                 + ' u au total</strong> (+' + s0.hausseVolumePct.toFixed(0) + ' %)'
-                + (s0.parJour !== null ? ', ' + esc(fmtDec(s0.parJour)) + ' u/jour de plus' : '')
-                + ' → ' + esc(fmt(s0.montantVolume)) + ' F</div>'
+                + ' → ' + esc(fmt(s0.montantVolume)) + ' F'
+                + (s0.parJour !== null
+                    ? '<br>par jour : <strong>+' + esc(fmtDec(s0.parJour)) + ' u en plus</strong>'
+                      + ', soit ' + esc(fmtDec(s0.volumeTotal / eq.joursRestants)) + ' u au total'
+                    : '')
+                + '</div>'
                 + '</div></div></div>'
                 + '</div>';
 
@@ -1315,18 +1457,46 @@
                     + '</div>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
                     + '<thead><tr><th>Produit</th>'
+                    + '<th class="text-end">Prix pour la suite</th>'
                     + '<th class="text-end">Marge nette</th>'
                     + '<th class="text-end">Déjà attendu</th>'
                     + '<th class="text-end">À vendre en plus</th>'
                     + '<th class="text-end">Total à vendre</th>'
-                    + '<th class="text-end">Total par jour</th>'
+                    + '<th class="text-end">Par jour<br><span class="fw-normal text-muted">'
+                    + 'en plus / total</span></th>'
                     + '<th class="text-end">Plafond du total</th>'
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
                     + eq.plan.map(function (x) {
                         var total = x.volumeRestant + x.volumeAdditionnel;
                         var totalJour = eq.joursRestants > 0 ? total / eq.joursRestants : null;
+                        // Le prix qui gouverne les jours restants, MODIFIABLE.
+                        // Le defaut est le majoritaire du dernier jour vendu,
+                        // mais un tarif tout juste releve peut n'avoir jamais
+                        // ete pratique: le boeuf en gros est passe a 5 200 F
+                        // quand la seule vente du dernier jour etait a 5 100,
+                        // consentie exceptionnellement a une cliente.
+                        var src = (universEq.filter(function (u) { return u.nom === x.nom; })[0]) || {};
+                        var pr = src.prix_retenu || null;
+                        var saisi = etat.proj.prixSuite[x.nom];
+                        var modifie = saisi !== undefined && saisi !== null && saisi !== '';
+                        var titre = pr
+                            ? 'Majoritaire du ' + pr.date + ' (' + pr.nb_lignes + ' ligne(s)'
+                              + (pr.nb_prix_ce_jour > 1 ? ' sur ' + pr.nb_prix_ce_jour + ' prix ce jour-là' : '') + ')'
+                            : 'Aucune vente : prix moyen de la période';
                         return '<tr><td>' + esc(x.nom)
                             + (x.plafonne ? ' <span class="badge bg-secondary">plafond atteint</span>' : '')
+                            + '</td>'
+                            + '<td class="text-end">'
+                            + '<input type="number" class="form-control form-control-sm text-end d-inline-block sim2-prix-suite" '
+                            + 'style="width:6.5rem" step="50" min="0" data-nom="' + esc(x.nom) + '" '
+                            + 'title="' + esc(titre) + '" value="'
+                            + esc(String(Math.round(nb(src.prix_moyen)))) + '">'
+                            + (modifie
+                                ? ' <span class="badge bg-info text-dark">ajusté</span>'
+                                : (pr && pr.nb_prix_ce_jour > 1
+                                    ? ' <span class="badge bg-light text-dark border" title="'
+                                      + esc(titre) + '">majoritaire</span>'
+                                    : ''))
                             + '</td>'
                             + '<td class="text-end">' + esc(fmt(x.marge)) + ' F/u</td>'
                             + '<td class="text-end text-muted">' + esc(fmt(x.volumeRestant)) + ' u</td>'
@@ -1334,7 +1504,16 @@
                             + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
                             + '</td>'
                             + '<td class="text-end fw-bold">' + esc(fmt(total)) + ' u</td>'
-                            + '<td class="text-end">' + (totalJour !== null ? esc(fmtDec(totalJour)) + ' u/j' : '—') + '</td>'
+                            // Les DEUX cadences: l'effort quotidien, et
+                            // l'objectif quotidien qui l'inclut. La seconde
+                            // seule laissait croire que tout etait a vendre en
+                            // plus; la premiere seule ne dit pas ou l'on va.
+                            + '<td class="text-end">'
+                            + (x.parJour !== null
+                                ? '<strong>+' + esc(fmtDec(x.parJour)) + '</strong>'
+                                  + ' <span class="text-muted">/ ' + esc(fmtDec(totalJour)) + ' u/j</span>'
+                                : '—')
+                            + '</td>'
                             + '<td class="text-end text-muted">' + esc(fmt(x.plafondReste)) + ' u</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
@@ -1343,7 +1522,7 @@
                     // et la colonne somme moins que le manque: afficher le
                     // manque en pied faisait mentir le total de sa propre
                     // colonne, d'un ecart mesure a 1 772 728 F.
-                    + '<tr class="table-light fw-bold"><td colspan="7">Total de l\'effort'
+                    + '<tr class="table-light fw-bold"><td colspan="8">Total de l\'effort'
                     + (eq.resteACouvrir > 0
                         ? ' <span class="text-danger small">(reste ' + esc(fmt(eq.resteACouvrir))
                           + ' F à trouver ailleurs)</span>'
@@ -1434,10 +1613,16 @@
         // ---- Les recommandations: des gestes chiffres.
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
-            plCentral: d0.pl, produits: etat.produits,
-            // MEME marge que le plan d'equilibre: les deux blocs annoncent des
-            // volumes a vendre pour le meme manque, ils ne peuvent pas les
-            // chiffrer sur deux marges differentes.
+            plCentral: d0.pl,
+            // universEq, le MEME univers que le plan d'equilibre - pas
+            // etat.produits. Les deux blocs repondent a la meme question, « que
+            // vendre en plus pour combler le manque »: les faire raisonner sur
+            // deux listes differentes les faisait se contredire. Mesure sur
+            // mbao: le plan retenait la Viande Hachee, sa plus forte marge a
+            // 1 295 F/u, pendant que les recommandations juste en dessous
+            // designaient le boeuf en detail (916) et le boeuf en gros (733) -
+            // le 2e et le 3e - parce qu'elles ne voyaient que la liste suivie.
+            produits: universEq,
             margeDe: margeApresCommission,
             // Part du CA restant a faire: c'est l'assiette d'une hausse de
             // prix, pas le volume deja vendu.
@@ -1607,10 +1792,10 @@
         }
 
         h += '\n6. RÉSULTAT SIMULÉ\n';
-        h += '   ' + pad('référence', 26) + padL(fmt(b.pl), 14) + '\n';
+        h += '   ' + pad('référence', 26) + padL(fmt(plRef()), 14) + '\n';
         h += '   ' + pad('effet du scénario', 26) + padL(signe(total), 14) + '\n';
         h += '   ' + pad('', 26) + padL('──────────────', 14) + '\n';
-        h += '   ' + pad('simulé', 26) + padL(fmt(b.pl + total), 14) + '\n';
+        h += '   ' + pad('simulé', 26) + padL(fmt(plRef() + total), 14) + '\n';
         return h + '</pre>';
     }
 
@@ -1649,6 +1834,17 @@
             el.addEventListener('change', function () {
                 if (!etat.proj.suivis) etat.proj.suivis = {};
                 etat.proj.suivis[String(el.value).trim().toLowerCase()] = el.checked;
+            });
+        });
+        // Prix de la suite du mois: 'change', comme les autres controles qui
+        // declenchent un rendu complet - sinon le champ disparait sous les
+        // doigts a la premiere frappe.
+        document.querySelectorAll('.sim2-prix-suite').forEach(function (el) {
+            el.addEventListener('change', function () {
+                var v = el.value;
+                if (v === '' || !(nb(v) > 0)) delete etat.proj.prixSuite[el.dataset.nom];
+                else etat.proj.prixSuite[el.dataset.nom] = nb(v);
+                rendre();
             });
         });
         var sauve = document.getElementById('sim2-suivi-save');
