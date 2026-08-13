@@ -1408,10 +1408,17 @@
                 + '<div class="col-md-6"><div class="card h-100"><div class="card-body py-2">'
                 + '<div class="small text-muted mb-1">À marge inchangée — vendre plus</div>'
                 + '<div class="h5 mb-1">+' + esc(fmt(s0.volumeAdditionnel)) + ' u</div>'
+                // LES DEUX cadences, toujours, et nommees. N'en donner qu'une
+                // ici et l'autre dans le tableau faisait cohabiter deux « par
+                // jour » qui ne mesuraient pas la meme chose.
                 + '<div class="small text-muted">soit <strong>' + esc(fmt(s0.volumeTotal))
                 + ' u au total</strong> (+' + s0.hausseVolumePct.toFixed(0) + ' %)'
-                + (s0.parJour !== null ? ', ' + esc(fmtDec(s0.parJour)) + ' u/jour de plus' : '')
-                + ' → ' + esc(fmt(s0.montantVolume)) + ' F</div>'
+                + ' → ' + esc(fmt(s0.montantVolume)) + ' F'
+                + (s0.parJour !== null
+                    ? '<br>par jour : <strong>+' + esc(fmtDec(s0.parJour)) + ' u en plus</strong>'
+                      + ', soit ' + esc(fmtDec(s0.volumeTotal / eq.joursRestants)) + ' u au total'
+                    : '')
+                + '</div>'
                 + '</div></div></div>'
                 + '</div>';
 
@@ -1455,7 +1462,8 @@
                     + '<th class="text-end">Déjà attendu</th>'
                     + '<th class="text-end">À vendre en plus</th>'
                     + '<th class="text-end">Total à vendre</th>'
-                    + '<th class="text-end">Total par jour</th>'
+                    + '<th class="text-end">Par jour<br><span class="fw-normal text-muted">'
+                    + 'en plus / total</span></th>'
                     + '<th class="text-end">Plafond du total</th>'
                     + '<th class="text-end">Apport</th></tr></thead><tbody>'
                     + eq.plan.map(function (x) {
@@ -1496,7 +1504,16 @@
                             + (x.haussePct !== null ? ' <span class="text-muted">(+' + x.haussePct.toFixed(0) + ' %)</span>' : '')
                             + '</td>'
                             + '<td class="text-end fw-bold">' + esc(fmt(total)) + ' u</td>'
-                            + '<td class="text-end">' + (totalJour !== null ? esc(fmtDec(totalJour)) + ' u/j' : '—') + '</td>'
+                            // Les DEUX cadences: l'effort quotidien, et
+                            // l'objectif quotidien qui l'inclut. La seconde
+                            // seule laissait croire que tout etait a vendre en
+                            // plus; la premiere seule ne dit pas ou l'on va.
+                            + '<td class="text-end">'
+                            + (x.parJour !== null
+                                ? '<strong>+' + esc(fmtDec(x.parJour)) + '</strong>'
+                                  + ' <span class="text-muted">/ ' + esc(fmtDec(totalJour)) + ' u/j</span>'
+                                : '—')
+                            + '</td>'
                             + '<td class="text-end text-muted">' + esc(fmt(x.plafondReste)) + ' u</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
