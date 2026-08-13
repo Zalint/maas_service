@@ -90,6 +90,10 @@
         // de 15 000 F. Le voir sans le stock dit de combien on depend de cette
         // mesure - pas ce que vaut l'exploitation.
         horsStock: false,
+        // La projection est la partie qu'on vient consulter: ouverte par
+        // defaut. L'etat est MEMORISE, sinon chaque rendu - et il y en a un a
+        // chaque frappe de levier - la refermerait sous les doigts.
+        projOuverte: true,
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
@@ -536,6 +540,13 @@
         var g = effetsGlobaux(s);
         var total = effetTotal(s);
         var n = nbActifs(s);
+
+        // Repli de la projection: lu SUR LE DOM juste avant de le remplacer,
+        // pas depuis l'evenement 'toggle'. Celui-ci est asynchrone: un rendu
+        // declenche dans la foulee d'un clic lisait encore l'ancien etat, et la
+        // section se rouvrait toute seule.
+        var sect0 = document.getElementById('sim2-proj-section');
+        if (sect0) etat.projOuverte = sect0.open;
 
         $('bandeaux').innerHTML = bandeaux();
         $('corps').innerHTML = ''
@@ -1152,15 +1163,39 @@
             });
     }
 
+    /**
+     * L'enveloppe: une section a part, visible et repliable.
+     *
+     * La projection etait un simple sous-titre noye entre la matrice et le
+     * debug, alors que c'est la partie qu'on vient consulter. Elle a
+     * desormais son propre encadre, avec le CA projete et le PL central
+     * lisibles depuis l'entete meme quand le contenu est replie.
+     */
     function projection() {
+        var corps = projectionCorps();
+        if (!corps) return '';
+        var resume = etat.projResume || '';
+        return '<details class="card border-primary mb-3" id="sim2-proj-section"'
+            + (etat.projOuverte ? ' open' : '') + '>'
+            + '<summary class="card-header bg-primary bg-opacity-10 fw-medium" '
+            + 'style="cursor:pointer;list-style:revert">'
+            + '<i class="bi bi-calendar-check me-1"></i> Projection fin de mois'
+            + (resume ? '<span class="small text-muted ms-2">' + resume + '</span>' : '')
+            + '</summary>'
+            + '<div class="card-body py-3">' + corps + '</div>'
+            + '</details>';
+    }
+
+    function projectionCorps() {
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
         var b = etat.base;
         var debut = b.periode.dateDebut || '';
         var fin = b.periode.dateFin || '';
-        var h = '<h6 class="fin-subheading">Projection fin de mois</h6>';
+        var h = '';
+        etat.projResume = '';
         if (!/^\d{4}-\d{2}-01$/.test(debut) || fin.slice(0, 7) !== debut.slice(0, 7)) {
-            return h + '<div class="alert alert-secondary py-2 small mb-3">Projection disponible '
+            return '<div class="alert alert-secondary py-2 small mb-0">Projection disponible '
                 + 'sur une période du 1er du mois au jour d\'analyse.</div>';
         }
 
@@ -1183,7 +1218,7 @@
             // dans le bloc masque enfermait l'utilisateur - le seul reglage
             // capable de reafficher la projection etait invisible.
             var restentCalendaires = PJ.joursOuvres(fin, ca.finMois, false).length - 1;
-            return h + '<div class="alert alert-secondary py-2 small mb-3">'
+            return h + '<div class="alert alert-secondary py-2 small mb-0">'
                 + (restentCalendaires > 0 && sansDim
                     ? 'Il ne reste que ' + restentCalendaires + ' jour(s) avant la fin du mois, '
                       + 'tous des dimanches : plus rien à projeter à jours d\'ouverture constants. '
@@ -1280,7 +1315,7 @@
         if (!scen || !scen.central) {
             // Regle du document: sans realise exploitable, on ne projette que
             // le CA et on le DIT.
-            return h + '<div class="alert alert-warning py-2 small mb-3">'
+            return h + '<div class="alert alert-warning py-2 small mb-0">'
                 + 'P&L incomplet — données de coût insuffisantes : seule la projection de CA est rendue.</div>';
         }
 
@@ -1302,6 +1337,11 @@
         // Le scenario CENTRAL sert a la fois au plan d'equilibre ci-dessous et
         // a la decomposition plus bas: declare ici, avant son premier usage.
         var d0 = scen.central;
+
+        // Le RESUME que l'entete porte, lisible section repliee: on vient ici
+        // pour ces deux nombres, ils ne doivent pas exiger un depliage.
+        etat.projResume = '· CA ' + fmt(ca.caProjete) + ' F · PL '
+            + fmt(d0.pl) + ' F · confiance ' + conf.niveau;
 
         // ---- CE QU'IL FAUT FAIRE D'ICI LA FIN DU MOIS pour revenir a zero.
         //
