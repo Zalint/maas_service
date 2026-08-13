@@ -432,9 +432,17 @@
         // manque affiche un parage voisin de 100 %.
         var parageBase = nb(stock.pertes_decoupe_pct);
         var pm = sim.parage_mesure || null;
+        // ASSISE MINIMALE. Un taux mesure sur une seule journee n'est pas plus
+        // fiable que le parametre qu'il remplace - il est seulement plus
+        // recent, et il DIVISE la marge. Le cas s'est presente des le premier
+        // jour: une fois Laxass sorti du parage, l'ovin est tombe a 0,94 % sur
+        // UNE journee mesurable, et ce taux pilotait la marge de l'agneau.
+        //
+        // Cinq journees, le meme seuil que les rythmes de la projection et
+        // pour la meme raison: en dessous, la moyenne tient a une seule
+        // observation. Le parametre reprend alors la main, et l'ecran le dit.
         var parageDe = function (espece) {
-            var v = pm ? pm[espece] : null;
-            return (v === null || v === undefined) ? parageBase : nb(v);
+            return parageRetenu(pm, parageBase, MIN_JOURS_PARAGE, espece);
         };
         etat.contexte = {
             varBovin: nb(stock.variation_bovin),
@@ -446,6 +454,7 @@
             parageBovin: parageDe('bovin'),
             parageOvin: parageDe('ovin'),
             parageMesure: pm,
+            parageMinJours: MIN_JOURS_PARAGE,
             boeuf: { matin: qBoeuf(stock.matin_detail), soir: qBoeuf(stock.soir_detail) },
             commission: nb(pl.commission_maas),
             commissionPct: nb(cfg.commission_pct) || 3,
@@ -469,6 +478,31 @@
             );
         }
         if (!etat.globaux) reinitGlobaux();
+    }
+
+    // ASSISE MINIMALE d'un parage mesure. Cinq journees, le meme seuil que les
+    // rythmes de la projection et pour la meme raison: en dessous, la moyenne
+    // tient a une seule observation.
+    var MIN_JOURS_PARAGE = 5;
+
+    /**
+     * Le taux de parage RETENU pour une espece: le mesure, ou le parametre.
+     *
+     * Un taux mesure sur une seule journee n'est pas plus fiable que le
+     * parametre qu'il remplace - il est seulement plus recent, et il DIVISE la
+     * marge. Le cas s'est presente des le premier jour: une fois Laxass sorti
+     * du parage, l'ovin est tombe a 0,94 % sur UNE journee mesurable, et ce
+     * taux pilotait la marge de l'agneau.
+     *
+     * @param {object|null} mesure  { bovin, ovin, jours_mesures: {bovin, ovin} }
+     * @param {number} base         stock_pertes_decoupe_pct, le repli
+     * @param {number} mini         journees mesurables exigees
+     */
+    function parageRetenu(mesure, base, mini, espece) {
+        var v = mesure ? mesure[espece] : null;
+        if (v === null || v === undefined) return nb(base);
+        var n = (mesure.jours_mesures) ? nb(mesure.jours_mesures[espece]) : 0;
+        return n < nb(mini) ? nb(base) : nb(v);
     }
 
     /**
@@ -497,17 +531,23 @@
         var c = etat.contexte || {};
         var pm = c.parageMesure || null;
         var base = 'le paramètre ' + pct2(c.parageBase) + ' %';
+        var mini = nb(c.parageMinJours) || 5;
         var dit = function (espece, taux, cle) {
             var n = pm && pm.jours_mesures ? nb(pm.jours_mesures[cle]) : 0;
+            var jours = n + ' journée' + (n > 1 ? 's' : '') + ' mesurée' + (n > 1 ? 's' : '');
             if (!pm || pm[cle] === null || pm[cle] === undefined) {
                 return espece + ' ' + base + ' (aucune journée mesurable)';
             }
-            // Sous cinq journees, la moyenne tient a une seule d'entre elles:
-            // meme seuil que les rythmes de la projection, et meme raison.
-            var faible = n < 5;
-            return espece + ' <strong>' + pct2(pm[cle]) + ' %</strong> '
-                + '(' + n + ' journée' + (n > 1 ? 's' : '') + ' mesurée' + (n > 1 ? 's' : '') + ')'
-                + (faible ? ' <span class="text-warning-emphasis">⚠ trop peu pour être représentatif</span>' : '');
+            // Sous le seuil, le taux mesure est ECARTE, pas seulement signale:
+            // il divise la marge, et une moyenne sur une journee ne vaut pas
+            // mieux que le parametre. On montre quand meme ce qu'il vaudrait -
+            // c'est ce qui permet de juger quand il redeviendra utilisable.
+            if (n < mini) {
+                return espece + ' ' + base + ' — le mesuré (' + pct2(pm[cle]) + ' %) '
+                    + 'ne repose que sur ' + jours + ', '
+                    + '<span class="text-warning-emphasis">trop peu pour être retenu</span>';
+            }
+            return espece + ' <strong>' + pct2(pm[cle]) + ' %</strong> (' + jours + ')';
         };
         return '<div class="mt-1">Parage appliqué — ' + dit('bœuf', pm && pm.bovin, 'bovin')
             + ' · ' + dit('agneau', pm && pm.ovin, 'ovin')

@@ -73,3 +73,48 @@ describe('sept colonnes, le taux en vigueur au milieu', () => {
         }
     });
 });
+
+describe('assise minimale: quand le taux mesure est retenu', () => {
+    const parageRetenu = chargerDepuis(
+        'js/simulation-v2.js',
+        ['function parageRetenu(mesure, base, mini, espece)'],
+        'parageRetenu',
+        'var nb = function (v) { var n = parseFloat(v); return isFinite(n) ? n : 0; };'
+    );
+    // Le cas reel: une fois Laxass sorti du parage, l'ovin tombe a 0,94 % sur
+    // UNE journee, et ce taux divisait la marge de l'agneau.
+    const aout = { bovin: 3.96, ovin: 0.94, jours_mesures: { bovin: 11, ovin: 1 } };
+
+    test('assez de journees: le mesure prime', () => {
+        expect(parageRetenu(aout, 5, 5, 'bovin')).toBe(3.96);
+    });
+
+    test('trop peu de journees: le parametre reprend la main', () => {
+        expect(parageRetenu(aout, 5, 5, 'ovin')).toBe(5);
+    });
+
+    test('le seuil est INCLUSIF', () => {
+        const m = { bovin: 2, jours_mesures: { bovin: 5 } };
+        expect(parageRetenu(m, 5, 5, 'bovin')).toBe(2);
+        expect(parageRetenu({ bovin: 2, jours_mesures: { bovin: 4 } }, 5, 5, 'bovin')).toBe(5);
+    });
+
+    test('aucune mesure du tout: le parametre, sans lever', () => {
+        for (const m of [null, undefined, {}, { bovin: null }]) {
+            expect(parageRetenu(m, 5, 5, 'bovin')).toBe(5);
+        }
+    });
+
+    test('un taux mesure a ZERO est retenu, ce n est pas une absence', () => {
+        // 0 % de parage est un resultat, pas un trou: le confondre avec
+        // « pas de mesure » ferait diviser par 0,95 une espece qui ne pert rien.
+        const m = { ovin: 0, jours_mesures: { ovin: 8 } };
+        expect(parageRetenu(m, 5, 5, 'ovin')).toBe(0);
+    });
+
+    test('des journees manquantes comptent pour zero, pas pour infini', () => {
+        const m = { bovin: 3, jours_mesures: {} };
+        expect(parageRetenu(m, 5, 5, 'bovin')).toBe(5);
+        expect(parageRetenu({ bovin: 3 }, 5, 5, 'bovin')).toBe(5);
+    });
+});
