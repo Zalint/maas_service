@@ -342,3 +342,81 @@ describe('expliquer: ce qui est montre est ce qui est calcule', () => {
         expect(parage.formule).toMatch(/1[\s  ]153/);
     });
 });
+
+describe('parage MESURE par espece, a la place du parametre fixe', () => {
+    // Le diviseur de la marge utilisait stock_pertes_decoupe_pct, fige a 5 %
+    // chez tous les tenants. Le parage reellement mesure change le SIGNE du
+    // resultat, donc la conclusion qu'on en tire.
+    const boeuf = { nom: 'Boeuf en détail', prix_moyen: 5400, prix_achat: 4520, quantite: 23.5, ca: 126900 };
+    const agneau = { nom: 'Agneau', prix_moyen: 6000, prix_achat: 4500, quantite: 5.25, ca: 31500 };
+    const vide = { leviers: {}, globaux: {} };
+
+    test('le taux mesure de l espece prime sur le parametre', () => {
+        const ctx = { parageBase: 5, parageBovin: 17.5, parageOvin: 3 };
+        // 5400 − 4520/0,825 = −79 : la marge devient NEGATIVE.
+        expect(Math.round(M.margeAvec(boeuf, vide, ctx))).toBe(-79);
+        // 6000 − 4500/0,97 = 1361, et non 1263 comme a 5 %.
+        expect(Math.round(M.margeAvec(agneau, vide, ctx))).toBe(1361);
+    });
+
+    test('bovin et ovin ont chacun LEUR taux', () => {
+        const ctx = { parageBase: 5, parageBovin: 20, parageOvin: 0 };
+        expect(M.diviseurParage(boeuf, vide, ctx)).toBeCloseTo(0.80, 6);
+        expect(M.diviseurParage(agneau, vide, ctx)).toBeCloseTo(1, 6);
+    });
+
+    test('sans taux mesure, le parametre reprend la main', () => {
+        // Un mois dont aucune journee n'est mesurable ne doit rien changer au
+        // comportement d'avant.
+        const avant = M.margeAvec(boeuf, vide, { parageBase: 5 });
+        for (const ctx of [
+            { parageBase: 5 },
+            { parageBase: 5, parageBovin: null, parageOvin: null },
+            { parageBase: 5, parageBovin: undefined }
+        ]) {
+            expect(M.margeAvec(boeuf, vide, ctx)).toBeCloseTo(avant, 6);
+        }
+        expect(Math.round(avant)).toBe(642);
+    });
+
+    test('la volaille reste hors parage', () => {
+        const poulet = { nom: 'Poulet en détail', prix_moyen: 3500, prix_achat: 3000 };
+        const ctx = { parageBase: 5, parageBovin: 17.5, parageOvin: 3 };
+        expect(M.diviseurParage(poulet, vide, ctx)).toBe(1);
+        expect(M.margeAvec(poulet, vide, ctx)).toBe(500);
+    });
+
+    test('AUCUN effet de parage sur un scenario pose au taux mesure', () => {
+        // L'invariant qui justifie d'avoir separe la reference par espece:
+        // si le defaut des leviers bougeait sans que la reference du moteur
+        // bouge avec lui, l'ecran aurait affiche un effet de parage sur un
+        // scenario que personne n'a touche - le meme fantome que la
+        // commission a deja produit ici.
+        const ctx = {
+            parageBase: 5, parageBovin: 17.5, parageOvin: 3,
+            commission: 1000, commissionPct: 3, varBovin: 5000, varOvin: 100,
+            boeuf: { matin: 1, soir: 2 }, pv: { bovin: 4800, ovin: 5300 }
+        };
+        const auRepos = { leviers: {}, globaux: { charges: 0, dep: 0, com: 3, parBov: 17.5, parOvi: 3, dPa: 0 } };
+        const e = M.effetsGlobaux({ produits: [boeuf, agneau], contexte: ctx }, auRepos);
+        expect(e.pab).toBe(0);
+        expect(e.pao).toBe(0);
+        expect(e.total).toBe(0);
+    });
+
+    test('un levier de parage se mesure DEPUIS le taux mesure', () => {
+        const ctx = {
+            parageBase: 5, parageBovin: 20, parageOvin: 5,
+            commission: 0, commissionPct: 0, varBovin: 0, varOvin: 0,
+            boeuf: { matin: 0, soir: 0 }, pv: {}
+        };
+        // Ramener le parage bovin de 20 % a 15 % doit RAPPORTER: la carcasse
+        // necessaire aux memes ventes coute moins cher.
+        const s = { leviers: {}, globaux: { charges: 0, dep: 0, com: 0, parBov: 15, parOvi: 5, dPa: 0 } };
+        const e = M.effetsGlobaux({ produits: [boeuf], contexte: ctx }, s);
+        expect(e.pab).toBeGreaterThan(0);
+        // Et le detail expose la reference par espece, pas le parametre.
+        expect(e.det.parageRefB).toBe(20);
+        expect(e.det.parageRefO).toBe(5);
+    });
+});

@@ -1586,6 +1586,9 @@ router.get('/simulation', async (req, res) => {
         // levier volume etait surestime d'environ 20 %.
         let catalogueV2 = null;
         let projectionV2 = null;
+        // Parage MESURE du mois, arrete a la veille: le diviseur de la marge
+        // unitaire, a la place du parametre fixe a 5 %.
+        let parageMesureV2 = null;
         let topClientsV2 = null;
         let commandesV2 = null;
         let clientsHistoriqueV2 = null;
@@ -1678,6 +1681,55 @@ router.get('/simulation', async (req, res) => {
                 coeff_defaut: COEFFS_DOCUMENT[slugTenant] || 1.28,
                 coeff_enregistre: coeffEnregistre
             };
+
+            // ---- PARAGE MESURE DU MOIS, arrete a la VEILLE de dateFin.
+            //
+            // La marge unitaire divise le prix carcasse par (1 - parage). Elle
+            // le faisait avec stock_pertes_decoupe_pct, un parametre fixe a
+            // 5 %, alors que le parage reellement mesure change le SIGNE du
+            // resultat: a 4 520 F la carcasse et 5 400 F de prix moyen, la
+            // marge vaut +642 F a 5 % et -79 F a 17,5 %.
+            //
+            // La VEILLE, et non le jour meme: l'inventaire du soir se saisit
+            // souvent tard. Une journee dont le stock du soir n'est pas encore
+            // entre affiche un parage voisin de 100 % - elle empoisonnerait le
+            // taux du mois entier au moment precis ou l'on s'en sert.
+            //
+            // Le 1er du mois n'a pas de veille dans son mois: on rend null
+            // plutot que de cumuler le mois precedent, qui decrirait autre
+            // chose. Le client retombe alors sur le parametre.
+            parageMesureV2 = null;
+            try {
+                const veille = new Date(dateFin + 'T00:00:00Z');
+                veille.setUTCDate(veille.getUTCDate() - 1);
+                const veilleIso = veille.toISOString().slice(0, 10);
+                if (veilleIso.slice(0, 7) === dateFin.slice(0, 7)) {
+                    const { tauxParageMois } = require('../lib/parage-mois');
+                    const { lirePackCompositions } = require('../lib/pack-compositions');
+                    const { chargerContexteParage: ctxDe } = require('../lib/parage-contexte');
+                    const ctxParage = await ctxDe(sequelize);
+                    const packsParage = await lirePackCompositions();
+                    const t = await tauxParageMois(sequelize, veilleIso, ctxParage, packsParage);
+                    // `perte` est une FRACTION (0,175), l'ecran attend des
+                    // points de pourcentage - comme stock_pertes_decoupe_pct
+                    // qu'il remplace.
+                    const pct = (b) => (b && b.perte !== null && b.perte !== undefined)
+                        ? round2(parseFloat(b.perte) * 100) : null;
+                    parageMesureV2 = {
+                        jusquau: veilleIso,
+                        bovin: pct(t.bovin),
+                        ovin: pct(t.ovin),
+                        jours_mesures: {
+                            bovin: (t.bovin && t.bovin.joursMesures) || 0,
+                            ovin: (t.ovin && t.ovin.joursMesures) || 0
+                        }
+                    };
+                }
+            } catch (e) {
+                // Un parage illisible ne doit pas priver l'ecran de sa
+                // simulation: le client garde le parametre, comme avant.
+                console.warn('[simulation] parage mesure indisponible:', e.message);
+            }
 
             // ---- Clients de la periode, pour la fidelisation: les plus gros
             // par chiffre d'affaires, avec leur dernier passage. Derive des
@@ -2157,6 +2209,10 @@ router.get('/simulation', async (req, res) => {
                 // null hors v2: ces notions n'y servent a rien.
                 catalogue: catalogueV2,
                 projection: projectionV2,
+                // Le parage qui DIVISE la marge unitaire, avec sa fenetre et
+                // le nombre de journees mesurables qui le composent: un taux
+                // sans son assise ne se juge pas.
+                parage_mesure: parageMesureV2,
                 top_clients: topClientsV2,
                 commandes: commandesV2,
                 clients_historique: clientsHistoriqueV2,

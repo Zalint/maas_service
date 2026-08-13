@@ -418,13 +418,34 @@
         }
         etat.produits = produits;
         etat.sim = sim;
+        // PARAGE QUI DIVISE LA MARGE: le taux MESURE du mois quand il existe,
+        // le parametre stock_pertes_decoupe_pct sinon.
+        //
+        // Le parametre vaut 5 % chez tous les tenants. Sur aout 2026 a Mbao le
+        // bovin mesure est tout autre, et l'ecart change le SIGNE de la marge:
+        // a 4 520 F la carcasse pour 5 400 F de prix moyen, +642 F a 5 % et
+        // -79 F a 17,5 %. Diviser par un taux qu'on n'a pas mesure revient a
+        // decider du signe a l'avance.
+        //
+        // Le serveur arrete ce taux a la VEILLE du jour d'analyse: l'inventaire
+        // du soir se saisit souvent tard, et une journee dont le stock du soir
+        // manque affiche un parage voisin de 100 %.
         var parageBase = nb(stock.pertes_decoupe_pct);
+        var pm = sim.parage_mesure || null;
+        var parageDe = function (espece) {
+            var v = pm ? pm[espece] : null;
+            return (v === null || v === undefined) ? parageBase : nb(v);
+        };
         etat.contexte = {
             varBovin: nb(stock.variation_bovin),
             varOvin: nb(stock.variation_ovin),
             varAutre: nb(stock.variation_autre_boucherie),
             coeff: nb(stock.coeff),
             parageBase: parageBase,
+            // Les deux taux REELLEMENT appliques, par espece, et leur source.
+            parageBovin: parageDe('bovin'),
+            parageOvin: parageDe('ovin'),
+            parageMesure: pm,
             boeuf: { matin: qBoeuf(stock.matin_detail), soir: qBoeuf(stock.soir_detail) },
             commission: nb(pl.commission_maas),
             commissionPct: nb(cfg.commission_pct) || 3,
@@ -450,13 +471,86 @@
         if (!etat.globaux) reinitGlobaux();
     }
 
+    /**
+     * Un taux en pour-cent, au CENTIEME et a la francaise.
+     *
+     * Deux decimales, sans arrondi a l'entier: un parage mesure a 3,96 %
+     * affiche « 4 % » se lit comme une valeur ronde qu'on aurait choisie,
+     * alors que c'est le resultat d'une mesure sur onze journees. Et l'ecart
+     * n'est pas cosmetique - il porte sur un DIVISEUR: a 4 552 F la carcasse,
+     * 3,96 % contre 4 % deplace le cout de 2 F l'unite, soit pres de 700 F sur
+     * les 360 kg du mois.
+     */
+    function pct2(v) {
+        return nb(v).toFixed(2).replace('.', ',');
+    }
+
+    /**
+     * D'OU vient le taux de parage applique, et sur quoi il repose.
+     *
+     * Un taux mesure sur UNE journee n'est pas plus fiable que le parametre
+     * qu'il remplace - il est seulement plus recent. Le dire est la condition
+     * pour qu'on puisse s'en servir: c'est l'utilisateur qui sait si sa
+     * semaine a ete normale, pas le calcul.
+     */
+    function sourceDuParage() {
+        var c = etat.contexte || {};
+        var pm = c.parageMesure || null;
+        var base = 'le paramètre ' + pct2(c.parageBase) + ' %';
+        var dit = function (espece, taux, cle) {
+            var n = pm && pm.jours_mesures ? nb(pm.jours_mesures[cle]) : 0;
+            if (!pm || pm[cle] === null || pm[cle] === undefined) {
+                return espece + ' ' + base + ' (aucune journée mesurable)';
+            }
+            // Sous cinq journees, la moyenne tient a une seule d'entre elles:
+            // meme seuil que les rythmes de la projection, et meme raison.
+            var faible = n < 5;
+            return espece + ' <strong>' + pct2(pm[cle]) + ' %</strong> '
+                + '(' + n + ' journée' + (n > 1 ? 's' : '') + ' mesurée' + (n > 1 ? 's' : '') + ')'
+                + (faible ? ' <span class="text-warning-emphasis">⚠ trop peu pour être représentatif</span>' : '');
+        };
+        return '<div class="mt-1">Parage appliqué — ' + dit('bœuf', pm && pm.bovin, 'bovin')
+            + ' · ' + dit('agneau', pm && pm.ovin, 'ovin')
+            + (pm && pm.jusquau ? ', cumulé jusqu\'au <strong>' + esc(dateCourte(pm.jusquau)) + '</strong> '
+               + '— la journée en cours est écartée, son inventaire du soir étant souvent saisi tard.' : '')
+            + '</div>';
+    }
+
+    /**
+     * Sept taux de parage centres sur celui en vigueur, jamais negatifs.
+     *
+     * Le pas suit l'ordre de grandeur: 2 points autour d'un taux modeste, 3
+     * au-dela de 10 %. Un pas fixe de 2 sur un parage a 17 % donnerait une
+     * matrice de 11 a 23 %, trop serree pour montrer ce qu'un vrai progres
+     * rapporterait.
+     */
+    function echelleParage(taux) {
+        var t = Math.max(0, nb(taux));
+        var pas = t >= 10 ? 3 : 2;
+        var out = [];
+        for (var i = -3; i <= 3; i++) {
+            // La colonne du MILIEU porte le taux EXACT, non arrondi. Arrondi a
+            // 4 % quand le defaut vaut 3,96, elle aurait compte comme un levier
+            // actif des qu'on la clique - le scenario « je ne change rien »
+            // serait devenu impossible a retrouver.
+            out.push(i === 0 ? t : Math.max(0, Math.round((t + i * pas) * 100) / 100));
+        }
+        // Un taux bas colle plusieurs valeurs a zero: on ne garde qu'un zero,
+        // sinon la matrice repete trois fois la meme colonne.
+        return out.filter(function (v, i) { return i === 0 || v !== out[i - 1]; });
+    }
+
     function reinitGlobaux() {
         var c = etat.contexte;
         etat.globaux = {
             charges: 0, dep: 0,
             com: c ? c.commissionPct : 3,
-            parBov: c ? c.parageBase : 0,
-            parOvi: c ? c.parageBase : 0,
+            // Le point de depart des leviers est le taux MESURE de l'espece,
+            // pas le parametre: c'est lui qui sert aussi de reference au
+            // moteur, et les deux doivent partir du meme endroit sous peine
+            // d'afficher un effet de parage sur un scenario vide.
+            parBov: c ? nb(c.parageBovin) : 0,
+            parOvi: c ? nb(c.parageOvin) : 0,
             dPa: 0
         };
     }
@@ -521,8 +615,8 @@
         if (nb(s.globaux.charges)) n++;
         if (nb(s.globaux.dep)) n++;
         if (nb(s.globaux.com) !== c.commissionPct) n++;
-        if (nb(s.globaux.parBov) !== c.parageBase) n++;
-        if (nb(s.globaux.parOvi) !== c.parageBase) n++;
+        if (nb(s.globaux.parBov) !== nb(c.parageBovin)) n++;
+        if (nb(s.globaux.parOvi) !== nb(c.parageOvin)) n++;
         if (nb(s.globaux.dPa)) n++;
         return n;
     }
@@ -724,12 +818,31 @@
             var part = b.ventes > 0 ? (ca / b.ventes) * 100 : 0;
             var pa = p.prix_achat === null || p.prix_achat === undefined
                 ? null : p.prix_achat + (estBoeuf(p) ? nb(s.globaux.dPa) : 0);
+            // LE COUT REELLEMENT SOUSTRAIT, entre parentheses.
+            //
+            // La colonne montrait le prix de la carcasse (4 520) alors que la
+            // marge divise par (1 - parage) et soustrait donc 4 758. Le
+            // tableau ne se reconstituait pas de tete: 5 400 - 4 520 = 880, et
+            // la colonne Marge affichait 642. Le second nombre rend les deux
+            // colonnes voisines a nouveau compatibles.
+            var div = M.diviseurParage(p, s, etat.contexte);
+            var paPare = (pa === null || div === null || div >= 1) ? null : pa / div;
             return '<tr' + (p.sans_vente ? ' class="text-muted"' : '') + '>'
                 + '<td>' + esc(p.nom) + '</td>'
                 + '<td class="text-end">' + esc(q.toLocaleString('fr-FR')) + '</td>'
                 + '<td class="text-end">' + esc(fmt(p.prix_moyen)) + '</td>'
-                + '<td class="text-end' + (estBoeuf(p) && nb(s.globaux.dPa) ? ' text-danger' : '') + '">'
-                  + esc(pa === null ? '—' : fmt(pa)) + '</td>'
+                + '<td class="text-end' + (estBoeuf(p) && nb(s.globaux.dPa) ? ' text-danger' : '') + '"'
+                  // Le taux au CENTIEME, jamais arrondi a l'entier: 3,96 %
+                  // affiche « 4 % » laisse croire a un chiffre rond decide,
+                  // alors que c'est une mesure. Et l'infobulle sert justement
+                  // a refaire le calcul.
+                  + (paPare === null ? '' : ' title="Prix carcasse ' + esc(fmt(pa))
+                     + ' F ÷ (1 − ' + esc(pct2((1 - div) * 100)) + ' % de parage)'
+                     + ' = ' + esc(fmt(paPare)) + ' F réellement soustraits du prix moyen."')
+                  + '>'
+                  + esc(pa === null ? '—' : fmt(pa))
+                  + (paPare === null ? ''
+                     : ' <span class="text-muted">(' + esc(fmt(paPare)) + ')</span>') + '</td>'
                 + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger' : '') + '">'
                   + esc(m === null ? '—' : fmt(m)) + '</td>'
                 + '<td class="text-end">' + esc(fmt(ca)) + '</td>'
@@ -752,7 +865,10 @@
             + '</table></div>'
             + '<div class="small text-muted mb-3"><strong>CFA 100</strong> : ce que rapporterait 100 FCFA '
             + 'de plus sur le prix unitaire, à quantités inchangées. '
-            + '<strong>Marge</strong> : nette de parage — prix moyen − prix carcasse ÷ (1 − parage).</div>';
+            + '<strong>Marge</strong> : nette de parage — prix moyen − prix carcasse ÷ (1 − parage). '
+            + 'Le second prix entre parenthèses est ce qui est <strong>réellement soustrait</strong> '
+            + 'du prix moyen.'
+            + sourceDuParage() + '</div>';
     }
 
     function equilibre(s) {
@@ -823,9 +939,13 @@
                    set: function (s, v) { var l = s.leviers[p0.nom] || { prix: 0, unite: 'F', vol: 0 }; l.vol = nb(p0.quantite) * v / 100; s.leviers[p0.nom] = l; } },
             pa: { lib: 'Prix d\'achat bœuf', vals: [-400, -200, -100, 0, 100, 200, 400], u: 'F',
                   set: function (s, v) { s.globaux.dPa = v; } },
-            parBov: { lib: 'Taux de parage bœuf', vals: [0, 2, 4, c.parageBase, 6, 8, 10], u: '%', abs: true,
+            // La colonne du MILIEU porte le taux en vigueur - le mesure - pour
+            // que la matrice se lise de part et d'autre de l'existant. Une
+            // echelle fixe 0..10 aurait place un parage mesure a 17 % hors du
+            // tableau, donc invisible la ou il agit.
+            parBov: { lib: 'Taux de parage bœuf', vals: echelleParage(nb(c.parageBovin)), u: '%', abs: true,
                       set: function (s, v) { s.globaux.parBov = v; } },
-            parOvi: { lib: 'Taux de parage agneau', vals: [0, 2, 4, c.parageBase, 6, 8, 10], u: '%', abs: true,
+            parOvi: { lib: 'Taux de parage agneau', vals: echelleParage(nb(c.parageOvin)), u: '%', abs: true,
                       set: function (s, v) { s.globaux.parOvi = v; } },
             com: { lib: 'Commission', vals: [1, 2, 3, 4, 5, 6, 7], u: '%', abs: true,
                    set: function (s, v) { s.globaux.com = v; } }
@@ -1015,7 +1135,8 @@
             copie.ca = nb(p.ca) * proportion;
             return copie;
         });
-        var base = { charges: 0, dep: 0, com: c.commissionPct, parBov: c.parageBase, parOvi: c.parageBase, dPa: 0 };
+        var base = { charges: 0, dep: 0, com: c.commissionPct,
+            parBov: nb(c.parageBovin), parOvi: nb(c.parageOvin), dPa: 0 };
         var sc = { leviers: {}, globaux: Object.assign({}, base, globaux) };
         return M.effetsGlobaux({ produits: restants, contexte: ctxSansStock }, sc).total;
     }
@@ -1030,8 +1151,11 @@
         var prixCatalogue = M.estBoeuf(p) ? pv.bovin
             : (M.estOvin(p) ? pv.ovin : pv.volaille);
         if (!prixCatalogue) return m;
-        // Meme diviseur de parage que la marge elle-meme.
-        var parage = M.estBoeuf(p) || M.estOvin(p) ? nb(c.parageBase) : 0;
+        // Meme diviseur de parage que la marge elle-meme: le taux MESURE de
+        // l'espece, pas le parametre. Deux diviseurs differents dans le meme
+        // ecran feraient diverger la marge et la commission qu'elle induit.
+        var parage = M.estBoeuf(p) ? nb(c.parageBovin)
+            : (M.estOvin(p) ? nb(c.parageOvin) : 0);
         var d = 1 - parage / 100;
         if (!(d > 0)) return m;
         return m - taux * nb(prixCatalogue) / d;
@@ -1640,7 +1764,6 @@
             return bd ? nb(bd.prix_achat) : null;
         }());
         var ep = nb(etat.proj.ecartParage);
-        var pBase = nb(etat.contexte.parageBase);
         var sensis = [];
         if (stats && paMoyen !== null && stats.max > paMoyen) {
             sensis.push({ lib: 'Coût du bœuf au plus haut (' + fmt(stats.max) + ' F)',
@@ -1651,11 +1774,17 @@
                 effet: effetSurLaSuite(univSens, propSuite, { dPa: stats.min - paMoyen }) });
         }
         if (ep > 0) {
-            var pHaut = Math.min(99, pBase + ep), pBas = Math.max(0, pBase - ep);
-            sensis.push({ lib: 'Parage à ' + fmt(pHaut) + ' % (+' + fmt(ep) + ' pts)',
-                effet: effetSurLaSuite(univSens, propSuite, { parBov: pHaut, parOvi: pHaut }) });
-            sensis.push({ lib: 'Parage à ' + fmt(pBas) + ' % (−' + fmt(ep) + ' pts)',
-                effet: effetSurLaSuite(univSens, propSuite, { parBov: pBas, parOvi: pBas }) });
+            // Chaque espece bouge depuis SON taux. Appliquer un meme
+            // pourcentage absolu aux deux revenait, depuis que les taux sont
+            // mesures separement, a deplacer l'agneau de plusieurs points sans
+            // que personne ne l'ait demande.
+            var bovin = nb(etat.contexte.parageBovin), ovin = nb(etat.contexte.parageOvin);
+            var hautB = Math.min(99, bovin + ep), hautO = Math.min(99, ovin + ep);
+            var basB = Math.max(0, bovin - ep), basO = Math.max(0, ovin - ep);
+            sensis.push({ lib: 'Parage +' + fmt(ep) + ' pts (bœuf ' + pct2(hautB) + ' %)',
+                effet: effetSurLaSuite(univSens, propSuite, { parBov: hautB, parOvi: hautO }) });
+            sensis.push({ lib: 'Parage −' + fmt(ep) + ' pts (bœuf ' + pct2(basB) + ' %)',
+                effet: effetSurLaSuite(univSens, propSuite, { parBov: basB, parOvi: basO }) });
         }
         if (sensis.length) {
             h += '<div class="d-flex align-items-center gap-2 mb-1 small flex-wrap">'
