@@ -47,6 +47,11 @@ function role(req) {
     return String((req.session && req.session.user && req.session.user.role) || '').toLowerCase();
 }
 
+/** Le nom de l'utilisateur connecte, pour signer une calibration. */
+function utilisateur(req) {
+    return String((req.session && req.session.user && req.session.user.username) || '') || null;
+}
+
 /**
  * GET /api/simulation-v2/reglages
  *
@@ -69,6 +74,7 @@ router.get('/reglages', async (req, res) => {
                 famille_poulet: r.famillePoulet,
                 prix_achat_defaut_poulet: r.prixPouletDefaut,
                 produits_simulation: r.produitsSuivis,
+                coeff_p1_p2: r.coeffP1P2,
                 avertissements: r.avertissements
             }
         });
@@ -85,7 +91,29 @@ router.get('/reglages', async (req, res) => {
  */
 router.put('/reglages', adminStrict, async (req, res) => {
     try {
-        const r = await reglages.ecrireReglages(req.body || {});
+        const corps = Object.assign({}, req.body || {});
+
+        // SIGNATURE DE LA CALIBRATION, posee par le serveur.
+        //
+        // Le client envoie la valeur qu'il vient de calculer et la fenetre sur
+        // laquelle il l'a calculee; il n'envoie NI l'auteur NI la date. Les
+        // accepter de lui permettrait de signer une calibration au nom d'un
+        // autre, et de l'antidater - alors que le seul interet de les stocker
+        // est de pouvoir s'y fier.
+        if (corps.coeffP1P2 !== undefined && corps.coeffP1P2 !== null) {
+            const recu = (typeof corps.coeffP1P2 === 'object' && !Array.isArray(corps.coeffP1P2))
+                ? corps.coeffP1P2
+                : { valeur: corps.coeffP1P2 };
+            corps.coeffP1P2 = {
+                valeur: recu.valeur,
+                fenetre: recu.fenetre,
+                jours: recu.jours,
+                par: utilisateur(req),
+                le: new Date().toISOString()
+            };
+        }
+
+        const r = await reglages.ecrireReglages(corps);
         if (!r.ok) {
             return res.status(400).json({ success: false, error: r.erreurs.join(' ; ') });
         }
@@ -119,6 +147,9 @@ router.put('/reglages', adminStrict, async (req, res) => {
                 actif: apres.actif,
                 famille_poulet: apres.famillePoulet,
                 prix_achat_defaut_poulet: apres.prixPouletDefaut,
+                // Rendu au client pour qu'il affiche la signature - date et
+                // auteur - sans avoir a recharger l'ecran.
+                coeff_p1_p2: apres.coeffP1P2,
                 avertissements: apres.avertissements
             }
         });

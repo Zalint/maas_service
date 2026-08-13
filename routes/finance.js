@@ -1651,10 +1651,28 @@ router.get('/simulation', async (req, res) => {
                 o_foire: 1.336, mbao: 1.243, keur_massar: 1.280, sacre_coeur: 1.392
             };
             const slugTenant = String(require('../config/tenant').slug || '').toLowerCase();
+
+            // La calibration ENREGISTREE, si un administrateur en a fige une.
+            //
+            // Elle voyage avec la projection et non avec /reglages, qui ne
+            // rend ses cles qu'aux administrateurs: le coefficient pilote le
+            // chiffre que TOUT LE MONDE lit a l'ecran, il ne peut pas etre
+            // invisible a ceux qui le subissent. Sa lecture ne doit jamais
+            // faire echouer la simulation - sans elle, le client recalcule en
+            // direct, exactement comme avant.
+            let coeffEnregistre = null;
+            try {
+                const rg = await require('../lib/simulation-v2/reglages').lireReglages();
+                coeffEnregistre = rg.coeffP1P2 || null;
+            } catch (e) {
+                console.warn('[finance] calibration P1/P2 illisible:', e.message);
+            }
+
             projectionV2 = {
                 ca_par_jour: caParJour,
                 historique: { debut: histoDebutIso, fin: histoFinIso, ca_par_jour: caHisto },
-                coeff_defaut: COEFFS_DOCUMENT[slugTenant] || 1.28
+                coeff_defaut: COEFFS_DOCUMENT[slugTenant] || 1.28,
+                coeff_enregistre: coeffEnregistre
             };
 
             // ---- Clients de la periode, pour la fidelisation: les plus gros
