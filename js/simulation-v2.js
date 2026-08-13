@@ -783,7 +783,8 @@
             return '<tr>'
                 + '<td>' + esc(p.nom)
                   + (p.prix_achat_origine === 'famille_poulet' ? ' <span class="badge bg-success-subtle text-success">famille poulet</span>' : '')
-                  + (p.prix_achat_origine === 'repli_poulet' ? ' <span class="badge bg-warning-subtle text-warning">prix de repli</span>' : '')
+                  + (p.prix_achat_origine === 'famille_boeuf' ? ' <span class="badge bg-info-subtle text-info">famille bœuf</span>' : '')
+                  + (p.prix_achat === null || p.prix_achat === undefined ? ' <span class="badge bg-danger-subtle text-danger">coût inconnu</span>' : '')
                   + (m !== null && m < 0 ? ' <span class="badge bg-danger-subtle text-danger">marge négative</span>' : '')
                   + (p.sans_vente ? ' <span class="badge bg-light text-muted">aucune vente</span>' : '')
                 + '</td>'

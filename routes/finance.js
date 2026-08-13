@@ -2068,7 +2068,7 @@ router.get('/simulation', async (req, res) => {
             // Quand les origines different, on rend la MOINS sure des trois:
             // c'est celle qui doit alerter, et c'est aussi la seule lecture
             // honnete d'un prix qui n'a pas la meme provenance tous les jours.
-            const RANG = { propre: 0, famille_poulet: 1, repli_poulet: 2 };
+            const RANG = { propre: 0, famille_boeuf: 1, famille_poulet: 2 };
             origineDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
                 if (!c || !c.origines.size) return finDePeriode.origine(nom);
@@ -2183,7 +2183,7 @@ router.get('/simulation', async (req, res) => {
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0,
                 // D'ou vient le cout: 'propre' (catalogue ou historique du
-                // produit lui-meme), 'famille_poulet', 'repli_poulet', ou null
+                // produit lui-meme), 'famille_boeuf', 'famille_poulet', ou null
                 // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
                 // un chiffre dont on ne peut pas nommer la source ne se
                 // verifie pas. Null hors Simulation 2.0, ou la notion n'existe

@@ -71,13 +71,27 @@ test('un produit HORS famille reste sans cout', async () => {
     expect(p.prixAchat('Yell')).toBeNull();
 });
 
-test('le repli configurable ne sert QUE si le catalogue est muet', async () => {
+test('AUCUN repli numerique: le cout manquant est remonte, pas invente', async () => {
+    // Un cout invente est pire qu'un cout absent: il produit une marge
+    // d'apparence calculee, qui entre dans les classements et declenche des
+    // recommandations, sans que rien ne dise qu'elle repose sur un nombre
+    // choisi d'avance.
     poserBase({ poulet: null });
     const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 2750 });
     const p = r.pourDate('2026-07-31');
-    expect(p.prixAchat('Poulet en détail')).toBe(2750);
-    expect(p.origine('Poulet en détail')).toBe('repli_poulet');
-    expect(r.avertissements.join(' ')).toMatch(/repli de 2750/);
+    expect(p.prixAchat('Poulet en détail')).toBeNull();
+    expect(p.origine('Poulet en détail')).toBeNull();
+});
+
+test("l'avertissement NOMME le produit et la ligne qui le renseignerait", async () => {
+    // Previr d'un probleme sans dire ou le corriger oblige a chercher.
+    poserBase({ poulet: null });
+    const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 2750 });
+    r.pourDate('2026-07-31').prixAchat('Poulet en détail');
+    const a = r.avertissements.join(' ');
+    expect(a).toMatch(/Poulet en détail/);
+    expect(a).toMatch(/« Poulet »/);
+    expect(a).not.toMatch(/2750/);
 });
 
 test('sans catalogue ni repli, le cout reste inconnu plutot que zero', async () => {
@@ -99,13 +113,35 @@ test('les avertissements du module de base sont conserves', async () => {
     expect(r.avertissements).toContain('avertissement du module de base');
 });
 
-test("l'avertissement de repli n'est emis QU'UNE fois", async () => {
+test("le produit sans cout n'est nomme QU'UNE fois", async () => {
+    // pourDate est appele une fois par journee: sans deduplication, le meme
+    // produit apparaitrait trente fois dans les avertissements.
     poserBase({ poulet: null });
     const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 3000 });
     for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) {
         r.pourDate(d).prixAchat('Poulet en détail');
     }
-    expect(r.avertissements.filter((a) => /repli de 3000/.test(a)).length).toBe(1);
+    expect(r.avertissements.filter((a) => /Coût inconnu.*Poulet en détail/.test(a)).length).toBe(1);
+});
+
+test('la famille BOEUF passe avant la poulet', async () => {
+    // Un produit range par erreur dans les deux prendrait sinon le cout de la
+    // volaille sans que rien ne le dise.
+    poserBase();
+    const p = (await creer({
+        famillePoulet: ['Jarret'], familleBoeuf: ['Jarret']
+    })).pourDate('2026-07-31');
+    expect(p.prixAchat('Jarret')).toBe(3835);
+    expect(p.origine('Jarret')).toBe('famille_boeuf');
+});
+
+test('le Jarret prend le cout de la carcasse de boeuf', async () => {
+    poserBase();
+    const p = (await creer({ familleBoeuf: ['Jarret'] })).pourDate('2026-07-31');
+    expect(p.prixAchat('Jarret')).toBe(3835);
+    expect(p.origine('Jarret')).toBe('famille_boeuf');
+    // Un produit hors famille reste sans cout.
+    expect(p.prixAchat('Yell')).toBeNull();
 });
 
 test('le module de base n est appele qu UNE fois, pas par journee', async () => {
