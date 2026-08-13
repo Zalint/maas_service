@@ -351,3 +351,39 @@ describe('le reglage des dimanches accompagne la calibration', () => {
         expect(c.dimanches).toBeNull();
     });
 });
+
+describe('famille boeuf: le Jarret prend le cout de la carcasse', () => {
+    beforeEach(() => { jest.clearAllMocks(); });
+
+    test('le Jarret y est par defaut', async () => {
+        FinanceConfig.findAll.mockResolvedValue([]);
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual(['Jarret']);
+    });
+
+    test('la liste est relue, dedupliquee, et une liste VIDE desactive', async () => {
+        FinanceConfig.findAll.mockResolvedValue([
+            { key: 'famille_boeuf', value: 'Jarret, Gigot, jarret' }
+        ]);
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual(['Jarret', 'Gigot']);
+
+        FinanceConfig.findAll.mockResolvedValue([{ key: 'famille_boeuf', value: '' }]);
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual([]);
+    });
+
+    test('elle passe par le MEME validateur que la famille poulet', () => {
+        // Un element non-chaine est refuse, jamais converti: String({}) rend
+        // '[object Object]', qui passait pour un produit.
+        expect(reglages.valider({ familleBoeuf: [{ nom: 'Jarret' }] }).ok).toBe(false);
+        expect(reglages.valider({ familleBoeuf: ['Jarret, Gigot'] }).ok).toBe(false);
+        const bon = reglages.valider({ familleBoeuf: ['Jarret', 'Gigot'] });
+        expect(bon.ok).toBe(true);
+        expect(bon.aEcrire[0]).toEqual({ key: 'famille_boeuf', value: 'Jarret,Gigot' });
+    });
+
+    test('le defaut n est pas expose par reference', async () => {
+        FinanceConfig.findAll.mockResolvedValue([]);
+        const a = await reglages.lireReglages();
+        a.familleBoeuf.push('POLLUTION');
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual(['Jarret']);
+    });
+});
