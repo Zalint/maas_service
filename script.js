@@ -10339,6 +10339,61 @@ function filtrerTableauReconciliationMensuelle() {
  * Un denominateur nul n'affiche PAS 0% - qui se lirait "aucune perte" - mais
  * un tiret: il n'y avait rien a mesurer.
  */
+/**
+ * Les produits qui COMPOSENT chaque taux de parage, du plus lourd au plus
+ * leger.
+ *
+ * Le taux est un rapport entre deux sommes de kilos, et rien a l'ecran ne
+ * disait sur QUOI il portait. Un produit range par erreur dans une espece y
+ * entrait sans qu'on puisse le voir: 48 kg de Laxass classe en Ovin faisaient
+ * afficher 83 % de perte sur l'agneau, qui n'avait pourtant rien vendu ce
+ * jour-la. La liste rend la composition verifiable d'un coup d'oeil.
+ *
+ * Les exclusions du parage (Administration -> Parage : exclusions) sont deja
+ * appliquees en amont: ce qui apparait ici est exactement ce qui compte.
+ */
+function afficherContributeursParage(parageMois, kg) {
+    const zone = document.getElementById('parage-contributeurs');
+    if (!zone) return;
+    if (!parageMois) { zone.innerHTML = ''; return; }
+
+    const bloc = (cat, titre) => {
+        const d = parageMois[cat];
+        const pp = (d && d.parProduit) || {};
+        const noms = Object.keys(pp).sort((a, b) => (pp[b].theorique || 0) - (pp[a].theorique || 0));
+        if (!noms.length) return '';
+        const total = noms.reduce((s, n) => s + (pp[n].theorique || 0), 0);
+        // PAS de badge "rien vendu": un stock sans vente est la NORME ici. Le
+        // stock est tenu sous le nom de la carcasse ("Boeuf", 532 kg) tandis
+        // que les ventes sortent sous les noms de decoupe ("Boeuf en detail",
+        // 355 kg). Les deux colonnes ne s'alignent donc pas produit par
+        // produit, et signaler cet ecart aurait appris a ignorer l'alerte.
+        const lignes = noms.map((n) => {
+            const part = total > 0 ? (pp[n].theorique / total) * 100 : 0;
+            return '<tr>'
+                + `<td>${n}</td>`
+                + `<td class="text-end">${kg(pp[n].theorique)}</td>`
+                + `<td class="text-end">${kg(pp[n].vendu || 0)}</td>`
+                + `<td class="text-end text-muted">${part.toFixed(0)} %</td></tr>`;
+        }).join('');
+        return `<div class="col-md-6"><div class="small fw-medium mb-1">${titre}</div>`
+            + '<table class="table table-sm table-bordered mb-2"><thead><tr>'
+            + '<th>Produit</th><th class="text-end">Stock théorique</th>'
+            + '<th class="text-end">Vendu</th><th class="text-end">Part</th>'
+            + `</tr></thead><tbody>${lignes}</tbody></table></div>`;
+    };
+
+    const html = bloc('bovin', 'Composition du parage bœuf') + bloc('ovin', 'Composition du parage agneau');
+    zone.innerHTML = html
+        ? '<div class="small text-muted mb-1">Produits qui composent les taux ci-dessus, '
+          + 'par poids décroissant dans le <strong>stock théorique</strong> — le dénominateur. '
+          + 'Le stock est tenu sous le nom de la carcasse et les ventes sortent sous les noms '
+          + 'de découpe : les deux colonnes ne se correspondent donc pas ligne à ligne. '
+          + 'Les exclusions configurées en administration sont déjà retirées.'
+          + '</div><div class="row g-2">' + html + '</div>'
+        : '';
+}
+
 function afficherParageMois(parageMois) {
     // LA definition du taux vit dans lib/parage.js, charge par index.html et
     // expose en window.parageLib. Ce fichier en recopiait la formule ET le
@@ -10357,6 +10412,8 @@ function afficherParageMois(parageMois) {
         { cat: 'ovin', valeur: 'parage-ovin-mois', detail: 'parage-ovin-mois-detail' }
     ];
     const kg = (n) => `${(parseFloat(n) || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} kg`;
+
+    afficherContributeursParage(parageMois, kg);
 
     cartes.forEach(({ cat, valeur, detail }) => {
         const elValeur = document.getElementById(valeur);
@@ -10501,8 +10558,8 @@ function ecrireExclusions(ensemble) {
 function agregerReconciliationMois(lignes, exclusions) {
     const totaux = { ventesTheoriques: 0, ventesSaisies: 0, creances: 0, versements: 0 };
     const parage = {
-        bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } },
-        ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 } }
+        bovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 }, parProduit: {} },
+        ovin: { vendu: 0, theorique: 0, dechet: { matin: 0, transferts: 0, soir: 0, vendu: 0, jete: 0, produit: 0 }, parProduit: {} }
     };
     let retenues = 0;
     (lignes || []).forEach((l) => {
@@ -10522,6 +10579,17 @@ function agregerReconciliationMois(lignes, exclusions) {
                 ['matin', 'transferts', 'soir', 'vendu', 'jete', 'produit']
                     .forEach((c) => { t[c] += parseFloat(d.dechet[c]) || 0; });
             }
+            // QUI compose le pool. Sans cette liste, un produit range par
+            // erreur dans une espece reste invisible: le 13 aout, 48 kg de
+            // Laxass classe en Ovin portaient un taux de 83 % attribue a
+            // l'agneau, qui n'avait rien vendu ce jour-la.
+            const pp = d.parProduit || {};
+            Object.keys(pp).forEach((nom) => {
+                const cible = parage[cat].parProduit[nom]
+                    || (parage[cat].parProduit[nom] = { theorique: 0, vendu: 0 });
+                cible.theorique += parseFloat(pp[nom].theorique) || 0;
+                cible.vendu += parseFloat(pp[nom].vendu) || 0;
+            });
         });
     });
     return { totaux, parage, retenues, exclues: (lignes || []).length - retenues };
