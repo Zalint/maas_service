@@ -16,7 +16,27 @@
 
 const fs = require('fs');
 const path = require('path');
-const lire = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+
+/**
+ * Le source SANS ses commentaires.
+ *
+ * Ce fichier est bavard en commentaires, et ils nomment abondamment les cles
+ * du contrat: `ca_par_jour`, `commandes`, `top_clients` apparaissent dans des
+ * phrases explicatives autant que dans du code. Un test qui cherche la chaine
+ * dans le source BRUT passait donc au vert sur un simple commentaire - il
+ * pouvait affirmer qu'une cle existait des deux cotes alors qu'un seul des
+ * deux la posait vraiment, ce qui est exactement le silence que ce contrat
+ * existe pour rompre.
+ *
+ * Les URL (`http://`) sont preservees: sans cette precaution, `//` y serait
+ * pris pour un debut de commentaire et couperait la ligne en deux.
+ */
+const lire = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+/** La cle comme IDENTIFIANT ou propriete, jamais comme sous-chaine. */
+const porte = (source, cle) => new RegExp('\\b' + cle + '\\b').test(source);
 
 // Les cles du contrat, chacune presente DES DEUX cotes. En ajouter une ici
 // quand l'ecran se met a lire un nouveau champ du serveur.
@@ -50,8 +70,8 @@ test('chaque cle du contrat existe cote serveur ET cote ecran', () => {
     const ecran = lire('js/simulation-v2.js');
     const absentes = [];
     CLES.forEach((k) => {
-        if (!serveur.includes(k)) absentes.push(k + ' (serveur)');
-        if (!ecran.includes(k)) absentes.push(k + ' (écran)');
+        if (!porte(serveur, k)) absentes.push(k + ' (serveur)');
+        if (!porte(ecran, k)) absentes.push(k + ' (écran)');
     });
     expect(absentes).toEqual([]);
 });
@@ -64,8 +84,8 @@ test('le moteur ne lit le contexte que par les noms que l ecran construit', () =
     const ecran = lire('js/simulation-v2.js');
     ['varBovin', 'varOvin', 'parageBase', 'commissionPct', 'commission', 'boeuf', 'pv']
         .forEach((k) => {
-            expect(moteur.includes(k)).toBe(true);
-            expect(ecran.includes(k)).toBe(true);
+            expect(porte(moteur, k)).toBe(true);
+            expect(porte(ecran, k)).toBe(true);
         });
 });
 
