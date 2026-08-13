@@ -103,6 +103,9 @@
             // Combien de fois le rythme mensuel d'un produit on s'autorise a
             // lui demander, dans le plan d'equilibre.
             facteurMax: 3,
+            // Ecart de parage teste par les scenarios de la projection, en
+            // POINTS de pourcentage (5 % -> 8 % et 2 % a 3 points).
+            ecartParage: 3,
             // Prix de vente retenu pour les jours qui RESTENT, par produit.
             // Vide = celui que le serveur propose (majoritaire du dernier jour
             // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
@@ -978,6 +981,45 @@
         return copie;
     }
 
+    /**
+     * L'effet, sur les JOURS QUI RESTENT, d'un coût d'achat ou d'un taux de
+     * parage différent.
+     *
+     * Passe par le MOTEUR, pas par une formule recopiée: c'est lui qui sait
+     * qu'un point de parage renchérit la carcasse de toutes les unités vendues
+     * (1/(1-p)) et que la livraison induite est commissionnée. Réécrire ces
+     * règles ici en ferait une seconde source de vérité, qui divergerait.
+     *
+     * Le contexte est privé de ses termes de STOCK - variation par espèce et
+     * écart matin/soir mis à zéro. Ces effets décrivent le stock DÉJÀ constitué
+     * sur la période écoulée; la projection les traite à part, par l'option
+     * « variation de stock projetée ». Les laisser ici les compterait deux fois.
+     *
+     * @param {Array} produits  au prix de la suite, quantités de la période
+     * @param {number} proportion  part du volume encore à vendre
+     * @param {object} globaux  ce qui change: { dPa } ou { parBov, parOvi }
+     */
+    function effetSurLaSuite(produits, proportion, globaux) {
+        if (!M || !etat.contexte || !(proportion > 0)) return 0;
+        var c = etat.contexte;
+        var ctxSansStock = {};
+        Object.keys(c).forEach(function (k) { ctxSansStock[k] = c[k]; });
+        ctxSansStock.varBovin = 0;
+        ctxSansStock.varOvin = 0;
+        ctxSansStock.boeuf = { matin: 0, soir: 0 };
+
+        var restants = produits.map(function (p) {
+            var copie = {};
+            Object.keys(p).forEach(function (k) { copie[k] = p[k]; });
+            copie.quantite = nb(p.quantite) * proportion;
+            copie.ca = nb(p.ca) * proportion;
+            return copie;
+        });
+        var base = { charges: 0, dep: 0, com: c.commissionPct, parBov: c.parageBase, parOvi: c.parageBase, dPa: 0 };
+        var sc = { leviers: {}, globaux: Object.assign({}, base, globaux) };
+        return M.effetsGlobaux({ produits: restants, contexte: ctxSansStock }, sc).total;
+    }
+
     function margeApresCommission(p) {
         var m = margeBase(p);
         if (m === null) return null;
@@ -1342,6 +1384,63 @@
         // pour ces deux nombres, ils ne doivent pas exiger un depliage.
         etat.projResume = '· CA ' + fmt(ca.caProjete) + ' F · PL '
             + fmt(d0.pl) + ' F · confiance ' + conf.niveau;
+
+        // ---- QUATRE SENSIBILITES DE COUT, sur les jours qui restent.
+        //
+        // Les trois cartes ci-dessus font varier le CHIFFRE D'AFFAIRES. Elles
+        // ne disent rien de ce qui se passe si la carcasse renchérit ou si la
+        // découpe rend moins - deux aléas que le boucher subit sans les
+        // choisir, et qui pèsent plus lourd que 10 % de CA.
+        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
+        var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
+        var stats = (etat.sim.prix_achat || {}).boeuf_stats || null;
+        var paMoyen = (function () {
+            var bd = univSens.filter(function (p) { return M.estBoeuf(p) && nb(p.prix_achat) > 0; })[0];
+            return bd ? nb(bd.prix_achat) : null;
+        }());
+        var ep = nb(etat.proj.ecartParage);
+        var pBase = nb(etat.contexte.parageBase);
+        var sensis = [];
+        if (stats && paMoyen !== null && stats.max > paMoyen) {
+            sensis.push({ lib: 'Coût du bœuf au plus haut (' + fmt(stats.max) + ' F)',
+                effet: effetSurLaSuite(univSens, propSuite, { dPa: stats.max - paMoyen }) });
+        }
+        if (stats && paMoyen !== null && stats.min < paMoyen) {
+            sensis.push({ lib: 'Coût du bœuf au plus bas (' + fmt(stats.min) + ' F)',
+                effet: effetSurLaSuite(univSens, propSuite, { dPa: stats.min - paMoyen }) });
+        }
+        if (ep > 0) {
+            var pHaut = Math.min(99, pBase + ep), pBas = Math.max(0, pBase - ep);
+            sensis.push({ lib: 'Parage à ' + fmt(pHaut) + ' % (+' + fmt(ep) + ' pts)',
+                effet: effetSurLaSuite(univSens, propSuite, { parBov: pHaut, parOvi: pHaut }) });
+            sensis.push({ lib: 'Parage à ' + fmt(pBas) + ' % (−' + fmt(ep) + ' pts)',
+                effet: effetSurLaSuite(univSens, propSuite, { parBov: pBas, parOvi: pBas }) });
+        }
+        if (sensis.length) {
+            h += '<div class="d-flex align-items-center gap-2 mb-1 small flex-wrap">'
+                + '<span class="fw-medium">Et si le coût bougeait, sur les jours qui restent</span>'
+                + '<label class="text-muted ms-2">écart de parage testé :</label>'
+                + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
+                + 'data-k="ecartParage" style="width:4.5rem" min="0" max="50" step="0.5" value="'
+                + esc(String(ep)) + '"><span class="text-muted">points</span></div>'
+                + '<div class="table-responsive"><table class="table table-sm mb-2"><thead><tr>'
+                + '<th>Hypothèse sur la suite du mois</th>'
+                + '<th class="text-end">Effet</th><th class="text-end">PL projeté</th>'
+                + '</tr></thead><tbody>'
+                + sensis.map(function (s) {
+                    var pl = d0.pl + s.effet;
+                    return '<tr><td>' + esc(s.lib) + '</td>'
+                        + '<td class="text-end ' + cls(s.effet) + '">' + esc(signe(s.effet)) + '</td>'
+                        + '<td class="text-end fw-bold ' + cls(pl) + '">' + esc(fmt(pl)) + '</td></tr>';
+                }).join('')
+                + '</tbody></table></div>'
+                + '<div class="small text-muted mb-2">Le coût et le parage ne portent que sur les '
+                + 'unités encore à vendre, au taux de parage : une unité vendue consomme '
+                + '1/(1−parage) de carcasse. La commission suit les livraisons induites. '
+                + 'L\'effet de stock n\'est pas recompté ici — il relève de l\'option '
+                + '<em>variation de stock projetée</em>.</div>';
+        }
 
         // ---- CE QU'IL FAUT FAIRE D'ICI LA FIN DU MOIS pour revenir a zero.
         //
@@ -1859,6 +1958,7 @@
                 if (k === 'stockOption') etat.proj.stockOption = el.value;
                 else if (k === 'depensesOption') etat.proj.depensesOption = el.value;
                 else if (k === 'facteurMax') etat.proj.facteurMax = Math.max(1, nb(el.value) || 1);
+                else if (k === 'ecartParage') etat.proj.ecartParage = Math.max(0, nb(el.value));
                 else if (k === 'exclureDimanche') etat.proj.exclureDimanche = el.checked;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);

@@ -2162,7 +2162,12 @@ router.get('/simulation', async (req, res) => {
                     avertissements: (resolveurPrix.avertissements || []).concat(
                         typeof resolveurPrix.resumePrixBoeuf === 'function'
                             ? resolveurPrix.resumePrixBoeuf() : []
-                    )
+                    ),
+                    // Fourchette des prix bovins reellement pratiques, pour les
+                    // scenarios << cout au plus haut / au plus bas >> de la
+                    // projection. Null hors v2, ou la notion ne sert a rien.
+                    boeuf_stats: (v2 && typeof resolveurPrix.statsPrixBoeuf === 'function')
+                        ? resolveurPrix.statsPrixBoeuf() : null
                 }
             }
         });
