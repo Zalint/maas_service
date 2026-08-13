@@ -76,10 +76,19 @@
         enAttente: false,
         debug: false,
         chargement: false,
-        // Lire le resultat SANS la variation de stock. Sur aout, le stock pese
-        // 148 742 F pour un PL de -51 196: le mois se lit alors comme une photo
-        // de stock plutot que comme une exploitation. La case permet de voir ce
-        // que vaut l'exploitation seule.
+        // Lire le resultat SANS la variation de stock.
+        //
+        // ATTENTION a ce que ce mode veut dire, et a ce qu'il ne veut PAS dire.
+        // La variation de stock n'est pas un gain fictif: elle est dans le PL
+        // pour ne pas passer en charge une marchandise achetee mais pas encore
+        // vendue. Ce stock partira, et sa marge avec. Le PL AVEC stock reste
+        // donc la bonne mesure du mois.
+        //
+        // Ce mode mesure une EXPOSITION: sur aout, 148 742 F de variation pour
+        // un PL de -51 196, soit 175 % du resultat suspendus a un comptage et a
+        // une valorisation. Une erreur de 10 % sur l'inventaire deplace le PL
+        // de 15 000 F. Le voir sans le stock dit de combien on depend de cette
+        // mesure - pas ce que vaut l'exploitation.
         horsStock: false,
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
@@ -192,7 +201,8 @@
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-hors-stock">'
         +       '<label class="form-check-label small ms-1" for="sim2-hors-stock" '
-        +         'title="Retire la variation de stock du résultat, pour lire l\'exploitation seule">'
+        +         'title="Retire la variation de stock : montre la part du résultat qui repose '
+        +           'sur de la marchandise encore invendue. Ce n\'est pas le résultat réel.">'
         +         'Hors stock</label></div>'
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-debug">'
@@ -581,10 +591,13 @@
         // PL: le dire est la condition pour offrir cette lecture.
         if (etat.horsStock) {
             h += '<div class="alert alert-info py-2 small mb-2"><i class="bi bi-eye"></i> '
-               + '<strong>Lecture hors stock.</strong> La variation de stock ('
-               + esc(fmt(nb(st.variation_nette))) + ' F) est retirée du résultat de référence : '
-               + 'ce n\'est plus le PL, c\'est l\'exploitation seule. Le PL réel reste '
-               + esc(fmt(b.pl)) + ' F.</div>';
+               + '<strong>Lecture hors stock — mesure d\'exposition, pas le résultat.</strong> '
+               + 'La variation de stock (' + esc(fmt(nb(st.variation_nette))) + ' F) est retirée. '
+               + 'Elle n\'est pas un gain fictif : elle est dans le PL pour ne PAS passer en charge '
+               + 'une marchandise achetée mais pas encore vendue — ce stock partira, et sa marge avec. '
+               + 'Ce que ce mode montre, c\'est la part de votre résultat qui repose sur une '
+               + 'marchandise encore invendue, donc sur un comptage et une valorisation : le PL réel '
+               + 'reste <strong>' + esc(fmt(b.pl)) + ' F</strong>.</div>';
         }
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
         h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
