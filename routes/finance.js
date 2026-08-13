@@ -1703,12 +1703,44 @@ router.get('/simulation', async (req, res) => {
 
             // Plafonne aux 40 plus gros de la fenetre: de quoi tenir un top 5 et
             // des relances, sans porter toute la clientele dans la reponse.
+            // Le plafond retient les plus gros SUR LA FENETRE **et** les plus
+            // gros DU MOIS DERNIER.
+            //
+            // Trier sur le seul CA de la fenetre ecartait le client qui n'est
+            // present que depuis peu: un restaurant a 900 000 F le mois
+            // dernier passait derriere quarante reguliers cumulant plus sur
+            // trois mois, et disparaissait donc du « top 5 des gros clients du
+            // mois dernier » - la liste ratait precisement celui qu'elle
+            // cherche. On garde les deux classements, dedupliques.
+            const moisPrecedent = (() => {
+                const d = new Date(String(dateFin).slice(0, 7) + '-01T00:00:00Z');
+                d.setUTCMonth(d.getUTCMonth() - 1);
+                return d.toISOString().slice(0, 7);
+            })();
+            const caMoisDernier = (h) => {
+                let s = 0;
+                for (const [j, m] of h.jours.entries()) {
+                    if (String(j).slice(0, 7) === moisPrecedent) s += m;
+                }
+                return s;
+            };
+            const tous = Array.from(habitudes.values());
+            const parFenetre = tous.slice().sort((a, b) => b.ca - a.ca).slice(0, 40);
+            const parMoisDernier = tous.slice()
+                .sort((a, b) => caMoisDernier(b) - caMoisDernier(a)).slice(0, 20);
+            const retenusClients = [];
+            const vusClients = new Set();
+            for (const h of parFenetre.concat(parMoisDernier)) {
+                const cle = String(h.nom).trim().toLowerCase();
+                if (vusClients.has(cle)) continue;
+                vusClients.add(cle);
+                retenusClients.push(h);
+            }
+
             clientsHistoriqueV2 = {
                 debut: histoDebutIso,
                 fin: dateFin,
-                clients: Array.from(habitudes.values())
-                    .sort((a, b) => b.ca - a.ca)
-                    .slice(0, 40)
+                clients: retenusClients
                     .map((h) => ({
                         nom: h.nom,
                         ca_fenetre: round2(h.ca),
@@ -1892,9 +1924,18 @@ router.get('/simulation', async (req, res) => {
             produitsVendus = volumes.produits
                 .filter((a) => a.quantite > 0)
                 .map((a) => {
-                    // La graphie la plus courante fait un meilleur libelle que
-                    // la cle normalisee, qui est en minuscules sans accents.
-                    const nom = a.graphies[0] || a.cle;
+                    // agregerVolumes TRIE les graphies par ordre alphabetique:
+                    // prendre la premiere donnait la graphie alphabetiquement
+                    // premiere, pas la plus courante - la faute de frappe
+                    // d'une seule ligne l'emportait sur l'orthographe des
+                    // quatre-vingts autres. A defaut d'un comptage par
+                    // graphie, la plus LONGUE est un meilleur candidat: elle
+                    // porte les accents, que leur absence raccourcit rarement
+                    // mais jamais l'inverse.
+                    const nom = (a.graphies || []).slice().sort(
+                        (x, y) => String(y).length - String(x).length
+                            || String(x).localeCompare(String(y), 'fr')
+                    )[0] || a.cle;
                     const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
                     const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
                     return {
@@ -1931,9 +1972,19 @@ router.get('/simulation', async (req, res) => {
             // restent dans la liste, coches - sans quoi l'ecran devait les
             // afficher a part, et le panneau se lisait comme deux listes sans
             // rapport.
-            const dejaSuivi = new Set(PRODUITS_SIMULATION.map((n) => normaliserNomProduit(n)));
+            // Les 5 de base ET ceux que l'administration a ajoutes. N'y mettre
+            // que les 5 laissait un produit ajoute retomber dans
+            // `produits_ecartes`: l'ecran le declarait « aucune vente ce
+            // mois-ci » sur des ventes bien reelles.
+            const dejaSuivi = new Set(listeSuivie.map((n) => normaliserNomProduit(n)));
 
-            candidatsV2 = produitsVendus
+            // Le serveur rend la marge BRUTE et les deux prix; c'est l'ECRAN
+            // qui reclasse en marge NETTE DE PARAGE, parce que lui seul porte
+            // le contexte de parage par espece (cfgMap et categorieDe vivent
+            // dans computePl, pas ici). Sans ce reclassement cote client, un
+            // produit a +50 F bruts mais -137 F nets etait presente comme un
+            // gisement de marge.
+            const candidatsBruts = produitsVendus
                 .filter((p) => {
                     if (dejaSuivi.has(normaliserNomProduit(p.nom))) return false;
                     if (!clesStock.has(normaliserNomProduit(p.nom))) return false;
@@ -1947,14 +1998,16 @@ router.get('/simulation', async (req, res) => {
                     ca: p.ca,
                     prix_moyen: p.prix_moyen,
                     prix_achat: p.prix_achat,
-                    // Marge BRUTE: le parage par espece est une affaire de
-                    // l'ecran, qui connait le scenario en cours. Elle suffit a
-                    // classer les candidats entre eux.
                     marge_unitaire: round2(p.prix_moyen - p.prix_achat)
                 }))
                 .filter((p) => p.marge_unitaire > 0)
-                .sort((a, b) => b.marge_unitaire - a.marge_unitaire)
-                .slice(0, 20);
+                .sort((a, b) => b.marge_unitaire - a.marge_unitaire);
+
+            candidatsV2 = candidatsBruts.slice(0, 20);
+            // Les candidats VALIDES mais tronques par le plafond d'affichage:
+            // ils ne doivent pas ressortir en « marge nulle ou negative » dans
+            // la liste des ecartes, ce qui etait un mensonge sur leur compte.
+            const clesCandidates = new Set(candidatsBruts.map((c) => normaliserNomProduit(c.nom)));
 
             // POURQUOI un produit vendu n'est-il pas proposable.
             //
@@ -1965,7 +2018,8 @@ router.get('/simulation', async (req, res) => {
             // une liste de choses a faire, pas une panne.
             ecartesV2 = produitsVendus
                 .filter((p) => !dejaSuivi.has(normaliserNomProduit(p.nom)))
-                .filter((p) => !candidatsV2.some((c) => c.nom === p.nom))
+                // Compare a TOUS les candidats valides, pas aux 20 affiches.
+                .filter((p) => !clesCandidates.has(normaliserNomProduit(p.nom)))
                 .map((p) => {
                     let motif = null;
                     if (!clesStock.has(normaliserNomProduit(p.nom))) motif = 'sans_stock';

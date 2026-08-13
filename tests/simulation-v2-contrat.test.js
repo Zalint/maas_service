@@ -71,7 +71,15 @@ test('chaque cle du contrat existe cote serveur ET cote ecran', () => {
     const absentes = [];
     CLES.forEach((k) => {
         if (!porte(serveur, k)) absentes.push(k + ' (serveur)');
-        if (!porte(ecran, k)) absentes.push(k + ' (écran)');
+        // Cote ecran, la cle doit etre LUE — donc apparaitre en acces de
+        // PROPRIETE (`.cle`), et pas seulement a gauche d'un deux-points dans
+        // un objet que l'ecran construit. Le test passait au vert sur
+        // `commandes: etat.sim.commandes || []` meme apres avoir remplace la
+        // lecture par un tableau vide: la cle survivait a gauche, la lecture
+        // avait disparu a droite.
+        if (!new RegExp('\\.\\s*' + k + '\\b').test(ecran)) {
+            absentes.push(k + ' (écran : jamais lu comme propriété)');
+        }
     });
     expect(absentes).toEqual([]);
 });

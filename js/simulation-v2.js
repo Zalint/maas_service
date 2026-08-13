@@ -242,6 +242,10 @@
         corps.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours…</div>';
 
         var fige = $('ref').value !== 'calcul' ? $('ref').value : null;
+        // La periode REELLEMENT interrogee, capturee avant que le snapshot
+        // n'ecrase les champs: c'est a elle qu'on compare la periode du
+        // snapshot pour savoir s'il faut relancer /simulation.
+        var demandee = { debut: d.value, fin: f.value };
         var qs = 'dateDebut=' + encodeURIComponent(d.value) + '&dateFin=' + encodeURIComponent(f.value);
 
         Promise.all([
@@ -285,6 +289,25 @@
                 $('fin').value = snap.periode_fin;
             }
             $('debut').disabled = $('fin').disabled = !!fige;
+
+            // Le snapshot peut porter une AUTRE periode que celle des champs
+            // au moment de la requete. On ecrivait alors ses dates dans les
+            // champs sans relancer /simulation: les prix d'achat, le catalogue
+            // et les volumes vendus restaient ceux du mois affiche, appliques
+            // aux volumes figes d'un autre mois. Une seule requete de plus,
+            // et seulement quand les periodes different reellement.
+            var periodeAutre = fige && snap && (
+                snap.periode_debut !== demandee.debut || snap.periode_fin !== demandee.fin
+            );
+            if (periodeAutre) {
+                var qs2 = 'dateDebut=' + encodeURIComponent(snap.periode_debut)
+                    + '&dateFin=' + encodeURIComponent(snap.periode_fin);
+                jsonOu('/api/finance/simulation?' + qs2, null).then(function (sim2) {
+                    preparer(sim2 || sim, payload, cfg, source, true);
+                    rendre();
+                });
+                return;
+            }
 
             preparer(sim, payload, cfg, source, !!fige);
             rendre();
@@ -837,6 +860,41 @@
     }
 
     /**
+     * La marge d'une unite vendue EN PLUS, nette de la commission qu'elle
+     * declenche.
+     *
+     * Le plan d'equilibre chiffrait son apport a la marge nette de parage
+     * seule. Or le moteur du meme ecran facture aussi la COMMISSION INDUITE:
+     * vendre une unite de plus fait livrer 1/(1-parage) unite de carcasse,
+     * commissionnee au prix catalogue fournisseur (hypothese 2 du moteur).
+     * Les deux moities de l'ecran se contredisaient donc: le plan promettait
+     * de combler 2 500 000 F la ou le moteur n'en rendait que 2 100 000.
+     *
+     *     commission par unite = taux x prix catalogue / (1 - parage espece)
+     *
+     * Quand le prix catalogue de l'espece est inconnu, on ne peut pas chiffrer
+     * la ponction: on rend la marge brute de parage plutot que d'inventer un
+     * cout, et le plan reste alors optimiste - comme le reste de l'ecran, qui
+     * signale deja cette part non chiffree.
+     */
+    function margeApresCommission(p) {
+        var m = margeBase(p);
+        if (m === null) return null;
+        var c = etat.contexte || {};
+        var pv = c.pv || {};
+        var taux = nb(c.commissionPct) / 100;
+        if (!taux) return m;
+        var prixCatalogue = M.estBoeuf(p) ? pv.bovin
+            : (M.estOvin(p) ? pv.ovin : pv.volaille);
+        if (!prixCatalogue) return m;
+        // Meme diviseur de parage que la marge elle-meme.
+        var parage = M.estBoeuf(p) || M.estOvin(p) ? nb(c.parageBase) : 0;
+        var d = 1 - parage / 100;
+        if (!(d > 0)) return m;
+        return m - taux * nb(prixCatalogue) / d;
+    }
+
+    /**
      * Reglage ADMIN des produits suivis, a l'endroit ou l'on constate le
      * besoin: on voit ici qu'un produit manque au plan, on l'ajoute ici.
      *
@@ -852,8 +910,33 @@
         var ajoutes = (etat.sim && etat.sim.produits_suivis_ajoutes) || [];
         if (!cand.length && !ajoutes.length) return '';
 
-        var choisis = {};
-        ajoutes.forEach(function (n) { choisis[String(n).trim().toLowerCase()] = true; });
+        // La selection vit dans l'ETAT, pas dans le DOM. rendre() reconstruit
+        // innerHTML: toute case cochee etait perdue des qu'un autre controle
+        // declenchait un rendu, et « Enregistrer » confirmait alors un
+        // enregistrement VIDE sans que rien ne le dise.
+        if (!etat.proj.suivis) {
+            etat.proj.suivis = {};
+            ajoutes.forEach(function (n) { etat.proj.suivis[String(n).trim().toLowerCase()] = true; });
+        }
+        var choisis = etat.proj.suivis;
+
+        // RECLASSEMENT EN MARGE NETTE DE PARAGE. Le serveur classe sur la
+        // marge brute, faute de contexte de parage; l'ecran, lui, l'a. Un
+        // produit a +50 F bruts peut sortir a -137 F nets: le proposer comme
+        // gisement de marge ferait ajouter au plan un produit qui le creuse.
+        cand = cand.map(function (c) {
+            var nette = margeApresCommission({
+                nom: c.nom, prix_moyen: c.prix_moyen, prix_achat: c.prix_achat
+            });
+            return Object.assign({}, c, { marge_nette: nette });
+        }).filter(function (c) {
+            // Marge nette inconnue: on garde et on le dit, plutot que de
+            // masquer un produit dont le cout existe.
+            return c.marge_nette === null || c.marge_nette > 0;
+        }).sort(function (a, b) {
+            return (b.marge_nette === null ? -Infinity : b.marge_nette)
+                - (a.marge_nette === null ? -Infinity : a.marge_nette);
+        });
 
         // Les produits ajoutes mais ABSENTS des candidats du mois (ils n'ont
         // rien vendu, ou leur cout a disparu) doivent rester cochables: sans
@@ -863,7 +946,7 @@
         var lignes = cand.slice();
         ajoutes.forEach(function (n) {
             if (!connus[String(n).trim().toLowerCase()]) {
-                lignes.push({ nom: n, marge_unitaire: null, quantite: null, ca: null, absent: true });
+                lignes.push({ nom: n, marge_nette: null, quantite: null, ca: null, absent: true });
             }
         });
 
@@ -912,7 +995,7 @@
         }
 
         h += '<div class="table-responsive"><table class="table table-sm mb-2"><thead><tr>'
-            + '<th>Suivi</th><th>Produit</th><th class="text-end">Marge brute</th>'
+            + '<th>Suivi</th><th>Produit</th><th class="text-end">Marge nette</th>'
             + '<th class="text-end">Vendu</th><th class="text-end">CA</th>'
             + '</tr></thead><tbody>'
             + lignes.map(function (c) {
@@ -922,7 +1005,10 @@
                     + '<td>' + esc(c.nom)
                     + (c.absent ? ' <span class="badge bg-light text-dark border">aucune vente ce mois-ci</span>' : '')
                     + '</td>'
-                    + '<td class="text-end">' + (c.marge_unitaire === null ? '—' : esc(fmt(c.marge_unitaire)) + ' F/u') + '</td>'
+                    + '<td class="text-end">'
+                    + (c.marge_nette === null || c.marge_nette === undefined
+                        ? '—' : esc(fmt(c.marge_nette)) + ' F/u')
+                    + '</td>'
                     + '<td class="text-end">' + (c.quantite === null ? '—' : esc(fmt(c.quantite)) + ' u') + '</td>'
                     + '<td class="text-end">' + (c.ca === null ? '—' : esc(fmt(c.ca)) + ' F') + '</td></tr>';
             }).join('')
@@ -944,6 +1030,15 @@
             if (el.checked) noms.push(el.value);
         });
         var msg = document.getElementById('sim2-suivi-msg');
+        // Refus explicite d'un enregistrement qui VIDERAIT la liste sans que
+        // ce soit demande. Vider reste possible - il faut decocher, ce que la
+        // presence de cases cochees rend visible - mais un panneau qui n'a
+        // rendu aucune case ne doit pas pouvoir effacer un reglage.
+        if (!noms.length && !document.querySelectorAll('.sim2-suivi').length) {
+            if (msg) msg.innerHTML = '<span class="text-danger">Aucune case affichée : '
+                + 'rien n\'a été enregistré.</span>';
+            return;
+        }
         if (msg) msg.textContent = 'Enregistrement…';
         fetch('/api/simulation-v2/reglages', {
             method: 'PUT',
@@ -993,7 +1088,19 @@
             exclureDimanche: sansDim
         });
         if (ca.restants.P1 === 0 && ca.restants.P2 === 0) {
-            return h + '<div class="alert alert-secondary py-2 small mb-3">Mois complet : rien à projeter.</div>';
+            // Il reste peut-etre des jours CALENDAIRES, tous fermes. Le dire,
+            // et laisser la case a portee de main: sortir ici en la laissant
+            // dans le bloc masque enfermait l'utilisateur - le seul reglage
+            // capable de reafficher la projection etait invisible.
+            var restentCalendaires = PJ.joursOuvres(fin, ca.finMois, false).length - 1;
+            return h + '<div class="alert alert-secondary py-2 small mb-3">'
+                + (restentCalendaires > 0 && sansDim
+                    ? 'Il ne reste que ' + restentCalendaires + ' jour(s) avant la fin du mois, '
+                      + 'tous des dimanches : plus rien à projeter à jours d\'ouverture constants. '
+                      + '<label class="ms-1"><input type="checkbox" class="sim2-proj-ctl" '
+                      + 'data-k="exclureDimanche" checked> Exclure les dimanches</label>'
+                    : 'Mois complet : rien à projeter.')
+                + '</div>';
         }
 
         var plBrut = etat.plBrut || {};
@@ -1008,8 +1115,14 @@
         // court aussi les jours creux. Jours d'OUVERTURE quand les dimanches
         // sont exclus, pour que le prorata des depenses et le plafond du plan
         // comptent la meme chose que les rythmes.
+        //
+        // Au moins UN jour ecoule: quand le 1er du mois tombe un dimanche et
+        // que l'analyse porte sur cette seule journee, le compte tombait a 0.
+        // Le module retombait alors sur un facteur 1 pendant que l'ecran
+        // affichait « × 24 » (jours.mois / max(1, 0)): le facteur montre
+        // n'etait pas celui applique.
         var jours = {
-            ecoules: PJ.joursOuvres(debut, fin, sansDim).length,
+            ecoules: Math.max(1, PJ.joursOuvres(debut, fin, sansDim).length),
             mois: PJ.joursOuvres(debut, ca.finMois, sansDim).length
         };
         var argsScen = {
@@ -1109,11 +1222,17 @@
         // compare d'un mois a l'autre, ce qui n'a aucune raison de priver
         // l'equilibre d'une cuisse de poulet dont le cout est connu. Repli sur
         // la liste suivie si le serveur ne fournit pas encore l'autre.
-        var universEq = (etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+        //
+        // EN MODE FIGE, on reste sur etat.produits: c'est la seule liste qui
+        // porte les volumes du SNAPSHOT (superposes dans preparer). Puiser
+        // dans produits_vendus - toujours calcule sur la periode vivante -
+        // faisait cohabiter sur le meme ecran un tableau de sensibilite fige
+        // et un plan d'equilibre bati sur d'autres volumes.
+        var universEq = (!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
             ? etat.sim.produits_vendus
             : etat.produits;
         var eq = PJ.planEquilibre({
-            plCentral: d0.pl, produits: universEq, margeDe: margeBase,
+            plCentral: d0.pl, produits: universEq, margeDe: margeApresCommission,
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
@@ -1190,9 +1309,9 @@
                     + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
                     + 'data-k="facteurMax" style="width:5rem" min="1" max="20" step="0.5" value="'
                     + esc(String(eq.facteurMax)) + '">'
-                    + '<span class="text-muted">fois son rythme mensuel — soit '
-                    + '<em>vendu × (' + jours.mois + ' j ÷ ' + jours.ecoules + ' j) × '
-                    + esc(String(eq.facteurMax)) + '</em></span>'
+                    + '<span class="text-muted">fois son rythme mensuel — la colonne '
+                    + '<em>plafond du total</em> en retire ce qui est déjà vendu, et ne '
+                    + 'descend jamais sous ce qui est déjà attendu</span>'
                     + '</div>'
                     + '<div class="table-responsive"><table class="table table-sm mb-1">'
                     + '<thead><tr><th>Produit</th>'
@@ -1219,8 +1338,20 @@
                             + '<td class="text-end text-muted">' + esc(fmt(x.plafondReste)) + ' u</td>'
                             + '<td class="text-end">' + esc(fmt(x.part)) + ' F</td></tr>';
                     }).join('')
-                    + '<tr class="table-light fw-bold"><td colspan="7">Total de l\'effort</td>'
-                    + '<td class="text-end">' + esc(fmt(eq.manque)) + ' F</td></tr>'
+                    // La SOMME de la colonne, pas le manque. Quand le plan
+                    // n'est pas atteignable, les produits sont tous plafonnes
+                    // et la colonne somme moins que le manque: afficher le
+                    // manque en pied faisait mentir le total de sa propre
+                    // colonne, d'un ecart mesure a 1 772 728 F.
+                    + '<tr class="table-light fw-bold"><td colspan="7">Total de l\'effort'
+                    + (eq.resteACouvrir > 0
+                        ? ' <span class="text-danger small">(reste ' + esc(fmt(eq.resteACouvrir))
+                          + ' F à trouver ailleurs)</span>'
+                        : '')
+                    + '</td>'
+                    + '<td class="text-end">'
+                    + esc(fmt(eq.plan.reduce(function (s, x) { return s + x.part; }, 0)))
+                    + ' F</td></tr>'
                     + '</tbody></table></div>'
                     + '</details>';
             }
@@ -1303,7 +1434,14 @@
         // ---- Les recommandations: des gestes chiffres.
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
-            plCentral: d0.pl, produits: etat.produits, margeDe: margeBase,
+            plCentral: d0.pl, produits: etat.produits,
+            // MEME marge que le plan d'equilibre: les deux blocs annoncent des
+            // volumes a vendre pour le meme manque, ils ne peuvent pas les
+            // chiffrer sur deux marges differentes.
+            margeDe: margeApresCommission,
+            // Part du CA restant a faire: c'est l'assiette d'une hausse de
+            // prix, pas le volume deja vendu.
+            proportion: b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0,
             topClients: etat.sim.top_clients || [],
             clientsHistorique: clientsHisto,
             dateAnalyse: fin
@@ -1503,6 +1641,14 @@
                 }
                 etat.globaux[el.dataset.g] = v;
                 onLevier();
+            });
+        });
+        // Chaque case ecrit dans l'etat: la selection survit alors aux rendus
+        // declenches par les autres controles.
+        document.querySelectorAll('.sim2-suivi').forEach(function (el) {
+            el.addEventListener('change', function () {
+                if (!etat.proj.suivis) etat.proj.suivis = {};
+                etat.proj.suivis[String(el.value).trim().toLowerCase()] = el.checked;
             });
         });
         var sauve = document.getElementById('sim2-suivi-save');

@@ -356,13 +356,26 @@
                         + fmt(gap) + ' F'
                 });
             });
+            // Une hausse de prix ne s'applique qu'aux unites ENCORE A VENDRE:
+            // le mois ecoule ne se refacture pas. Diviser par la quantite
+            // deja vendue rendait une hausse trop FAIBLE - d'autant plus
+            // trompeuse qu'on est loin dans le mois - et le geste propose ne
+            // comblait pas l'ecart annonce. `proportion` est la part du CA
+            // restant a faire; a defaut, on retombe sur l'ancienne assiette
+            // en le DISANT.
             var gros = produits.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })[0];
+            var proportionCA = nb(args.proportion);
             if (gros && nb(gros.quantite) > 0) {
+                var assiette = proportionCA > 0
+                    ? nb(gros.quantite) * proportionCA : nb(gros.quantite);
                 out.push({
                     type: 'prix', priorite: 2,
                     titre: 'Ou ajuster le prix de ' + gros.nom,
-                    detail: '+' + fmt(gap / nb(gros.quantite)) + ' F par unité sur le volume '
-                        + 'actuel effacerait l\'écart — à confronter à la concurrence'
+                    detail: '+' + fmt(gap / assiette) + ' F par unité sur les '
+                        + fmt(assiette) + ' u ' + (proportionCA > 0
+                            ? 'encore attendues d\'ici la fin du mois'
+                            : 'du volume actuel')
+                        + ' effacerait l\'écart — à confronter à la concurrence'
                 });
             }
         }
@@ -402,7 +415,7 @@
                 titre: 'Relancer ' + c.nom,
                 detail: 'vient environ tous les ' + fmt(c.intervalle) + ' jours ('
                     + c.nbVisites + ' passages), et rien depuis ' + c.silence
-                    + ' — soit ' + c.retard.toFixed(1) + '× son rythme. '
+                    + ' jours — soit ' + c.retard.toFixed(1) + '× son rythme. '
                     + fmt(c.ca) + ' F sur la fenêtre.'
             });
         });
@@ -427,20 +440,25 @@
      *   - a volume inchange, de combien monter la MARGE au kilo;
      *   - a marge inchangee, combien de KILOS vendre en plus.
      *
-     * PUIS UN PLAN CUMULE sur plusieurs produits, chacun portant une part
-     * proportionnelle a ce qu'il peut reellement porter - sa marge FOIS son
-     * volume attendu. Cette ponderation a une propriete utile: la hausse
-     * relative demandee est alors la MEME pour tous ("vendre X % de plus sur
-     * ces cinq produits"), ce qui se transmet a une equipe, la ou cinq
-     * objectifs differents ne se retiennent pas.
+     * PUIS UN PLAN CUMULE sur plusieurs produits, pris par MARGE UNITAIRE
+     * decroissante et portant chacun une part proportionnelle a sa MARGE.
+     * Consequence: le nombre d'unites supplementaires est le meme pour tous
+     * tant qu'aucun plafond ne mord, et a effort egal ce sont les fortes
+     * marges qui rapportent le plus. Un produit plafonne cede son reliquat
+     * aux autres, par paliers.
      *
      * @param {object} args
      * @param {number} args.plCentral      PL projete (negatif = manque)
      * @param {Array}  args.produits       lignes de sensibilite
-     * @param {Function} args.margeDe      (produit) => marge nette F/u ou null
+     * @param {Function} args.margeDe      (produit) => marge nette F/u ou null.
+     *   DOIT etre nette de tout ce que l'unite vendue en plus declenche -
+     *   commission MaaS induite comprise - sinon le plan promet un apport que
+     *   le moteur ne rend pas.
      * @param {number} args.caRealise
      * @param {number} args.caProjete
      * @param {number} args.joursRestants
+     * @param {object} [args.jours]        { ecoules, mois } en jours OUVRES
+     * @param {number} [args.facteurMax]   plafond, en multiples du rythme mensuel
      * @param {string} [args.principal]    produit mis en avant
      * @param {number} [args.nbProduits]   taille du plan cumule (defaut 5)
      */
@@ -476,7 +494,14 @@
         if (!eligibles.length) return null;
 
         var nomPrincipal = args.principal || 'Boeuf en détail';
-        var cle = function (s) { return String(s || '').trim().toLowerCase(); };
+        // MEME normalisation que partout ailleurs dans la chaine (accents ET
+        // casse). Sans le retrait des diacritiques, « Boeuf en detail » vendu
+        // sans accent ne rejoignait pas le pilote « Boeuf en détail », et le
+        // plan se rabattait silencieusement sur un autre produit.
+        var cle = function (s) {
+            return String(s == null ? '' : s).normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+        };
         var principal = eligibles.filter(function (x) { return cle(x.nom) === cle(nomPrincipal); })[0]
             || eligibles.slice().sort(function (a, b) {
                 return (b.marge * b.volumeRestant) - (a.marge * a.volumeRestant);
@@ -566,10 +591,18 @@
                 : x.quantiteActuelle + x.volumeRestant * facteurMax;
             // Ce qu'il reste vendable sous ce plafond, une fois retire ce qui
             // est DEJA vendu: c'est sur cette base que le tableau raisonne.
-            var plafondReste = Math.max(0, plafondMois - x.quantiteActuelle);
-            // Et l'effort ne peut occuper que la place laissee par le volume
-            // deja attendu sans rien faire.
-            var effortMax = Math.max(0, plafondReste - x.volumeRestant);
+            //
+            // JAMAIS sous le volume deja attendu. Le plafond vient du rythme
+            // par JOURS, le volume attendu de la proportion de CA: les deux
+            // bases peuvent diverger, et le plafond passait alors SOUS un
+            // total qu'il etait cense contenir - l'ecran affichait « total
+            // 70 u » sous un « plafond 60 u ». Un plafond ne peut pas
+            // interdire ce qui arrive sans rien faire; il ne borne que
+            // l'EFFORT qu'on ajoute par-dessus.
+            var plafondReste = Math.max(plafondMois - x.quantiteActuelle, x.volumeRestant);
+            // L'effort n'occupe que la place laissee au-dessus du volume deja
+            // attendu. Positif ou nul par construction, desormais.
+            var effortMax = plafondReste - x.volumeRestant;
             return {
                 p: x, plafond: effortMax, plafondReste: plafondReste,
                 plafondMois: plafondMois, unites: 0, plafonne: false
