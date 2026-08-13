@@ -1614,10 +1614,15 @@
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
             plCentral: d0.pl,
-            // MEMES produits et MEME marge que le plan d'equilibre: les deux
-            // blocs annoncent des volumes a vendre pour le meme manque, ils ne
-            // peuvent pas les chiffrer sur deux prix ni deux marges.
-            produits: etat.produits.map(auPrixDeLaSuite),
+            // universEq, le MEME univers que le plan d'equilibre - pas
+            // etat.produits. Les deux blocs repondent a la meme question, « que
+            // vendre en plus pour combler le manque »: les faire raisonner sur
+            // deux listes differentes les faisait se contredire. Mesure sur
+            // mbao: le plan retenait la Viande Hachee, sa plus forte marge a
+            // 1 295 F/u, pendant que les recommandations juste en dessous
+            // designaient le boeuf en detail (916) et le boeuf en gros (733) -
+            // le 2e et le 3e - parce qu'elles ne voyaient que la liste suivie.
+            produits: universEq,
             margeDe: margeApresCommission,
             // Part du CA restant a faire: c'est l'assiette d'une hausse de
             // prix, pas le volume deja vendu.
