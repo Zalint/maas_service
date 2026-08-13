@@ -142,6 +142,45 @@ const isDebugMode = true;
 const reconciliationCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes en millisecondes
 
+// Le cache SURVIT au rechargement de la page.
+//
+// Un mois coute une quinzaine d'allers-retours par journee - ventes, stock,
+// transferts, parage, cash. Le refaire parce qu'on a rafraichi l'onglet ou
+// navigue ailleurs n'apporte rien: la meme fenetre de 5 minutes s'applique,
+// on ne fait que la respecter au-dela de la duree de vie du Map.
+//
+// sessionStorage et non localStorage: la donnee est un instantane de travail,
+// pas une preference. Fermer l'onglet doit la laisser partir.
+const CACHE_STORAGE_CLE = 'reconciliation-mois-cache';
+
+function restaurerCacheReconciliation() {
+    try {
+        const brut = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_CLE) || '{}');
+        Object.keys(brut).forEach((k) => {
+            const e = brut[k];
+            if (e && e.timestamp && (Date.now() - e.timestamp) < CACHE_DURATION) {
+                reconciliationCache.set(k, e);
+            }
+        });
+    } catch (e) {
+        console.warn('Cache de reconciliation illisible:', e && e.message);
+    }
+}
+
+function persisterCacheReconciliation() {
+    try {
+        const brut = {};
+        reconciliationCache.forEach((v, k) => { brut[k] = v; });
+        sessionStorage.setItem(CACHE_STORAGE_CLE, JSON.stringify(brut));
+    } catch (e) {
+        // Quota depasse sur un gros mois: le cache memoire continue de servir,
+        // seule la survie au rechargement est perdue.
+        console.warn('Cache de reconciliation non persiste:', e && e.message);
+    }
+}
+
+restaurerCacheReconciliation();
+
 // Fonctions pour gérer le spinner de chargement
 function showLoadingSpinner() {
     const overlay = document.getElementById('loading-overlay');
@@ -9807,6 +9846,7 @@ function initReconciliationMensuelle() {
                 // Forcer le recalcul en supprimant le cache pour cette période
                 const cacheKey = `${mois}-${annee}`;
                 reconciliationCache.delete(cacheKey);
+                persisterCacheReconciliation();
                 console.log(`Cache supprimé pour ${mois}/${annee}, recalcul forcé`);
                 chargerReconciliationMensuelle(true); // true = force recalcul
             } else {
@@ -9841,6 +9881,7 @@ function initReconciliationMensuelle() {
         btnViderCache.addEventListener('click', function() {
             const cacheSize = reconciliationCache.size;
             reconciliationCache.clear();
+            persisterCacheReconciliation();
             console.log(`Cache vidé - ${cacheSize} entrées supprimées`);
             alert(`Cache vidé avec succès (${cacheSize} entrées supprimées)`);
         });
@@ -9964,19 +10005,16 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
                 // vente, le menu deroulant continuant d'en annoncer un seul.
                 filtrerTableauReconciliationMensuelle();
 
-                // Mettre à jour les totaux
-                if (cachedData.totaux) {
-                    const totalVentesTheoriquesEl = document.getElementById('total-ventes-theoriques-mois');
-                    const totalVentesSaisiesEl = document.getElementById('total-ventes-saisies-mois');
-                    const totalVersementsEl = document.getElementById('total-versements-mois');
-                                
-                    if (totalVentesTheoriquesEl) totalVentesTheoriquesEl.textContent = formatMonetaire(cachedData.totaux.ventesTheoriques);
-                    if (totalVentesSaisiesEl) totalVentesSaisiesEl.textContent = formatMonetaire(cachedData.totaux.ventesSaisies);
-                    if (totalVersementsEl) totalVersementsEl.textContent = formatMonetaire(cachedData.totaux.versements);
-                    // Sans cette ligne, revenir sur l'ecran depuis le cache
-                    // laissait les deux cartes de parage a leur tiret initial.
-                    afficherParageMois(cachedData.totaux.parage);
-                }
+                // Les totaux NE SONT PLUS relus du cache: ils y ont ete
+                // ecrits avant que l'utilisateur ne coche ses exclusions, et
+                // les reposer ici ECRASAIT ceux qu'afficherDonnees... vient de
+                // recalculer en les respectant. Revenir par le cache annulait
+                // donc visuellement les exclusions, alors que les cases
+                // restaient cochees.
+                //
+                // agregerReconciliationMois() les rejoue sur les lignes du
+                // cache, sans un seul appel reseau: c'est une boucle sur une
+                // trentaine de lignes, pas un calcul a economiser.
                 
                 isLoadingReconciliationMensuelle = false;
                 return;
@@ -10254,17 +10292,17 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
         // Sauvegarder dans le cache
         const cacheKey = `${mois}-${annee}`;
 
+        // Seules les LIGNES sont mises en cache, pas les totaux. Un total est un
+        // resultat d'agregation, et l'agregation depend des exclusions cochees
+        // APRES coup: le garder ici en ferait un chiffre perime que quelqu'un
+        // finirait par relire. agregerReconciliationMois() le recalcule sur ces
+        // lignes, sans appel reseau.
         const cacheData = {
             data: lignesCalculees,
-            totaux: {
-                ventesTheoriques: totalVentesTheoriquesMois,
-                ventesSaisies: totalVentesSaisiesMois,
-                versements: totalVersementsMois,
-                parage: parageMois
-            },
             timestamp: Date.now()
         };
         reconciliationCache.set(cacheKey, cacheData);
+        persisterCacheReconciliation();
         console.log(`Données sauvegardées en cache pour ${mois}/${annee}`);
         
         // Mettre à jour l'indicateur de cache
