@@ -83,10 +83,19 @@
     /** Taux de parage du scenario pour un produit, en fraction restante. */
     function diviseurParage(p, scenario, contexte) {
         var g = globauxDe(scenario);
-        var base = nb(contexte && contexte.parageBase);
+        var c = contexte || {};
+        var base = nb(c.parageBase);
+        // Le taux par ESPECE quand le contexte le porte - c'est le parage
+        // MESURE du mois, arrete a la veille. parageBase (le parametre fixe a
+        // 5 %) ne sert plus que de repli, quand aucune journee du mois n'est
+        // mesurable pour cette espece. Bovin et ovin ne se parent pas au meme
+        // taux: leur imposer un diviseur commun etait deja faux avant qu'il
+        // soit mesure.
+        var bov = c.parageBovin !== undefined && c.parageBovin !== null ? nb(c.parageBovin) : base;
+        var ovi = c.parageOvin !== undefined && c.parageOvin !== null ? nb(c.parageOvin) : base;
         var taux = null;
-        if (estBoeuf(p)) taux = g.parBov !== undefined ? nb(g.parBov) : base;
-        else if (estOvin(p)) taux = g.parOvi !== undefined ? nb(g.parOvi) : base;
+        if (estBoeuf(p)) taux = g.parBov !== undefined ? nb(g.parBov) : bov;
+        else if (estOvin(p)) taux = g.parOvi !== undefined ? nb(g.parOvi) : ovi;
         else return 1; // volaille et epicerie: pas de levier de parage ici
         var d = 1 - taux / 100;
         return d > 0 ? d : null; // parage >= 100 %: rien n'est vendable
@@ -145,9 +154,17 @@
     function effetsGlobaux(donnees, scenario) {
         var c = donnees.contexte;
         var g = globauxDe(scenario);
+        // REFERENCE PAR ESPECE. Le taux de reference est celui a partir
+        // duquel l'effet d'un levier de parage se mesure: sans cette
+        // separation, passer le diviseur de la marge au parage MESURE tout en
+        // gardant 5 % comme reference aurait affiche un effet de parage non
+        // nul sur un scenario pourtant vide - le meme fantome que la
+        // commission a deja produit ici.
         var p0 = nb(c.parageBase);
-        var pB = g.parBov !== undefined ? nb(g.parBov) : p0;
-        var pO = g.parOvi !== undefined ? nb(g.parOvi) : p0;
+        var p0B = (c.parageBovin === undefined || c.parageBovin === null) ? p0 : nb(c.parageBovin);
+        var p0O = (c.parageOvin === undefined || c.parageOvin === null) ? p0 : nb(c.parageOvin);
+        var pB = g.parBov !== undefined ? nb(g.parBov) : p0B;
+        var pO = g.parOvi !== undefined ? nb(g.parOvi) : p0O;
         // MEME repli que le parage, et pour la meme raison: un scenario qui
         // omet `com` decrit un taux INCHANGE, pas un taux nul. Sans ce repli,
         // nb(undefined) valait 0 et coTaux rendait -(commission x (0/3 - 1))
@@ -156,7 +173,10 @@
         // de bouclage ne l'attrapait pas: expliquer() portait le meme fantome.
         var com = g.com !== undefined ? nb(g.com) : nb(c.commissionPct);
         var dPa = nb(g.dPa);
-        var d0 = 1 - p0 / 100;
+        // Un diviseur de reference PAR ESPECE: bovin et ovin ne se parent pas
+        // au meme taux, et la mesure le montre crument.
+        var d0B = 1 - p0B / 100;
+        var d0O = 1 - p0O / 100;
         var dB = 1 - pB / 100;
         var dO = 1 - pO / 100;
 
@@ -193,10 +213,10 @@
         // PARAGE, canal cout des ventes: la carcasse necessaire aux memes
         // ventes change avec le taux. Exige le prix carcasse; s'il est
         // inconnu, la part reste non chiffree (0) et expliquer le dit.
-        var cvParageB = (paB !== null && dB > 0 && d0 > 0)
-            ? -(qB * paB / dB - qB * paB / d0) : 0;
-        var cvParageO = (paO !== null && dO > 0 && d0 > 0)
-            ? -(qO * paO / dO - qO * paO / d0) : 0;
+        var cvParageB = (paB !== null && dB > 0 && d0B > 0)
+            ? -(qB * paB / dB - qB * paB / d0B) : 0;
+        var cvParageO = (paO !== null && dO > 0 && d0O > 0)
+            ? -(qO * paO / dO - qO * paO / d0O) : 0;
 
         // PRIX D'ACHAT, canal ventes: dPa sur chaque unite de carcasse des
         // ventes, au parage du scenario. NE depend PAS du prix de base:
@@ -210,8 +230,8 @@
         // surplus (soir - matin) est achete au nouveau prix ET revalorise au
         // coefficient - net = -dPa x surplus x parage.
         var dQ = nb(c.boeuf && c.boeuf.soir) - nb(c.boeuf && c.boeuf.matin);
-        var stB = -((pB - p0) / 100) * nb(c.varBovin);
-        var stO = -((pO - p0) / 100) * nb(c.varOvin);
+        var stB = -((pB - p0B) / 100) * nb(c.varBovin);
+        var stO = -((pO - p0O) / 100) * nb(c.varOvin);
         var stPa = -(dPa * dQ * (pB / 100));
 
         // COMMISSION INDUITE (hypothese 2): les leviers volume et parage font
@@ -219,8 +239,8 @@
         // fournisseur (l'assiette reelle de la commission MaaS), au taux du
         // scenario.
         var pv = c.pv || {};
-        var addB = (dB > 0 && d0 > 0) ? (volB / dB + qB * (1 / dB - 1 / d0)) : 0;
-        var addO = (dO > 0 && d0 > 0) ? (volO / dO + qO * (1 / dO - 1 / d0)) : 0;
+        var addB = (dB > 0 && d0B > 0) ? (volB / dB + qB * (1 / dB - 1 / d0B)) : 0;
+        var addO = (dO > 0 && d0O > 0) ? (volO / dO + qO * (1 / dO - 1 / d0O)) : 0;
         var addV = volV;
         var pvManquants = [];
         var assiette = 0;
@@ -252,7 +272,8 @@
                 // tel quel et affichait « undefined » quand le scenario
                 // l'omettait.
                 com: com,
-                parageBase: p0, parBov: pB, parOvi: pO, dPa: dPa
+                parageBase: p0, parageRefB: p0B, parageRefO: p0O,
+                parBov: pB, parOvi: pO, dPa: dPa
             }
         };
     }
@@ -347,29 +368,29 @@
         if (d.cvParageB) lignes.push({
             libelle: 'Parage bœuf · coût des ventes',
             formule: 'carcasse pour ' + fmt(d.qBovins) + ' u vendues : '
-                + fmt(carc(d.qBovins, d.parageBase)) + ' u à ' + d.parageBase + ' % → '
+                + fmt(carc(d.qBovins, d.parageRefB)) + ' u à ' + d.parageRefB + ' % → '
                 + fmt(carc(d.qBovins, d.parBov)) + ' u à ' + d.parBov + ' %, soit '
-                + fmt(carc(d.qBovins, d.parBov) - carc(d.qBovins, d.parageBase))
+                + fmt(carc(d.qBovins, d.parBov) - carc(d.qBovins, d.parageRefB))
                 + ' u × ' + fmt(d.paBovin) + ' F',
             valeur: d.cvParageB
         });
         if (d.stB) lignes.push({
             libelle: 'Parage bœuf · stock',
-            formule: '−(' + d.parBov + ' − ' + d.parageBase + ')/100 × ' + fmt(nb(c.varBovin)),
+            formule: '−(' + d.parBov + ' − ' + d.parageRefB + ')/100 × ' + fmt(nb(c.varBovin)),
             valeur: d.stB
         });
         if (d.cvParageO) lignes.push({
             libelle: 'Parage agneau · coût des ventes',
             formule: 'carcasse pour ' + fmt(d.qOvins) + ' u vendues : '
-                + fmt(carc(d.qOvins, d.parageBase)) + ' u à ' + d.parageBase + ' % → '
+                + fmt(carc(d.qOvins, d.parageRefO)) + ' u à ' + d.parageRefO + ' % → '
                 + fmt(carc(d.qOvins, d.parOvi)) + ' u à ' + d.parOvi + ' %, soit '
-                + fmt(carc(d.qOvins, d.parOvi) - carc(d.qOvins, d.parageBase))
+                + fmt(carc(d.qOvins, d.parOvi) - carc(d.qOvins, d.parageRefO))
                 + ' u × ' + fmt(d.paOvin) + ' F',
             valeur: d.cvParageO
         });
         if (d.stO) lignes.push({
             libelle: 'Parage agneau · stock',
-            formule: '−(' + d.parOvi + ' − ' + d.parageBase + ')/100 × ' + fmt(nb(c.varOvin)),
+            formule: '−(' + d.parOvi + ' − ' + d.parageRefO + ')/100 × ' + fmt(nb(c.varOvin)),
             valeur: d.stO
         });
         if (d.cvDPa) lignes.push({
@@ -400,6 +421,11 @@
     return {
         estBoeuf: estBoeuf,
         estOvin: estOvin,
+        // Expose pour que l'ecran affiche le cout REELLEMENT soustrait
+        // (prix carcasse / (1 - parage)) a cote du prix carcasse, avec le
+        // MEME diviseur que la marge - le recalculer la-bas en ferait une
+        // seconde definition.
+        diviseurParage: diviseurParage,
         margeAvec: margeAvec,
         effetProduit: effetProduit,
         effetsGlobaux: effetsGlobaux,

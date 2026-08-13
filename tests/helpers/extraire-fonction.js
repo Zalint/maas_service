@@ -13,7 +13,15 @@
 const fs = require('fs');
 const path = require('path');
 
-/** Le texte d'une fonction de premier niveau, de sa signature a son '}' seul. */
+/**
+ * Le texte d'une fonction, de sa signature a son accolade fermante.
+ *
+ * La fermeture est cherchee A L'INDENTATION DE LA SIGNATURE. Une regle fixee
+ * sur la colonne 0 ne trouvait rien dans js/simulation-v2.js, dont tout le
+ * corps vit dans une IIFE: l'extraction avalait alors le fichier jusqu'au bout
+ * et rendait du code qui ne compile pas, avec une erreur de syntaxe pour seule
+ * explication.
+ */
 function extraire(source, signature) {
     const debut = source.indexOf(signature);
     if (debut === -1) {
@@ -21,14 +29,42 @@ function extraire(source, signature) {
             `${signature} introuvable. Signature renommee, ou fonction devenue imbriquee ?`
         );
     }
-    const fin = source.indexOf('\n}', debut);
+    // L'indentation de la ligne qui porte la signature.
+    const debutLigne = source.lastIndexOf('\n', debut) + 1;
+    const marge = source.slice(debutLigne, debut);
+    if (/\S/.test(marge)) {
+        throw new Error(`${signature} n'est pas en debut de ligne: extraction impossible.`);
+    }
+    const cloture = '\n' + marge + '}';
+    const fin = source.indexOf(cloture, debut);
     if (fin === -1) {
         throw new Error(
-            `${signature} trouvee mais sans accolade fermante en colonne 0 : `
-            + 'la fonction n\'est plus de premier niveau, l\'extraction rendrait du code tronque.'
+            `${signature} trouvee mais sans accolade fermante a son indentation `
+            + `(${marge.length} espaces): l'extraction rendrait du code tronque.`
         );
     }
-    return source.slice(debut, fin + 2);
+    return source.slice(debut, fin + cloture.length);
+}
+
+/** Le texte d'un fichier du depot, chemin relatif a la racine. */
+function sourceDe(chemin) {
+    return fs.readFileSync(path.join(__dirname, '..', '..', chemin), 'utf8');
+}
+
+/**
+ * Assemble des fonctions prelevees dans N'IMPORTE QUEL fichier du depot.
+ *
+ * @param {string}   chemin     relatif a la racine, ex. 'js/simulation-v2.js'
+ * @param {string[]} signatures dans l'ordre voulu - les dependances d'abord
+ * @param {string}   retour     expression evaluee apres les definitions
+ * @param {string}   [prelude]  code injecte AVANT, pour les helpers du module
+ */
+function chargerDepuis(chemin, signatures, retour, prelude) {
+    const source = sourceDe(chemin);
+    const code = (prelude || '') + '\n'
+        + signatures.map((s) => extraire(source, s)).join('\n');
+    // eslint-disable-next-line no-new-func
+    return new Function(`${code}\nreturn ${retour};`)();
 }
 
 /** Le texte de script.js, lu une fois. */
@@ -49,4 +85,4 @@ function chargerDepuisScript(signatures, retour) {
     return new Function(`${code}\nreturn ${retour};`)();
 }
 
-module.exports = { extraire, sourceScript, chargerDepuisScript };
+module.exports = { extraire, sourceScript, chargerDepuisScript, sourceDe, chargerDepuis };
