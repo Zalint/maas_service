@@ -81,3 +81,6 @@ qr-*.png
 # prod-dump.sql contient des donnees de production - jamais de commit.
 .tmp/
 .claude/
+
+# Rapports de couverture Jest: generes, jamais versionnes.
+coverage/

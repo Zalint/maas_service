@@ -310,6 +310,129 @@ function graphiesDeDatesPourPeriode(dateDebut, dateFin) {
     return dates;
 }
 
+/** 'JJ-MM-AAAA' (format de stocks.date) -> 'AAAA-MM-JJ'. null si illisible. */
+function isoDepuisJjmmaaaa(brut) {
+    const m = String(brut || '').match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+/** 'AAAA-MM-JJ' -> 'JJ-MM-AAAA', pour parler la meme langue que l'ecran. */
+function jjmmaaaaDepuisIso(iso) {
+    const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : String(iso || '');
+}
+
+/**
+ * Estime la borne du soir quand la date de fin n'a pas ete comptee.
+ *
+ * Rend null quand il n'y a rien a estimer - soit le comptage existe bien a
+ * dateFin, soit il n'existe AUCUN comptage sur lequel s'ancrer.
+ *
+ * La formule vit dans lib/stock-soir-estime.js (fonction pure, testee); ici on
+ * ne fait que rassembler ses entrees et revaloriser sa sortie. La valorisation
+ * repasse par valoriserLignes, donc les regles deja etablies continuent de
+ * s'appliquer telles quelles: prix d'achat a la date, repli sur le prix de
+ * vente, et surtout mise a l'ecart des quantites negatives.
+ */
+async function estimerBorneSoir(args) {
+    const {
+        ancre, dateFin, contexte, resolveurPrix,
+        estBoucherie, produitsNonFiables, ratioRepli
+    } = args;
+
+    const ancreIso = isoDepuisJjmmaaaa(ancre.date_utilisee);
+    // Comptage bien present a la date demandee: rien a estimer.
+    if (ancreIso === dateFin) return null;
+    // Aucun comptage nulle part: il n'y a pas d'ancre, donc pas d'estimation
+    // possible. Le PL garde son comportement actuel (valeur nulle).
+    if (!ancreIso || ancreIso > dateFin) return null;
+
+    const { Stock, Transfert, Vente } = require('../db/models');
+    const { lirePackCompositions } = require('../lib/pack-compositions');
+    const { tauxParageMois } = require('../lib/parage-mois');
+    const { estimerStockSoir } = require('../lib/stock-soir-estime');
+    const { valoriserLignes } = require('../lib/valorisation-stock');
+
+    // Fenetre OUVERTE a gauche: le comptage du soir de l'ancre inclut deja les
+    // mouvements de sa propre journee. L'inclure doublerait ses ventes.
+    const lendemain = new Date(ancreIso + 'T00:00:00Z');
+    lendemain.setUTCDate(lendemain.getUTCDate() + 1);
+    const debutFenetre = lendemain.toISOString().slice(0, 10);
+    const formes = graphiesDeDatesPourPeriode(debutFenetre, dateFin);
+
+    const packs = await lirePackCompositions();
+    const [transferts, ventesFenetre, tauxMois] = await Promise.all([
+        Transfert.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
+        Vente.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
+        // Le taux du mois de dateFin, avec la definition EXACTE des cartes
+        // "Parage Boeuf (Mois)" - contexte reutilise, 5 requetes economisees.
+        tauxParageMois(sequelize, dateFin, contexte, packs)
+    ]);
+
+    // Lignes de l'ancre telles qu'elles sont en base: l'estimation part du
+    // comptage, pas de sa valorisation.
+    const lignesAncre = await sequelize.query(
+        `SELECT produit, quantite, total, prix_unitaire
+         FROM stocks
+         WHERE type_stock = 'soir' AND date = :dateAncre`,
+        { type: sequelize.QueryTypes.SELECT, replacements: { dateAncre: ancre.date_utilisee } }
+    );
+
+    const ratios = {
+        bovin: tauxMois && tauxMois.bovin ? tauxMois.bovin.ratio : null,
+        ovin: tauxMois && tauxMois.ovin ? tauxMois.ovin.ratio : null
+    };
+
+    const estimation = estimerStockSoir({
+        lignesAncre,
+        transferts,
+        ventes: ventesFenetre,
+        ratios,
+        ratioRepli,
+        categorieDe: contexte.categorieDe,
+        estBoucherie,
+        exclusions: contexte.exclusions,
+        familleDechet: contexte.familleDechet,
+        packs
+    });
+
+    // Meme mise a l'ecart des produits non fiables que les deux bornes reelles,
+    // sinon l'estimation compare un perimetre plus large que le stock du matin.
+    const retenues = produitsNonFiables && produitsNonFiables.size
+        ? estimation.lignes.filter((l) => !produitsNonFiables.has(normaliserNomProduit(l.produit)))
+        : estimation.lignes;
+    // categorieDe est OBLIGATOIRE ici: sans lui, valoriserLignes rend
+    // valeur_bovin / valeur_ovin / valeur_autre_boucherie a zero, et la
+    // ventilation par espece de la variation de stock s'effondrerait
+    // silencieusement des qu'une estimation remplace le comptage.
+    const valorisation = valoriserLignes({
+        lignes: retenues,
+        prixAchat: resolveurPrix.pourDate(dateFin).prixAchat,
+        estBoucherie,
+        categorieDe: contexte.categorieDe
+    });
+
+    const joursEcart = Math.round(
+        (new Date(dateFin + 'T00:00:00Z') - new Date(ancreIso + 'T00:00:00Z')) / 86400000
+    );
+
+    return {
+        valorisation: { ...valorisation, date_utilisee: jjmmaaaaDepuisIso(dateFin) },
+        date_demandee_jjmmaaaa: jjmmaaaaDepuisIso(dateFin),
+        meta: {
+            date_ancre: ancre.date_utilisee,
+            date_ancre_iso: ancreIso,
+            jours_ecart: joursEcart,
+            mois_taux: dateFin.slice(0, 7),
+            par_categorie: estimation.parCategorie,
+            nb_lignes_parage: estimation.nb_lignes_parage,
+            nb_lignes_sans_parage: estimation.nb_lignes_sans_parage,
+            valeur_ancre: round2(ancre.valeur),
+            valeur_estimee: round2(valorisation.valeur),
+            avertissements: estimation.avertissements
+        }
+    };
+}
+
 const router = express.Router();
 
 // ============================================================
@@ -1408,8 +1531,11 @@ router.get('/simulation', async (req, res) => {
         // ce que la periode maximale (366 jours) garde tres modeste.
         // `date` sert a ponderer le prix d'achat jour par jour (voir plus bas).
         // Colonne de plus sur la meme requete, aucun aller-retour ajoute.
+        // nom_client et commande_id ne servent qu'a la v2 (fidelisation,
+        // commandes a multiplier), mais les porter ici ne coute que deux
+        // colonnes sur la meme requete.
         const lignes = await sequelize.query(
-            `SELECT produit, nombre, montant, date
+            `SELECT produit, nombre, montant, date, nom_client, commande_id
                FROM ventes
               WHERE date IN (:dateList)`,
             { type: sequelize.QueryTypes.SELECT, replacements: { dateList } }
@@ -1445,6 +1571,17 @@ router.get('/simulation', async (req, res) => {
         let resolveurPrix;
         let prixAchatDe;
         let origineDe = () => null;
+        // Prix de VENTE catalogue des carcasses, expose en v2 seulement.
+        // C'est l'assiette reelle de la commission MaaS (commissionPct x prix
+        // catalogue x quantites livrees, cf routes/finance-creances.js): le
+        // moteur de l'ecran en a besoin pour faire suivre la commission aux
+        // achats que les leviers volume et parage induisent - sans quoi le
+        // levier volume etait surestime d'environ 20 %.
+        let catalogueV2 = null;
+        let projectionV2 = null;
+        let topClientsV2 = null;
+        let commandesV2 = null;
+        let clientsHistoriqueV2 = null;
 
         if (!v2) {
             const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
@@ -1455,6 +1592,201 @@ router.get('/simulation', async (req, res) => {
             resolveurPrix = await creerResolveurPrixAchatSimulation({
                 dateMax: dateFin, reglages: reglagesSim
             });
+
+            // FournisseurPrix vient de l'import de tete de fichier: le require
+            // local rendait le MEME objet (cache de Node) et n'etait que du
+            // bruit.
+            const rowsPv = await FournisseurPrix.findAll({ raw: true });
+            const pvDe = (cle) => {
+                const r = rowsPv.find((x) => normaliserNomProduit(x.produit) === cle);
+                const v = r ? parseFloat(r.prix_vente) : NaN;
+                return Number.isFinite(v) && v > 0 ? v : null;
+            };
+            catalogueV2 = {
+                pv_boeuf: pvDe('boeuf'),
+                pv_agneau: pvDe('agneau'),
+                pv_poulet: pvDe('poulet')
+            };
+
+            // ---- Donnees de PROJECTION fin de mois (methode P1/P2).
+            //
+            // CA par jour de la periode demandee: derive des lignes deja
+            // chargees, zero requete de plus. L'historique des 92 jours qui
+            // PRECEDENT la periode sert a deux choses: les rythmes
+            // historiques comparables de la regle 70/30, et la CALIBRATION du
+            // coefficient P1/P2 sur les ventes du tenant lui-meme plutot que
+            // sur la valeur de reference du document.
+            const caParJour = {};
+            for (const l of lignes) {
+                const iso = parseDateVersISO(l.date);
+                if (iso) caParJour[iso] = (caParJour[iso] || 0) + (parseFloat(l.montant) || 0);
+            }
+
+            const finHisto = new Date(dateDebut + 'T00:00:00Z');
+            finHisto.setUTCDate(finHisto.getUTCDate() - 1);
+            const debutHisto = new Date(finHisto);
+            debutHisto.setUTCDate(debutHisto.getUTCDate() - 91);
+            const histoDebutIso = debutHisto.toISOString().slice(0, 10);
+            const histoFinIso = finHisto.toISOString().slice(0, 10);
+            // nom_client sur la MEME requete: l'habitude d'achat d'un client ne
+            // se lit pas sur la periode courante seule. « Aucun passage depuis
+            // 7 jours » ne veut rien dire pour qui vient tous les quinze jours.
+            const lignesHisto = await sequelize.query(
+                `SELECT date, montant, nom_client FROM ventes WHERE date IN (:dl)`,
+                {
+                    type: sequelize.QueryTypes.SELECT,
+                    replacements: { dl: graphiesDeDatesPourPeriode(histoDebutIso, histoFinIso) }
+                }
+            );
+            const caHisto = {};
+            for (const l of lignesHisto) {
+                const iso = parseDateVersISO(l.date);
+                if (iso) caHisto[iso] = (caHisto[iso] || 0) + (parseFloat(l.montant) || 0);
+            }
+
+            // Coefficient de REFERENCE du document, par tenant. La calibration
+            // sur l'historique, faite cote client, prime quand elle est
+            // possible; cette valeur est le repli et le point de comparaison.
+            const COEFFS_DOCUMENT = {
+                o_foire: 1.336, mbao: 1.243, keur_massar: 1.280, sacre_coeur: 1.392
+            };
+            const slugTenant = String(require('../config/tenant').slug || '').toLowerCase();
+            projectionV2 = {
+                ca_par_jour: caParJour,
+                historique: { debut: histoDebutIso, fin: histoFinIso, ca_par_jour: caHisto },
+                coeff_defaut: COEFFS_DOCUMENT[slugTenant] || 1.28
+            };
+
+            // ---- Clients de la periode, pour la fidelisation: les plus gros
+            // par chiffre d'affaires, avec leur dernier passage. Derive des
+            // memes lignes.
+            const parClient = new Map();
+            for (const l of lignes) {
+                const nom = String(l.nom_client || '').trim();
+                if (!nom) continue;
+                const cle = nom.toLowerCase();
+                if (!parClient.has(cle)) parClient.set(cle, { nom, ca: 0, nb: 0, dernier: null });
+                const cl = parClient.get(cle);
+                cl.ca += parseFloat(l.montant) || 0;
+                cl.nb += 1;
+                const iso = parseDateVersISO(l.date);
+                if (iso && (!cl.dernier || iso > cl.dernier)) cl.dernier = iso;
+            }
+            topClientsV2 = Array.from(parClient.values())
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 8)
+                .map((cl) => ({ nom: cl.nom, ca: round2(cl.ca), nb: cl.nb, dernier: cl.dernier }));
+
+            // ---- HABITUDE D'ACHAT, sur l'historique ET la periode courante.
+            //
+            // Relancer sur un delai fixe ("aucun passage depuis 7 jours") se
+            // trompe des deux cotes: on harcele le client bimensuel et on
+            // laisse filer l'hebdomadaire qui a saute deux tours. Ce qu'il faut
+            // comparer, c'est le silence a SON rythme a lui.
+            //
+            // On transporte les JOURNEES de passage, pas les lignes: deux
+            // achats le meme jour sont une visite. Le calcul d'intervalle et la
+            // decision vivent dans le module pur, teste.
+            const habitudes = new Map();
+            const noterPassage = (nomBrut, iso, montant) => {
+                const nom = String(nomBrut || '').trim();
+                if (!nom || !iso) return;
+                const cle = nom.toLowerCase();
+                if (!habitudes.has(cle)) habitudes.set(cle, { nom, jours: new Map(), ca: 0 });
+                const h = habitudes.get(cle);
+                const m = parseFloat(montant) || 0;
+                h.jours.set(iso, (h.jours.get(iso) || 0) + m);
+                h.ca += m;
+            };
+            for (const l of lignesHisto) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+            for (const l of lignes) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+
+            // Plafonne aux 40 plus gros de la fenetre: de quoi tenir un top 5 et
+            // des relances, sans porter toute la clientele dans la reponse.
+            // Le plafond retient les plus gros SUR LA FENETRE **et** les plus
+            // gros DU MOIS DERNIER.
+            //
+            // Trier sur le seul CA de la fenetre ecartait le client qui n'est
+            // present que depuis peu: un restaurant a 900 000 F le mois
+            // dernier passait derriere quarante reguliers cumulant plus sur
+            // trois mois, et disparaissait donc du « top 5 des gros clients du
+            // mois dernier » - la liste ratait precisement celui qu'elle
+            // cherche. On garde les deux classements, dedupliques.
+            const moisPrecedent = (() => {
+                const d = new Date(String(dateFin).slice(0, 7) + '-01T00:00:00Z');
+                d.setUTCMonth(d.getUTCMonth() - 1);
+                return d.toISOString().slice(0, 7);
+            })();
+            const caMoisDernier = (h) => {
+                let s = 0;
+                for (const [j, m] of h.jours.entries()) {
+                    if (String(j).slice(0, 7) === moisPrecedent) s += m;
+                }
+                return s;
+            };
+            const tous = Array.from(habitudes.values());
+            const parFenetre = tous.slice().sort((a, b) => b.ca - a.ca).slice(0, 40);
+            const parMoisDernier = tous.slice()
+                .sort((a, b) => caMoisDernier(b) - caMoisDernier(a)).slice(0, 20);
+            const retenusClients = [];
+            const vusClients = new Set();
+            for (const h of parFenetre.concat(parMoisDernier)) {
+                const cle = String(h.nom).trim().toLowerCase();
+                if (vusClients.has(cle)) continue;
+                vusClients.add(cle);
+                retenusClients.push(h);
+            }
+
+            clientsHistoriqueV2 = {
+                debut: histoDebutIso,
+                fin: dateFin,
+                clients: retenusClients
+                    .map((h) => ({
+                        nom: h.nom,
+                        ca_fenetre: round2(h.ca),
+                        // [date ISO, montant] triees: l'ecran en tire les
+                        // intervalles et les cumuls mensuels qu'il veut.
+                        passages: Array.from(h.jours.entries())
+                            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                            .map(([j, m]) => ({ date: j, ca: round2(m) }))
+                    }))
+            };
+
+            // ---- Commandes de la periode: les lignes partageant un
+            // commande_id. Le serveur livre les PANIERS; le classement par PL
+            // estime se fait cote ecran, seul a connaitre les marges nettes.
+            // Les 30 plus grosses par CA suffisent: on cherche les meilleures,
+            // pas l'exhaustivite.
+            const parCommande = new Map();
+            for (const l of lignes) {
+                const id = l.commande_id;
+                if (id === null || id === undefined || id === '') continue;
+                if (!parCommande.has(id)) {
+                    parCommande.set(id, { id, client: null, date: null, ca: 0, produits: new Map() });
+                }
+                const cde = parCommande.get(id);
+                cde.ca += parseFloat(l.montant) || 0;
+                const nomCl = String(l.nom_client || '').trim();
+                if (nomCl && !cde.client) cde.client = nomCl;
+                const isoCde = parseDateVersISO(l.date);
+                if (isoCde && (!cde.date || isoCde > cde.date)) cde.date = isoCde;
+                const prod = String(l.produit || '').trim();
+                if (prod) {
+                    if (!cde.produits.has(prod)) cde.produits.set(prod, { produit: prod, quantite: 0, ca: 0 });
+                    const pr = cde.produits.get(prod);
+                    pr.quantite += parseFloat(l.nombre) || 0;
+                    pr.ca += parseFloat(l.montant) || 0;
+                }
+            }
+            commandesV2 = Array.from(parCommande.values())
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 30)
+                .map((cde) => ({
+                    id: cde.id, client: cde.client, date: cde.date, ca: round2(cde.ca),
+                    lignes: Array.from(cde.produits.values()).map((p) => ({
+                        produit: p.produit, quantite: round2(p.quantite), ca: round2(p.ca)
+                    }))
+                }));
 
             // Un resolveur par JOURNEE, memoise: pourDate relit tout
             // l'historique a chaque appel, et il y a une ligne de vente par
@@ -1524,7 +1856,19 @@ router.get('/simulation', async (req, res) => {
             };
         }
 
-        const produits = PRODUITS_SIMULATION.map((nom) => {
+        // Les cinq d'origine, plus ceux que l'administration a ajoutes. La
+        // base reste codee en dur: un tableau dont les lignes changent d'un
+        // mois a l'autre ne se compare pas, et l'ajout doit etre un acte
+        // explicite. Hors v2, la liste ne bouge pas du tout.
+        const listeSuivie = v2 && reglagesSim.produitsSuivis.length
+            ? PRODUITS_SIMULATION.concat(
+                reglagesSim.produitsSuivis.filter((nom) => !PRODUITS_SIMULATION.some(
+                    (base) => normaliserNomProduit(base) === normaliserNomProduit(nom)
+                ))
+            )
+            : PRODUITS_SIMULATION;
+
+        const produits = listeSuivie.map((nom) => {
             const agg = trouverProduit(volumes.produits, nom)
                 || { quantite: 0, ca: 0, nb_lignes: 0, graphies: [] };
             const prixMoyen = agg.quantite > 0 ? agg.ca / agg.quantite : null;
@@ -1561,6 +1905,133 @@ router.get('/simulation', async (req, res) => {
             };
         });
 
+        // ---- TOUS les produits vendus, avec leur cout quand il est connu.
+        //
+        // PRODUITS_SIMULATION est une liste FERMEE, et c'est voulu: le tableau
+        // de sensibilite doit se comparer d'un mois a l'autre, donc ses lignes
+        // ne doivent pas apparaitre et disparaitre. Mais le plan d'equilibre,
+        // lui, cherche ou aller chercher de la marge - et rien ne justifie
+        // qu'il ignore une cuisse de poulet qui se vend avec un cout connu.
+        //
+        // Deux listes pour deux usages, donc, plutot qu'une liste ouverte qui
+        // casserait la comparaison. Les produits SANS cout connu sont rendus
+        // avec marge nulle: l'ecran les nomme au lieu de les taire, c'est ce
+        // qui pousse a completer le catalogue.
+        let produitsVendus = null;
+        let candidatsV2 = null;
+        let ecartesV2 = null;
+        if (v2) {
+            produitsVendus = volumes.produits
+                .filter((a) => a.quantite > 0)
+                .map((a) => {
+                    // agregerVolumes TRIE les graphies par ordre alphabetique:
+                    // prendre la premiere donnait la graphie alphabetiquement
+                    // premiere, pas la plus courante - la faute de frappe
+                    // d'une seule ligne l'emportait sur l'orthographe des
+                    // quatre-vingts autres. A defaut d'un comptage par
+                    // graphie, la plus LONGUE est un meilleur candidat: elle
+                    // porte les accents, que leur absence raccourcit rarement
+                    // mais jamais l'inverse.
+                    const nom = (a.graphies || []).slice().sort(
+                        (x, y) => String(y).length - String(x).length
+                            || String(x).localeCompare(String(y), 'fr')
+                    )[0] || a.cle;
+                    const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
+                    const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+                    return {
+                        nom,
+                        quantite: round2(a.quantite),
+                        ca: round2(a.ca),
+                        prix_moyen: a.prix_moyen === null ? null : round2(a.prix_moyen),
+                        prix_achat: prixAchat,
+                        nb_lignes: a.nb_lignes,
+                        sans_vente: false,
+                        prix_achat_origine: origineDe(nom)
+                    };
+                });
+
+            // ---- CANDIDATS a l'ajout dans la liste suivie, par marge.
+            //
+            // Condition posee par le proprietaire du produit: le nom vendu doit
+            // etre AUSSI un nom de stock. Sans ligne de stock, le produit n'a
+            // ni borne matin ni borne soir - donc ni variation ni parage a lui
+            // opposer, et il n'apporterait qu'un prix a la simulation.
+            //
+            // Une seule requete, sur les noms DISTINCTS de la table stocks:
+            // c'est un ensemble court, et la comparaison se fait ensuite en
+            // memoire avec la meme normalisation que partout ailleurs.
+            const nomsStock = await sequelize.query(
+                'SELECT DISTINCT produit FROM stocks',
+                { type: sequelize.QueryTypes.SELECT }
+            );
+            const clesStock = new Set(
+                nomsStock.map((r) => normaliserNomProduit(r.produit)).filter(Boolean)
+            );
+            // Seuls les CINQ d'origine sont ecartes: ils sont toujours suivis
+            // et ne se decochent pas. Ceux que l'administration a ajoutes
+            // restent dans la liste, coches - sans quoi l'ecran devait les
+            // afficher a part, et le panneau se lisait comme deux listes sans
+            // rapport.
+            // Les 5 de base ET ceux que l'administration a ajoutes. N'y mettre
+            // que les 5 laissait un produit ajoute retomber dans
+            // `produits_ecartes`: l'ecran le declarait « aucune vente ce
+            // mois-ci » sur des ventes bien reelles.
+            const dejaSuivi = new Set(listeSuivie.map((n) => normaliserNomProduit(n)));
+
+            // Le serveur rend la marge BRUTE et les deux prix; c'est l'ECRAN
+            // qui reclasse en marge NETTE DE PARAGE, parce que lui seul porte
+            // le contexte de parage par espece (cfgMap et categorieDe vivent
+            // dans computePl, pas ici). Sans ce reclassement cote client, un
+            // produit a +50 F bruts mais -137 F nets etait presente comme un
+            // gisement de marge.
+            const candidatsBruts = produitsVendus
+                .filter((p) => {
+                    if (dejaSuivi.has(normaliserNomProduit(p.nom))) return false;
+                    if (!clesStock.has(normaliserNomProduit(p.nom))) return false;
+                    // Sans cout connu, aucune marge a proposer: le produit
+                    // apparait deja dans les recommandations "coût inconnu".
+                    return p.prix_achat !== null && p.prix_moyen !== null;
+                })
+                .map((p) => ({
+                    nom: p.nom,
+                    quantite: p.quantite,
+                    ca: p.ca,
+                    prix_moyen: p.prix_moyen,
+                    prix_achat: p.prix_achat,
+                    marge_unitaire: round2(p.prix_moyen - p.prix_achat)
+                }))
+                .filter((p) => p.marge_unitaire > 0)
+                .sort((a, b) => b.marge_unitaire - a.marge_unitaire);
+
+            candidatsV2 = candidatsBruts.slice(0, 20);
+            // Les candidats VALIDES mais tronques par le plafond d'affichage:
+            // ils ne doivent pas ressortir en « marge nulle ou negative » dans
+            // la liste des ecartes, ce qui etait un mensonge sur leur compte.
+            const clesCandidates = new Set(candidatsBruts.map((c) => normaliserNomProduit(c.nom)));
+
+            // POURQUOI un produit vendu n'est-il pas proposable.
+            //
+            // Sans cela, un tenant dont le catalogue est incomplet voit un
+            // panneau vide et conclut que la fonction ne marche pas. Mesure
+            // sur la production: chez O.Foire et Keur Massar, AUCUN candidat -
+            // et la cause est la meme partout, un prix d'achat absent. C'est
+            // une liste de choses a faire, pas une panne.
+            ecartesV2 = produitsVendus
+                .filter((p) => !dejaSuivi.has(normaliserNomProduit(p.nom)))
+                // Compare a TOUS les candidats valides, pas aux 20 affiches.
+                .filter((p) => !clesCandidates.has(normaliserNomProduit(p.nom)))
+                .map((p) => {
+                    let motif = null;
+                    if (!clesStock.has(normaliserNomProduit(p.nom))) motif = 'sans_stock';
+                    else if (p.prix_achat === null) motif = 'sans_prix_achat';
+                    else if (p.prix_moyen === null) motif = 'sans_prix_vente';
+                    else motif = 'marge_nulle';
+                    return { nom: p.nom, ca: p.ca, motif };
+                })
+                .sort((a, b) => b.ca - a.ca)
+                .slice(0, 20);
+        }
+
         // Somme de TOUTES les lignes de vente de la periode, tous produits
         // confondus. Le client s'en sert pour verifier que le denominateur des
         // pourcentages - le total_ventes du PL - se rapporte bien au meme
@@ -1579,6 +2050,14 @@ router.get('/simulation', async (req, res) => {
             data: {
                 periode: { dateDebut, dateFin },
                 produits,
+                // Null hors v2: le plan d'equilibre n'y existe pas.
+                produits_vendus: produitsVendus,
+                // Produits proposes a l'ajout, par marge decroissante.
+                produits_candidats: candidatsV2,
+                // Produits vendus non proposables, avec la raison.
+                produits_ecartes: ecartesV2,
+                // Ce que l'administration a ajoute a la liste de base.
+                produits_suivis_ajoutes: v2 ? reglagesSim.produitsSuivis : null,
                 total_ventes_toutes_lignes: round2(totalToutesLignes),
                 produit_equilibre: PRODUIT_EQUILIBRE,
                 // Mesure, cf le commentaire d'en-tete de cette route.
@@ -1589,6 +2068,12 @@ router.get('/simulation', async (req, res) => {
                 // porte les chiffres, elle ne peut donc pas etre en desaccord
                 // avec eux.
                 version: v2 ? 2 : 1,
+                // null hors v2: ces notions n'y servent a rien.
+                catalogue: catalogueV2,
+                projection: projectionV2,
+                top_clients: topClientsV2,
+                commandes: commandesV2,
+                clients_historique: clientsHistoriqueV2,
                 prix_achat: {
                     // 'periode' dit que le cout est une moyenne ponderee par
                     // les quantites vendues; 'fin_de_periode' qu'il est fige
@@ -1605,7 +2090,15 @@ router.get('/simulation', async (req, res) => {
                     // un cout affiche, ce qui est necessaire pour le lire, et
                     // ne divulgue pas la liste.
                     famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
-                    avertissements: resolveurPrix.avertissements || []
+                    // Le RESUME du prix bovin retenu suit les avertissements,
+                    // au meme endroit: qu'il vienne de MATA ou du catalogue,
+                    // c'est la meme question - sur quel prix ce resultat
+                    // repose-t-il. Le taire quand tout va bien laissait
+                    // l'utilisateur sans le chiffre qui explique son cout.
+                    avertissements: (resolveurPrix.avertissements || []).concat(
+                        typeof resolveurPrix.resumePrixBoeuf === 'function'
+                            ? resolveurPrix.resumePrixBoeuf() : []
+                    )
                 }
             }
         });
@@ -1723,7 +2216,9 @@ async function computePl(dateDebut, dateFin) {
             // supplementaire, alors que faire calculer les volumes ailleurs en
             // aurait coute un, sur les memes lignes, avec le risque de deux
             // filtres de dates qui divergent.
-            attributes: ['montant', 'produit', 'nombre']
+            //
+            // 'date' sert a reperer une DERNIERE JOURNEE SANS VENTE (plus bas).
+            attributes: ['montant', 'produit', 'nombre', 'date']
         });
         // totalVentes = somme des Vente.montant REELLES uniquement.
         // Les commandes envoyees au CDC sont prises en compte ailleurs dans
@@ -1737,6 +2232,40 @@ async function computePl(dateDebut, dateFin) {
         // plutot que ceux d'aujourd'hui.
         const { agregerVolumes } = require('../lib/volumes-vendus');
         const volumesVendus = agregerVolumes(ventes);
+
+        // DERNIERE JOURNEE SANS VENTE.
+        //
+        // Une periode qui se termine sur une journee vide se lit exactement
+        // comme une periode complete: le total, les charges proratisees et le
+        // nombre de jours comptent tous cette journee. Le cas usuel n'est pas
+        // une journee reellement sans chiffre d'affaires - c'est une date de
+        // fin posee plus loin que la derniere saisie, et le resultat parait
+        // alors simplement mauvais au lieu d'etre signale comme incomplet.
+        //
+        // On compte les LIGNES, pas le montant: une journee dont les ventes
+        // s'annulent a zero a bien ete saisie, et ne doit rien declencher.
+        let nbLignesDateFin = 0;
+        let montantDateFin = 0;
+        let derniereDateAvecVente = null;
+        for (const v of ventes) {
+            const iso = parseDateVersISO(v.date);
+            if (!iso) continue;
+            if (iso === dateFin) {
+                nbLignesDateFin += 1;
+                montantDateFin += parseFloat(v.montant) || 0;
+            }
+            if (!derniereDateAvecVente || iso > derniereDateAvecVente) derniereDateAvecVente = iso;
+        }
+        const ventesDateFin = {
+            date: dateFin,
+            nb_lignes: nbLignesDateFin,
+            montant: round2(montantDateFin),
+            aucune_vente: nbLignesDateFin === 0,
+            // La derniere journee de la PERIODE qui porte des ventes. Dit a
+            // l'utilisateur ou ramener sa date de fin, plutot que de le laisser
+            // la chercher. Null si la periode entiere est vide.
+            derniere_date_avec_vente: derniereDateAvecVente
+        };
 
         // 2. Commission MaaS + Marge CDC via computeCreances
         const { computeCreances } = require('./finance-creances');
@@ -1955,8 +2484,10 @@ async function computePl(dateDebut, dateFin) {
 
         const stockMatinDebut = stockMatinVal.valeur;
         const stockMatinDate = stockMatinVal.date_utilisee;
-        const stockSoirFin = stockSoirVal.valeur;
-        const stockSoirDate = stockSoirVal.date_utilisee;
+        // `let`: la borne du soir peut etre remplacee plus bas par une
+        // ESTIMATION quand personne n'a encore compte le soir de dateFin.
+        let stockSoirEffectif = stockSoirVal;
+        let stockSoirDate = stockSoirVal.date_utilisee;
         // Produits restes au prix de VENTE, faute de prix d'achat: l'ecran les
         // marque d'un asterisque. Les deux bornes sont rendues SEPAREMENT: un
         // produit present le matin et absent le soir ne concerne qu'une des
@@ -1964,8 +2495,6 @@ async function computePl(dateDebut, dateFin) {
         // melange de bases qu'il ne contenait pas - une fausse piste pour qui
         // cherche a expliquer une variation.
         const stockMatinAuPrixDeVente = stockMatinVal.produits_au_prix_de_vente;
-        const stockSoirAuPrixDeVente = stockSoirVal.produits_au_prix_de_vente;
-        const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Coefficient pertes decoupe (default 5%): la viande perd du
         // volume lors de la decoupe, donc on ne valorise que (100-X)%
         // de la variation brute.
@@ -1984,11 +2513,42 @@ async function computePl(dateDebut, dateFin) {
             ? pertesPct
             : 5;
         const coeffStock = (100 - safePertesPct) / 100;
+
+        // --- Stock du soir ESTIME, tant qu'il n'est pas compte ---------------
+        //
+        // Sans comptage a dateFin, cette fonction repliait EN SILENCE sur le
+        // dernier inventaire - parfois vieux de plusieurs jours - en comparant
+        // donc deux instants non adjacents alors que ventes, charges et
+        // depenses, elles, couvrent bien toute la periode.
+        //
+        // On estime desormais, par inversion de l'identite du parage
+        // (soir = ancre + transferts - vendu / rendement), et on le DIT: rien
+        // n'est ecrit en base, et le PL ne peut pas etre fige dans cet etat.
+        const estimation = await estimerBorneSoir({
+            ancre: stockSoirVal,
+            dateFin,
+            contexte: ctxFamille,
+            resolveurPrix,
+            estBoucherie,
+            produitsNonFiables,
+            ratioRepli: coeffStock
+        });
+        if (estimation) {
+            stockSoirEffectif = estimation.valorisation;
+            stockSoirDate = estimation.date_demandee_jjmmaaaa;
+        }
+
+        const stockSoirFin = stockSoirEffectif.valeur;
+        const stockSoirAuPrixDeVente = stockSoirEffectif.produits_au_prix_de_vente;
+        const variationStockBrute = stockSoirFin - stockMatinDebut;
         // Le coefficient de pertes de DECOUPE ne s'applique qu'a la viande.
         // Applique a toute la variation, il retranchait 5% a des sachets
         // d'epicerie qu'on ne pare pas - et comme le stock des produits
         // automatiques vaut leurs ventes, il en rognait 5% sans raison.
-        const variationBoucherie = stockSoirVal.valeur_boucherie - stockMatinVal.valeur_boucherie;
+        // stockSoirEffectif, PAS stockSoirVal: quand le soir est estime, c'est
+        // l'estimation qui est la borne du PL. Lire l'ancre ici comparerait la
+        // variation a un instant que le reste du calcul a deja remplace.
+        const variationBoucherie = stockSoirEffectif.valeur_boucherie - stockMatinVal.valeur_boucherie;
         // Ventilation de la variation boucherie par espece. Le PL applique un
         // coefficient de parage UNIQUE, alors que lib/parage.js calcule deja
         // deux ratios separes, bovin et ovin. Exposer le partage ne change
@@ -1998,11 +2558,11 @@ async function computePl(dateDebut, dateFin) {
         // Ce que la mesure montre et qu'un total masquait: sur juillet 2026 le
         // bovin fait +13 480 F quand l'ovin fait -6 200 F. Le signe differe,
         // donc augmenter le taux de parage agneau AMELIORE le resultat.
-        const variationBovin = stockSoirVal.valeur_bovin - stockMatinVal.valeur_bovin;
-        const variationOvin = stockSoirVal.valeur_ovin - stockMatinVal.valeur_ovin;
-        const variationAutreBoucherie = stockSoirVal.valeur_autre_boucherie
+        const variationBovin = stockSoirEffectif.valeur_bovin - stockMatinVal.valeur_bovin;
+        const variationOvin = stockSoirEffectif.valeur_ovin - stockMatinVal.valeur_ovin;
+        const variationAutreBoucherie = stockSoirEffectif.valeur_autre_boucherie
             - stockMatinVal.valeur_autre_boucherie;
-        const variationHorsBoucherie = stockSoirVal.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
+        const variationHorsBoucherie = stockSoirEffectif.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
         const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
         // 7. PL final
@@ -2031,6 +2591,11 @@ async function computePl(dateDebut, dateFin) {
                 // celui des postes: au-dela du centime, l'ecart est un signal
                 // de defaut; en deca, c'est l'arrondi.
                 volumes: volumesVendus,
+                // Etat de la DERNIERE JOURNEE de la periode: une date de fin
+                // posee au-dela de la derniere saisie donne un PL qui a l'air
+                // complet. L'ecran le dit plutot que de laisser croire a un
+                // mauvais resultat.
+                ventes_date_fin: ventesDateFin,
                 // ETAT DES SOURCES, a cote des montants et jamais confondu
                 // avec eux. `fiable` est faux des qu'un poste repose sur une
                 // source muette: c'est ce que POST /pl/snapshot regarde pour
@@ -2090,7 +2655,14 @@ async function computePl(dateDebut, dateFin) {
                     // demande, l'export Excel l'emporte, et les snapshots le
                     // portent d'office puisqu'ils stockent cette reponse.
                     matin_detail: stockMatinVal.detail_lignes || [],
-                    soir_detail: stockSoirVal.detail_lignes || [],
+                    soir_detail: stockSoirEffectif.detail_lignes || [],
+                    // Borne du soir ESTIMEE faute de comptage a la date de fin.
+                    // Un client d'avant cette version ne lit pas ces champs et
+                    // se comporte comme avant; un snapshot fige avant elle non
+                    // plus, d'ou le booleen plutot qu'un objet toujours present.
+                    soir_estime: !!estimation,
+                    soir_origine: estimation ? 'estimation' : 'comptage',
+                    estimation: estimation ? estimation.meta : null,
                     // Le coefficient ne porte que sur la boucherie: l'ecran doit
                     // pouvoir le dire plutot que laisser croire a un 5% global.
                     variation_boucherie: round2(variationBoucherie),
@@ -2113,18 +2685,26 @@ async function computePl(dateDebut, dateFin) {
                     // calcule dont les entrees ne sont pas saisies).
                     negatifs_ignores: round2(
                         (stockMatinVal.valeur_negative_ignoree || 0)
-                        + (stockSoirVal.valeur_negative_ignoree || 0)
+                        + (stockSoirEffectif.valeur_negative_ignoree || 0)
                     ),
                     nb_lignes_negatives:
                         (stockMatinVal.lignes_negatives || []).length
-                        + (stockSoirVal.lignes_negatives || []).length,
+                        + (stockSoirEffectif.lignes_negatives || []).length,
                     // Produits ecartes des DEUX bornes faute de stock fiable.
                     produits_ecartes: produitsNonFiables.pourAffichage || [],
                     // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
                     // lot pour la journee, historique illisible. Sans cela, un
                     // repli sur le catalogue fournisseur reste invisible et le
                     // chiffre parait simplement faux.
-                    avertissements: resolveurPrix.avertissements || []
+                    // Le RESUME du prix bovin retenu suit les avertissements,
+                    // au meme endroit: qu'il vienne de MATA ou du catalogue,
+                    // c'est la meme question - sur quel prix ce resultat
+                    // repose-t-il. Le taire quand tout va bien laissait
+                    // l'utilisateur sans le chiffre qui explique son cout.
+                    avertissements: (resolveurPrix.avertissements || []).concat(
+                        typeof resolveurPrix.resumePrixBoeuf === 'function'
+                            ? resolveurPrix.resumePrixBoeuf() : []
+                    )
                 },
                 pl: round2(pl)
         };
@@ -2287,6 +2867,22 @@ router.post('/pl/snapshot', async (req, res) => {
             err.code = 'source_indisponible';
             throw err;
         }
+
+        // Meme refus, autre cause: un PL dont le stock du soir est ESTIME ne se
+        // fige pas non plus. La table ne porte qu'une ligne par date, aucune
+        // route ne permet de corriger un snapshot passe, et l'estimation bouge
+        // a chaque vente. Le figer graverait un chiffre provisoire dans un
+        // historique immuable.
+        if (data.stock && data.stock.soir_estime) {
+            return res.status(409).json({
+                success: false,
+                code: 'stock_soir_estime',
+                error: `Stock du soir non encore saisi pour le ${dateFin} : le PL affiché `
+                    + `repose sur une estimation et ne peut pas être figé. `
+                    + `Saisissez l'inventaire du soir, puis refigez.`
+            });
+        }
+
 
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({

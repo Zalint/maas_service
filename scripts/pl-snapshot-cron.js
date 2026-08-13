@@ -49,11 +49,20 @@ const DRY_RUN = process.argv.includes('--dry-run');
         // ampute des avances s'installerait en base sans qu'aucun ecran ne le
         // dise. Mieux vaut un trou dans l'historique, qui se voit et se
         // rattrape, qu'un chiffre faux qui a l'air definitif.
+        //
+        // Deuxieme refus, independant: on ne grave pas non plus une
+        // ESTIMATION de stock du soir. Le cron tourne a 23h35 alors que la
+        // saisie du soir reste ouverte jusqu'a 04h00: sans ce refus, il
+        // figerait presque chaque soir un stock non encore compte.
         if (data.sources && data.sources.fiable === false) {
             const raison = (data.sources.avances && data.sources.avances.raison) || 'source indisponible';
             console.warn(`[pl-snapshot] REFUS de figer le ${dateFin}: ${raison}.`);
             console.warn('[pl-snapshot] les avances comptent pour 0, le PL serait faux. Rien ecrit.');
             process.exitCode = 1;
+        } else if (data.stock && data.stock.soir_estime) {
+            const meta = data.stock.estimation || {};
+            console.warn(`[pl-snapshot] REFUS: stock du soir non saisi pour le ${dateFin} `
+                + `(dernier comptage le ${meta.date_ancre || '?'}). Rien n'est fige.`);
         } else if (DRY_RUN) {
             console.log('[pl-snapshot] dry-run: rien ecrit');
         } else {
