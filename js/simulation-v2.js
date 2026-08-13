@@ -1180,11 +1180,21 @@
     function enregistrerCalibration(valeur, bouton) {
         var pj = (etat.sim && etat.sim.projection) || {};
         var hi = pj.historique || {};
+        var sansDim = etat.proj.exclureDimanche;
         var corps = valeur === null ? { coeffP1P2: null } : {
             coeffP1P2: {
                 valeur: valeur,
                 fenetre: (hi.debut || '?') + ' → ' + (hi.fin || '?'),
-                jours: (hi.debut && hi.fin) ? PJ.joursEntre(hi.debut, hi.fin).length : null
+                // Les jours REELLEMENT mesures, pas les jours du calendrier.
+                // calibrerCoeff() moyenne sur joursOuvres(..., exclureDimanche):
+                // annoncer 92 quand la mesure porte sur 79 decrit un autre
+                // echantillon que celui qui a produit le coefficient.
+                jours: (hi.debut && hi.fin) ? PJ.joursOuvres(hi.debut, hi.fin, sansDim).length : null,
+                // Le reglage sous lequel la mesure a ete faite. Sans lui, deux
+                // calibrations menees avec des reglages opposes s'enregistrent
+                // sous des signatures indiscernables, et l'alerte de derive
+                // compare deux nombres qui ne mesurent pas la meme chose.
+                dimanches: sansDim ? 'exclus' : 'comptes'
             }
         };
         var libelle = bouton ? bouton.innerHTML : '';
@@ -1286,10 +1296,17 @@
             + '</details>';
     }
 
-    /** '2026-08-13T09:12:00Z' -> '13/08/2026'. */
+    /**
+     * '2026-08-13T09:12:00Z' -> '13/08/2026'.
+     *
+     * Delegue a lib/dates-fr.js, servi au navigateur par index.html: une
+     * quatrieme conversion de date locale a ce depot serait un quatrieme
+     * endroit ou les formats pourraient diverger.
+     */
     function dateCourte(iso) {
-        var m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-        return m ? m[3] + '/' + m[2] + '/' + m[1] : '';
+        var s = String(iso || '');
+        var r = window.datesFr ? window.datesFr.enFrancais(s) : s;
+        return r === s && !/^\d{4}-\d{2}-\d{2}/.test(s) ? '' : r;
     }
 
     /**
@@ -1305,7 +1322,7 @@
      * TOUT LE TENANT - c'est le meme regime que les produits suivis juste en
      * dessous, et la route PUT /api/simulation-v2/reglages refait le controle.
      */
-    function boutonCalibrer(pj, calibre, enr) {
+    function boutonCalibrer(calibre, enr, sansDim) {
         var u = window.currentUser || {};
         if (String(u.role || '').toLowerCase() !== 'admin') return '';
 
@@ -1335,13 +1352,28 @@
         // - c'est tout son interet - mais si la fenetre a bouge au point que
         // le calcul en direct s'en ecarte, il faut le VOIR, sinon on garde des
         // mois durant un coefficient qui ne decrit plus rien.
+        //
+        // Encore faut-il comparer deux mesures COMPARABLES. Le calcul en
+        // direct suit la case « Exclure les dimanches » de l'ecran; la valeur
+        // enregistree porte le reglage sous lequel elle a ete faite. Les
+        // opposer sans le verifier faisait crier a la derive des qu'on
+        // touchait a la case, alors que rien n'avait bouge.
         if (enr && calibre !== null) {
-            var ecart = Math.abs(calibre - nb(enr.valeur)) / Math.max(0.001, Math.abs(nb(enr.valeur)));
-            if (ecart > 0.02) {
-                h += '<div class="form-text text-warning-emphasis">'
-                    + 'le calcul en direct donne aujourd\'hui ' + calibre.toFixed(3)
-                    + ', soit ' + (ecart * 100).toFixed(0) + ' % d\'écart avec la valeur enregistrée.'
+            var memeReglage = !enr.dimanches
+                || enr.dimanches === (sansDim ? 'exclus' : 'comptes');
+            if (!memeReglage) {
+                h += '<div class="form-text text-muted">'
+                    + 'calibrée dimanches ' + esc(enr.dimanches)
+                    + ' : non comparable au calcul en direct tant que la case ci-dessous diffère.'
                     + '</div>';
+            } else {
+                var ecart = Math.abs(calibre - nb(enr.valeur)) / Math.max(0.001, Math.abs(nb(enr.valeur)));
+                if (ecart > 0.02) {
+                    h += '<div class="form-text text-warning-emphasis">'
+                        + 'le calcul en direct donne aujourd\'hui ' + calibre.toFixed(3)
+                        + ', soit ' + (ecart * 100).toFixed(0) + ' % d\'écart avec la valeur enregistrée.'
+                        + '</div>';
+                }
             }
         }
         return h;
@@ -1516,7 +1548,7 @@
             + '<div class="form-text">' + esc(origineCoeff)
             + (calibre !== null ? ' · calibré en direct : ' + calibre.toFixed(3) : '')
             + ' · document : ' + nb(pj.coeff_defaut).toFixed(3) + '</div>'
-            + boutonCalibrer(pj, calibre, enr) + '</div>'
+            + boutonCalibrer(calibre, enr, sansDim) + '</div>'
             + '<div class="col-md-3"><label class="form-label small">Pondération réel / historique</label>'
             + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="poidsReel">'
             + '<option value="0.7"' + (etat.proj.poidsReel === 0.7 ? ' selected' : '') + '>70 % réel + 30 % historique</option>'

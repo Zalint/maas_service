@@ -110,7 +110,14 @@ async function lireReglagesSimulationV2() {
         return await require('../lib/simulation-v2/reglages').lireReglages();
     } catch (e) {
         console.warn('[simulation] reglages v2 illisibles, comportement d\'origine:', e.message);
-        return { actif: false, famillePoulet: [], prixPouletDefaut: 0, avertissements: [] };
+        // Le repli porte TOUTES les cles, pas seulement celles qu'un appelant
+        // lisait le jour ou il a ete ecrit: `produitsSuivis` et `coeffP1P2` y
+        // manquaient, et seul le garde `v2 &&` du premier evitait un
+        // « Cannot read properties of undefined » sur une panne de base.
+        return {
+            actif: false, famillePoulet: [], prixPouletDefaut: 0,
+            produitsSuivis: [], coeffP1P2: null, avertissements: []
+        };
     }
 }
 
@@ -1657,16 +1664,13 @@ router.get('/simulation', async (req, res) => {
             // Elle voyage avec la projection et non avec /reglages, qui ne
             // rend ses cles qu'aux administrateurs: le coefficient pilote le
             // chiffre que TOUT LE MONDE lit a l'ecran, il ne peut pas etre
-            // invisible a ceux qui le subissent. Sa lecture ne doit jamais
-            // faire echouer la simulation - sans elle, le client recalcule en
-            // direct, exactement comme avant.
-            let coeffEnregistre = null;
-            try {
-                const rg = await require('../lib/simulation-v2/reglages').lireReglages();
-                coeffEnregistre = rg.coeffP1P2 || null;
-            } catch (e) {
-                console.warn('[finance] calibration P1/P2 illisible:', e.message);
-            }
+            // invisible a ceux qui le subissent.
+            //
+            // Relue depuis `reglagesSim`, deja charge en tete de handler: une
+            // seconde lecture aurait fait deux allers-retours en base par
+            // requete ET deux traitements differents de la panne, celui-ci
+            // ignorant le repli documente de lireReglagesSimulationV2().
+            const coeffEnregistre = reglagesSim.coeffP1P2 || null;
 
             projectionV2 = {
                 ca_par_jour: caParJour,

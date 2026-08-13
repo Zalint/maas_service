@@ -39,9 +39,14 @@ function charger() {
 const afficher = charger();
 
 function poser() {
+    // #parage-contributeurs manquait: afficherContributeursParage() sortait
+    // aussitot sur son garde `if (!zone) return`, et tout le rendu de la
+    // composition passait les tests sans qu'une seule de ses lignes s'execute.
     document.body.innerHTML = `
         <p id="parage-bovin-mois">—</p><p id="parage-bovin-mois-detail"></p>
-        <p id="parage-ovin-mois">—</p><p id="parage-ovin-mois-detail"></p>`;
+        <p id="parage-ovin-mois">—</p><p id="parage-ovin-mois-detail"></p>
+        <div id="parage-contributeurs"></div>`;
+    delete window.__parageContributeursOuvert;
 }
 
 const lire = (cat) => ({
@@ -204,5 +209,94 @@ describe('robustesse', () => {
     test('un rendement au-dela de 100% donne un parage negatif', () => {
         afficher({ bovin: { vendu: 110, theorique: 100 }, ovin: { vendu: 0, theorique: 0 } });
         expect(lire('bovin').valeur).toBe('-10.0 %');
+    });
+});
+
+describe('composition des taux: quels produits les portent', () => {
+    const zone = () => document.getElementById('parage-contributeurs');
+    const lignes = () => Array.from(zone().querySelectorAll('tbody tr'))
+        .map((tr) => Array.from(tr.children).map((td) => td.textContent.trim()));
+
+    test('les produits sont classes par poids DECROISSANT dans le theorique', () => {
+        // C'est le denominateur qui decide du classement: il repond a la seule
+        // question posee, « sur quoi ce taux porte-t-il ».
+        afficher({
+            bovin: {
+                vendu: 100, theorique: 150,
+                parProduit: {
+                    'Foie': { theorique: 10, vendu: 8 },
+                    'Boeuf': { theorique: 130, vendu: 90 },
+                    'Yell': { theorique: 10, vendu: 2 }
+                }
+            },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        expect(lignes().map((l) => l[0])).toEqual(['Boeuf', 'Foie', 'Yell']);
+    });
+
+    test('la part est calculee sur le theorique, et sommee a 100', () => {
+        afficher({
+            bovin: {
+                vendu: 75, theorique: 100,
+                parProduit: { 'Boeuf': { theorique: 75, vendu: 60 }, 'Foie': { theorique: 25, vendu: 15 } }
+            },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        const parts = lignes().map((l) => l[3]);
+        expect(parts).toEqual(['75 %', '25 %']);
+    });
+
+    test('un produit range dans la mauvaise espece devient VISIBLE', () => {
+        // Le cas qui a motive cet ecran: 48 kg de Laxass classes en Ovin
+        // portaient a eux seuls le taux attribue a l'agneau.
+        afficher({
+            bovin: { vendu: 0, theorique: 0, parProduit: {} },
+            ovin: {
+                vendu: 10, theorique: 58,
+                parProduit: {
+                    'Laxass': { theorique: 48, vendu: 0 },
+                    'Agneau': { theorique: 10, vendu: 10 }
+                }
+            }
+        });
+        const l = lignes();
+        expect(l[0][0]).toBe('Laxass');
+        expect(l[0][3]).toBe('83 %');
+    });
+
+    test('replie par defaut, et l ouverture SURVIT a un nouveau rendu', () => {
+        // La zone est videe entre deux rendus: relire l'etat dans le DOM
+        // rendait toujours « ferme », et le bloc se refermait sous les doigts
+        // des qu'on cochait une exclusion.
+        const donnees = {
+            bovin: { vendu: 9, theorique: 10, parProduit: { 'Boeuf': { theorique: 10, vendu: 9 } } },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        };
+        afficher(donnees);
+        const det = zone().querySelector('details');
+        expect(det.open).toBe(false);
+
+        det.open = true;
+        det.dispatchEvent(new Event('toggle'));
+        afficher(donnees);
+        expect(zone().querySelector('details').open).toBe(true);
+    });
+
+    test('aucun produit: la zone reste vide plutot que d afficher un cadre creux', () => {
+        afficher({
+            bovin: { vendu: 9, theorique: 10, parProduit: {} },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        expect(zone().innerHTML).toBe('');
+    });
+
+    test('un mois sans donnees efface la composition precedente', () => {
+        afficher({
+            bovin: { vendu: 9, theorique: 10, parProduit: { 'Boeuf': { theorique: 10, vendu: 9 } } },
+            ovin: { vendu: 0, theorique: 0, parProduit: {} }
+        });
+        expect(zone().innerHTML).not.toBe('');
+        afficher(null);
+        expect(zone().innerHTML).toBe('');
     });
 });

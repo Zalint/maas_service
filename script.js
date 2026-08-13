@@ -151,11 +151,36 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes en millisecondes
 //
 // sessionStorage et non localStorage: la donnee est un instantane de travail,
 // pas une preference. Fermer l'onglet doit la laisser partir.
-const CACHE_STORAGE_CLE = 'reconciliation-mois-cache';
+//
+// LA CLE PORTE L'UTILISATEUR. La deconnexion ne fait qu'un
+// `window.location.href = 'login.html'`: sessionStorage y survit. Sans ce
+// cloisonnement, l'utilisateur suivant sur un poste partage relisait, pendant
+// les 5 minutes de la fenetre, les lignes du precedent - y compris celles d'un
+// point de vente auquel le serveur ne lui donne pas acces.
+const CACHE_STORAGE_PREFIXE = 'reconciliation-mois-cache';
 
-function restaurerCacheReconciliation() {
+function identiteCache() {
+    return String((window.currentUser || {}).username || '');
+}
+
+function cleStockageCache() {
+    return CACHE_STORAGE_PREFIXE + ':' + identiteCache();
+}
+
+// La restauration est PARESSEUSE, et non faite au chargement du module:
+// checkAuth() pose window.currentUser de facon asynchrone, donc l'identite
+// n'est pas connue a l'evaluation du fichier. Restaurer trop tot reviendrait a
+// lire le cache de « personne », c'est-a-dire de n'importe qui.
+let cacheRestaurePour = null;
+
+function assurerCacheRestaure() {
+    const id = identiteCache();
+    // Tant que l'identite est inconnue, on ne restaure RIEN: le doute ferme.
+    if (!id || cacheRestaurePour === id) return;
+    cacheRestaurePour = id;
+    reconciliationCache.clear();
     try {
-        const brut = JSON.parse(sessionStorage.getItem(CACHE_STORAGE_CLE) || '{}');
+        const brut = JSON.parse(sessionStorage.getItem(cleStockageCache()) || '{}');
         Object.keys(brut).forEach((k) => {
             const e = brut[k];
             if (e && e.timestamp && (Date.now() - e.timestamp) < CACHE_DURATION) {
@@ -168,18 +193,21 @@ function restaurerCacheReconciliation() {
 }
 
 function persisterCacheReconciliation() {
+    const id = identiteCache();
+    if (!id) return; // rien a ecrire tant qu'on ne sait pas pour qui
     try {
         const brut = {};
         reconciliationCache.forEach((v, k) => { brut[k] = v; });
-        sessionStorage.setItem(CACHE_STORAGE_CLE, JSON.stringify(brut));
+        sessionStorage.setItem(cleStockageCache(), JSON.stringify(brut));
     } catch (e) {
-        // Quota depasse sur un gros mois: le cache memoire continue de servir,
-        // seule la survie au rechargement est perdue.
+        // Quota depasse sur un gros mois. On EFFACE plutot que de laisser en
+        // place la valeur precedemment ecrite: survivre a un echec d'ecriture
+        // ferait restaurer, au prochain rechargement, un instantane que la
+        // session courante croyait remplace.
         console.warn('Cache de reconciliation non persiste:', e && e.message);
+        try { sessionStorage.removeItem(cleStockageCache()); } catch (e2) { /* rien de plus a faire */ }
     }
 }
-
-restaurerCacheReconciliation();
 
 // Fonctions pour gérer le spinner de chargement
 function showLoadingSpinner() {
@@ -9987,14 +10015,24 @@ async function chargerReconciliationMensuelle(forceRecalcul = false) {
 
         console.log(`Chargement des données de réconciliation pour ${mois}/${annee}`);
 
+        // Le cache de la session, restaure au premier usage: c'est ici que
+        // l'identite de l'utilisateur est enfin connue.
+        assurerCacheRestaure();
+
+        // Les exclusions viennent du SERVEUR, et le mois auquel elles se
+        // rapportent est FIGE ici - pas relu des menus deroulants au moment
+        // d'un clic, qui pourraient avoir bouge depuis. Avant toute agregation:
+        // les deux chemins, cache et calcul complet, en dependent.
+        await chargerExclusionsReconciliation(`${mois}-${annee}`);
+
         // Vérifier le cache si on ne force pas le recalcul
         if (!forceRecalcul) {
             const cacheKey = `${mois}-${annee}`;
             const cachedData = reconciliationCache.get(cacheKey);
-            
+
             if (cachedData && (Date.now() - cachedData.timestamp) < CACHE_DURATION) {
                 console.log(`Données trouvées en cache pour ${mois}/${annee}`);
-                
+
                 // Afficher les données en cache
                 afficherDonneesReconciliationMensuelle(cachedData.data);
 
@@ -10564,10 +10602,18 @@ function afficherParageMois(parageMois) {
  * couple, et l'utilisateur coche une LIGNE, pas une journee entiere de tous
  * les points de vente.
  *
- * Persistees par mois dans localStorage: rouvrir l'onglet ou relancer le
- * calcul ne doit pas redonner la parole a une journee qu'on a ecartee.
+ * SERVEUR, et non localStorage. La premiere version rangeait ces exclusions
+ * dans le navigateur: deux personnes lisaient alors deux parages differents
+ * pour le meme mois sans qu'aucun ecran ne le dise, et sur un poste partage
+ * l'exclusion posee par l'un s'appliquait en silence aux totaux de l'autre.
+ * Voir lib/reconciliation-exclusions.js pour le stockage et sa signature.
+ *
+ * L'ETAT EN MEMOIRE porte le mois auquel il se rapporte. Il etait auparavant
+ * relu depuis les menus deroulants a chaque clic: changer le menu sans
+ * recalculer, puis cocher une case, ecrivait l'exclusion sous le mois affiche
+ * au menu et non sous celui des lignes a l'ecran.
  */
-const EXCLUSIONS_CLE = 'reconciliation-mois-exclusions';
+const exclusionsEtat = { mois: '', ensemble: new Set(), detail: new Map() };
 
 function cleExclusion(dateStr, pointVente) {
     return String(dateStr) + '|' + String(pointVente);
@@ -10579,27 +10625,72 @@ function moisCourantReconciliation() {
     return (m && a) ? (m.value + '-' + a.value) : '';
 }
 
+/** Les exclusions du mois CHARGE, jamais celles du menu deroulant courant. */
 function lireExclusions() {
-    try {
-        const brut = JSON.parse(localStorage.getItem(EXCLUSIONS_CLE) || '{}');
-        const mois = moisCourantReconciliation();
-        return new Set(Array.isArray(brut[mois]) ? brut[mois] : []);
-    } catch (e) {
-        // Un stockage illisible ne doit pas empecher l'ecran de s'afficher:
-        // on repart d'aucune exclusion, ce qui est l'etat par defaut.
-        console.warn('Exclusions de reconciliation illisibles:', e && e.message);
-        return new Set();
-    }
+    return exclusionsEtat.ensemble;
 }
 
-function ecrireExclusions(ensemble) {
+/**
+ * Recharge les exclusions du serveur pour un mois donne, et FIGE ce mois.
+ *
+ * Un echec ne bloque pas l'ecran: on repart d'aucune exclusion, l'etat par
+ * defaut, et on le signale. Mieux vaut un total qui compte tout - et qui le
+ * dit - qu'un ecran vide.
+ */
+async function chargerExclusionsReconciliation(mois) {
+    exclusionsEtat.mois = String(mois || '');
+    exclusionsEtat.ensemble = new Set();
+    exclusionsEtat.detail = new Map();
     try {
-        const brut = JSON.parse(localStorage.getItem(EXCLUSIONS_CLE) || '{}');
-        brut[moisCourantReconciliation()] = Array.from(ensemble);
-        localStorage.setItem(EXCLUSIONS_CLE, JSON.stringify(brut));
+        const res = await fetch('/api/reconciliation/exclusions', { credentials: 'include' });
+        const j = await res.json();
+        if (!j || !j.success) throw new Error((j && j.message) || 'réponse invalide');
+        (j.data[exclusionsEtat.mois] || []).forEach((e) => {
+            exclusionsEtat.ensemble.add(e.cle);
+            exclusionsEtat.detail.set(e.cle, e);
+        });
     } catch (e) {
-        console.warn('Exclusions de reconciliation non enregistrees:', e && e.message);
+        console.warn('Exclusions de reconciliation illisibles:', e && e.message);
     }
+    return exclusionsEtat.ensemble;
+}
+
+/**
+ * Bascule UNE exclusion cote serveur, puis repeint.
+ *
+ * L'etat local n'est mis a jour qu'APRES la reponse: un affichage optimiste
+ * ferait croire l'exclusion enregistree alors qu'un compte en lecture seule
+ * vient de se voir refuser l'ecriture.
+ */
+async function basculerExclusionReconciliation(cle, exclure, caseACocher) {
+    if (caseACocher) caseACocher.disabled = true;
+    try {
+        const res = await fetch('/api/reconciliation/exclusions', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mois: exclusionsEtat.mois, cle, exclure })
+        });
+        const j = await res.json();
+        if (!j || !j.success) throw new Error((j && j.message) || 'refusé');
+        exclusionsEtat.ensemble = new Set();
+        exclusionsEtat.detail = new Map();
+        (j.data || []).forEach((e) => {
+            exclusionsEtat.ensemble.add(e.cle);
+            exclusionsEtat.detail.set(e.cle, e);
+        });
+    } catch (e) {
+        // La case revient a l'etat que le SERVEUR connait, pas a celui qu'on
+        // vient de cliquer: elle ne doit jamais annoncer une exclusion qui
+        // n'a pas ete enregistree.
+        if (typeof showToast === 'function') {
+            showToast('Exclusion non enregistrée : ' + (e && e.message), 'danger');
+        } else {
+            console.warn('Exclusion non enregistrée:', e && e.message);
+        }
+    }
+    if (caseACocher) caseACocher.disabled = false;
+    appliquerExclusionsReconciliation();
 }
 
 /**
@@ -10680,13 +10771,22 @@ function appliquerExclusionsReconciliation() {
 
     const info = document.getElementById('recon-exclusions-info');
     if (info) {
+        // QUI a exclu, et QUAND. Une exclusion change les totaux que tout le
+        // monde lit: la subir sans savoir d'ou elle vient, c'est douter du
+        // tableau entier.
+        const qui = Array.from(exclusions)
+            .map((c) => exclusionsEtat.detail.get(c))
+            .filter((e) => e && e.par)
+            .map((e) => e.par + (e.le ? ' le ' + String(e.le).slice(8, 10)
+                + '/' + String(e.le).slice(5, 7) : ''));
+        const auteurs = Array.from(new Set(qui));
         info.textContent = r.exclues
             ? r.exclues + ' journée(s) exclue(s) des totaux et du parage'
+              + (auteurs.length ? ' — par ' + auteurs.join(', ') : '')
             : '';
     }
     return r;
 }
-window.appliquerExclusionsReconciliation = appliquerExclusionsReconciliation;
 
 function construireLigneReconciliationMois(dateStr, pointVente, data) {
     const row = document.createElement('tr');
@@ -10705,10 +10805,7 @@ function construireLigneReconciliationMois(dateStr, pointVente, data) {
     chk.dataset.cle = cleExclusion(dateStr, pointVente);
     chk.title = 'Exclure cette journée des totaux et du parage du mois';
     chk.addEventListener('change', function () {
-        const ex = lireExclusions();
-        if (chk.checked) ex.add(chk.dataset.cle); else ex.delete(chk.dataset.cle);
-        ecrireExclusions(ex);
-        appliquerExclusionsReconciliation();
+        basculerExclusionReconciliation(chk.dataset.cle, chk.checked, chk);
     });
     cell.appendChild(chk);
     row.appendChild(cell);

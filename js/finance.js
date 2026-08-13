@@ -417,10 +417,7 @@
             if (typeof showToast === 'function') showToast('Aucune donnée à exporter', 'warning');
             return;
         }
-        const fmtDateFr = (iso) => {
-            const m = typeof iso === 'string' && iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-        };
+        const fmtDateFr = (iso) => window.datesFr.enFrancais(iso);
         const rows = src.map((d) => ({
             'Date': fmtDateFr(d.date),
             'Produit': d.produit,
@@ -459,11 +456,7 @@
     function renderDetailParDate(data) {
         const tbodyDate = document.querySelector('#fin-creances-detail-date tbody');
         if (!tbodyDate) return;
-        const fmtDateFr = (iso) => {
-            if (!iso || typeof iso !== 'string') return iso;
-            const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
-            return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-        };
+        const fmtDateFr = (iso) => window.datesFr.enFrancais(iso);
         const r2 = (n) => Math.round((n || 0) * 100) / 100;
         const tiret = '<span class="text-muted">—</span>';
         const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
@@ -2058,10 +2051,9 @@
         }
     }
 
-    const fmtDateFr = (iso) => {
-        const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-        return m ? `${m[3]}/${m[2]}/${m[1]}` : String(iso || '');
-    };
+    // Le String() conserve le repli d'origine: null rend '' et non 'null',
+    // qui s'afficherait tel quel dans les cellules du tableau.
+    const fmtDateFr = (iso) => window.datesFr.enFrancais(String(iso == null ? '' : iso));
 
     // ===== Export Excel du PL (tout ce que montre l'ecran) =====
     // Construit depuis plDernieresDonnees: on exporte EXACTEMENT ce qui est
@@ -2197,6 +2189,17 @@
 
     // ===== Snapshots: figer le PL du jour + historique =====
 
+    // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
+    // n'existait pas ?". C'est une SIMULATION d'affichage: rien n'est envoye au
+    // serveur, rien n'est enregistre, et le PL reel reste affiche a cote.
+    //
+    // Declare ICI, avant majDeltaJourPl qui le lit. Il vivait 170 lignes plus
+    // bas: le code fonctionnait parce que rien n'appelle renderPl() pendant
+    // l'evaluation du module, mais le premier appel plus precoce - un rendu
+    // optimiste, un test qui importe le fichier - aurait leve
+    // « Cannot access before initialization » et emporte tout l'ecran PL.
+    const plPostesNeutralises = new Set();
+
     // PL DU JOUR: la difference entre deux cumuls voisins.
     //
     // Un PL fige court du 1er du mois a sa date. C'est un CUMUL, pas une
@@ -2209,19 +2212,33 @@
     // D'ou la comparaison sur periode_debut plutot que sur le mois: c'est la
     // condition exacte, et elle se lit sans reflechir.
 
-    /** 'YYYY-MM-DD', quelle que soit la forme rendue par l'API. */
-    function isoDeSnapshot(v) {
-        if (!v) return '';
-        if (typeof v === 'string') return v.slice(0, 10);
-        try { return new Date(v).toISOString().slice(0, 10); } catch (e) { return ''; }
-    }
+    // Le jour et l'ecart en jours viennent de lib/dates-fr.js, servi au
+    // navigateur par index.html - comme lib/parage.js l'est pour la formule du
+    // parage. Trois conversions locales de plus dans ce fichier, chacune avec
+    // sa propre tolerance aux entrees, etaient trois endroits ou la prochaine
+    // divergence de format pouvait naitre.
+    const isoDeSnapshot = (v) => window.datesFr.jourISO(v);
+    const joursEntreIso = (a, b) => window.datesFr.ecartEnJours(a, b);
 
-    /** Jours calendaires entre deux dates ISO, ou null si l'une est illisible. */
-    function joursEntreIso(a, b) {
-        const t1 = Date.parse(a + 'T00:00:00Z');
-        const t2 = Date.parse(b + 'T00:00:00Z');
-        if (!isFinite(t1) || !isFinite(t2)) return null;
-        return Math.round((t2 - t1) / 86400000);
+    /**
+     * Le PL fige le plus recent qui precede `dateRef` sur la MEME periode.
+     *
+     * UNE seule definition de « le precedent », partagee par le tableau de
+     * l'historique et par la carte du PL. Ils en avaient deux: le tableau
+     * prenait le voisin immediat dans la liste triee, la carte filtrait puis
+     * retenait le maximum. Un snapshot de periode_debut differente intercale
+     * entre deux dates suffisait a les faire diverger - tiret d'un cote,
+     * chiffre de l'autre, pour la meme journee au meme instant.
+     */
+    function snapshotPrecedent(rows, dateRef, periodeDebut) {
+        let meilleur = null;
+        for (const s of rows) {
+            if (isoDeSnapshot(s.periode_debut) !== periodeDebut) continue;
+            const d = isoDeSnapshot(s.date);
+            if (!d || d >= dateRef) continue;
+            if (!meilleur || d > isoDeSnapshot(meilleur.date)) meilleur = s;
+        }
+        return meilleur;
     }
 
     /**
@@ -2231,24 +2248,24 @@
      * Sans ce cas, la ligne du 1er resterait vide alors qu'elle est justement
      * la seule dont la valeur se lit directement.
      *
-     * @param {Array} rows snapshots tries par date DECROISSANTE
+     * @param {Array} rows snapshots, dans n'importe quel ordre
      * @returns {Map<string, {valeur:number, jours:number, depuis:string|null}>}
      */
     function plParJournee(rows) {
         const out = new Map();
-        for (let i = 0; i < rows.length; i++) {
-            const cur = rows[i];
+        for (const cur of rows) {
             const dateCur = isoDeSnapshot(cur.date);
             const debutCur = isoDeSnapshot(cur.periode_debut);
-            const prec = rows[i + 1];
-            const datePrec = prec ? isoDeSnapshot(prec.date) : '';
-            if (prec && isoDeSnapshot(prec.periode_debut) === debutCur && datePrec && datePrec < dateCur) {
+            if (!dateCur || !debutCur) continue;
+            const prec = snapshotPrecedent(rows, dateCur, debutCur);
+            if (prec) {
+                const datePrec = isoDeSnapshot(prec.date);
                 out.set(dateCur, {
                     valeur: (parseFloat(cur.pl) || 0) - (parseFloat(prec.pl) || 0),
                     jours: joursEntreIso(datePrec, dateCur),
                     depuis: datePrec
                 });
-            } else if (debutCur && dateCur === debutCur) {
+            } else if (dateCur === debutCur) {
                 out.set(dateCur, { valeur: parseFloat(cur.pl) || 0, jours: 1, depuis: null });
             }
             // Sinon: aucun point de comparaison. Un tiret, plutot que la
@@ -2290,9 +2307,10 @@
             const rows = await listeSnapshotsPl(false);
             const debut = isoDeSnapshot(d.periode.dateDebut);
             const fin = isoDeSnapshot(d.periode.dateFin);
-            const prec = rows
-                .filter((s) => isoDeSnapshot(s.periode_debut) === debut && isoDeSnapshot(s.date) < fin)
-                .sort((a, b) => isoDeSnapshot(b.date).localeCompare(isoDeSnapshot(a.date)))[0];
+            // MEME regle que la colonne « PL du jour » du tableau: une seule
+            // definition de « le precedent », donc deux ecrans qui ne peuvent
+            // pas se contredire.
+            const prec = (debut && fin) ? snapshotPrecedent(rows, fin, debut) : null;
             if (!prec) return;
             const datePrec = isoDeSnapshot(prec.date);
             const delta = (parseFloat(d.pl) || 0) - (parseFloat(prec.pl) || 0);
@@ -2451,10 +2469,6 @@
         }
     }
 
-    // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
-    // n'existait pas ?". C'est une SIMULATION d'affichage: rien n'est envoye au
-    // serveur, rien n'est enregistre, et le PL reel reste affiche a cote.
-    const plPostesNeutralises = new Set();
     let plDernieresDonnees = null;
 
     function renderPl(d) {

@@ -108,6 +108,7 @@ router.put('/reglages', adminStrict, async (req, res) => {
                 valeur: recu.valeur,
                 fenetre: recu.fenetre,
                 jours: recu.jours,
+                dimanches: recu.dimanches,
                 par: utilisateur(req),
                 le: new Date().toISOString()
             };
