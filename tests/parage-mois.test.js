@@ -16,13 +16,24 @@ const path = require('path');
 // balise <script> en production. C'est le cablage reel, pas un bouchon.
 require('../lib/parage');
 
+/** Le texte d'une fonction de premier niveau, de sa signature a son '}' seul. */
+function extraire(source, signature) {
+    const debut = source.indexOf(signature);
+    if (debut === -1) throw new Error(`${signature} introuvable dans script.js`);
+    const fin = source.indexOf('\n}', debut) + 2;
+    return source.slice(debut, fin);
+}
+
 function charger() {
     const source = fs.readFileSync(path.join(__dirname, '..', 'script.js'), 'utf8');
-    const debut = source.indexOf('function afficherParageMois(parageMois)');
-    if (debut === -1) throw new Error('afficherParageMois introuvable dans script.js');
-    const fin = source.indexOf('\n}', debut) + 2;
+    // afficherParageMois APPELLE afficherContributeursParage, qui liste les
+    // produits composant chaque taux. N'extraire que la premiere rendait une
+    // fonction qui levait ReferenceError des le premier appel: l'extraction
+    // doit suivre les dependances, sinon elle teste un code qui n'existe pas.
+    const code = extraire(source, 'function afficherContributeursParage(parageMois, kg)')
+        + '\n' + extraire(source, 'function afficherParageMois(parageMois)');
     // eslint-disable-next-line no-new-func
-    return new Function(`${source.slice(debut, fin)}\nreturn afficherParageMois;`)();
+    return new Function(`${code}\nreturn afficherParageMois;`)();
 }
 
 const afficher = charger();
