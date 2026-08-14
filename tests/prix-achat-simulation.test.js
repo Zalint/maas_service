@@ -160,3 +160,31 @@ describe('origine', () => {
         expect(p.origine('Boeuf en détail')).toBeNull();
     });
 });
+
+describe('la cible du cout est RELAYEE', () => {
+    test('sans elle, deux decoupes d une meme carcasse divergent', () => {
+        // routes/finance.js cumule le cout pondere par CIBLE. Si la couche de
+        // simulation ne relaie pas cibleDuCout, l'appelant retombe sur le
+        // libelle de vente: « Boeuf en gros » et « Boeuf en détail » moyennent
+        // alors chacun sur son propre calendrier. Mesure sur aout 2026:
+        // 4 037 contre 4 150, pour la MEME carcasse.
+        creerResolveurPrixAchat.mockResolvedValue({
+            avertissements: [],
+            pourDate: () => ({
+                prixAchat: () => 4000,
+                origine: () => 'mappé vers Boeuf',
+                cibleDuCout: (p) => ({ cible: 'Boeuf', coefficient: /jarret/i.test(p) ? 0.5 : 1 }),
+                prixAchatDefaut: { bovin: 4000, ovin: null },
+                origineBoeuf: 'catalogue fournisseur'
+            }),
+            resumePrixBoeuf: () => [], statsPrixBoeuf: () => null
+        });
+        return creerResolveurPrixAchatSimulation({ dateMax: '2026-08-14' }).then((r) => {
+            const p = r.pourDate('2026-08-14');
+            expect(typeof p.cibleDuCout).toBe('function');
+            expect(p.cibleDuCout('Boeuf en gros')).toEqual({ cible: 'Boeuf', coefficient: 1 });
+            expect(p.cibleDuCout('Boeuf en détail')).toEqual({ cible: 'Boeuf', coefficient: 1 });
+            expect(p.cibleDuCout('Jarret')).toEqual({ cible: 'Boeuf', coefficient: 0.5 });
+        });
+    });
+});

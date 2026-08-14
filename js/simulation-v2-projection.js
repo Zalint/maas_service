@@ -265,20 +265,48 @@
             facteurDepenses = r;
         }
 
+        // ON PROJETTE LE TAUX DE MARGE, PAS LES AVANCES.
+        //
+        // Les avances et les paiements sont de la TRESORERIE d'achat: une
+        // partie repart en stock. Les extrapoler comme un cout sans
+        // extrapoler le stock qu'ils creent comptait tout l'achat du mois
+        // comme consomme. Mesure sur aout 2026: la marge implicite tombait a
+        // 0,5 % du CA quand la marge reelle est de 10,4 %, et le PL projete
+        // affichait -341 053 F pour une activite qui gagne de l'argent.
+        //
+        // Le serveur rend desormais `taux_marge`, constate depuis le debut du
+        // mois. C'est le proxy retenu par le proprietaire du produit: les
+        // receptions sont regulieres - tous les deux jours - donc le taux ne
+        // depend pas du calendrier des livraisons.
+        var tauxMarge = p.taux_marge !== null && p.taux_marge !== undefined
+            ? nb(p.taux_marge) / 100
+            : null;
+        // Repli: reconstituer le taux depuis les postes, pour un PL fige
+        // anterieur a ce champ.
+        if (tauxMarge === null && caRealise > 0) {
+            var coutR = nb(p.total_avances) + nb(p.paiements_fournisseur)
+                - nb(p.stock_variation_nette);
+            tauxMarge = (caRealise - coutR) / caRealise;
+        }
+
         var d = {
             ca: caCible,
-            avances: nb(p.total_avances) * r,
+            tauxMarge: tauxMarge,
+            marge: tauxMarge === null ? null : caCible * tauxMarge,
             commission: nb(p.commission_maas) * r,
             margeCdc: nb(p.marge_cdc) * r,
             charges: nb(args.chargesMensuel),
             depenses: nb(p.depenses_periode) * facteurDepenses,
             depensesFacteur: facteurDepenses,
+            // Rendus pour l'affichage du detail: ils n'entrent PLUS dans le
+            // calcul, la marge les contient deja.
+            avances: nb(p.total_avances) * r,
             paiements: nb(p.paiements_fournisseur),
             stock: stock
         };
-        d.pl = d.ca - d.avances - d.commission + d.margeCdc
-            - d.charges - d.depenses - d.paiements + d.stock;
-        d.margeNette = caCible > 0 ? d.pl / caCible : null;
+        d.pl = d.marge === null ? null
+            : d.marge - d.commission + d.margeCdc - d.charges - d.depenses;
+        d.margeNette = (caCible > 0 && d.pl !== null) ? d.pl / caCible : null;
         return d;
     }
 
