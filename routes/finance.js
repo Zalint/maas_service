@@ -2269,7 +2269,23 @@ router.get('/simulation', async (req, res) => {
             // produit. Les journees dont le cout est inconnu sont ECARTEES du
             // numerateur ET du denominateur: les inclure a zero ferait passer
             // une donnee manquante pour un achat gratuit.
+            // LE CUMUL SE FAIT SUR LA CIBLE, PAS SUR LE LIBELLE DE VENTE.
+            //
+            // « Boeuf en gros » et « Boeuf en détail » sortent de la MEME
+            // carcasse: leur cout doit etre identique. Cumuler par libelle
+            // faisait moyenner chacun sur SON propre calendrier de vente, et
+            // les deux divergeaient sans qu'aucune carcasse ne differe. Mesure
+            // sur aout 2026: 4 037 pour le gros contre 4 150 pour le detail -
+            // 113 F/u d'ecart, uniquement parce que le gros avait fait 70 % de
+            // son volume avant une hausse de prix contre 53 % pour le detail.
+            //
+            // On accumule donc en UNITES DE LA CIBLE (quantite x coefficient)
+            // au prix de la cible, puis on reconvertit par libelle. Le Jarret,
+            // mappe vers Boeuf avec 0,5, consomme bien un demi-kilo de
+            // carcasse par piece vendue et porte la moitie du prix.
             const cumul = new Map();
+            const cibleParLibelle = new Map();
+            const originesParLibelle = new Map();
             for (const l of lignes) {
                 const iso = parseDateVersISO(l.date);
                 if (!iso) continue;
@@ -2278,19 +2294,41 @@ router.get('/simulation', async (req, res) => {
                 const r = pour(iso);
                 const pa = parseFloat(r.prixAchat(l.produit));
                 if (!Number.isFinite(pa) || pa <= 0) continue;
-                const cle = normaliserNomProduit(l.produit);
+                const dest = r.cibleDuCout ? r.cibleDuCout(l.produit) : null;
+                const cible = (dest && dest.cible) || l.produit;
+                const coef = (dest && dest.coefficient) || 1;
+                const cleLib = normaliserNomProduit(l.produit);
+                cibleParLibelle.set(cleLib, { cible, coef });
+                // L'ORIGINE reste attachee au LIBELLE. Le cout est commun a la
+                // carcasse, la phrase qui le decrit ne l'est pas: « Boeuf en
+                // gros » est mappe x1, le Jarret x0,5. Les melanger faisait
+                // afficher « sources multiples » sur les trois.
+                const oLib = r.origine(l.produit);
+                if (oLib) {
+                    if (!originesParLibelle.has(cleLib)) originesParLibelle.set(cleLib, new Set());
+                    originesParLibelle.get(cleLib).add(oLib);
+                }
+                // Le prix de la CIBLE: prixAchat rend deja prix_cible x coef,
+                // on remonte donc au prix unitaire de la carcasse.
+                const prixCible = coef > 0 ? pa / coef : pa;
+                const cle = normaliserNomProduit(cible);
                 if (!cumul.has(cle)) cumul.set(cle, { pondere: 0, qte: 0, origines: new Set() });
                 const c = cumul.get(cle);
-                c.pondere += pa * q;
-                c.qte += q;
-                const o = r.origine(l.produit);
-                if (o) c.origines.add(o);
+                c.pondere += prixCible * (q * coef);
+                c.qte += q * coef;
             }
+            /** Le cumul de la CIBLE d'un libelle, et le coefficient qui y mene. */
+            const cumulDe = (nom) => {
+                const d = cibleParLibelle.get(normaliserNomProduit(nom));
+                if (!d) return null;
+                const c = cumul.get(normaliserNomProduit(d.cible));
+                return c ? { c, coef: d.coef } : null;
+            };
 
             const finDePeriode = resolveurPrix.pourDate(dateFin);
             prixAchatDe = (nom) => {
-                const c = cumul.get(normaliserNomProduit(nom));
-                if (c && c.qte > 0) return c.pondere / c.qte;
+                const d = cumulDe(nom);
+                if (d && d.c.qte > 0) return (d.c.pondere / d.c.qte) * d.coef;
                 // AUCUNE journee ponderable. Deux cas distincts tombent ici,
                 // et le repli sur la fin de periode convient aux deux:
                 //  - produit sans vente: rien a ponderer;
@@ -2313,10 +2351,10 @@ router.get('/simulation', async (req, res) => {
             // une: le prix affiche est alors une moyenne de provenances, et
             // c'est exactement ce qu'il faut savoir avant de s'y fier.
             origineDe = (nom) => {
-                const c = cumul.get(normaliserNomProduit(nom));
-                if (!c || !c.origines.size) return finDePeriode.origine(nom);
-                if (c.origines.size === 1) return c.origines.values().next().value;
-                return `sources multiples (${Array.from(c.origines).join(', ')})`;
+                const o = originesParLibelle.get(normaliserNomProduit(nom));
+                if (!o || !o.size) return finDePeriode.origine(nom);
+                if (o.size === 1) return o.values().next().value;
+                return `sources multiples (${Array.from(o).join(', ')})`;
             };
         }
 

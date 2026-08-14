@@ -757,6 +757,11 @@
         // propre », « mappé vers Boeuf × 0,5 », « sources multiples ». Une table
         // de traduction ici serait une seconde definition de la resolution, et
         // c'est exactement celle qui vient de disparaitre.
+        // Totaux cumules PENDANT la construction, sur les memes valeurs que
+        // les lignes: les recalculer ensuite ferait une seconde definition, et
+        // un total qui ne serait pas la somme de ce qu'on voit.
+        var totMarge = 0, totCout = 0, totVentes = 0, totQte = 0;
+        var lignesSansCout = 0;
         var lignes = liste.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })
             .map(function (p) {
                 var pv = (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
@@ -771,6 +776,20 @@
                 // c'est le cout de la carcasse qu'il faut acheter pour vendre
                 // une unite, pas celui de l'unite elle-meme.
                 var m = (pv === null || pa === null) ? null : pv - (paPare === null ? pa : paPare);
+                // MARGE de la ligne = marge unitaire x quantite. Le taux par
+                // unite ne dit pas ce que le produit rapporte: le Jarret perd
+                // 1 564 F par piece, mais sur 11 pieces - a comparer aux
+                // 959 F x 390 du boeuf en detail.
+                var q = nb(p.quantite);
+                var margeLigne = m === null ? null : m * q;
+                // COUT de la ligne au prix REELLEMENT soustrait, parage
+                // compris: c'est ce qu'il a fallu acheter, pas ce qu'on a
+                // vendu.
+                var coutLigne = pa === null ? null : (paPare === null ? pa : paPare) * q;
+                totQte += q;
+                totVentes += nb(p.ca);
+                if (margeLigne === null || coutLigne === null) lignesSansCout++;
+                else { totMarge += margeLigne; totCout += coutLigne; }
                 return '<tr>'
                     + '<td>' + esc(p.nom)
                       + (pa === null
@@ -786,6 +805,8 @@
                     + '<td class="small text-muted">' + esc(p.prix_achat_origine || '—') + '</td>'
                     + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger fw-medium' : '') + '">'
                       + esc(fmt(m)) + '</td>'
+                    + '<td class="text-end' + (margeLigne !== null && margeLigne < 0 ? ' text-danger fw-medium' : '') + '">'
+                      + esc(fmt(margeLigne)) + '</td>'
                     + '<td class="text-end">' + esc(fmt(p.ca)) + '</td>'
                     + '</tr>';
             }).join('');
@@ -820,8 +841,26 @@
             + '<th class="text-end">Prix de vente pondéré</th><th class="text-end">Coût pondéré</th>'
             + '<th class="text-end">Parage</th>'
             + '<th>Source du coût</th><th class="text-end">Marge nette de parage</th>'
+            + '<th class="text-end">Marge</th>'
             + '<th class="text-end">Ventes</th></tr></thead>'
-            + '<tbody>' + lignes + '</tbody></table></div></details>';
+            + '<tbody>' + lignes + '</tbody>'
+            // PIED DE TABLEAU. Le total de cout ne porte QUE sur les lignes
+            // qui ont un cout: additionner des lignes dont une partie manque
+            // donnerait une marge d'apparence complete. Le nombre de lignes
+            // ecartees est dit juste a cote.
+            + '<tfoot><tr class="fw-semibold border-top">'
+            + '<td>Total' + (lignesSansCout
+                ? ' <span class="fw-normal text-muted small">('
+                  + lignesSansCout + ' ligne(s) sans coût, exclue(s) du coût et de la marge)</span>'
+                : '') + '</td>'
+            + '<td class="text-end">' + esc(totQte.toLocaleString('fr-FR', { maximumFractionDigits: 2 })) + '</td>'
+            + '<td></td>'
+            + '<td class="text-end">' + esc(fmt(totCout)) + '</td>'
+            + '<td></td><td></td><td></td>'
+            + '<td class="text-end' + (totMarge < 0 ? ' text-danger' : '') + '">' + esc(fmt(totMarge)) + '</td>'
+            + '<td class="text-end">' + esc(fmt(totVentes)) + '</td>'
+            + '</tr></tfoot>'
+            + '</table></div></details>';
     }
 
     function marquerEnAttente() {
