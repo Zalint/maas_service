@@ -3668,8 +3668,13 @@ router.get('/cash-stock', async (req, res) => {
  * autres en retour.
  */
 async function lireConfigPublique() {
-    const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
-    const reserveesV2 = new Set(Object.values(CLES_V2));
+    // CLES_RESERVEES, pas Object.values(CLES): la liste noire doit couvrir les
+    // cles RETIREES du code autant que les cles vivantes. Les lignes d'une cle
+    // supprimee restent en base sur les tenants deja deployes, et les deriver
+    // de la liste vivante faisait fuiter chaque suppression - retirer une cle
+    // du code l'exposait sur la route.
+    const { CLES_RESERVEES } = require('../lib/simulation-v2/reglages');
+    const reserveesV2 = new Set(CLES_RESERVEES);
     const rows = await FinanceConfig.findAll();
     const config = {};
     for (const r of rows) {

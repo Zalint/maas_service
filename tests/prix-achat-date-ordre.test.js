@@ -24,8 +24,20 @@ jest.mock('../db/models', () => mockModeles);
 // l'emporter sur le nombre fige du catalogue: c'est la raison d'etre de la
 // case « Prix API (DATA) ».
 const PRIX_LOT = 4057;
+// atDate DOIT dependre de la date. Un stub constant - `() => 4057` - laissait
+// passer deux mutations graves: appeler atDate() SANS argument (le vrai client
+// rend alors null, donc tout le mois retombe sur le catalogue pendant que
+// l'ecran affiche le prix MATA), et atDate(dateMax) (tout le mois value au
+// prix du dernier jour, exactement l'ecart de 40% que ce module existe pour
+// eviter). Le vrai resolveur rend aussi `count`.
+//
+// La table est ECRITE DANS la fabrique: jest.mock est hisse au-dessus des
+// declarations du fichier, donc une constante externe y serait undefined.
 jest.mock('../lib/achats-boeuf-client', () => ({
-    getBoeufPrixAchatResolver: jest.fn(async () => ({ atDate: () => 4057 }))
+    getBoeufPrixAchatResolver: jest.fn(async () => ({
+        atDate: (d) => ({ '2026-08-11': 3990, '2026-08-12': 4100, '2026-08-13': 4057 }[d] ?? null),
+        count: 3
+    }))
 }));
 
 const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
@@ -36,16 +48,35 @@ const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
  * @param {Array}   o.catalogue  lignes fournisseur_prix
  * @param {Array}   o.alias      lignes produit_alias
  */
-function poser({ dynamique = false, catalogue = [], alias = [] } = {}) {
+function poser({ dynamique = false, catalogue = [], alias = [], historique = [] } = {}) {
+    // DECIMAL(12,2) et DECIMAL(10,4) reviennent de Postgres en CHAINES
+    // ("4500.00", "0.5000"), pas en nombres. Nourrir les mocks avec des
+    // nombres rendait six parseFloat() du code supprimables sans qu'aucun test
+    // ne tombe - et sans l'un d'eux, Number.isFinite("4500.00") est faux et le
+    // catalogue se vide ENTIEREMENT en production. Les mocks mentent donc ici
+    // comme la base dit vrai.
+    const dec = (v, n) => (v == null ? null : Number(v).toFixed(n));
     mockModeles.FournisseurPrix.findAll.mockResolvedValue(
         catalogue.map((c) => ({
             produit: c.produit,
-            prix_achat: c.prix_achat,
+            prix_achat: dec(c.prix_achat, 2),
             prix_achat_dynamique: c.produit.toLowerCase() === 'boeuf' ? dynamique : false
         }))
     );
-    mockModeles.PrixAchatHistory.findAll.mockResolvedValue([]);
-    mockModeles.ProduitAlias.findAll.mockResolvedValue(alias);
+    mockModeles.PrixAchatHistory.findAll.mockResolvedValue(
+        historique.map((h) => ({
+            produit: h.produit,
+            prix_achat: dec(h.prix_achat, 2),
+            created_at: h.created_at
+        }))
+    );
+    mockModeles.ProduitAlias.findAll.mockResolvedValue(
+        alias.map((a) => ({
+            alias_produit: a.alias_produit,
+            produit_catalog: a.produit_catalog,
+            coefficient: dec(a.coefficient, 4)
+        }))
+    );
 }
 
 const CATALOGUE = [
@@ -182,5 +213,86 @@ describe('rien ne correspond : le cout reste INCONNU', () => {
         expect(p.prixAchat('Boeuf en détail')).toBe(PRIX_LOT);
         expect(p.prixAchat('Foie')).toBe(2500);
         expect(r.avertissements.join(' ')).toMatch(/Mapping produits illisible/);
+    });
+});
+
+describe('le prix suit la DATE, pas la borne de la periode', () => {
+    // Tout ce bloc couvrait un angle mort complet: PrixAchatHistory etait
+    // moque a [] dans CHAQUE test du depot, et le stub du lot etait constant.
+    // La resolution point-in-time - la raison d'etre du module, « jusqu'a 40%
+    // d'ecart sur la marge du mois » - n'etait donc jamais executee.
+
+    test('le lot du jour change d un jour a l autre', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-11').prixAchat('Boeuf')).toBe(3990);
+        expect(r.pourDate('2026-08-12').prixAchat('Boeuf')).toBe(4100);
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4057);
+    });
+
+    test('une journee sans lot retombe sur le catalogue, et le DIT', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-01').prixAchat('Boeuf')).toBe(4500);
+        expect(r.avertissements.join(' ')).toMatch(/aucun lot/i);
+    });
+
+    test('l historique donne la DERNIERE valeur <= la date', async () => {
+        poser({
+            catalogue: [{ produit: 'Foie', prix_achat: 2500 }],
+            historique: [
+                { produit: 'Foie', prix_achat: 2000, created_at: '2026-08-01T10:00:00.000Z' },
+                { produit: 'Foie', prix_achat: 2300, created_at: '2026-08-10T10:00:00.000Z' }
+            ]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        // Avant toute ecriture: le catalogue courant, faute de mieux.
+        expect(r.pourDate('2026-07-31').prixAchat('Foie')).toBe(2500);
+        expect(r.pourDate('2026-08-05').prixAchat('Foie')).toBe(2000);
+        expect(r.pourDate('2026-08-12').prixAchat('Foie')).toBe(2300);
+    });
+
+    test("une ecriture POSTERIEURE ne remonte pas dans le passe", async () => {
+        // Le `break` de la boucle: sans lui, le prix du 10 aout valoriserait
+        // aussi le 5, et tout le mois finirait au dernier prix connu.
+        poser({
+            catalogue: [{ produit: 'Foie', prix_achat: 2500 }],
+            historique: [
+                { produit: 'Foie', prix_achat: 2000, created_at: '2026-08-01T10:00:00.000Z' },
+                { produit: 'Foie', prix_achat: 9999, created_at: '2026-08-20T10:00:00.000Z' }
+            ]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-31');
+        expect(r.pourDate('2026-08-05').prixAchat('Foie')).toBe(2000);
+    });
+
+    test("une ecriture le jour MEME compte, meme tard le soir", async () => {
+        // La borne est a 23:59:59.999: un prix saisi a 22 h doit valoir pour
+        // sa propre journee, sinon la saisie du soir ne prend effet que le
+        // lendemain sans que personne ne l'ait decide.
+        poser({
+            catalogue: [{ produit: 'Foie', prix_achat: 2500 }],
+            historique: [{ produit: 'Foie', prix_achat: 2100, created_at: '2026-08-05T22:00:00.000Z' }]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-31');
+        expect(r.pourDate('2026-08-05').prixAchat('Foie')).toBe(2100);
+    });
+
+    test("l historique d un AUTRE produit ne deteint pas", async () => {
+        poser({
+            catalogue: [{ produit: 'Foie', prix_achat: 2500 }, { produit: 'Yell', prix_achat: 2500 }],
+            historique: [{ produit: 'Yell', prix_achat: 1200, created_at: '2026-08-01T10:00:00.000Z' }]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-31');
+        expect(r.pourDate('2026-08-05').prixAchat('Foie')).toBe(2500);
+        expect(r.pourDate('2026-08-05').prixAchat('Yell')).toBe(1200);
+    });
+
+    test('un prix de catalogue a ZERO est inconnu, pas gratuit', async () => {
+        // Zero rendrait une marge egale au prix de vente: le produit le plus
+        // rentable de l'ecran, par accident.
+        poser({ catalogue: [{ produit: 'Foie', prix_achat: 0 }] });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Foie')).toBeNull();
     });
 });
