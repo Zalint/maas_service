@@ -227,7 +227,15 @@
             etat.mode = $('mode').value;
             if (etat.mode === 'auto') rendre();
         });
-        $('calc').addEventListener('click', rendre);
+        // « Calculer » RECHARGE les donnees, il ne se contente pas de rejouer
+        // le scenario sur celles qu'on a deja. Le PL bouge dans la journee -
+        // une vente saisie, un stock corrige - et rendre() seul reaffichait
+        // alors les chiffres d'avant: il fallait quitter l'onglet et revenir
+        // pour voir l'effet, ce qui donne au bouton l'air de ne rien faire.
+        //
+        // charger() enchaine sur rendre(): un seul chemin, et le meme que
+        // celui du changement de periode.
+        $('calc').addEventListener('click', charger);
         $('reset').addEventListener('click', function () {
             etat.leviers = {};
             // reinitGlobaux(), PAS null. Poser null laissait nbActifs() lire
@@ -480,7 +488,18 @@
                 + 'les effets stock des taux de parage ne sont pas chiffrables dessus.'
             );
         }
-        if (!etat.globaux) reinitGlobaux();
+        // LES GLOBAUX SONT REPOSES A CHAQUE CHARGEMENT, pas seulement au
+        // premier. Ils partent du contexte - taux de parage mesure, taux de
+        // commission - et ce contexte vient d'etre remplace par des donnees
+        // fraiches. Les garder d'une charge a l'autre laissait un scenario
+        // « vide » comparer un levier a 3,96 % contre une reference qui valait
+        // encore 5 %: l'ecran annonçait « 1 levier actif » et -7 383 F d'effet
+        // sur un scenario que personne n'avait touche.
+        //
+        // Le prix a payer est assume: un scenario en cours est perdu quand on
+        // recharge. C'est preferable a un scenario chiffre contre une
+        // reference perimee, qu'aucun ecran ne signale.
+        reinitGlobaux();
     }
 
     // ASSISE MINIMALE d'un parage mesure. Cinq journees, le meme seuil que les
