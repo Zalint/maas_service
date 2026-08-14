@@ -366,13 +366,30 @@ async function estimerBorneSoir(args) {
     const debutFenetre = lendemain.toISOString().slice(0, 10);
     const formes = graphiesDeDatesPourPeriode(debutFenetre, dateFin);
 
+    // LE PARAGE SE MESURE JUSQU'A LA VEILLE, jamais jusqu'au jour estime.
+    //
+    // On est ici PARCE QUE le stock du soir de dateFin n'a pas ete compte. Or
+    // le parage d'une journee vaut vendu / (matin + transferts - soir): sans
+    // soir, ce jour-la compte un soir de ZERO, son theorique explose et le
+    // ratio s'effondre. Mesure sur le 14-08-2026: 25,88 % de parage en
+    // incluant la journee, 3,96 % en s'arretant a la veille - un facteur 6,5
+    // qui part directement dans le stock estime, donc dans le PL.
+    //
+    // Le 1er du mois, il n'y a pas de veille dans le mois: rien n'est
+    // mesurable, et le taux de repli configure (stock_pertes_decoupe_pct)
+    // prend la main - c'est exactement le cas qu'il couvre.
+    const veilleDt = new Date(dateFin + 'T00:00:00Z');
+    veilleDt.setUTCDate(veilleDt.getUTCDate() - 1);
+    const veille = veilleDt.toISOString().slice(0, 10);
+    const mesurable = veille.slice(0, 7) === dateFin.slice(0, 7);
+
     const packs = await lirePackCompositions();
     const [transferts, ventesFenetre, tauxMois] = await Promise.all([
         Transfert.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
         Vente.findAll({ where: { date: { [Op.in]: formes } }, raw: true }),
-        // Le taux du mois de dateFin, avec la definition EXACTE des cartes
-        // "Parage Boeuf (Mois)" - contexte reutilise, 5 requetes economisees.
-        tauxParageMois(sequelize, dateFin, contexte, packs)
+        // Meme definition que les cartes "Parage Boeuf (Mois)" - contexte
+        // reutilise, 5 requetes economisees - mais bornee a la veille.
+        mesurable ? tauxParageMois(sequelize, veille, contexte, packs) : Promise.resolve(null)
     ]);
 
     // Lignes de l'ancre telles qu'elles sont en base: l'estimation part du

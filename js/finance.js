@@ -2859,7 +2859,14 @@
             : '';
         const detailParage = soirEstime
             ? Object.entries(estimation.par_categorie || {}).map(([cat, v]) => {
-                const nom = cat === 'dechet' ? 'déchet' : cat;
+                // On NOMME les produits, pas l'espece. « bovin : 71,05 kg »
+                // ne se rapprochait d'aucune ligne du tableau juste en
+                // dessous, qui affiche « Boeuf : 88,17 » — le pool bovin vaut
+                // Boeuf + Viande Hachée, et rien ne le disait.
+                const produits = Array.isArray(v.produits) ? v.produits : [];
+                const nom = produits.length
+                    ? produits.join(' + ')
+                    : (cat === 'dechet' ? 'déchet' : cat);
                 const sortie = v.kg_vendus
                     ? `vendu ${esc(fmtQte(v.kg_vendus))} kg → ${esc(fmtQte(v.kg_sortis))} kg sortis du stock`
                         + (v.taux_parage ? ` (parage ${esc(String(v.taux_parage).replace('.', ','))} %${v.taux_mesure ? ' mesuré' : ' — taux de repli'})` : '')
