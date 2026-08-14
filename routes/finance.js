@@ -1219,6 +1219,38 @@ function validerCoefficient(brut) {
     return { ok: true, valeur: v };
 }
 
+/**
+ * La cible FINALE d'un mapping, quand la cible choisie est elle-meme un alias.
+ *
+ * « Veau haché -> Veau » alors que « Veau -> Boeuf » est une CHAINE, et
+ * lib/prix-achat-date.js ne suit qu'UN maillon: « Veau haché » lirait le prix
+ * de catalogue FIGE de « Veau » pendant que « Veau » prend le lot du jour.
+ * Deux couts pour le meme animal, jusqu'a 400 F/kg d'ecart.
+ *
+ * On aplatit donc a l'ECRITURE - « Veau haché -> Boeuf », ce qu'un humain
+ * aurait ecrit. Aplatir ici plutot que resoudre a la lecture garde la table
+ * lisible: une ligne dit ce qu'elle fait, au lieu d'un « -> Veau » qui se
+ * comporterait en douce comme « -> Boeuf ».
+ *
+ * Partage par PUT /alias et par la conversion en masse: les deux ecrivent dans
+ * la meme table, et n'en garder qu'un chain-safe laissait l'autre creer
+ * exactement ce qu'on venait d'interdire.
+ *
+ * Borne par la taille de la table, et s'arrete sur un cycle: on ne repasse
+ * jamais deux fois par le meme nom.
+ */
+function cibleFinale(aliasMap, depart) {
+    const vus = new Set();
+    let cible = depart;
+    while (cible && !vus.has(cible.toLowerCase())) {
+        vus.add(cible.toLowerCase());
+        const suivant = cibleDe(aliasMap, cible.toLowerCase());
+        if (!suivant) break;
+        cible = suivant;
+    }
+    return cible;
+}
+
 // Body: { alias_produit, produit_catalog, coefficient? }
 // Upsert: si l'alias existe, sa cible est mise a jour.
 // La cible est un nom de produit inventaire boucherie. Si elle n'est
@@ -1257,14 +1289,30 @@ router.put('/alias', async (req, res) => {
         }
         const coefficient = coef.valeur;
 
+        // APLATISSEMENT DE LA CIBLE, comme dans la conversion en masse.
+        //
+        // Le menu deroulant propose TOUTE entree du catalogue, y compris
+        // celles qui sont elles-memes mappees. Choisir « Veau » alors que
+        // « Veau -> Boeuf » existe creait une chaine que la resolution ne suit
+        // pas: le libelle prenait le prix de catalogue FIGE de Veau pendant
+        // que Veau prenait le lot du jour. On ecrit donc la cible finale.
+        const aliasExistants = await ProduitAlias.findAll({ raw: true });
+        const aliasMap = new Map(
+            aliasExistants.map((a) => [a.alias_produit.toLowerCase(), a.produit_catalog])
+        );
+        // On retire le libelle en cours: sans cela, remettre a jour un alias
+        // existant le ferait se suivre lui-meme.
+        aliasMap.delete(aliasProduit.toLowerCase());
+        const cibleAplatie = cibleFinale(aliasMap, produitCatalog);
+
         const username = req.session && req.session.user
             ? req.session.user.username
             : null;
         const result = await sequelize.transaction(async (t) => {
             const [, createdCatalog] = await FournisseurPrix.findOrCreate({
-                where: { produit: produitCatalog },
+                where: { produit: cibleAplatie },
                 defaults: {
-                    produit: produitCatalog,
+                    produit: cibleAplatie,
                     prix_vente: 0,
                     prix_achat: null,
                     updated_at: new Date()
@@ -1278,7 +1326,7 @@ router.put('/alias', async (req, res) => {
             // reste NULL donc pas d'entree history (CHECK >= 0).
             if (createdCatalog) {
                 await PrixVenteHistory.create({
-                    produit: produitCatalog,
+                    produit: cibleAplatie,
                     prix_vente: 0,
                     changed_by: username || '_autocreate_alias_'
                 }, { transaction: t });
@@ -1301,14 +1349,14 @@ router.put('/alias', async (req, res) => {
                 // supprimer puis recreer la PK, et ferait perdre l'historique
                 // d'audit attache au nom.
                 await existante.update({
-                    produit_catalog: produitCatalog,
+                    produit_catalog: cibleAplatie,
                     coefficient,
                     updated_at: new Date()
                 }, { transaction: t });
             } else {
                 await ProduitAlias.create({
                     alias_produit: aliasProduit,
-                    produit_catalog: produitCatalog,
+                    produit_catalog: cibleAplatie,
                     coefficient,
                     updated_at: new Date()
                 }, { transaction: t });
@@ -1316,15 +1364,24 @@ router.put('/alias', async (req, res) => {
             return { catalog_created: createdCatalog };
         });
         if (result.catalog_created) {
-            audit.log(req, 'prix.autocreate', { produit: produitCatalog, source: 'alias' });
+            audit.log(req, 'prix.autocreate', { produit: cibleAplatie, source: 'alias' });
         }
         audit.log(req, 'alias.upsert', {
             alias_produit: aliasProduit,
-            produit_catalog: produitCatalog,
+            produit_catalog: cibleAplatie,
+            demande: produitCatalog,
             coefficient
         });
         invalidateFinanceDerivedCaches();
-        res.json({ success: true, ...result });
+        // On DIT quand la cible ecrite differe de celle demandee: un choix
+        // silencieusement redirige laisse l'utilisateur devant une ligne qui
+        // ne dit pas ce qu'il a selectionne.
+        res.json({
+            success: true,
+            ...result,
+            produit_catalog: cibleAplatie,
+            aplati: cibleAplatie !== produitCatalog ? { demande: produitCatalog } : null
+        });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -1416,37 +1473,9 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 .map((c) => c.produit.trim().toLowerCase())
         );
 
-        /**
-         * La cible FINALE, quand la cible calculee est elle-meme un alias.
-         *
-         * « Veau haché » se resout par prefixe vers « Veau », et « Veau » est
-         * mappe vers « Boeuf ». Ecrire la chaine telle quelle donnerait deux
-         * couts pour le meme animal: lib/prix-achat-date.js ne suit qu'UN
-         * maillon, donc « Veau haché » lirait le prix de catalogue FIGE de
-         * « Veau » (4 035) pendant que « Veau » lui-meme prend le lot du jour.
-         * Jusqu'a 400 F/kg d'ecart, dans le sens qui gonfle la marge.
-         *
-         * On ecrit donc ce qu'un humain aurait ecrit: « Veau haché -> Boeuf ».
-         * Aplatir a l'ECRITURE plutot que resoudre a la lecture garde la table
-         * lisible - une ligne dit ce qu'elle fait.
-         *
-         * La boucle est bornee par la taille de la table et s'arrete sur un
-         * cycle: on ne repasse jamais deux fois par le meme nom.
-         */
-        const cibleFinale = (depart) => {
-            const vus = new Set();
-            let cible = depart;
-            while (cible && !vus.has(cible.toLowerCase())) {
-                vus.add(cible.toLowerCase());
-                const suivant = cibleDe(resolverMaps.aliasMap, cible.toLowerCase());
-                if (!suivant) break;
-                cible = suivant;
-            }
-            return cible;
-        };
-
         const ignores = [];
         const aplatis = [];
+        const dejaDansLeLot = new Set();
         for (const r of distinctRows) {
             const resolved = resolveProduit(r.produit, resolverMaps);
             if (resolved.statut !== 'prefix') continue;
@@ -1454,10 +1483,21 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 ignores.push(r.produit);
                 continue;
             }
-            const cible = cibleFinale(resolved.resolved);
+            const cible = cibleFinale(resolverMaps.aliasMap, resolved.resolved);
             if (cible !== resolved.resolved) {
                 aplatis.push({ alias_produit: r.produit, via: resolved.resolved, cible });
             }
+            // UNE SEULE ligne par cle normalisee dans le lot.
+            //
+            // produit_alias porte desormais un index UNIQUE sur
+            // LOWER(TRIM(alias_produit)). Or les ventes contiennent « Boeuf en
+            // gros » ET « Boeuf En Gros »: si aucune des deux n'est encore
+            // mappee, elles arrivaient toutes deux ici et bulkCreate violait
+            // l'index - la conversion entiere echouait en 500, alors qu'elle
+            // demandait deux fois la meme chose.
+            const cle = String(r.produit).trim().toLowerCase();
+            if (dejaDansLeLot.has(cle)) continue;
+            dejaDansLeLot.add(cle);
             toUpsert.push({
                 alias_produit: r.produit,
                 produit_catalog: cible,

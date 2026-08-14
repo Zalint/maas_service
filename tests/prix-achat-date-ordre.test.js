@@ -263,7 +263,7 @@ describe('une cible SANS prix ne passe pas en silence', () => {
     });
 });
 
-describe('3e rang : le mapping, avec son coefficient', () => {
+describe('le mapping et son coefficient (1er rang)', () => {
     test('Jarret vaut la MOITIE de la carcasse du jour', async () => {
         // Vendu a la piece, environ 500 g. Le cout suit le prix du lot, pas
         // un nombre fige: c'est tout l'interet de passer par la cible.

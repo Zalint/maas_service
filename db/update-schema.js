@@ -982,9 +982,9 @@ async function updateSchema() {
                 to_regclass('ventes') IS NOT NULL
                 AND to_regclass('produits') IS NOT NULL
                 AND to_regclass('finance_config') IS NOT NULL
-                AND NOT EXISTS (SELECT 1 FROM finance_config WHERE key = '${MARQUEUR}')
+                AND NOT EXISTS (SELECT 1 FROM finance_config WHERE key = :cle)
             ) AS pret
-        `);
+        `, { replacements: { cle: MARQUEUR } });
         if (!pret) {
             console.log('Materialisation famille bovine: sautee (tables absentes ou deja faite)');
         } else {

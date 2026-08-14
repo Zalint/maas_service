@@ -1671,7 +1671,7 @@
                     </td>
                     <td>
                         <input type="number" class="form-control form-control-sm"
-                               data-mapping-coef="${idx}" min="0.0001" max="1000" step="0.05"
+                               data-mapping-coef="${idx}" min="0.01" max="1000" step="0.01"
                                value="${esc(String(it.coefficient == null ? 1 : it.coefficient))}"
                                title="1 si ce libellé se compte dans la même unité que la carcasse. 0,5 pour le Jarret, vendu à la pièce.">
                     </td>

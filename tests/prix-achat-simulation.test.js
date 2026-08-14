@@ -16,7 +16,7 @@ const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulat
 
 /**
  * Faux resolveur de base. Il decide seul de ce qui a un cout: c'est LUI qui
- * porte desormais le mapping et la famille bovine, et ce test ne doit pas
+ * porte desormais le mapping, et ce test ne doit pas
  * redire sa logique - sinon il testerait sa propre copie.
  */
 function poserBase(couts = { boeuf: 3835, jarret: 1917.5 }) {
@@ -31,7 +31,7 @@ function poserBase(couts = { boeuf: 3835, jarret: 1917.5 }) {
             },
             origine: (produit) => {
                 const n = String(produit).toLowerCase();
-                if (/^(boeuf|veau)/.test(n)) return 'famille bovine';
+                if (/^(boeuf|veau)/.test(n)) return 'prix propre';
                 if (n === 'jarret') return 'mappé vers Boeuf × 0,5';
                 return null;
             },
@@ -144,7 +144,7 @@ describe('origine', () => {
         // nommerait alors une provenance que le cout n'a pas suivie.
         poserBase();
         const p = (await creer()).pourDate('2026-07-31');
-        expect(p.origine('Boeuf en détail')).toBe('famille bovine');
+        expect(p.origine('Boeuf en détail')).toBe('prix propre');
         expect(p.origine('Jarret')).toBe('mappé vers Boeuf × 0,5');
         expect(p.origine('Poivre Sachet 100')).toBeNull();
     });
@@ -152,7 +152,7 @@ describe('origine', () => {
     test('un cout NUL n a pas d origine a nommer', async () => {
         // La regle du zero appartient a CETTE couche: le module de base rend
         // une source pour un prix de zero, qu'elle tient pour gratuit. Sans ce
-        // filtre, l'ecran afficherait « famille bovine » sur une ligne sans
+        // filtre, l'ecran afficherait « prix propre » sur une ligne sans
         // cout - une provenance pour un chiffre qui n'existe pas.
         poserBase({ boeuf: 0, jarret: 0 });
         const p = (await creer()).pourDate('2026-07-31');

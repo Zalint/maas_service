@@ -67,6 +67,22 @@ describe('valider', () => {
     test('refuse un corps vide', () => {
         expect(reglages.valider({}).ok).toBe(false);
     });
+    test('une cle inconnue MELANGEE a une cle valide fait tout echouer', () => {
+        // Le vrai trou: seule, prixPouletDefaut tombait sur « aucun reglage
+        // fourni ». ACCOMPAGNEE d'un actif valide, elle passait en silence -
+        // le drapeau s'ecrivait, la reponse etait 200, et l'appelant croyait
+        // que le reste avait pris. Une ecriture partielle sous un succes.
+        const v = reglages.valider({ actif: true, prixPouletDefaut: -1 });
+        expect(v.ok).toBe(false);
+        expect(v.aEcrire).toHaveLength(0);
+        expect(v.erreurs.join(' ')).toMatch(/prixPouletDefaut/);
+    });
+    test('le refus nomme TOUTES les cles inconnues', () => {
+        const v = reglages.valider({ actif: true, familleBoeuf: [], vieuxTruc: 1 });
+        expect(v.ok).toBe(false);
+        expect(v.erreurs.join(' ')).toMatch(/familleBoeuf/);
+        expect(v.erreurs.join(' ')).toMatch(/vieuxTruc/);
+    });
     test('accepte une liste sous forme de chaine', () => {
         const v = reglages.valider({ produitsSuivis: 'A, B ,A' });
         expect(v.ok).toBe(true);
@@ -357,4 +373,4 @@ describe('le reglage des dimanches accompagne la calibration', () => {
         expect(c.dimanches).toBeNull();
     });
 });
-
+
