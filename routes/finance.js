@@ -3102,19 +3102,42 @@ async function computePl(dateDebut, dateFin) {
         const variationHorsBoucherie = stockSoirEffectif.valeur_hors_boucherie - stockMatinVal.valeur_hors_boucherie;
         const variationStockNette = coeffStock * variationBoucherie + variationHorsBoucherie;
 
-        // 7. PL final
-        const pl = totalVentes
-            - totalAvances
+        // 7. COUT DES VENTES, MARGE, puis PL
+        //
+        // Les avances et les paiements fournisseur sont de la TRESORERIE
+        // sortie pour acheter, pas le cout de ce qui a ete vendu: une partie
+        // est encore sur l'etal. Ce qui a reellement ete consomme, c'est donc
+        // les sorties MOINS ce que la periode a mis en stock.
+        //
+        // Sans ce poste, l'ecran laissait lire « ventes - avances » comme une
+        // marge - ici +15 347 F sur 2,85 M de CA, soit 0,5 %, alors que la
+        // marge reelle est de 10,4 %. L'ecart, ce sont les 377 517 F de
+        // marchandise payee et pas encore vendue.
+        const coutDesVentes = totalAvances + totalPaiementsFournisseur - variationStockNette;
+        const margeDesVentes = totalVentes - coutDesVentes;
+
+        // Le PL s'ecrit alors comme une cascade lisible, et rend EXACTEMENT
+        // le meme nombre que la formule d'origine:
+        //   marge - commission + marge CDC - charges - depenses
+        const pl = margeDesVentes
             - commission
             + margeCdc
             - chargesProratisees
-            - totalDepenses
-            - totalPaiementsFournisseur
-            + variationStockNette;
+            - totalDepenses;
 
         return {
                 periode: { dateDebut, dateFin, nb_jours: nbDaysPeriod },
                 total_ventes: round2(totalVentes),
+                // COUT DES VENTES et MARGE, rendus a cote des postes bruts.
+                // `taux_marge` est en POINTS DE POURCENTAGE du CA: c'est lui
+                // que la projection extrapole, et non les avances - les
+                // extrapoler comme un cout sans extrapoler le stock qu'elles
+                // creent ecrasait la marge projetee de 10,4 % a 0,5 %.
+                cout_des_ventes: round2(coutDesVentes),
+                marge_des_ventes: round2(margeDesVentes),
+                taux_marge: totalVentes > 0
+                    ? Math.round((margeDesVentes / totalVentes) * 10000) / 100
+                    : null,
                 // Volumes vendus par produit, issus des MEMES lignes que
                 // total_ventes. Presents ici pour etre figes avec le PL: sans
                 // eux, une simulation rejouee sur un PL fige melangerait un

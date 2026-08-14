@@ -199,20 +199,45 @@ describe('PL projete: chaque poste suit sa regle, jamais une autre', () => {
         depenses_periode: 50, paiements_fournisseur: 80, stock_variation_nette: 200
     };
 
-    test('les postes d activite suivent le CA, les actes ponctuels non', () => {
+    test('le CA est projete par le TAUX DE MARGE, pas par les avances', () => {
+        // La regle a change, et c'est le coeur du correctif.
+        //
+        // AVANT: les avances etaient extrapolees comme un cout (x2 avec le CA)
+        // pendant que le stock qu'elles creent restait fige. Tout l'achat du
+        // mois passait donc pour consomme. Mesure sur aout 2026: la marge
+        // implicite tombait a 0,5 % du CA quand la marge reelle vaut 10,4 %,
+        // et le PL projete affichait -341 053 F pour une activite benificiaire.
+        //
+        // APRES: on projette le TAUX DE MARGE constate. Avances, paiements et
+        // stock sont dans le cout des ventes et suivent donc le volume
+        // ensemble, ce qui est leur nature - ce sont trois faces d'un meme
+        // achat.
         const d = P.projeterPL({
             postes: POSTES, caRealise: 10000, caCible: 20000,
             chargesMensuel: 500, stockOption: 'garder'
         });
-        expect(d.avances).toBeCloseTo(2000, 10);      // x2 avec le CA
-        expect(d.commission).toBeCloseTo(600, 10);    // x2
+        // cout realise = avances + paiements - stock = 1000 + 80 - 200 = 880
+        // taux de marge = (10000 - 880) / 10000 = 91,2 %
+        expect(d.tauxMarge).toBeCloseTo(0.912, 10);
+        expect(d.marge).toBeCloseTo(20000 * 0.912, 10);
+        expect(d.commission).toBeCloseTo(600, 10);    // x2, suit l'activite
         expect(d.margeCdc).toBeCloseTo(200, 10);      // x2
-        expect(d.depenses).toBe(50);                  // realise, pas extrapole
-        expect(d.paiements).toBe(80);                 // realise
+        expect(d.depenses).toBe(50);                  // realise, acte ponctuel
         expect(d.charges).toBe(500);                  // mois complet
-        expect(d.stock).toBe(200);                    // photo conservee
-        expect(d.pl).toBeCloseTo(20000 - 2000 - 600 + 200 - 500 - 50 - 80 + 200, 10);
+        expect(d.pl).toBeCloseTo(18240 - 600 + 200 - 500 - 50, 10);
         expect(d.margeNette).toBeCloseTo(d.pl / 20000, 10);
+    });
+
+    test('le taux rendu par le SERVEUR prime sur le taux reconstitue', () => {
+        // Le serveur calcule taux_marge sur les memes postes, mais sans
+        // l'arrondi des champs intermediaires. Le repli local n'existe que
+        // pour un PL fige AVANT l'ajout du champ.
+        const d = P.projeterPL({
+            postes: Object.assign({}, POSTES, { taux_marge: 25 }),
+            caRealise: 10000, caCible: 20000, chargesMensuel: 500, stockOption: 'garder'
+        });
+        expect(d.tauxMarge).toBeCloseTo(0.25, 10);
+        expect(d.marge).toBeCloseTo(5000, 10);
     });
     test('depenses extrapolees au prorata des JOURS, pas du CA', () => {
         // 12 jours ecoules sur 31: une depense courante court aussi les jours

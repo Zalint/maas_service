@@ -2225,7 +2225,12 @@
             // Feuille 1: la decomposition, chaque poste en CONTRIBUTION signee
             // (comme l'ecran), puis marge brute et PL.
             const ventes = d.total_ventes || 0;
-            const margeBrute = ventes - (d.total_avances || 0) + (stock.variation_nette || 0);
+            const coutDesVentes = d.cout_des_ventes !== undefined && d.cout_des_ventes !== null
+                ? d.cout_des_ventes
+                : (d.total_avances || 0) + (d.paiements_fournisseur || 0) - (stock.variation_nette || 0);
+            const margeBrute = d.marge_des_ventes !== undefined && d.marge_des_ventes !== null
+                ? d.marge_des_ventes
+                : ventes - coutDesVentes;
             const synthese = [
                 { 'Poste': 'Période', 'Montant (FCFA)': `${fmtDateFr(p.dateDebut)} → ${fmtDateFr(p.dateFin)} (${p.nb_jours} jours)` },
                 { 'Poste': 'Montant total des ventes', 'Montant (FCFA)': ventes },
@@ -2237,8 +2242,9 @@
                 { 'Poste': 'Dépenses (période)', 'Montant (FCFA)': -(d.depenses_periode || 0) },
                 { 'Poste': 'Paiements faits au fournisseur', 'Montant (FCFA)': -(d.paiements_fournisseur || 0) },
                 { 'Poste': `Variation stock × ${stock.coeff != null ? stock.coeff : ''} (pertes découpe ${stock.pertes_decoupe_pct != null ? stock.pertes_decoupe_pct : ''}%)`, 'Montant (FCFA)': stock.variation_nette || 0 },
-                { 'Poste': 'Marge brute (ventes − avances + variation stock)', 'Montant (FCFA)': Math.round(margeBrute * 100) / 100 },
-                { 'Poste': 'Marge brute (% des ventes)', 'Montant (FCFA)': ventes > 0 ? Math.round((margeBrute / ventes) * 1000) / 10 : '' },
+                { 'Poste': 'Coût des ventes (avances + paiements − variation stock)', 'Montant (FCFA)': Math.round(coutDesVentes * 100) / 100 },
+                { 'Poste': 'Marge des ventes (ventes − coût des ventes)', 'Montant (FCFA)': Math.round(margeBrute * 100) / 100 },
+                { 'Poste': 'Marge des ventes (% des ventes)', 'Montant (FCFA)': ventes > 0 ? Math.round((margeBrute / ventes) * 1000) / 10 : '' },
                 { 'Poste': 'PL', 'Montant (FCFA)': d.pl || 0 }
             ];
             if (d.depenses_double_compte && d.depenses_double_compte.montant > 0) {
@@ -2729,12 +2735,17 @@
         const plColor = pl >= 0 ? 'success' : 'danger';
         const ecart = pl - (d.pl || 0);
 
-        // Marge brute = ventes - avances + variation stock, soit la marge sur
-        // les achats REELLEMENT consommes: les achats corriges de ce qui est
-        // reste en stock. Elle suit donc la neutralisation de la variation
-        // stock, mais pas celle des charges - qui n'en font pas partie.
+        // MARGE DES VENTES = ventes - (avances + paiements fournisseur - stock).
+        //
+        // Les PAIEMENTS FOURNISSEUR manquaient. Ils sont pourtant de la
+        // tresorerie d'achat au meme titre que les avances: les laisser dehors
+        // affichait 13,8 % de marge la ou elle vaut 10,4 %, et obligeait a les
+        // retrancher plus bas - le PL etait juste, la marge non.
+        //
+        // Le cout des ventes, c'est cette tresorerie MOINS ce qui est reste sur
+        // l'etal: on ne compte que ce qui a ete consomme.
         const margeBrute = postes
-            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle) && actif(p))
+            .filter((p) => ['ventes', 'avances', 'paiements', 'stock'].includes(p.cle) && actif(p))
             .reduce((s, p) => s + p.signe * p.montant, 0);
         // Retrouve par sa CLE, pas par sa position: postes[0] se trouve etre
         // les ventes aujourd'hui, mais reordonner le tableau ferait alors
@@ -2986,7 +2997,7 @@
                 <div class="col-md-6">
                     <div class="card border-${margeColor} h-100">
                         <div class="card-body text-center">
-                            <h6 class="card-subtitle mb-2 text-muted">Marge brute</h6>
+                            <h6 class="card-subtitle mb-2 text-muted">Marge des ventes</h6>
                             <h2 class="text-${margeColor} mb-0">${margeBrute >= 0 ? '+' : ''}${esc(fmtMoney(margeBrute))}</h2>
                             <div class="small text-muted mt-2">
                                 ${margeBrutePct === null
