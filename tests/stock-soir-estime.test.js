@@ -13,6 +13,7 @@ const { estimerStockSoir } = require('../lib/stock-soir-estime');
 const CAT = {
     'Boeuf': 'bovin', 'Boeuf en détail': 'bovin', 'Boeuf en gros': 'bovin',
     'Foie': 'bovin', 'Yell': 'bovin', 'Jarret': 'bovin',
+    'Viande Hachée': 'bovin',
     'Agneau': 'ovin', 'Laxass': 'ovin',
     'Déchet 400': 'bovin', 'Dechet': 'bovin'
 };
@@ -246,12 +247,48 @@ describe('taux non mesurable: repli nomme, jamais un zero silencieux', () => {
 });
 
 describe('robustesse', () => {
-    test('une categorie qui vend sans aucun stock d ancre est signalee', () => {
+    test('une categorie qui vend sans aucun stock DISPONIBLE est signalee', () => {
         const r = estimerStockSoir(base({
             lignesAncre: [{ produit: 'Vermicelles', quantite: 5, total: 2500, prix_unitaire: 500 }],
             ventes: [{ produit: 'Boeuf en détail', nombre: 10 }]
         }));
-        expect(r.avertissements.join(' ')).toContain('aucun stock au dernier comptage');
+        expect(r.avertissements.join(' ')).toContain('aucun stock disponible au dernier comptage');
+    });
+
+    test('une reception SANS ancre se repartit quand meme', () => {
+        // Le garde porte desormais sur le DISPONIBLE (ancre + transferts), pas
+        // sur la seule ancre. Une carcasse arrivee sur un produit qui n'avait
+        // rien hier est bien du stock: la refuser laissait la journee sans
+        // estimation alors que la marchandise est la.
+        const r = estimerStockSoir(base({
+            lignesAncre: [{ produit: 'Boeuf', quantite: 0, total: 0, prix_unitaire: 3835 }],
+            transferts: [{ produit: 'Boeuf', quantite: 100, impact: '1' }],
+            ventes: [{ produit: 'Boeuf en détail', nombre: 24 }]
+        }));
+        expect(r.avertissements.join(' ')).not.toContain('ne peut pas etre repartie');
+        const boeuf = r.lignes.find((l) => l.produit === 'Boeuf');
+        expect(boeuf.quantite).toBeGreaterThan(70);
+        expect(boeuf.quantite).toBeLessThan(80);
+    });
+
+    test('la repartition suit le DISPONIBLE du jour, pas les parts d hier', () => {
+        // Le cas mesure en production le 14-08-2026. Hier: Boeuf 57,3 et
+        // Viande Hachee 13,75, soit 80,6 % / 19,4 %. Une carcasse de 87,8 kg
+        // arrive sur le Boeuf: les parts reelles deviennent 91,3 % / 8,7 %.
+        // Repartir sur les parts d'HIER rendait 12,7 kg de boeuf a la viande
+        // hachee - la valeur reelle de « Boeuf » etait 108,3 kg.
+        const r = estimerStockSoir(base({
+            lignesAncre: [
+                { produit: 'Boeuf', quantite: 57.3, total: 0, prix_unitaire: 4480 },
+                { produit: 'Viande Hachée', quantite: 13.75, total: 0, prix_unitaire: 3600 }
+            ],
+            transferts: [{ produit: 'Boeuf', quantite: 87.8, impact: '1' }],
+            ventes: [{ produit: 'Boeuf en détail', nombre: 38.75 }]
+        }));
+        const boeuf = r.lignes.find((l) => l.produit === 'Boeuf');
+        // Le prorata d'hier donnait 95,57: on exige nettement mieux.
+        expect(boeuf.quantite).toBeGreaterThan(105);
+        expect(boeuf.quantite).toBeLessThan(111);
     });
 
     test('une estimation peut sortir negative et passe telle quelle', () => {
