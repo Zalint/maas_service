@@ -954,9 +954,42 @@ async function updateSchema() {
         // carcasse elle-meme (« Boeuf » est la cible, pas un alias), et on
         // saute les produits declares a la piece - c'est tout l'objet du
         // changement.
+        // TROIS GARDES, chacune pour un defaut mesure:
+        //
+        // 1. EXISTENCE DES TABLES. updateSchema() tourne AVANT sequelize.sync()
+        //    au provisionnement d'un tenant (scripts/init-tenant-db.js), et ne
+        //    cree ni ventes ni produits. Sans ce test, la requete levait sur un
+        //    tenant neuf - et comme l'appelant ATTRAPE l'erreur pour continuer,
+        //    toutes les migrations SUIVANTES etaient silencieusement sautees.
+        //
+        // 2. UN MARQUEUR, pour que « une fois » veuille dire une fois.
+        //    updateSchema() tourne a chaque demarrage du serveur. Le seul garde
+        //    etant NOT EXISTS sur produit_alias, un mapping SUPPRIME depuis
+        //    l'ecran reapparaissait au redemarrage suivant: la migration
+        //    defaisait le geste de l'utilisateur.
+        //
+        // 3. UNE SEULE GRAPHIE par produit. Le NOT EXISTS compare en
+        //    LOWER(TRIM) mais alias_produit est une PK SENSIBLE A LA CASSE:
+        //    « Boeuf en détail » et « Boeuf En Détail » coexistent dans les
+        //    ventes, et la migration en inserait DEUX. Les deux resolvent vers
+        //    la meme cle normalisee cote code, donc c'est l'ordre physique des
+        //    tuples qui decidait laquelle gagne - et un coefficient corrige sur
+        //    l'une restait sans effet si l'autre passait devant.
+        const MARQUEUR = 'migration_famille_bovine_materialisee';
+        const [[{ pret }]] = await sequelize.query(`
+            SELECT (
+                to_regclass('ventes') IS NOT NULL
+                AND to_regclass('produits') IS NOT NULL
+                AND to_regclass('finance_config') IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM finance_config WHERE key = '${MARQUEUR}')
+            ) AS pret
+        `);
+        if (!pret) {
+            console.log('Materialisation famille bovine: sautee (tables absentes ou deja faite)');
+        } else {
         await sequelize.query(`
             INSERT INTO produit_alias (alias_produit, produit_catalog, coefficient, updated_at)
-            SELECT DISTINCT libelle.nom, 'Boeuf', 1, NOW()
+            SELECT DISTINCT ON (LOWER(TRIM(libelle.nom))) libelle.nom, 'Boeuf', 1, NOW()
             FROM (
                 SELECT produit AS nom FROM ventes
                 UNION
@@ -989,8 +1022,21 @@ async function updateSchema() {
               AND EXISTS (
                   SELECT 1 FROM fournisseur_prix f WHERE f.produit = 'Boeuf'
               )
+            -- DISTINCT ON exige un ORDER BY qui commence par la meme
+            -- expression. La graphie retenue est la premiere par ordre
+            -- alphabetique, donc STABLE d'une execution a l'autre - pas
+            -- l'ordre physique des tuples, qui n'est garanti par rien.
+            ORDER BY LOWER(TRIM(libelle.nom)), libelle.nom
             ON CONFLICT DO NOTHING
         `);
+        // Le marqueur est pose APRES l'insertion, dans la meme sequence: si
+        // l'insertion echoue, il n'est pas pose et la migration sera retentee.
+        await sequelize.query(
+            `INSERT INTO finance_config (key, value, updated_at)
+             VALUES (:cle, '1', NOW()) ON CONFLICT (key) DO NOTHING`,
+            { replacements: { cle: MARQUEUR } }
+        );
+        }
         console.log('Table produit_alias verifiee');
 
         // Ajouter montant_total_caisse a clotures_caisse pour l'ecran
