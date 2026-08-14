@@ -124,12 +124,34 @@ test("le produit sans cout n'est nomme QU'UNE fois", async () => {
     expect(r.avertissements.filter((a) => /Coût inconnu.*Poulet en détail/.test(a)).length).toBe(1);
 });
 
+test('le POIDS multiplie le prix de la carcasse', async () => {
+    // Le Jarret se vend a la piece, la carcasse se paie au kilo: sans poids,
+    // son cout valait 3 835 F sur un produit vendu 500 F.
+    poserBase();
+    const p = (await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] })).pourDate('2026-07-31');
+    expect(p.prixAchat('Jarret')).toBeCloseTo(0.4 * 3835, 6);
+    expect(p.origine('Jarret')).toBe('famille_boeuf');
+});
+
+test('une entree sans poids vaut 1: meme unite que la carcasse', async () => {
+    poserBase();
+    const p = (await creer({ familleBoeuf: ['Gigot'] })).pourDate('2026-07-31');
+    expect(p.prixAchat('Gigot')).toBe(3835);
+});
+
+test('carcasse sans prix: le produit est NOMME, pas value a zero', async () => {
+    poserBase({ boeuf: null });
+    const r = await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] });
+    expect(r.pourDate('2026-07-31').prixAchat('Jarret')).toBeNull();
+    expect(r.avertissements.join(' ')).toMatch(/Jarret/);
+});
+
 test('la famille BOEUF passe avant la poulet', async () => {
     // Un produit range par erreur dans les deux prendrait sinon le cout de la
     // volaille sans que rien ne le dise.
     poserBase();
     const p = (await creer({
-        famillePoulet: ['Jarret'], familleBoeuf: ['Jarret']
+        famillePoulet: ['Jarret'], familleBoeuf: [{ nom: 'Jarret', poids: 1 }]
     })).pourDate('2026-07-31');
     expect(p.prixAchat('Jarret')).toBe(3835);
     expect(p.origine('Jarret')).toBe('famille_boeuf');
@@ -137,7 +159,7 @@ test('la famille BOEUF passe avant la poulet', async () => {
 
 test('le Jarret prend le cout de la carcasse de boeuf', async () => {
     poserBase();
-    const p = (await creer({ familleBoeuf: ['Jarret'] })).pourDate('2026-07-31');
+    const p = (await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 1 }] })).pourDate('2026-07-31');
     expect(p.prixAchat('Jarret')).toBe(3835);
     expect(p.origine('Jarret')).toBe('famille_boeuf');
     // Un produit hors famille reste sans cout.

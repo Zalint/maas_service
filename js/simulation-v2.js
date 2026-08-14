@@ -702,8 +702,108 @@
             + equilibre(s)
             + matrice(s)
             + projection()
+            + tousLesProduits(s)
             + (etat.debug ? debug(s, g, total) : '');
         cablerLeviers();
+
+        // L'ouverture du bloc « Tous les produits » survit au prochain rendu.
+        // Le `toggle` est ASYNCHRONE: on lit det.open depuis l'evenement, pas
+        // avant, sinon on enregistre l'etat d'avant le clic.
+        var det = document.getElementById('sim2-tous-produits');
+        if (det) {
+            det.addEventListener('toggle', function () { etat.tousProduitsOuverts = det.open; });
+        }
+    }
+
+    /**
+     * TOUS les produits vendus, avec leur prix de vente et leur cout, tels que
+     * le calcul les a retenus. Pour information, replie par defaut.
+     *
+     * Le tableau de sensibilite ne montre que les produits SUIVIS - cinq, plus
+     * ceux qu'un admin ajoute. C'est voulu: un tableau dont les lignes vont et
+     * viennent d'un mois a l'autre ne se compare pas. Mais du coup rien ne
+     * disait ce que le calcul retient pour les AUTRES, alors qu'ils pesent
+     * dans le chiffre d'affaires et que leurs couts viennent d'etre corriges.
+     *
+     * Les deux prix sont des moyennes PONDEREES par les quantites vendues, pas
+     * des prix de catalogue: c'est ce que la periode a reellement coute et
+     * rapporte. D'ou l'ecart possible avec l'ecran Prix fournisseur, qui
+     * montre le prix courant.
+     */
+    function tousLesProduits(scenario) {
+        var liste = (etat.sim && etat.sim.produits_vendus) || [];
+        if (!liste.length) return '';
+
+        var ORIGINES = {
+            propre: 'prix propre',
+            famille_boeuf: 'carcasse bœuf × poids',
+            famille_poulet: 'carcasse poulet'
+        };
+        var lignes = liste.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })
+            .map(function (p) {
+                var pv = (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
+                var pa = (p.prix_achat === null || p.prix_achat === undefined) ? null : nb(p.prix_achat);
+                // Le MEME diviseur que la marge du tableau de sensibilite: le
+                // recalculer ici en ferait une seconde definition, et deux
+                // parages differents pour le meme produit sur le meme ecran.
+                var div = M.diviseurParage(p, scenario || { leviers: {}, globaux: {} }, etat.contexte);
+                var parage = (div === null || div >= 1) ? null : (1 - div) * 100;
+                var paPare = (pa === null || parage === null) ? null : pa / div;
+                // Marge NETTE de parage, comme partout ailleurs sur cet ecran:
+                // c'est le cout de la carcasse qu'il faut acheter pour vendre
+                // une unite, pas celui de l'unite elle-meme.
+                var m = (pv === null || pa === null) ? null : pv - (paPare === null ? pa : paPare);
+                return '<tr>'
+                    + '<td>' + esc(p.nom)
+                      + (pa === null
+                         ? ' <span class="badge bg-danger-subtle text-danger">coût inconnu</span>' : '')
+                    + '</td>'
+                    + '<td class="text-end">' + esc(nb(p.quantite).toLocaleString('fr-FR')) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(pv)) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(pa))
+                      + (paPare === null ? ''
+                         : ' <span class="text-muted">(' + esc(fmt(paPare)) + ')</span>') + '</td>'
+                    + '<td class="text-end text-muted">'
+                      + (parage === null ? '—' : esc(pct2(parage)) + ' %') + '</td>'
+                    + '<td class="small text-muted">' + esc(ORIGINES[p.prix_achat_origine] || '—') + '</td>'
+                    + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger fw-medium' : '') + '">'
+                      + esc(fmt(m)) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(p.ca)) + '</td>'
+                    + '</tr>';
+            }).join('');
+
+        var sansCout = liste.filter(function (p) {
+            return p.prix_achat === null || p.prix_achat === undefined;
+        }).length;
+
+        // L'etat vit dans une VARIABLE, pas dans le DOM: rendre() reconstruit
+        // innerHTML, donc relire l'ouverture au moment du rendu rendrait
+        // toujours « ferme » et le bloc se refermerait a chaque changement de
+        // levier - exactement le defaut deja corrige sur la composition du
+        // parage.
+        var ouvert = etat.tousProduitsOuverts === true;
+        return '<details class="mb-3"' + (ouvert ? ' open' : '') + ' id="sim2-tous-produits">'
+            + '<summary class="fin-subheading" style="cursor:pointer">'
+            + 'Tous les produits vendus — prix et coût retenus '
+            + '<span class="badge bg-secondary">' + liste.length + '</span>'
+            + (sansCout
+               ? ' <span class="badge bg-danger-subtle text-danger">' + sansCout + ' sans coût</span>' : '')
+            + '</summary>'
+            + '<div class="small text-muted mb-2 mt-1">Pour information : ce tableau ne pilote aucun '
+            + 'levier. Les deux prix sont des moyennes <strong>pondérées par les quantités vendues</strong> '
+            + 'sur la période — ce que la période a réellement coûté et rapporté, et non le prix courant '
+            + 'du catalogue. Le second coût entre parenthèses est celui <strong>réellement '
+            + 'soustrait</strong> : le prix de la carcasse ÷ (1 − parage), puisqu\'il faut en acheter '
+            + 'davantage que ce qu\'on vend. La colonne Parage est vide pour ce qui ne se pare pas — '
+            + 'volaille, épicerie. La marge est nette de parage mais <strong>brute de commission</strong>.'
+            + '</div>'
+            + '<div class="table-responsive"><table class="table table-sm table-hover mb-0">'
+            + '<thead><tr><th>Produit</th><th class="text-end">Quantité</th>'
+            + '<th class="text-end">Prix de vente pondéré</th><th class="text-end">Coût pondéré</th>'
+            + '<th class="text-end">Parage</th>'
+            + '<th>Source du coût</th><th class="text-end">Marge nette de parage</th>'
+            + '<th class="text-end">Ventes</th></tr></thead>'
+            + '<tbody>' + lignes + '</tbody></table></div></details>';
     }
 
     function marquerEnAttente() {
