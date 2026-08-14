@@ -84,3 +84,10 @@ qr-*.png
 
 # Rapports de couverture Jest: generes, jamais versionnes.
 coverage/
+
+# Sauvegardes de .env : elles portent SESSION_SECRET, DB_PASSWORD et les cles
+# d integration. Un `git add -A` en a pousse une par accident (commit 1d3abd1) ;
+# les secrets concernes ont ete revoques.
+.env.local.*
+.env.*.avant-*
+scripts/.*.tmp.js
