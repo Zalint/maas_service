@@ -66,7 +66,7 @@ const {
     PlSnapshot,
     sequelize
 } = require('../db/models');
-const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
+const { resolveProduit, buildResolverMaps, cibleDe } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
 
@@ -115,7 +115,7 @@ async function lireReglagesSimulationV2() {
         // manquaient, et seul le garde `v2 &&` du premier evitait un
         // « Cannot read properties of undefined » sur une panne de base.
         return {
-            actif: false, famillePoulet: [], familleBoeuf: [], prixPouletDefaut: 0,
+            actif: false,
             produitsSuivis: [], coeffP1P2: null, avertissements: []
         };
     }
@@ -1146,7 +1146,12 @@ router.get('/alias', async (req, res) => {
                 produit: r.produit,
                 count: r.n,
                 statut: resolved.statut,
-                resolved: resolved.resolved
+                resolved: resolved.resolved,
+                // Le coefficient DEJA enregistre, sans quoi le champ de saisie
+                // repartirait a 1 a chaque rechargement - et le prochain
+                // Enregistrer, meme pour ne changer que la cible, ecraserait
+                // silencieusement un 0,5 pose la veille.
+                coefficient: resolved.coefficient
             };
         });
 
@@ -1159,7 +1164,9 @@ router.get('/alias', async (req, res) => {
                 dropdown,
                 aliases: aliases.map((a) => ({
                     alias_produit: a.alias_produit,
-                    produit_catalog: a.produit_catalog
+                    produit_catalog: a.produit_catalog,
+                    // Combien d'unites de la cible vaut UNE unite du libelle.
+                    coefficient: a.coefficient == null ? 1 : parseFloat(a.coefficient)
                 })),
                 items
             }
@@ -1170,7 +1177,81 @@ router.get('/alias', async (req, res) => {
     }
 });
 
-// Body: { alias_produit, produit_catalog }
+/**
+ * COEFFICIENT d'un mapping: conversion d'unite, pas imputation de cout.
+ *
+ * Absent, il vaut 1 - le libelle se compte comme sa cible, cas de toutes les
+ * decoupes vendues au kilo. Le Jarret vaut 0,5: il se vend a la PIECE et une
+ * piece pese environ 500 g. La carcasse reste achetee UNE fois, sous
+ * « Boeuf », et sa commission avec elle.
+ *
+ * Zero et negatif sont REFUSES, jamais ramenes a 1: un coefficient nul
+ * rendrait un cout nul, donc une marge egale au prix de vente - le produit le
+ * plus rentable de l'ecran, par accident, sans que rien ne le dise. La
+ * contrainte SQL les refuse aussi, mais une erreur 400 explicite vaut mieux
+ * qu'une violation de contrainte remontee brute.
+ *
+ * Sortie en dehors du gestionnaire de route pour etre testable seule, comme
+ * resoudreCibleSnapshot: une regle de validation qui ne se lit qu'a travers
+ * une requete HTTP finit par n'etre verifiee nulle part.
+ *
+ * @param {*} brut  la valeur recue, de n'importe quelle forme
+ * @returns {{ok: true, valeur: number}|{ok: false, erreur: string}}
+ */
+function validerCoefficient(brut) {
+    // « Absent » se teste sur la FORME recue, pas sur String(brut): String([])
+    // rend une chaine vide, et un tableau serait passe pour un champ non
+    // rempli - donc pour un coefficient de 1, valeur qu'il ne porte pas.
+    const absent = brut === undefined || brut === null
+        || (typeof brut === 'string' && brut.trim() === '');
+    if (absent) return { ok: true, valeur: 1 };
+    // Number() et non parseFloat(): parseFloat('0.5kg') rend 0,5 sans broncher,
+    // et une unite collee par erreur passerait pour une saisie valide.
+    const v = Number(brut);
+    if (!Number.isFinite(v) || v <= 0) {
+        return { ok: false, erreur: 'coefficient doit être un nombre strictement positif' };
+    }
+    // Au-dela de 1 000, ce n'est plus une conversion: c'est une virgule qui a
+    // glisse.
+    if (v > 1000) {
+        return { ok: false, erreur: 'coefficient invraisemblable (1000 au maximum)' };
+    }
+    return { ok: true, valeur: v };
+}
+
+/**
+ * La cible FINALE d'un mapping, quand la cible choisie est elle-meme un alias.
+ *
+ * « Veau haché -> Veau » alors que « Veau -> Boeuf » est une CHAINE, et
+ * lib/prix-achat-date.js ne suit qu'UN maillon: « Veau haché » lirait le prix
+ * de catalogue FIGE de « Veau » pendant que « Veau » prend le lot du jour.
+ * Deux couts pour le meme animal, jusqu'a 400 F/kg d'ecart.
+ *
+ * On aplatit donc a l'ECRITURE - « Veau haché -> Boeuf », ce qu'un humain
+ * aurait ecrit. Aplatir ici plutot que resoudre a la lecture garde la table
+ * lisible: une ligne dit ce qu'elle fait, au lieu d'un « -> Veau » qui se
+ * comporterait en douce comme « -> Boeuf ».
+ *
+ * Partage par PUT /alias et par la conversion en masse: les deux ecrivent dans
+ * la meme table, et n'en garder qu'un chain-safe laissait l'autre creer
+ * exactement ce qu'on venait d'interdire.
+ *
+ * Borne par la taille de la table, et s'arrete sur un cycle: on ne repasse
+ * jamais deux fois par le meme nom.
+ */
+function cibleFinale(aliasMap, depart) {
+    const vus = new Set();
+    let cible = depart;
+    while (cible && !vus.has(cible.toLowerCase())) {
+        vus.add(cible.toLowerCase());
+        const suivant = cibleDe(aliasMap, cible.toLowerCase());
+        if (!suivant) break;
+        cible = suivant;
+    }
+    return cible;
+}
+
+// Body: { alias_produit, produit_catalog, coefficient? }
 // Upsert: si l'alias existe, sa cible est mise a jour.
 // La cible est un nom de produit inventaire boucherie. Si elle n'est
 // pas encore dans fournisseur_prix, on cree une entree avec prix=0
@@ -1202,14 +1283,36 @@ router.put('/alias', async (req, res) => {
             });
         }
 
+        const coef = validerCoefficient(req.body && req.body.coefficient);
+        if (!coef.ok) {
+            return res.status(400).json({ success: false, error: coef.erreur });
+        }
+        const coefficient = coef.valeur;
+
+        // APLATISSEMENT DE LA CIBLE, comme dans la conversion en masse.
+        //
+        // Le menu deroulant propose TOUTE entree du catalogue, y compris
+        // celles qui sont elles-memes mappees. Choisir « Veau » alors que
+        // « Veau -> Boeuf » existe creait une chaine que la resolution ne suit
+        // pas: le libelle prenait le prix de catalogue FIGE de Veau pendant
+        // que Veau prenait le lot du jour. On ecrit donc la cible finale.
+        const aliasExistants = await ProduitAlias.findAll({ raw: true });
+        const aliasMap = new Map(
+            aliasExistants.map((a) => [a.alias_produit.toLowerCase(), a.produit_catalog])
+        );
+        // On retire le libelle en cours: sans cela, remettre a jour un alias
+        // existant le ferait se suivre lui-meme.
+        aliasMap.delete(aliasProduit.toLowerCase());
+        const cibleAplatie = cibleFinale(aliasMap, produitCatalog);
+
         const username = req.session && req.session.user
             ? req.session.user.username
             : null;
         const result = await sequelize.transaction(async (t) => {
             const [, createdCatalog] = await FournisseurPrix.findOrCreate({
-                where: { produit: produitCatalog },
+                where: { produit: cibleAplatie },
                 defaults: {
-                    produit: produitCatalog,
+                    produit: cibleAplatie,
                     prix_vente: 0,
                     prix_achat: null,
                     updated_at: new Date()
@@ -1223,27 +1326,62 @@ router.put('/alias', async (req, res) => {
             // reste NULL donc pas d'entree history (CHECK >= 0).
             if (createdCatalog) {
                 await PrixVenteHistory.create({
-                    produit: produitCatalog,
+                    produit: cibleAplatie,
                     prix_vente: 0,
                     changed_by: username || '_autocreate_alias_'
                 }, { transaction: t });
             }
-            await ProduitAlias.upsert({
-                alias_produit: aliasProduit,
-                produit_catalog: produitCatalog,
-                updated_at: new Date()
-            }, { transaction: t });
+            // La ligne EXISTANTE, retrouvee sans egard a la casse. upsert()
+            // porte sur la PK, sensible a la casse: enregistrer « Boeuf En
+            // Détail » quand la base porte « Boeuf en détail » creait une
+            // SECONDE ligne. Les deux resolvent vers la meme cle normalisee,
+            // donc l'ordre physique des tuples decidait laquelle s'applique -
+            // un coefficient corrige pouvait rester sans effet.
+            const existante = await ProduitAlias.findOne({
+                where: sequelize.where(
+                    sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('alias_produit'))),
+                    aliasProduit.toLowerCase()
+                ),
+                transaction: t
+            });
+            if (existante) {
+                // On garde la graphie DEJA stockee: la changer reviendrait a
+                // supprimer puis recreer la PK, et ferait perdre l'historique
+                // d'audit attache au nom.
+                await existante.update({
+                    produit_catalog: cibleAplatie,
+                    coefficient,
+                    updated_at: new Date()
+                }, { transaction: t });
+            } else {
+                await ProduitAlias.create({
+                    alias_produit: aliasProduit,
+                    produit_catalog: cibleAplatie,
+                    coefficient,
+                    updated_at: new Date()
+                }, { transaction: t });
+            }
             return { catalog_created: createdCatalog };
         });
         if (result.catalog_created) {
-            audit.log(req, 'prix.autocreate', { produit: produitCatalog, source: 'alias' });
+            audit.log(req, 'prix.autocreate', { produit: cibleAplatie, source: 'alias' });
         }
         audit.log(req, 'alias.upsert', {
             alias_produit: aliasProduit,
-            produit_catalog: produitCatalog
+            produit_catalog: cibleAplatie,
+            demande: produitCatalog,
+            coefficient
         });
         invalidateFinanceDerivedCaches();
-        res.json({ success: true, ...result });
+        // On DIT quand la cible ecrite differe de celle demandee: un choix
+        // silencieusement redirige laisse l'utilisateur devant une ligne qui
+        // ne dit pas ce qu'il a selectionne.
+        res.json({
+            success: true,
+            ...result,
+            produit_catalog: cibleAplatie,
+            aplati: cibleAplatie !== produitCatalog ? { demande: produitCatalog } : null
+        });
     } catch (e) {
         console.error('PUT /api/finance/alias:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -1259,11 +1397,24 @@ router.delete('/alias/:alias', async (req, res) => {
         if (!alias) {
             return res.status(400).json({ success: false, error: 'alias requis' });
         }
-        const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
+        // Comparaison INSENSIBLE A LA CASSE, comme partout ailleurs dans la
+        // resolution. L'egalite exacte supprimait 0 ligne des que l'ecran
+        // renvoyait une autre graphie que celle stockee - or l'ecran liste les
+        // graphies vues dans les VENTES, pas celles de la table. « Boeuf En
+        // Détail » (82 ventes) affichait « Alias -> Boeuf » et sa corbeille ne
+        // supprimait rien, sous un bandeau vert « Alias supprime ».
+        const n = await ProduitAlias.destroy({
+            where: sequelize.where(
+                sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('alias_produit'))),
+                alias.toLowerCase()
+            )
+        });
         if (n > 0) {
             audit.log(req, 'alias.delete', { alias_produit: alias });
             invalidateFinanceDerivedCaches();
         }
+        // deleted: 0 n'est PAS un succes silencieux. Le client doit pouvoir le
+        // dire, sinon l'utilisateur croit avoir supprime un mapping qui reste.
         res.json({ success: true, deleted: n });
     } catch (e) {
         console.error('DELETE /api/finance/alias/:alias:', e);
@@ -1299,17 +1450,62 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
         const now = new Date();
         const toUpsert = [];
         const created = [];
+        // Produits qui portent DEJA leur propre prix d'achat. Les convertir
+        // changerait leur cout, pas seulement sa forme.
+        //
+        // Convertir un prefixe en alias sert a figer une resolution qui
+        // s'applique deja - jamais a deplacer un prix. Or depuis que le
+        // mapping passe AVANT le prix propre (lib/prix-achat-date.js), ecrire
+        // un alias sur un produit qui a son prix ECRASE ce prix.
+        //
+        // Le cas concret: « Boeuf sur pied » se resout en 'prefix' vers
+        // « Boeuf », parce que son libelle commence par ce mot. Un clic sur
+        // « Convertir tous les prefixes » lui donnait donc le prix d'un KILO
+        // de carcasse, alors que c'est une bete comptee a la TETE qui porte
+        // son propre prix par tete. Un seul bouton recreait en masse l'erreur
+        // que la suppression de la regex venait de corriger.
+        const aPrixPropre = new Set(
+            catalog
+                .filter((c) => {
+                    const v = parseFloat(c.prix_achat);
+                    return Number.isFinite(v) && v > 0;
+                })
+                .map((c) => c.produit.trim().toLowerCase())
+        );
+
+        const ignores = [];
+        const aplatis = [];
+        const dejaDansLeLot = new Set();
         for (const r of distinctRows) {
             const resolved = resolveProduit(r.produit, resolverMaps);
             if (resolved.statut !== 'prefix') continue;
+            if (aPrixPropre.has(String(r.produit).trim().toLowerCase())) {
+                ignores.push(r.produit);
+                continue;
+            }
+            const cible = cibleFinale(resolverMaps.aliasMap, resolved.resolved);
+            if (cible !== resolved.resolved) {
+                aplatis.push({ alias_produit: r.produit, via: resolved.resolved, cible });
+            }
+            // UNE SEULE ligne par cle normalisee dans le lot.
+            //
+            // produit_alias porte desormais un index UNIQUE sur
+            // LOWER(TRIM(alias_produit)). Or les ventes contiennent « Boeuf en
+            // gros » ET « Boeuf En Gros »: si aucune des deux n'est encore
+            // mappee, elles arrivaient toutes deux ici et bulkCreate violait
+            // l'index - la conversion entiere echouait en 500, alors qu'elle
+            // demandait deux fois la meme chose.
+            const cle = String(r.produit).trim().toLowerCase();
+            if (dejaDansLeLot.has(cle)) continue;
+            dejaDansLeLot.add(cle);
             toUpsert.push({
                 alias_produit: r.produit,
-                produit_catalog: resolved.resolved,
+                produit_catalog: cible,
                 updated_at: now
             });
             created.push({
                 alias_produit: r.produit,
-                produit_catalog: resolved.resolved
+                produit_catalog: cible
             });
         }
 
@@ -1319,11 +1515,17 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
             });
             audit.log(req, 'alias.bulk-from-prefix', {
                 count: created.length,
-                created
+                created,
+                ignores,
+                aplatis
             });
             invalidateFinanceDerivedCaches();
         }
-        res.json({ success: true, created });
+        // `ignores` et `aplatis` sont RENDUS, pas seulement journalises: une
+        // conversion en masse qui saute des lignes ou change une cible sans le
+        // dire laisse croire qu'elle a tout traite tel quel, et l'utilisateur
+        // cherche ensuite pourquoi un produit pointe ailleurs qu'attendu.
+        res.json({ success: true, created, ignores, aplatis });
     } catch (e) {
         console.error('POST /api/finance/alias/bulk-from-prefix:', e);
         res.status(500).json({ success: false, error: e.message });
@@ -1763,9 +1965,7 @@ router.get('/simulation', async (req, res) => {
             prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
         } else {
             const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulation');
-            resolveurPrix = await creerResolveurPrixAchatSimulation({
-                dateMax: dateFin, reglages: reglagesSim
-            });
+            resolveurPrix = await creerResolveurPrixAchatSimulation({ dateMax: dateFin });
 
             // FournisseurPrix vient de l'import de tete de fichier: le require
             // local rendait le MEME objet (cache de Node) et n'etait que du
@@ -2088,22 +2288,18 @@ router.get('/simulation', async (req, res) => {
             };
             // UNE seule valeur, jamais une composee. La moyenne ponderee peut
             // melanger des journees resolues differemment - un prix propre
-            // apparu en cours de mois apres des journees en repli de famille -
-            // et rendre "famille_poulet+propre" faisait sortir la sortie de
-            // son contrat documente, que le client aiguille par egalite.
+            // apparu en cours de mois apres des journees resolues par le
+            // mapping - et concatener les phrases ferait dire a l'ecran que le
+            // cout vient de deux endroits a la fois.
             //
-            // Quand les origines different, on rend la MOINS sure des trois:
-            // c'est celle qui doit alerter, et c'est aussi la seule lecture
-            // honnete d'un prix qui n'a pas la meme provenance tous les jours.
-            const RANG = { propre: 0, famille_boeuf: 1, famille_poulet: 2 };
+            // Quand les origines different, on le DIT plutot que d'en elire
+            // une: le prix affiche est alors une moyenne de provenances, et
+            // c'est exactement ce qu'il faut savoir avant de s'y fier.
             origineDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
                 if (!c || !c.origines.size) return finDePeriode.origine(nom);
-                let pire = null;
-                for (const o of c.origines) {
-                    if (pire === null || (RANG[o] ?? 99) > (RANG[pire] ?? 99)) pire = o;
-                }
-                return pire;
+                if (c.origines.size === 1) return c.origines.values().next().value;
+                return `sources multiples (${Array.from(c.origines).join(', ')})`;
             };
         }
 
@@ -2210,7 +2406,7 @@ router.get('/simulation', async (req, res) => {
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0,
                 // D'ou vient le cout: 'propre' (catalogue ou historique du
-                // produit lui-meme), 'famille_boeuf', 'famille_poulet', ou null
+                // produit lui-meme) ou « mappé vers X » ou null
                 // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
                 // un chiffre dont on ne peut pas nommer la source ne se
                 // verifie pas. Null hors Simulation 2.0, ou la notion n'existe
@@ -2408,7 +2604,7 @@ router.get('/simulation', async (req, res) => {
                     // prix_achat_origine reste rendu a tous: il dit d'ou vient
                     // un cout affiche, ce qui est necessaire pour le lire, et
                     // ne divulgue pas la liste.
-                    famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
+
                     // Le RESUME du prix bovin retenu suit les avertissements,
                     // au meme endroit: qu'il vienne de MATA ou du catalogue,
                     // c'est la meme question - sur quel prix ce resultat
@@ -3393,6 +3589,7 @@ router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
 // Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
 router.resoudreCibleSnapshot = resoudreCibleSnapshot;
+router.validerCoefficient = validerCoefficient;
 
 router.get('/cash-stock', async (req, res) => {
     try {
@@ -3616,8 +3813,13 @@ router.get('/cash-stock', async (req, res) => {
  * autres en retour.
  */
 async function lireConfigPublique() {
-    const { CLES: CLES_V2 } = require('../lib/simulation-v2/reglages');
-    const reserveesV2 = new Set(Object.values(CLES_V2));
+    // CLES_RESERVEES, pas Object.values(CLES): la liste noire doit couvrir les
+    // cles RETIREES du code autant que les cles vivantes. Les lignes d'une cle
+    // supprimee restent en base sur les tenants deja deployes, et les deriver
+    // de la liste vivante faisait fuiter chaque suppression - retirer une cle
+    // du code l'exposait sur la route.
+    const { CLES_RESERVEES } = require('../lib/simulation-v2/reglages');
+    const reserveesV2 = new Set(CLES_RESERVEES);
     const rows = await FinanceConfig.findAll();
     const config = {};
     for (const r of rows) {

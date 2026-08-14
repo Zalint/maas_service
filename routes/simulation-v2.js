@@ -71,9 +71,6 @@ router.get('/reglages', async (req, res) => {
             success: true,
             data: {
                 actif: r.actif,
-                famille_poulet: r.famillePoulet,
-                famille_boeuf: r.familleBoeuf,
-                prix_achat_defaut_poulet: r.prixPouletDefaut,
                 produits_simulation: r.produitsSuivis,
                 coeff_p1_p2: r.coeffP1P2,
                 avertissements: r.avertissements
@@ -87,9 +84,7 @@ router.get('/reglages', async (req, res) => {
 
 /**
  * PUT /api/simulation-v2/reglages
- * Body: { actif?: boolean, famillePoulet?: string[]|string,
- *         familleBoeuf?: string[]|string,
- *         prixPouletDefaut?: number, produitsSuivis?: string[]|string,
+ * Body: { actif?: boolean, produitsSuivis?: string[]|string,
  *         coeffP1P2?: {valeur: number, fenetre?: string, jours?: number,
  *                      dimanches?: 'exclus'|'comptes'} | number | null }
  *
@@ -128,8 +123,8 @@ router.put('/reglages', adminStrict, async (req, res) => {
             return res.status(400).json({ success: false, error: r.erreurs.join(' ; ') });
         }
 
-        // Les reglages entrent dans le calcul de la simulation (famille
-        // poulet, prix de repli): les caches derives de Finance doivent
+        // Les reglages entrent dans le calcul de la simulation (produits
+        // suivis, coefficient P1/P2): les caches derives de Finance doivent
         // tomber, sinon l'ecran garde jusqu'a 60 s un chiffre calcule sous
         // l'ancien reglage.
         try {
@@ -155,9 +150,6 @@ router.put('/reglages', adminStrict, async (req, res) => {
             success: true,
             data: {
                 actif: apres.actif,
-                famille_poulet: apres.famillePoulet,
-                famille_boeuf: apres.familleBoeuf,
-                prix_achat_defaut_poulet: apres.prixPouletDefaut,
                 // Rendu au client pour qu'il affiche la signature - date et
                 // auteur - sans avoir a recharger l'ecran.
                 coeff_p1_p2: apres.coeffP1P2,

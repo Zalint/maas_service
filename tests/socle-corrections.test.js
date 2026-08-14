@@ -78,7 +78,7 @@ describe('etat des sources : non configure n est pas une panne', () => {
     });
 });
 
-describe('famille poulet : bornes et contournements', () => {
+describe('liste de noms : bornes et contournements', () => {
     const reglages = require('../lib/simulation-v2/reglages');
 
     test('un nom contenant une virgule est REFUSE, jamais scinde', () => {
@@ -86,40 +86,40 @@ describe('famille poulet : bornes et contournements', () => {
         // n'est pas representable. Joindre puis redecouper transformait
         // 'Poulet, gros' en DEUX produits sans qu'aucune erreur ne le dise -
         // le defaut meme que cette branche pretendait corriger.
-        const v = reglages.valider({ famillePoulet: ['Poulet, gros'] });
+        const v = reglages.valider({ produitsSuivis: ['Poulet, gros'] });
         expect(v.ok).toBe(false);
         expect(v.erreurs.join(' ')).toMatch(/sans virgule/);
     });
 
     test('la branche tableau deduplique comme la branche chaine', () => {
-        const v = reglages.valider({ famillePoulet: ['Poulet en détail', 'POULET EN DETAIL'] });
+        const v = reglages.valider({ produitsSuivis: ['Poulet en détail', 'POULET EN DETAIL'] });
         expect(v.aEcrire[0].value).toBe('Poulet en détail');
     });
 
     test('un nom demesure est refuse', () => {
-        const v = reglages.valider({ famillePoulet: ['P'.repeat(121)] });
+        const v = reglages.valider({ produitsSuivis: ['P'.repeat(121)] });
         expect(v.ok).toBe(false);
         expect(v.erreurs.join(' ')).toMatch(/120 caractères/);
     });
 });
 
-describe('famille poulet : un element non textuel est refuse, pas converti', () => {
+describe('liste de noms : un element non textuel est refuse, pas converti', () => {
     const reglages2 = require('../lib/simulation-v2/reglages');
 
     test('un objet dans le tableau fait echouer la validation', () => {
         // String({nom:'Poulet'}) rendait '[object Object]', qui passait la
         // validation et s'affichait comme un produit de la famille.
-        const v = reglages2.valider({ famillePoulet: [{ nom: 'Poulet en gros' }] });
+        const v = reglages2.valider({ produitsSuivis: [{ nom: 'Poulet en gros' }] });
         expect(v.ok).toBe(false);
         expect(v.erreurs.join(' ')).toMatch(/liste de noms/);
     });
 
     test('un nombre est refuse lui aussi', () => {
-        expect(reglages2.valider({ famillePoulet: ['Poulet en gros', 42] }).ok).toBe(false);
+        expect(reglages2.valider({ produitsSuivis: ['Poulet en gros', 42] }).ok).toBe(false);
     });
 
     test('un tableau de chaines reste accepte', () => {
-        const v = reglages2.valider({ famillePoulet: ['Poulet en gros', 'Poulet en détail'] });
+        const v = reglages2.valider({ produitsSuivis: ['Poulet en gros', 'Poulet en détail'] });
         expect(v.ok).toBe(true);
         expect(v.aEcrire[0].value).toBe('Poulet en gros,Poulet en détail');
     });

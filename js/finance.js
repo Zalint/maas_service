@@ -1647,6 +1647,7 @@
                         <td class="text-end">${esc(it.count)}</td>
                         <td>${statutPill(it.statut, it.resolved)}</td>
                         <td><span class="text-muted">${esc(it.resolved)}</span></td>
+                        <td class="text-muted small">1 — même produit</td>
                         <td></td>
                     </tr>
                 `;
@@ -1668,6 +1669,12 @@
                             ${catalogOptions(selectedCatalog)}
                         </select>
                     </td>
+                    <td>
+                        <input type="number" class="form-control form-control-sm"
+                               data-mapping-coef="${idx}" min="0.01" max="1000" step="0.01"
+                               value="${esc(String(it.coefficient == null ? 1 : it.coefficient))}"
+                               title="1 si ce libellé se compte dans la même unité que la carcasse. 0,5 pour le Jarret, vendu à la pièce.">
+                    </td>
                     <td class="d-flex gap-1">
                         <button type="button" class="btn btn-sm btn-primary" data-mapping-save="${idx}" title="${actionLabel}">
                             <i class="bi bi-check2"></i>
@@ -1676,7 +1683,7 @@
                     </td>
                 </tr>
             `;
-        }).join('') || '<tr><td colspan="5" class="text-muted text-center py-3">Aucun produit vendu sur les 90 derniers jours.</td></tr>';
+        }).join('') || '<tr><td colspan="6" class="text-muted text-center py-3">Aucun produit vendu sur les 90 derniers jours.</td></tr>';
 
         // Wire boutons "Enregistrer" (PUT /alias) — lookup par index dans
         // items pour eviter tout escape CSS sur des noms a caracteres
@@ -1689,6 +1696,7 @@
                 const alias = it.produit;
                 const select = tbody.querySelector(`select[data-mapping-select="${idx}"]`);
                 const target = select ? select.value : '';
+                const champCoef = tbody.querySelector(`input[data-mapping-coef="${idx}"]`);
                 if (!target) {
                     if (typeof showToast === 'function') showToast('Choisir un produit du catalogue', 'warning');
                     return;
@@ -1698,7 +1706,14 @@
                         method: 'PUT',
                         credentials: 'include',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ alias_produit: alias, produit_catalog: target })
+                        // Le coefficient part AVEC la cible: les deux décrivent
+                        // la même relation, et les séparer laisserait un alias
+                        // sans son unité de conversion.
+                        body: JSON.stringify({
+                            alias_produit: alias,
+                            produit_catalog: target,
+                            coefficient: champCoef ? champCoef.value : undefined
+                        })
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
@@ -1734,7 +1749,15 @@
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
-                    if (typeof showToast === 'function') showToast('Alias supprimé', 'success');
+                    // deleted vaut 0 quand aucune ligne ne correspondait. Un
+                    // bandeau vert sur zéro suppression laissait croire à un
+                    // mapping retiré qui continuait de s'appliquer.
+                    if (typeof showToast === 'function') {
+                        showToast(
+                            j.deleted ? 'Alias supprimé' : 'Aucun alias à supprimer pour ce libellé',
+                            j.deleted ? 'success' : 'warning'
+                        );
+                    }
                     loadMapping();
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');

@@ -70,7 +70,19 @@
         return (v < 0 ? '−' : '') + s;
     };
 
-    /** Memes familles que le serveur: bovine par regex, ovine par prefixe. */
+    /**
+     * Familles par PREFIXE, pour deux usages qui restent des questions
+     * d'ESPECE: quel taux de parage appliquer, et a quels produits le levier
+     * « prix d'achat boeuf » du scenario s'applique.
+     *
+     * ATTENTION - ce n'est PLUS la regle du serveur. Le cout d'un produit s'y
+     * resout par le Mapping produits (lib/prix-achat-date.js); la regex
+     * /^(boeuf|veau)/ n'y decide plus rien. Consequence connue: « Jarret »,
+     * mappe vers Boeuf x 0,5, voit son cout suivre la carcasse dans le PL mais
+     * PAS bouger sous le levier de prix d'achat de cette page - son nom ne
+     * commence pas par « boeuf ». La sensibilite affichee sous-estime donc
+     * l'exposition des decoupes mappees dont le libelle ne porte pas l'espece.
+     */
     function estBoeuf(p) { return /^(boeuf|veau)/.test(norm(p && p.nom)); }
     function estOvin(p) { return /^(agneau|mouton)/.test(norm(p && p.nom)); }
     // La volaille se NOMME, elle n'est plus le fourre-tout de « ni bovin ni

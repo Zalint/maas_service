@@ -2,7 +2,9 @@
  * Resolveur de prix d'achat propre a Simulation 2.0.
  *
  * Ce module ne doit RIEN changer au module de base: le PL, Cash et Stock et la
- * marge du Centre de Decoupe en dependent. Il n'ajoute qu'une couche de repli.
+ * marge du Centre de Decoupe en dependent. Depuis que la resolution est
+ * centralisee dans lib/prix-achat-date.js - qui lit le Mapping produits - il
+ * n'ajoute plus qu'une chose: il NOMME les produits sans cout.
  *
  * @jest-environment node
  */
@@ -12,177 +14,149 @@ jest.mock('../lib/prix-achat-date', () => ({ creerResolveurPrixAchat: jest.fn() 
 const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
 const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulation');
 
-// Faux resolveur de base: 'Boeuf' a un prix, 'Poulet' aussi, les declinaisons
-// n'en ont aucun. C'est exactement l'etat mesure en production.
-function poserBase({ poulet = 3000, boeuf = 3835 } = {}) {
+/**
+ * Faux resolveur de base. Il decide seul de ce qui a un cout: c'est LUI qui
+ * porte desormais le mapping, et ce test ne doit pas
+ * redire sa logique - sinon il testerait sa propre copie.
+ */
+function poserBase(couts = { boeuf: 3835, jarret: 1917.5 }) {
     creerResolveurPrixAchat.mockResolvedValue({
         avertissements: ['avertissement du module de base'],
         pourDate: () => ({
             prixAchat: (produit) => {
                 const n = String(produit).toLowerCase();
-                if (/^(boeuf|veau)/.test(n)) return boeuf;
-                if (n === 'poulet') return poulet;
-                if (n === 'cuisse de poulet') return 1800;
-                if (n === 'agneau') return 4500;
+                if (/^(boeuf|veau)/.test(n)) return couts.boeuf;
+                if (n === 'jarret') return couts.jarret;   // mappe, coefficient 0,5
+                return null;                                // ni prix propre ni mapping
+            },
+            origine: (produit) => {
+                const n = String(produit).toLowerCase();
+                if (/^(boeuf|veau)/.test(n)) return 'prix propre';
+                if (n === 'jarret') return 'mappé vers Boeuf × 0,5';
                 return null;
             },
-            prixAchatDefaut: { bovin: boeuf, ovin: 4500 },
+            prixAchatDefaut: { bovin: couts.boeuf, ovin: 4500 },
             origineBoeuf: 'catalogue fournisseur'
-        })
+        }),
+        resumePrixBoeuf: () => ['resume'],
+        statsPrixBoeuf: () => ({ min: 3735, max: 4435 })
     });
 }
 
-const REGLAGES = { famillePoulet: ['Poulet en détail', 'Poulet en gros'], prixPouletDefaut: 3000 };
-const creer = (reglages) => creerResolveurPrixAchatSimulation({ dateMax: '2026-07-31', reglages });
+const creer = () => creerResolveurPrixAchatSimulation({ dateMax: '2026-07-31' });
 
 beforeEach(() => { jest.clearAllMocks(); });
 
-test('la famille poulet donne un cout aux declinaisons qui n en avaient pas', async () => {
-    poserBase();
-    const p = (await creer(REGLAGES)).pourDate('2026-07-31');
-    expect(p.prixAchat('Poulet en détail')).toBe(3000);
-    expect(p.prixAchat('Poulet en gros')).toBe(3000);
-    expect(p.origine('Poulet en détail')).toBe('famille_poulet');
+describe('la couche ne fait que RELAYER le module de base', () => {
+    test('un cout connu passe tel quel', async () => {
+        poserBase();
+        const p = (await creer()).pourDate('2026-07-31');
+        expect(p.prixAchat('Boeuf en détail')).toBe(3835);
+        // Le Jarret vaut la moitie: le mapping l'a resolu vers « Boeuf » avec
+        // un coefficient de 0,5, parce qu'il se vend a la piece.
+        expect(p.prixAchat('Jarret')).toBe(1917.5);
+    });
+
+    test('les avertissements du module de base sont CONSERVES', async () => {
+        // Le tableau est reutilise, pas copie: le module de base en pousse
+        // pendant la resolution, pas seulement au chargement.
+        poserBase();
+        const r = await creer();
+        expect(r.avertissements).toContain('avertissement du module de base');
+    });
+
+    test('resumePrixBoeuf et statsPrixBoeuf sont RELAYES', async () => {
+        // Sans eux, l'ecran de simulation perdrait le prix retenu que le PL
+        // affiche, et les deux sensibilites de cout du boeuf.
+        poserBase();
+        const r = await creer();
+        expect(r.resumePrixBoeuf()).toEqual(['resume']);
+        expect(r.statsPrixBoeuf()).toEqual({ min: 3735, max: 4435 });
+    });
+
+    test('le module de base n est appele qu UNE fois, pas par journee', async () => {
+        poserBase();
+        const r = await creer();
+        for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) r.pourDate(d);
+        expect(creerResolveurPrixAchat).toHaveBeenCalledTimes(1);
+        expect(creerResolveurPrixAchat).toHaveBeenCalledWith('2026-07-31');
+    });
 });
 
-test('les accents et la casse ne comptent pas', async () => {
-    poserBase();
-    const p = (await creer(REGLAGES)).pourDate('2026-07-31');
-    expect(p.prixAchat('POULET EN DETAIL')).toBe(3000);
-    expect(p.prixAchat('Poulet En Détail')).toBe(3000);
-});
+describe('un cout inconnu est NOMME, jamais invente', () => {
+    test('le produit et le geste correctif sont dans l avertissement', async () => {
+        // « le cout de X est inconnu » laisse chercher; nommer le mapping se
+        // traite en trente secondes.
+        poserBase();
+        const r = await creer();
+        expect(r.pourDate('2026-07-31').prixAchat('Poivre Sachet 100')).toBeNull();
+        const a = r.avertissements.join(' ');
+        expect(a).toMatch(/Poivre Sachet 100/);
+        expect(a).toMatch(/Mappé vers/);
+    });
 
-test('un produit qui a DEJA un cout garde le sien', async () => {
-    poserBase();
-    // Meme mise dans la famille par erreur, 'Cuisse de poulet' porte son
-    // propre prix (1 800 F, hors Mata): le repli ne doit pas l'ecraser.
-    const p = (await creer({ famillePoulet: ['Cuisse de poulet'], prixPouletDefaut: 3000 })).pourDate('2026-07-31');
-    expect(p.prixAchat('Cuisse de poulet')).toBe(1800);
-    expect(p.origine('Cuisse de poulet')).toBe('propre');
-});
-
-test('un produit HORS famille reste sans cout', async () => {
-    poserBase();
-    const p = (await creer(REGLAGES)).pourDate('2026-07-31');
-    // 'Merguez poulet' existe vraiment au catalogue de vente: un motif sur le
-    // mot "poulet" l'aurait avale, la liste explicite ne le touche pas.
-    expect(p.prixAchat('Merguez poulet')).toBeNull();
-    expect(p.origine('Merguez poulet')).toBeNull();
-    expect(p.prixAchat('Yell')).toBeNull();
-});
-
-test('AUCUN repli numerique: le cout manquant est remonte, pas invente', async () => {
-    // Un cout invente est pire qu'un cout absent: il produit une marge
-    // d'apparence calculee, qui entre dans les classements et declenche des
-    // recommandations, sans que rien ne dise qu'elle repose sur un nombre
-    // choisi d'avance.
-    poserBase({ poulet: null });
-    const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 2750 });
-    const p = r.pourDate('2026-07-31');
-    expect(p.prixAchat('Poulet en détail')).toBeNull();
-    expect(p.origine('Poulet en détail')).toBeNull();
-});
-
-test("l'avertissement NOMME le produit et la ligne qui le renseignerait", async () => {
-    // Previr d'un probleme sans dire ou le corriger oblige a chercher.
-    poserBase({ poulet: null });
-    const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 2750 });
-    r.pourDate('2026-07-31').prixAchat('Poulet en détail');
-    const a = r.avertissements.join(' ');
-    expect(a).toMatch(/Poulet en détail/);
-    expect(a).toMatch(/« Poulet »/);
-    expect(a).not.toMatch(/2750/);
-});
-
-test('sans catalogue ni repli, le cout reste inconnu plutot que zero', async () => {
-    poserBase({ poulet: null });
-    const p = (await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 0 })).pourDate('2026-07-31');
-    expect(p.prixAchat('Poulet en détail')).toBeNull();
-});
-
-test('une famille vide rend exactement le module de base', async () => {
-    poserBase();
-    const p = (await creer({ famillePoulet: [], prixPouletDefaut: 3000 })).pourDate('2026-07-31');
-    expect(p.prixAchat('Poulet en détail')).toBeNull();
-    expect(p.prixAchat('Boeuf en détail')).toBe(3835);
-});
-
-test('les avertissements du module de base sont conserves', async () => {
-    poserBase();
-    const r = await creer(REGLAGES);
-    expect(r.avertissements).toContain('avertissement du module de base');
-});
-
-test("le produit sans cout n'est nomme QU'UNE fois", async () => {
-    // pourDate est appele une fois par journee: sans deduplication, le meme
-    // produit apparaitrait trente fois dans les avertissements.
-    poserBase({ poulet: null });
-    const r = await creer({ famillePoulet: ['Poulet en détail'], prixPouletDefaut: 3000 });
-    for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) {
-        r.pourDate(d).prixAchat('Poulet en détail');
-    }
-    expect(r.avertissements.filter((a) => /Coût inconnu.*Poulet en détail/.test(a)).length).toBe(1);
-});
-
-test('le POIDS multiplie le prix de la carcasse', async () => {
-    // Le Jarret se vend a la piece, la carcasse se paie au kilo: sans poids,
-    // son cout valait 3 835 F sur un produit vendu 500 F.
-    poserBase();
-    const p = (await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] })).pourDate('2026-07-31');
-    expect(p.prixAchat('Jarret')).toBeCloseTo(0.4 * 3835, 6);
-    expect(p.origine('Jarret')).toBe('famille_boeuf');
-});
-
-test('une entree sans poids vaut 1: meme unite que la carcasse', async () => {
-    poserBase();
-    const p = (await creer({ familleBoeuf: ['Gigot'] })).pourDate('2026-07-31');
-    expect(p.prixAchat('Gigot')).toBe(3835);
-});
-
-test('carcasse sans prix: le produit est NOMME, pas value a zero', async () => {
-    poserBase({ boeuf: null });
-    const r = await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] });
-    expect(r.pourDate('2026-07-31').prixAchat('Jarret')).toBeNull();
-    expect(r.avertissements.join(' ')).toMatch(/Jarret/);
-});
-
-test('la famille BOEUF passe avant la poulet', async () => {
-    // Un produit range par erreur dans les deux prendrait sinon le cout de la
-    // volaille sans que rien ne le dise.
-    poserBase();
-    const p = (await creer({
-        famillePoulet: ['Jarret'], familleBoeuf: [{ nom: 'Jarret', poids: 1 }]
-    })).pourDate('2026-07-31');
-    expect(p.prixAchat('Jarret')).toBe(3835);
-    expect(p.origine('Jarret')).toBe('famille_boeuf');
-});
-
-test('le Jarret prend le cout de la carcasse de boeuf', async () => {
-    poserBase();
-    const p = (await creer({ familleBoeuf: [{ nom: 'Jarret', poids: 1 }] })).pourDate('2026-07-31');
-    expect(p.prixAchat('Jarret')).toBe(3835);
-    expect(p.origine('Jarret')).toBe('famille_boeuf');
-    // Un produit hors famille reste sans cout.
-    expect(p.prixAchat('Yell')).toBeNull();
-});
-
-test('le module de base n est appele qu UNE fois, pas par journee', async () => {
-    poserBase();
-    const r = await creer(REGLAGES);
-    for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) r.pourDate(d);
-    expect(creerResolveurPrixAchat).toHaveBeenCalledTimes(1);
-});
-
-test('sans reglages, aucune famille ne s applique et le module de base decide seul', () => {
-    // La signature accepte un objet de reglages absent: la famille est alors
-    // vide et le repli inexistant, donc le comportement est exactement celui
-    // de lib/prix-achat-date.js.
-    poserBase();
-    return creerResolveurPrixAchatSimulation({ dateMax: '2026-07-31' }).then((r) => {
-        const p = r.pourDate('2026-07-31');
+    test('AUCUN repli numerique: null, jamais un montant choisi d avance', async () => {
+        // Un cout invente produit une marge d'apparence calculee, qui entre
+        // dans les classements et declenche des recommandations sans que rien
+        // ne dise d'ou elle vient. Un cout absent, lui, se voit.
+        poserBase();
+        const p = (await creer()).pourDate('2026-07-31');
         expect(p.prixAchat('Poulet en détail')).toBeNull();
         expect(p.origine('Poulet en détail')).toBeNull();
-        expect(p.prixAchat('Boeuf en détail')).toBe(3835);
-        expect(p.origine('Boeuf en détail')).toBe('propre');
+    });
+
+    test('le produit n est nomme QU UNE fois sur toute la periode', async () => {
+        // pourDate est appele une fois par journee: sans deduplication, le
+        // meme produit apparaitrait trente fois.
+        poserBase();
+        const r = await creer();
+        for (const d of ['2026-07-01', '2026-07-02', '2026-07-03']) {
+            r.pourDate(d).prixAchat('Poivre Sachet 100');
+        }
+        expect(r.avertissements.filter((a) => /Poivre Sachet 100/.test(a))).toHaveLength(1);
+    });
+
+    test('la casse et les accents ne creent pas deux entrees', async () => {
+        // Meme normalisation que la resolution des prix: sans elle, « Poivre »
+        // et « POIVRE » se signaleraient deux fois pour le meme produit.
+        poserBase();
+        const r = await creer();
+        const p = r.pourDate('2026-07-31');
+        p.prixAchat('Poivre Sachet 100');
+        p.prixAchat('POIVRE SACHET 100');
+        expect(r.avertissements.filter((a) => /achet 100/i.test(a))).toHaveLength(1);
+    });
+
+    test('un cout NUL compte comme inconnu, pas comme gratuit', async () => {
+        // Zero rendrait une marge egale au prix de vente - le produit le plus
+        // rentable de l'ecran, par accident.
+        poserBase({ boeuf: 0, jarret: 0 });
+        const p = (await creer()).pourDate('2026-07-31');
+        expect(p.prixAchat('Boeuf en détail')).toBeNull();
+    });
+});
+
+describe('origine', () => {
+    test('la phrase du module de base est RELAYEE telle quelle', async () => {
+        // La source appartient au module de base, seul a connaitre la
+        // resolution. La reconstituer ici en ferait une seconde definition,
+        // libre de diverger du calcul qu'elle pretend decrire - et l'ecran
+        // nommerait alors une provenance que le cout n'a pas suivie.
+        poserBase();
+        const p = (await creer()).pourDate('2026-07-31');
+        expect(p.origine('Boeuf en détail')).toBe('prix propre');
+        expect(p.origine('Jarret')).toBe('mappé vers Boeuf × 0,5');
+        expect(p.origine('Poivre Sachet 100')).toBeNull();
+    });
+
+    test('un cout NUL n a pas d origine a nommer', async () => {
+        // La regle du zero appartient a CETTE couche: le module de base rend
+        // une source pour un prix de zero, qu'elle tient pour gratuit. Sans ce
+        // filtre, l'ecran afficherait « prix propre » sur une ligne sans
+        // cout - une provenance pour un chiffre qui n'existe pas.
+        poserBase({ boeuf: 0, jarret: 0 });
+        const p = (await creer()).pourDate('2026-07-31');
+        expect(p.prixAchat('Boeuf en détail')).toBeNull();
+        expect(p.origine('Boeuf en détail')).toBeNull();
     });
 });
