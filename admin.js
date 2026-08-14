@@ -7326,29 +7326,24 @@ function initSimulationV2Section() {
 }
 
 // Vrai une fois la lecture serveur reussie. Sans ce garde, un echec de
-// chargement laisserait les champs vides et un clic sur Enregistrer ecraserait
-// la famille poulet par une liste vide - le meme piege que pxListeChargee.
+// chargement laisserait l'interrupteur a sa position par defaut et un clic sur
+// Enregistrer l'imposerait au serveur - le meme piege que pxListeChargee.
 let sv2Charge = false;
 
 async function chargerSimulationV2() {
     const actif = document.getElementById('sv2Actif');
-    const famille = document.getElementById('sv2Famille');
-    const prix = document.getElementById('sv2Prix');
     const avert = document.getElementById('sv2Avertissements');
-    if (!actif || !famille || !prix) return;
+    if (!actif) return;
     try {
         const res = await fetch('/api/simulation-v2/reglages', { credentials: 'include' });
         const j = await res.json();
         if (!j.success) throw new Error(j.error || 'Erreur');
         const d = j.data || {};
         actif.checked = !!d.actif;
-        famille.value = Array.isArray(d.famille_poulet) ? d.famille_poulet.join(', ') : '';
-        prix.value = d.prix_achat_defaut_poulet != null ? d.prix_achat_defaut_poulet : '';
-        // Chargé SEULEMENT si la liste est la. La route ne rend { actif } qu'aux
-        // non-admins: sans ce test, un tel payload laissait le champ famille
-        // vide et un Enregistrer ultérieur soumettait une famille VIDE, donc
-        // effaçait le réglage.
-        sv2Charge = Array.isArray(d.famille_poulet);
+        // Chargé SEULEMENT si le drapeau est la. Cet ecran ne regle plus que
+        // lui: le cout d'un produit vit dans Finance > Mapping produits, et
+        // les deux listes de familles qui le disaient ici ont disparu.
+        sv2Charge = typeof d.actif === 'boolean';
         if (avert) {
             const liste = Array.isArray(d.avertissements) ? d.avertissements : [];
             avert.innerHTML = liste.length
@@ -7372,16 +7367,8 @@ async function sauvegarderSimulationV2() {
         return;
     }
     const actif = document.getElementById('sv2Actif');
-    const famille = document.getElementById('sv2Famille');
-    const prix = document.getElementById('sv2Prix');
-    const corps = {
-        actif: !!actif.checked,
-        famillePoulet: famille.value
-    };
-    // Le prix n'est envoye que s'il est renseigne: un champ vide veut dire
-    // "ne touche pas", pas "mets zero".
-    const p = parseFloat(prix.value);
-    if (Number.isFinite(p)) corps.prixPouletDefaut = p;
+    if (!actif) return;
+    const corps = { actif: !!actif.checked };
 
     try {
         const res = await fetch('/api/simulation-v2/reglages', {
@@ -7396,8 +7383,7 @@ async function sauvegarderSimulationV2() {
         // champs ci-dessous sur un TypeError illisible.
         if (!j.data) throw new Error('Réponse du serveur sans données');
         showToast(
-            'Simulation 2.0 ' + (j.data.actif ? 'activée' : 'désactivée')
-            + ' · famille poulet : ' + (j.data.famille_poulet || []).length + ' produit(s)',
+            'Simulation 2.0 ' + (j.data.actif ? 'activée' : 'désactivée'),
             'success'
         );
         chargerSimulationV2();

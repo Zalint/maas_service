@@ -17,8 +17,9 @@ describe('lireReglages', () => {
         FinanceConfig.findAll.mockResolvedValue([]);
         const r = await reglages.lireReglages();
         expect(r.actif).toBe(false);
-        expect(r.famillePoulet).toEqual(['Poulet en détail', 'Poulet en gros']);
-        expect(r.prixPouletDefaut).toBe(3000);
+        // VIDE par defaut: ce reglage AJOUTE aux cinq produits codes en dur
+        // cote route, il ne les remplace pas.
+        expect(r.produitsSuivis).toEqual([]);
     });
 
     test("seule la valeur '1' active le drapeau", async () => {
@@ -33,25 +34,19 @@ describe('lireReglages', () => {
     });
 
     test('une liste vide desactive la famille, elle ne retombe pas sur le defaut', async () => {
-        FinanceConfig.findAll.mockResolvedValue([{ key: 'famille_poulet', value: '  ,  , ' }]);
+        FinanceConfig.findAll.mockResolvedValue([{ key: 'produits_simulation', value: '  ,  , ' }]);
         const r = await reglages.lireReglages();
-        expect(r.famillePoulet).toEqual([]);
+        expect(r.produitsSuivis).toEqual([]);
     });
 
     test('les doublons et les blancs sont nettoyes', async () => {
         FinanceConfig.findAll.mockResolvedValue([
-            { key: 'famille_poulet', value: ' Poulet en gros , poulet EN GROS ,Poulet en détail, ' }
+            { key: 'produits_simulation', value: ' Poulet en gros , poulet EN GROS ,Poulet en détail, ' }
         ]);
         const r = await reglages.lireReglages();
-        expect(r.famillePoulet).toEqual(['Poulet en gros', 'Poulet en détail']);
+        expect(r.produitsSuivis).toEqual(['Poulet en gros', 'Poulet en détail']);
     });
 
-    test('un prix invalide retombe sur 3000 et le signale', async () => {
-        FinanceConfig.findAll.mockResolvedValue([{ key: 'prix_achat_defaut_poulet', value: 'abc' }]);
-        const r = await reglages.lireReglages();
-        expect(r.prixPouletDefaut).toBe(3000);
-        expect(r.avertissements.join(' ')).toMatch(/prix_achat_defaut_poulet/);
-    });
 
     test('une base illisible ne fait pas echouer la lecture', async () => {
         FinanceConfig.findAll.mockRejectedValue(new Error('boom'));
@@ -65,20 +60,15 @@ describe('valider', () => {
     test('refuse un actif non booleen', () => {
         expect(reglages.valider({ actif: 'oui' }).ok).toBe(false);
     });
-    test('refuse un prix hors bornes', () => {
-        expect(reglages.valider({ prixPouletDefaut: 0 }).ok).toBe(false);
-        expect(reglages.valider({ prixPouletDefaut: 200000 }).ok).toBe(false);
-        expect(reglages.valider({ prixPouletDefaut: 3200 }).ok).toBe(true);
-    });
     test('refuse une liste demesuree', () => {
         const gros = Array.from({ length: 51 }, (_, i) => 'P' + i);
-        expect(reglages.valider({ famillePoulet: gros }).ok).toBe(false);
+        expect(reglages.valider({ produitsSuivis: gros }).ok).toBe(false);
     });
     test('refuse un corps vide', () => {
         expect(reglages.valider({}).ok).toBe(false);
     });
     test('accepte une liste sous forme de chaine', () => {
-        const v = reglages.valider({ famillePoulet: 'A, B ,A' });
+        const v = reglages.valider({ produitsSuivis: 'A, B ,A' });
         expect(v.ok).toBe(true);
         expect(v.aEcrire[0].value).toBe('A,B');
     });
@@ -88,7 +78,7 @@ describe('ecrireReglages', () => {
     beforeEach(() => { jest.clearAllMocks(); });
 
     test("n'ecrit RIEN quand une seule valeur est invalide", async () => {
-        const r = await reglages.ecrireReglages({ actif: true, prixPouletDefaut: -5 });
+        const r = await reglages.ecrireReglages({ actif: true, produitsSuivis: ['A,B'] });
         expect(r.ok).toBe(false);
         expect(FinanceConfig.upsert).not.toHaveBeenCalled();
     });
@@ -179,7 +169,11 @@ describe('GET /reglages : ce que chaque role voit', () => {
         jest.clearAllMocks();
         FinanceConfig.findAll.mockResolvedValue([
             { key: 'simulation_v2_enabled', value: '1' },
-            { key: 'famille_poulet', value: 'Poulet en détail,Poulet en gros' },
+            { key: 'produits_simulation', value: 'Poulet en détail,Poulet en gros' },
+            // Ecrite par une version anterieure, et PLUS LUE: le repli
+            // numerique a disparu avec les familles. Elle reste dans le jeu
+            // d'essai parce qu'elle reste dans les bases deja migrees - la
+            // lecture doit l'ignorer, pas s'en etonner.
             { key: 'prix_achat_defaut_poulet', value: '3000' }
         ]);
     });
@@ -188,16 +182,19 @@ describe('GET /reglages : ce que chaque role voit', () => {
         const r = await appel(appAvecRole('admin'), 'GET', '/api/simulation-v2/reglages');
         expect(r.code).toBe(200);
         expect(r.body.data.actif).toBe(true);
-        expect(r.body.data.famille_poulet).toEqual(['Poulet en détail', 'Poulet en gros']);
-        expect(r.body.data.prix_achat_defaut_poulet).toBe(3000);
+        expect(r.body.data.produits_simulation).toEqual(['Poulet en détail', 'Poulet en gros']);
+        // Une cle orpheline en base ne ressort NI sous son nom, NI ailleurs:
+        // un reglage qui n'agit plus mais que l'ecran affiche encore se
+        // regle et ne change rien - le pire des deux etats.
+        expect(r.body.data.prix_achat_defaut_poulet).toBeUndefined();
+        expect(JSON.stringify(r.body.data)).not.toMatch(/3000/);
     });
 
     test('un superviseur ne voit QUE le drapeau', async () => {
         const r = await appel(appAvecRole('superviseur'), 'GET', '/api/simulation-v2/reglages');
         expect(r.code).toBe(200);
         expect(r.body.data).toEqual({ actif: true });
-        expect(r.body.data.famille_poulet).toBeUndefined();
-        expect(r.body.data.prix_achat_defaut_poulet).toBeUndefined();
+        expect(r.body.data.produits_simulation).toBeUndefined();
     });
 
     test('un superviseur ne peut pas ecrire', async () => {
@@ -212,7 +209,16 @@ describe('GET /reglages : ce que chaque role voit', () => {
     });
 
     test('un corps invalide rend 400 et n ecrit rien', async () => {
-        const r = await appel(appAvecRole('admin'), 'PUT', '/api/simulation-v2/reglages', { prixPouletDefaut: -1 });
+        const r = await appel(appAvecRole('admin'), 'PUT', '/api/simulation-v2/reglages', { actif: 'oui' });
+        expect(r.code).toBe(400);
+        expect(FinanceConfig.upsert).not.toHaveBeenCalled();
+    });
+
+    test('une cle qui n existe plus est REFUSEE, pas ignoree en silence', async () => {
+        // Un ecran reste sur un poste, une integration garde son ancien
+        // corps. Accepter { prixPouletDefaut } sans rien en faire rendrait un
+        // 200 pour une ecriture qui n'a pas eu lieu.
+        const r = await appel(appAvecRole('admin'), 'PUT', '/api/simulation-v2/reglages', { prixPouletDefaut: 3000 });
         expect(r.code).toBe(400);
         expect(FinanceConfig.upsert).not.toHaveBeenCalled();
     });
@@ -223,14 +229,14 @@ describe('deduplication de la famille', () => {
         // 'Poulet en détail' et 'POULET EN DETAIL' resolvent vers le meme cout:
         // les garder tous deux afficherait un doublon qui n'en est pas un.
         const v = reglages.valider({
-            famillePoulet: 'Poulet en détail, POULET EN DETAIL, Poulet en gros'
+            produitsSuivis: 'Poulet en détail, POULET EN DETAIL, Poulet en gros'
         });
         expect(v.ok).toBe(true);
         expect(v.aEcrire[0].value).toBe('Poulet en détail,Poulet en gros');
     });
 
     test('deux produits reellement differents sont conserves', () => {
-        const v = reglages.valider({ famillePoulet: 'Poulet en détail, Cuisse de poulet' });
+        const v = reglages.valider({ produitsSuivis: 'Poulet en détail, Cuisse de poulet' });
         expect(v.aEcrire[0].value).toBe('Poulet en détail,Cuisse de poulet');
     });
 });
@@ -351,64 +357,4 @@ describe('le reglage des dimanches accompagne la calibration', () => {
         expect(c.dimanches).toBeNull();
     });
 });
-
-describe('famille boeuf: un POIDS unitaire, pas un simple nom', () => {
-    beforeEach(() => { jest.clearAllMocks(); });
-
-    test('le Jarret y est par defaut, AVEC son poids', async () => {
-        // Le poids est ce qui rend le rattachement juste: la carcasse se paie
-        // au kilo, le jarret se vend a la piece. Sans lui, -3 557 F de marge.
-        FinanceConfig.findAll.mockResolvedValue([]);
-        expect((await reglages.lireReglages()).familleBoeuf)
-            .toEqual([{ nom: 'Jarret', poids: 0.5 }]);
-    });
-
-    test('« Nom:poids » est relu en {nom, poids}', async () => {
-        FinanceConfig.findAll.mockResolvedValue([
-            { key: 'famille_boeuf', value: 'Jarret:0.4, Gigot' }
-        ]);
-        expect((await reglages.lireReglages()).familleBoeuf).toEqual([
-            { nom: 'Jarret', poids: 0.4 },
-            // Sans ':', le poids vaut 1 - meme unite que la carcasse.
-            { nom: 'Gigot', poids: 1 }
-        ]);
-    });
-
-    test('un poids illisible ECARTE l entree au lieu de la ramener a 1', async () => {
-        // La ramener a 1 serait un cout faux d'un facteur inconnu; ecartee, le
-        // produit repart sans cout et sera nomme comme tel.
-        FinanceConfig.findAll.mockResolvedValue([
-            { key: 'famille_boeuf', value: 'Jarret:abc, Gigot:0, Osso:-2, Bon:0.5' }
-        ]);
-        expect((await reglages.lireReglages()).familleBoeuf).toEqual([{ nom: 'Bon', poids: 0.5 }]);
-    });
-
-    test('l ecriture accepte les deux formes et normalise en CSV', () => {
-        const a = reglages.valider({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] });
-        expect(a.ok).toBe(true);
-        expect(a.aEcrire[0]).toEqual({ key: 'famille_boeuf', value: 'Jarret:0.4' });
-
-        const b = reglages.valider({ familleBoeuf: 'Jarret:0.4, Gigot' });
-        expect(b.ok).toBe(true);
-        expect(b.aEcrire[0].value).toBe('Jarret:0.4,Gigot:1');
-    });
-
-    test('un poids invraisemblable est refuse', () => {
-        // 100 kg l'unite n'est pas une decoupe: c'est une virgule qui a glisse.
-        expect(reglages.valider({ familleBoeuf: [{ nom: 'Jarret', poids: 400 }] }).ok).toBe(false);
-    });
-
-    test('une entree qui n est ni chaine ni {nom} est refusee', () => {
-        expect(reglages.valider({ familleBoeuf: [{ poids: 0.4 }] }).ok).toBe(false);
-        expect(reglages.valider({ familleBoeuf: [42] }).ok).toBe(false);
-    });
-
-    test('le defaut n est pas expose par reference', async () => {
-        FinanceConfig.findAll.mockResolvedValue([]);
-        const a = await reglages.lireReglages();
-        a.familleBoeuf.push({ nom: 'POLLUTION', poids: 1 });
-        a.familleBoeuf[0].poids = 99;
-        expect((await reglages.lireReglages()).familleBoeuf)
-            .toEqual([{ nom: 'Jarret', poids: 0.5 }]);
-    });
-});
+

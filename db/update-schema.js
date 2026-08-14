@@ -873,6 +873,34 @@ async function updateSchema() {
             )
         `);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_produit_alias_catalog ON produit_alias(produit_catalog)`);
+
+        // COEFFICIENT: combien d'unites de l'entree catalogue vaut UNE unite du
+        // libelle de vente. C'est une conversion d'unite, PAS une imputation de
+        // cout - la carcasse est achetee une seule fois, sous « Boeuf ».
+        //
+        // 1 pour tout ce qui se vend dans la meme unite que la carcasse
+        // (« Boeuf en detail » au kilo). 0,5 pour le Jarret, qui se vend a la
+        // PIECE et dont une piece pese environ 500 g. Sans lui, un jarret
+        // vendu 500 F se voyait imputer le prix d'un KILO de carcasse -
+        // 4 057 F, soit -3 557 F de marge sur un produit qui en gagne.
+        //
+        // DEFAUT 1 et NOT NULL: les aliases deja poses gardent exactement le
+        // comportement qu'ils avaient, et une ligne sans coefficient est
+        // impossible - un coefficient nul ou absent rendrait un cout nul sans
+        // que rien ne le dise.
+        await sequelize.query(`
+            ALTER TABLE produit_alias
+            ADD COLUMN IF NOT EXISTS coefficient NUMERIC(10,4) NOT NULL DEFAULT 1
+        `);
+        // Un coefficient <= 0 n'est pas une conversion: c'est une saisie qui a
+        // glisse. La contrainte le refuse a la source plutot que de laisser un
+        // cout nul se propager jusqu'a une marge.
+        await sequelize.query(`
+            DO $$ BEGIN
+                ALTER TABLE produit_alias
+                ADD CONSTRAINT produit_alias_coefficient_positif CHECK (coefficient > 0);
+            EXCEPTION WHEN duplicate_object THEN NULL; END $$
+        `);
         console.log('Table produit_alias verifiee');
 
         // Ajouter montant_total_caisse a clotures_caisse pour l'ecran

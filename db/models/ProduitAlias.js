@@ -28,6 +28,20 @@ const ProduitAlias = sequelize.define('ProduitAlias', {
         allowNull: false,
         field: 'produit_catalog'
     },
+    /**
+     * Combien d'unites de l'entree catalogue vaut UNE unite du libelle de
+     * vente. Conversion d'unite, PAS imputation de cout: la carcasse est
+     * achetee une seule fois, sous « Boeuf », et sa commission avec elle.
+     *
+     *   1    le libelle se compte comme la carcasse (« Boeuf en detail », au kilo)
+     *   0.5  un Jarret se vend a la PIECE et pese environ 500 g
+     */
+    coefficient: {
+        type: DataTypes.DECIMAL(10, 4),
+        allowNull: false,
+        defaultValue: 1,
+        field: 'coefficient'
+    },
     updated_at: {
         type: DataTypes.DATE,
         allowNull: false,

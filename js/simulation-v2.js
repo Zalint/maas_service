@@ -753,11 +753,10 @@
         var liste = (etat.sim && etat.sim.produits_vendus) || [];
         if (!liste.length) return '';
 
-        var ORIGINES = {
-            propre: 'prix propre',
-            famille_boeuf: 'carcasse bœuf × poids',
-            famille_poulet: 'carcasse poulet'
-        };
+        // L'origine arrive DEJA redigee par lib/prix-achat-date.js - « prix
+        // propre », « mappé vers Boeuf × 0,5 », « famille bovine ». Une table
+        // de traduction ici serait une seconde definition de la resolution, et
+        // c'est exactement celle qui vient de disparaitre.
         var lignes = liste.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })
             .map(function (p) {
                 var pv = (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
@@ -784,7 +783,7 @@
                          : ' <span class="text-muted">(' + esc(fmt(paPare)) + ')</span>') + '</td>'
                     + '<td class="text-end text-muted">'
                       + (parage === null ? '—' : esc(pct2(parage)) + ' %') + '</td>'
-                    + '<td class="small text-muted">' + esc(ORIGINES[p.prix_achat_origine] || '—') + '</td>'
+                    + '<td class="small text-muted">' + esc(p.prix_achat_origine || '—') + '</td>'
                     + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger fw-medium' : '') + '">'
                       + esc(fmt(m)) + '</td>'
                     + '<td class="text-end">' + esc(fmt(p.ca)) + '</td>'
@@ -901,8 +900,11 @@
             var e = effetProduit(p, s);
             return '<tr>'
                 + '<td>' + esc(p.nom)
-                  + (p.prix_achat_origine === 'famille_poulet' ? ' <span class="badge bg-success-subtle text-success">famille poulet</span>' : '')
-                  + (p.prix_achat_origine === 'famille_boeuf' ? ' <span class="badge bg-info-subtle text-info">famille bœuf</span>' : '')
+                  // Le cout ne vient pas de la ligne du produit: on le dit sur
+                  // la ligne. « Jarret · mappé vers Boeuf × 0,5 » se verifie a
+                  // l'oeil, la ou un cout nu laisse croire a un prix saisi.
+                  + (p.prix_achat_origine && p.prix_achat_origine !== 'prix propre'
+                     ? ' <span class="badge bg-info-subtle text-info">' + esc(p.prix_achat_origine) + '</span>' : '')
                   + (p.prix_achat === null || p.prix_achat === undefined ? ' <span class="badge bg-danger-subtle text-danger">coût inconnu</span>' : '')
                   + (m !== null && m < 0 ? ' <span class="badge bg-danger-subtle text-danger">marge négative</span>' : '')
                   + (p.sans_vente ? ' <span class="badge bg-light text-muted">aucune vente</span>' : '')

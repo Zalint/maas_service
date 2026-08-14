@@ -3065,6 +3065,7 @@
                                             <th class="text-end">Nb ventes 90j</th>
                                             <th>Statut</th>
                                             <th>Mappé vers (catalogue)</th>
+                                            <th style="width:170px" title="Combien d'unités de l'entrée catalogue vaut UNE unité de ce libellé. 1 pour ce qui se vend dans la même unité que la carcasse. 0,5 pour le Jarret, vendu à la pièce et pesant environ 500 g. C'est une conversion d'unité, pas un achat : la carcasse est payée une seule fois.">Coefficient</th>
                                             <th style="width:120px"></th>
                                         </tr>
                                     </thead>
@@ -3997,7 +3998,7 @@
     <!-- La formule du parage, LA MEME qu'au serveur (window.parageLib).
          Charge avant reconciliationManager.js et script.js, qui la lisent
          au lieu d'en recopier le seuil et le calcul. -->
-    <script src="lib/dates-fr.js?v=20260814-fantome"></script>
+    <script src="lib/dates-fr.js?v=20260814-coef"></script>
     <script src="lib/parage.js?v=20260808-tauxdeperte"></script>
     <script src="reconciliationManager.js?v=20260808-dechet-negatif"></script>
     <script src="cash-payment-function.js"></script>
@@ -4007,16 +4008,16 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260814-fantome"></script>
+    <script src="script.js?v=20260814-coef"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260814-fantome"></script>
+    <script src="js/finance.js?v=20260814-coef"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
-    <script src="js/simulation-v2-moteur.js?v=20260814-fantome"></script>
-    <script src="js/simulation-v2-projection.js?v=20260814-fantome"></script>
-    <script src="js/simulation-v2.js?v=20260814-fantome"></script>
+    <script src="js/simulation-v2-moteur.js?v=20260814-coef"></script>
+    <script src="js/simulation-v2-projection.js?v=20260814-coef"></script>
+    <script src="js/simulation-v2.js?v=20260814-coef"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

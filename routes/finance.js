@@ -115,7 +115,7 @@ async function lireReglagesSimulationV2() {
         // manquaient, et seul le garde `v2 &&` du premier evitait un
         // « Cannot read properties of undefined » sur une panne de base.
         return {
-            actif: false, famillePoulet: [], familleBoeuf: [], prixPouletDefaut: 0,
+            actif: false,
             produitsSuivis: [], coeffP1P2: null, avertissements: []
         };
     }
@@ -1159,7 +1159,9 @@ router.get('/alias', async (req, res) => {
                 dropdown,
                 aliases: aliases.map((a) => ({
                     alias_produit: a.alias_produit,
-                    produit_catalog: a.produit_catalog
+                    produit_catalog: a.produit_catalog,
+                    // Combien d'unites de la cible vaut UNE unite du libelle.
+                    coefficient: a.coefficient == null ? 1 : parseFloat(a.coefficient)
                 })),
                 items
             }
@@ -1170,7 +1172,49 @@ router.get('/alias', async (req, res) => {
     }
 });
 
-// Body: { alias_produit, produit_catalog }
+/**
+ * COEFFICIENT d'un mapping: conversion d'unite, pas imputation de cout.
+ *
+ * Absent, il vaut 1 - le libelle se compte comme sa cible, cas de toutes les
+ * decoupes vendues au kilo. Le Jarret vaut 0,5: il se vend a la PIECE et une
+ * piece pese environ 500 g. La carcasse reste achetee UNE fois, sous
+ * « Boeuf », et sa commission avec elle.
+ *
+ * Zero et negatif sont REFUSES, jamais ramenes a 1: un coefficient nul
+ * rendrait un cout nul, donc une marge egale au prix de vente - le produit le
+ * plus rentable de l'ecran, par accident, sans que rien ne le dise. La
+ * contrainte SQL les refuse aussi, mais une erreur 400 explicite vaut mieux
+ * qu'une violation de contrainte remontee brute.
+ *
+ * Sortie en dehors du gestionnaire de route pour etre testable seule, comme
+ * resoudreCibleSnapshot: une regle de validation qui ne se lit qu'a travers
+ * une requete HTTP finit par n'etre verifiee nulle part.
+ *
+ * @param {*} brut  la valeur recue, de n'importe quelle forme
+ * @returns {{ok: true, valeur: number}|{ok: false, erreur: string}}
+ */
+function validerCoefficient(brut) {
+    // « Absent » se teste sur la FORME recue, pas sur String(brut): String([])
+    // rend une chaine vide, et un tableau serait passe pour un champ non
+    // rempli - donc pour un coefficient de 1, valeur qu'il ne porte pas.
+    const absent = brut === undefined || brut === null
+        || (typeof brut === 'string' && brut.trim() === '');
+    if (absent) return { ok: true, valeur: 1 };
+    // Number() et non parseFloat(): parseFloat('0.5kg') rend 0,5 sans broncher,
+    // et une unite collee par erreur passerait pour une saisie valide.
+    const v = Number(brut);
+    if (!Number.isFinite(v) || v <= 0) {
+        return { ok: false, erreur: 'coefficient doit être un nombre strictement positif' };
+    }
+    // Au-dela de 1 000, ce n'est plus une conversion: c'est une virgule qui a
+    // glisse.
+    if (v > 1000) {
+        return { ok: false, erreur: 'coefficient invraisemblable (1000 au maximum)' };
+    }
+    return { ok: true, valeur: v };
+}
+
+// Body: { alias_produit, produit_catalog, coefficient? }
 // Upsert: si l'alias existe, sa cible est mise a jour.
 // La cible est un nom de produit inventaire boucherie. Si elle n'est
 // pas encore dans fournisseur_prix, on cree une entree avec prix=0
@@ -1202,6 +1246,12 @@ router.put('/alias', async (req, res) => {
             });
         }
 
+        const coef = validerCoefficient(req.body && req.body.coefficient);
+        if (!coef.ok) {
+            return res.status(400).json({ success: false, error: coef.erreur });
+        }
+        const coefficient = coef.valeur;
+
         const username = req.session && req.session.user
             ? req.session.user.username
             : null;
@@ -1231,6 +1281,7 @@ router.put('/alias', async (req, res) => {
             await ProduitAlias.upsert({
                 alias_produit: aliasProduit,
                 produit_catalog: produitCatalog,
+                coefficient,
                 updated_at: new Date()
             }, { transaction: t });
             return { catalog_created: createdCatalog };
@@ -1240,7 +1291,8 @@ router.put('/alias', async (req, res) => {
         }
         audit.log(req, 'alias.upsert', {
             alias_produit: aliasProduit,
-            produit_catalog: produitCatalog
+            produit_catalog: produitCatalog,
+            coefficient
         });
         invalidateFinanceDerivedCaches();
         res.json({ success: true, ...result });
@@ -1763,9 +1815,7 @@ router.get('/simulation', async (req, res) => {
             prixAchatDe = resolveurPrix.pourDate(dateFin).prixAchat;
         } else {
             const { creerResolveurPrixAchatSimulation } = require('../lib/prix-achat-simulation');
-            resolveurPrix = await creerResolveurPrixAchatSimulation({
-                dateMax: dateFin, reglages: reglagesSim
-            });
+            resolveurPrix = await creerResolveurPrixAchatSimulation({ dateMax: dateFin });
 
             // FournisseurPrix vient de l'import de tete de fichier: le require
             // local rendait le MEME objet (cache de Node) et n'etait que du
@@ -2088,22 +2138,18 @@ router.get('/simulation', async (req, res) => {
             };
             // UNE seule valeur, jamais une composee. La moyenne ponderee peut
             // melanger des journees resolues differemment - un prix propre
-            // apparu en cours de mois apres des journees en repli de famille -
-            // et rendre "famille_poulet+propre" faisait sortir la sortie de
-            // son contrat documente, que le client aiguille par egalite.
+            // apparu en cours de mois apres des journees resolues par le
+            // mapping - et concatener les phrases ferait dire a l'ecran que le
+            // cout vient de deux endroits a la fois.
             //
-            // Quand les origines different, on rend la MOINS sure des trois:
-            // c'est celle qui doit alerter, et c'est aussi la seule lecture
-            // honnete d'un prix qui n'a pas la meme provenance tous les jours.
-            const RANG = { propre: 0, famille_boeuf: 1, famille_poulet: 2 };
+            // Quand les origines different, on le DIT plutot que d'en elire
+            // une: le prix affiche est alors une moyenne de provenances, et
+            // c'est exactement ce qu'il faut savoir avant de s'y fier.
             origineDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
                 if (!c || !c.origines.size) return finDePeriode.origine(nom);
-                let pire = null;
-                for (const o of c.origines) {
-                    if (pire === null || (RANG[o] ?? 99) > (RANG[pire] ?? 99)) pire = o;
-                }
-                return pire;
+                if (c.origines.size === 1) return c.origines.values().next().value;
+                return `sources multiples (${Array.from(c.origines).join(', ')})`;
             };
         }
 
@@ -2210,7 +2256,7 @@ router.get('/simulation', async (req, res) => {
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0,
                 // D'ou vient le cout: 'propre' (catalogue ou historique du
-                // produit lui-meme), 'famille_boeuf', 'famille_poulet', ou null
+                // produit lui-meme, mapping, ou famille bovine) ou null
                 // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
                 // un chiffre dont on ne peut pas nommer la source ne se
                 // verifie pas. Null hors Simulation 2.0, ou la notion n'existe
@@ -2408,7 +2454,7 @@ router.get('/simulation', async (req, res) => {
                     // prix_achat_origine reste rendu a tous: il dit d'ou vient
                     // un cout affiche, ce qui est necessaire pour le lire, et
                     // ne divulgue pas la liste.
-                    famille_poulet: (v2 && role === 'admin') ? reglagesSim.famillePoulet : [],
+
                     // Le RESUME du prix bovin retenu suit les avertissements,
                     // au meme endroit: qu'il vienne de MATA ou du catalogue,
                     // c'est la meme question - sur quel prix ce resultat
@@ -3393,6 +3439,7 @@ router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
 // Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
 router.resoudreCibleSnapshot = resoudreCibleSnapshot;
+router.validerCoefficient = validerCoefficient;
 
 router.get('/cash-stock', async (req, res) => {
     try {
