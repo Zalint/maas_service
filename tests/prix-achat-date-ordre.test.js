@@ -60,7 +60,11 @@ function poser({ dynamique = false, catalogue = [], alias = [], historique = [] 
         catalogue.map((c) => ({
             produit: c.produit,
             prix_achat: dec(c.prix_achat, 2),
-            prix_achat_dynamique: c.produit.toLowerCase() === 'boeuf' ? dynamique : false
+            prix_achat_dynamique: c.produit.toLowerCase() === 'boeuf' ? dynamique : false,
+            // Le produit se compte A LA PIECE (bete sur pied). Propriete
+            // DECLAREE de la ligne, la ou un motif sur le libelle rangeait
+            // « Boeuf sur pied » avec les kilos de carcasse.
+            vendu_a_l_unite: c.a_l_unite === true
         }))
     );
     mockModeles.PrixAchatHistory.findAll.mockResolvedValue(
@@ -96,60 +100,160 @@ const resoudre = async (options) => {
 
 beforeEach(() => { jest.clearAllMocks(); });
 
-describe('1er rang : la famille bovine, et le prix du JOUR', () => {
-    test('« Boeuf » prend le prix du lot MATA, PAS son prix de catalogue', async () => {
-        // La regression exacte: le catalogue dit 4 500, le lot du jour dit
-        // 4 057. Rendre 4 500 fausse le PL de 443 F par kilo de carcasse, et
-        // l'ecran continue d'AFFICHER 4 057 comme prix retenu.
+describe('PLUS AUCUNE regle de nommage', () => {
+    // Une regex /^(boeuf|veau)/ decidait naguere quels libelles partagent le
+    // cout de la carcasse. Elle tranchait au mauvais endroit dans les DEUX
+    // sens, et c'est ce bloc qui l'empeche de revenir.
+
+    test('« Boeuf abc » n est plus attrape par son prefixe', async () => {
+        // Le contre-exemple qui a fait tomber la regle: n'importe quel libelle
+        // commencant par « boeuf » heritait du prix de la carcasse, sans que
+        // personne ne l'ait declare.
         const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
-        expect(p.prixAchat('Boeuf')).toBe(PRIX_LOT);
-        expect(p.origine('Boeuf')).toBe('famille bovine');
+        expect(p.prixAchat('Boeuf abc')).toBeNull();
+        expect(p.origine('Boeuf abc')).toBeNull();
     });
 
-    test('les decoupes bovines suivent la carcasse', async () => {
+    test('une decoupe NON declaree n a pas de cout, elle n en herite pas', async () => {
         const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(p.prixAchat('Boeuf en détail')).toBeNull();
+    });
+
+    test("l'ordre des mots ne decide plus de rien", async () => {
+        // « Boeuf en détail » et « Filet De Boeuf » viennent du meme animal.
+        // La regex attrapait le premier et laissait filer le second, au seul
+        // motif que le nom y figure en dernier. Non declares, ils sont
+        // desormais traites PAREIL.
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(p.prixAchat('Boeuf en détail')).toBe(p.prixAchat('Filet De Boeuf'));
+    });
+});
+
+describe('1er rang : le MAPPING, ligne declaree et relisible', () => {
+    const AVEC_MAPPING = [
+        { alias_produit: 'Veau', produit_catalog: 'Boeuf', coefficient: 1 },
+        { alias_produit: 'Boeuf en détail', produit_catalog: 'Boeuf', coefficient: 1 }
+    ];
+
+    test('une decoupe declaree suit la carcasse, au prix du JOUR', async () => {
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE, alias: AVEC_MAPPING });
         expect(p.prixAchat('Boeuf en détail')).toBe(PRIX_LOT);
-        expect(p.prixAchat('Boeuf en gros')).toBe(PRIX_LOT);
+        expect(p.origine('Boeuf en détail')).toBe('mappé vers Boeuf');
     });
 
-    test('le VEAU prend le prix du BOEUF, malgre son propre prix', async () => {
-        // Regle metier documentee en tete de module: le veau est un boeuf
-        // vendu plus cher - meme carcasse, meme cout, la prime se voit cote
-        // vente. Sa ligne au catalogue porte pourtant 4 035.
-        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+    test('le VEAU suit le BOEUF, et le mapping BAT son prix propre', async () => {
+        // Le one-off confirme par le proprietaire du produit: le veau coute ce
+        // que coute la carcasse. Sa ligne au catalogue porte pourtant 4 035 -
+        // un nombre qui ne doit jamais servir de cout. C'est la ligne de
+        // mapping qui le dit, et c'est elle qui gagne.
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE, alias: AVEC_MAPPING });
         expect(p.prixAchat('Veau')).toBe(PRIX_LOT);
-        expect(p.origine('Veau')).toBe('famille bovine');
+        expect(p.origine('Veau')).toBe('mappé vers Boeuf');
     });
 
-    test('un mapping ne peut PAS detourner un produit bovin', async () => {
-        // La famille est une identite d'espece: elle passe avant un reglage
-        // de point de vente, sinon un mapping malencontreux ferait valoriser
-        // du boeuf au prix du poulet dans le PL.
-        const p = await resoudre({
-            dynamique: true,
-            catalogue: CATALOGUE,
-            alias: [{ alias_produit: 'Boeuf en gros', produit_catalog: 'Poulet', coefficient: 1 }]
-        });
-        expect(p.prixAchat('Boeuf en gros')).toBe(PRIX_LOT);
-    });
-
-    test('sans DATA, la famille retombe sur le catalogue', async () => {
-        const p = await resoudre({ dynamique: false, catalogue: CATALOGUE });
+    test('sans DATA, la cible retombe sur le catalogue', async () => {
+        const p = await resoudre({ dynamique: false, catalogue: CATALOGUE, alias: AVEC_MAPPING });
         expect(p.prixAchat('Boeuf en détail')).toBe(4500);
     });
 });
 
-describe('2e rang : le prix PROPRE, avant tout mapping', () => {
-    test('Foie garde son prix, meme mappe vers Boeuf', async () => {
-        // Foie et Yell sont achetes SEPAREMENT de la carcasse. Leur ligne au
-        // catalogue est la verite, et aucun mapping ne doit la couvrir.
+describe('2e rang : le prix PROPRE', () => {
+    test('la CARCASSE elle-meme prend le lot du jour', async () => {
+        // « Boeuf » n'est mappe vers rien - c'est la cible, pas un alias. Son
+        // prix dynamique vit sur SA LIGNE, pas dans une regle de famille:
+        // c'est ce qui permet de supprimer la regex sans perdre le prix de
+        // revient reel. Le catalogue dit 4 500, le lot dit 4 057.
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(p.prixAchat('Boeuf')).toBe(PRIX_LOT);
+        expect(p.origine('Boeuf')).toBe('prix propre');
+    });
+
+    test('Foie garde son prix parce qu il n est mappe NULLE PART', async () => {
+        // Foie et Yell sont achetes separement de la carcasse. Ils ne sont
+        // proteges par aucune regle: ils le sont parce qu'aucune ligne ne
+        // parle d'eux. C'est la protection la plus solide - elle se verifie
+        // a l'ecran.
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(p.prixAchat('Foie')).toBe(2500);
+        expect(p.origine('Foie')).toBe('prix propre');
+    });
+
+    test('mapper Foie serait un ACTE, et il gagnerait', async () => {
+        // Le revers assume de la regle: une ligne de mapping est deliberee,
+        // visible, et son origine s'affiche. Elle l'emporte donc.
         const p = await resoudre({
             dynamique: true,
             catalogue: CATALOGUE,
             alias: [{ alias_produit: 'Foie', produit_catalog: 'Boeuf', coefficient: 0.5 }]
         });
-        expect(p.prixAchat('Foie')).toBe(2500);
-        expect(p.origine('Foie')).toBe('prix propre');
+        expect(p.prixAchat('Foie')).toBe(PRIX_LOT * 0.5);
+        expect(p.origine('Foie')).toBe('mappé vers Boeuf × 0,5');
+    });
+});
+
+describe('les betes SUR PIED se comptent a la TETE, jamais au kilo', () => {
+    // « Boeuf sur pied » entre en stock en nombre de tetes. La regex le
+    // rangeait dans la famille bovine et lui imposait le prix d'un KILO de
+    // carcasse - une tete valorisee au prix d'un kilo de viande, sans qu'aucun
+    // reglage ne puisse le corriger.
+    const CAT_PIED = CATALOGUE.concat([
+        { produit: 'Boeuf sur pied', prix_achat: 400000, a_l_unite: true }
+    ]);
+
+    test('elle prend SON prix par tete, pas celui de la carcasse', async () => {
+        const p = await resoudre({ dynamique: true, catalogue: CAT_PIED });
+        expect(p.prixAchat('Boeuf sur pied')).toBe(400000);
+        expect(p.origine('Boeuf sur pied')).toBe('prix propre');
+    });
+
+    test('la mapper vers un produit au kilo est REFUSE, et signale', async () => {
+        // Le rendement d'abattage n'est pas une conversion d'unite: c'est une
+        // transformation. Un coefficient ne doit pas faire payer la bete au
+        // prix de ce qu'elle deviendra.
+        poser({
+            dynamique: true,
+            catalogue: CAT_PIED,
+            alias: [{ alias_produit: 'Boeuf sur pied', produit_catalog: 'Boeuf', coefficient: 0.55 }]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        const p = r.pourDate('2026-08-13');
+        expect(p.prixAchat('Boeuf sur pied')).toBe(400000);
+        expect(r.avertissements.join(' ')).toMatch(/Mapping ignoré/);
+        expect(r.avertissements.join(' ')).toMatch(/à la pièce/);
+    });
+
+    test('le refus vaut dans les DEUX sens', async () => {
+        // Mapper un produit au kilo vers une tete est tout aussi faux.
+        poser({
+            dynamique: true,
+            catalogue: CAT_PIED,
+            alias: [{ alias_produit: 'Jarret', produit_catalog: 'Boeuf sur pied', coefficient: 1 }]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Jarret')).toBeNull();
+        expect(r.avertissements.join(' ')).toMatch(/Mapping ignoré/);
+    });
+
+    test('le refus n est signale QU UNE fois', async () => {
+        poser({
+            dynamique: true,
+            catalogue: CAT_PIED,
+            alias: [{ alias_produit: 'Boeuf sur pied', produit_catalog: 'Boeuf', coefficient: 0.55 }]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        for (const d of ['2026-08-11', '2026-08-12', '2026-08-13']) {
+            r.pourDate(d).prixAchat('Boeuf sur pied');
+        }
+        expect(r.avertissements.filter((a) => /Mapping ignoré/.test(a))).toHaveLength(1);
+    });
+
+    test('piece vers piece reste licite', async () => {
+        const p = await resoudre({
+            dynamique: true,
+            catalogue: CAT_PIED.concat([{ produit: 'Veau sur pied', prix_achat: 0, a_l_unite: true }]),
+            alias: [{ alias_produit: 'Veau sur pied', produit_catalog: 'Boeuf sur pied', coefficient: 0.6 }]
+        });
+        expect(p.prixAchat('Veau sur pied')).toBe(400000 * 0.6);
     });
 });
 
@@ -203,15 +307,24 @@ describe('rien ne correspond : le cout reste INCONNU', () => {
         expect(p.origine('Poivre Sachet 100')).toBeNull();
     });
 
-    test('un mapping illisible ne prive pas le PL de ses couts bovins', async () => {
-        // La base peut refuser produit_alias - table absente sur un tenant pas
-        // encore migre. Le PL doit continuer a valoriser la carcasse.
+    test('un mapping illisible coute les couts MAPPES, et le DIT', async () => {
+        // Le prix a payer pour avoir supprime la regle implicite, et il faut
+        // le regarder en face: quand produit_alias est illisible - table
+        // absente sur un tenant pas encore migre - les produits qui tenaient
+        // leur cout d'une ligne de mapping le perdent. Avant, une regex les
+        // rattrapait en silence.
+        //
+        // C'est le bon compromis: le manque est SIGNALE, la ou la regex
+        // donnait un chiffre sans dire d'ou il venait. Et ce qui ne depend
+        // d'aucune ligne - la carcasse, les produits a prix propre - continue
+        // de valoriser le PL.
         poser({ dynamique: true, catalogue: CATALOGUE });
         mockModeles.ProduitAlias.findAll.mockRejectedValue(new Error('relation inexistante'));
         const r = await creerResolveurPrixAchat('2026-08-13');
         const p = r.pourDate('2026-08-13');
-        expect(p.prixAchat('Boeuf en détail')).toBe(PRIX_LOT);
-        expect(p.prixAchat('Foie')).toBe(2500);
+        expect(p.prixAchat('Boeuf')).toBe(PRIX_LOT);   // la carcasse tient
+        expect(p.prixAchat('Foie')).toBe(2500);         // le prix propre tient
+        expect(p.prixAchat('Boeuf en détail')).toBeNull();  // le mappe tombe
         expect(r.avertissements.join(' ')).toMatch(/Mapping produits illisible/);
     });
 });

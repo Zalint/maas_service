@@ -411,6 +411,39 @@ async function updateSchema() {
               AND LOWER(TRIM(produit)) = 'boeuf'
         `);
 
+        // Colonne vendu_a_l_unite: le produit se compte et se paie A LA PIECE,
+        // pas au kilo. Un animal SUR PIED est l'exemple: il entre en stock en
+        // nombre de tetes, et son prix d'achat est un prix par tete.
+        //
+        // Sans ce drapeau, rien ne distinguait une tete de betail d'un kilo de
+        // carcasse. Une regle de nommage - /^(boeuf|veau)/ - rangeait « Boeuf
+        // sur pied » dans la famille bovine et lui imposait le prix du KILO de
+        // carcasse: une tete valorisee au prix d'un kilo de viande, sans qu'
+        // aucun reglage ne puisse le corriger. Cette regle a disparu; ce
+        // drapeau la remplace par une propriete du PRODUIT, declaree et
+        // visible, au lieu d'une devinette sur son libelle.
+        //
+        // Il interdit AUSSI de mapper le produit vers une entree au kilo: le
+        // mapping convertit des unites, il ne convertit pas une tete en kilo.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_prix
+            ADD COLUMN IF NOT EXISTS vendu_a_l_unite BOOLEAN
+        `);
+        // Seed par noms EXACTS, jamais par motif: c'est tout l'objet du
+        // changement. NULL = jamais configure, donc un decochage tient et un
+        // redeploy ne le rallume pas - meme idempotence que prix_achat_dynamique.
+        await sequelize.query(`
+            UPDATE fournisseur_prix
+            SET vendu_a_l_unite = TRUE
+            WHERE vendu_a_l_unite IS NULL
+              AND LOWER(TRIM(produit)) IN (
+                  'boeuf sur pied', 'boeuf sur pieds',
+                  'veau sur pied', 'veau sur pieds',
+                  'agneau sur pied', 'agneau sur pieds',
+                  'mouton sur pied', 'mouton sur pieds'
+              )
+        `);
+
         // Colonne hors_mata: produit achete HORS circuit Mata. Quand TRUE,
         // ses transferts entrants ne generent aucune commission fournisseur
         // (routes/finance-creances.js), mais son prix d'achat continue de
@@ -900,6 +933,63 @@ async function updateSchema() {
                 ALTER TABLE produit_alias
                 ADD CONSTRAINT produit_alias_coefficient_positif CHECK (coefficient > 0);
             EXCEPTION WHEN duplicate_object THEN NULL; END $$
+        `);
+        // MATERIALISATION DE LA FAMILLE BOVINE EN LIGNES DE MAPPING.
+        //
+        // Une regex /^(boeuf|veau)/ donnait naguere le prix de la carcasse a
+        // tout libelle commencant par ces mots. Elle a disparu du code: elle
+        // tranchait au mauvais endroit dans les deux sens - elle attrapait
+        // « Boeuf sur pied », une bete VIVANTE comptee a la tete, pour lui
+        // imposer le prix d'un kilo de viande, et elle laissait filer « Filet
+        // De Boeuf » et « Tete de Boeuf », du meme animal, au seul motif que
+        // le nom y figure en dernier.
+        //
+        // Sans cette reprise, tous les libelles qu'elle couvrait perdraient
+        // leur cout au deploiement. On les ECRIT donc une bonne fois, en
+        // lignes que quelqu'un peut relire et corriger. Le motif ne sert qu'
+        // ICI, une seule fois, pour convertir une regle implicite en donnees -
+        // ce n'est plus lui qui decide a chaque calcul.
+        //
+        // Trois garde-fous: on ne touche a AUCUNE ligne existante, on saute la
+        // carcasse elle-meme (« Boeuf » est la cible, pas un alias), et on
+        // saute les produits declares a la piece - c'est tout l'objet du
+        // changement.
+        await sequelize.query(`
+            INSERT INTO produit_alias (alias_produit, produit_catalog, coefficient, updated_at)
+            SELECT DISTINCT libelle.nom, 'Boeuf', 1, NOW()
+            FROM (
+                SELECT produit AS nom FROM ventes
+                UNION
+                SELECT nom FROM produits
+                UNION
+                SELECT produit AS nom FROM fournisseur_prix
+            ) AS libelle
+            WHERE libelle.nom IS NOT NULL
+              AND LOWER(TRIM(libelle.nom)) ~ '^(boeuf|veau)'
+              AND LOWER(TRIM(libelle.nom)) <> 'boeuf'
+              -- LES BETES SUR PIED SONT EXCLUES, et c'est le coeur du sujet.
+              -- Un animal vivant se compte a la TETE; lui donner le prix d'un
+              -- kilo de carcasse est exactement l'erreur que la regex commettait.
+              -- Le drapeau vendu_a_l_unite ci-dessous ne suffit pas a les
+              -- proteger: ces produits vivent dans la table produits, pas
+              -- dans fournisseur_prix, donc ils n'ont pas encore de ligne ou
+              -- porter le drapeau. Ils restent SANS mapping - leur cout sera
+              -- signale comme inconnu jusqu'a ce qu'on leur donne un prix par
+              -- tete, ce qui vaut infiniment mieux qu'un cout faux en silence.
+              AND LOWER(TRIM(libelle.nom)) !~ 'sur pieds?$'
+              AND NOT EXISTS (
+                  SELECT 1 FROM produit_alias a
+                  WHERE LOWER(TRIM(a.alias_produit)) = LOWER(TRIM(libelle.nom))
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM fournisseur_prix f
+                  WHERE LOWER(TRIM(f.produit)) = LOWER(TRIM(libelle.nom))
+                    AND f.vendu_a_l_unite = TRUE
+              )
+              AND EXISTS (
+                  SELECT 1 FROM fournisseur_prix f WHERE f.produit = 'Boeuf'
+              )
+            ON CONFLICT DO NOTHING
         `);
         console.log('Table produit_alias verifiee');
 

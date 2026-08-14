@@ -44,6 +44,17 @@ const FournisseurPrix = sequelize.define('FournisseurPrix', {
         allowNull: true,
         field: 'prix_achat_dynamique'
     },
+    // TRUE = le produit se compte et se paie A LA PIECE, pas au kilo. Un
+    // animal sur pied entre en stock en nombre de tetes et son prix d'achat
+    // est un prix par tete. Le drapeau l'exclut de tout cout au kilo et
+    // interdit de le mapper vers une entree au kilo: le mapping convertit des
+    // unites, il ne convertit pas une tete en kilo. NULL = jamais configure
+    // (= desactive). Interrupteur courant, non historise.
+    vendu_a_l_unite: {
+        type: DataTypes.BOOLEAN,
+        allowNull: true,
+        field: 'vendu_a_l_unite'
+    },
     // TRUE = produit achete HORS circuit Mata: ses transferts entrants ne
     // generent aucune commission fournisseur, mais son prix_achat continue
     // de valoriser le stock. Interrupteur courant, non historise.
