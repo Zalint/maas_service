@@ -1360,8 +1360,9 @@
             + (noms.length > 1 ? ' sont absents' : ' est absent')
             + ' du catalogue fournisseur : aucune commission n\'est facturée sur '
             + (noms.length > 1 ? 'leurs livraisons' : 'ses livraisons')
-            + ', leur marge nette vaut donc leur marge brute. Ce n\'est pas une '
-            + 'estimation manquante — c\'est zéro.</div>';
+            + (noms.length > 1 ? ', leur marge nette vaut donc leur marge brute'
+                               : ', sa marge nette vaut donc sa marge brute')
+            + '. Ce n\'est pas une estimation manquante — c\'est zéro.</div>';
     }
 
     function margeApresCommission(p) {

@@ -895,6 +895,19 @@ router.put('/historique/:type/:id', adminStrictFinance, async (req, res) => {
         const maj = { [def.champ]: valeur };
         const brutDate = (req.body || {}).created_at;
         if (brutDate) {
+            // UN SEUL format accepte: l'instant UTC complet que rend
+            // toISOString(). new Date() avale bien d'autres formes, et deux
+            // d'entre elles sont des pieges sur un champ qui decide a partir
+            // de QUAND un prix s'applique: '2026-08-13' est lu comme minuit
+            // UTC, et '2026-08-13T10:00' comme minuit heure LOCALE DU SERVEUR.
+            // Le meme corps donnerait donc deux instants differents selon la
+            // machine qui l'execute.
+            if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(String(brutDate))) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'created_at attendu au format UTC complet (AAAA-MM-JJTHH:mm:ss.sssZ)'
+                });
+            }
             const d = new Date(brutDate);
             if (isNaN(d.getTime())) {
                 return res.status(400).json({ success: false, error: 'date invalide' });
@@ -909,7 +922,6 @@ router.put('/historique/:type/:id', adminStrictFinance, async (req, res) => {
         await ligne.update(maj);
 
         try {
-            const audit = require('../lib/finance-audit');
             if (typeof audit.log === 'function') {
                 audit.log(req, 'finance.historique.modifie', {
                     type: req.params.type, id: req.params.id, produit: ligne.produit, avant, apres: maj
@@ -942,19 +954,34 @@ router.delete('/historique/:type/:id', adminStrictFinance, async (req, res) => {
         const ligne = await Modele.findByPk(req.params.id);
         if (!ligne) return res.status(404).json({ success: false, error: 'entrée introuvable' });
 
-        const restantes = await Modele.count({ where: { produit: ligne.produit } });
-        if (restantes <= 1) {
+        // COMPTER PUIS SUPPRIMER SOUS VERROU. Deux suppressions concurrentes
+        // sur un produit qui n'a plus que deux entrees comptaient toutes deux
+        // « 2 », passaient toutes deux la garde, et le produit se retrouvait
+        // sans aucune entree - exactement l'etat que cette garde existe pour
+        // empecher, et qui ferait suivre le catalogue courant a toutes ses
+        // ventes passees.
+        const trace = { produit: ligne.produit, valeur: ligne[def.champ], created_at: ligne.created_at };
+        const refus = await sequelize.transaction(async (t) => {
+            // Les lignes du produit sont verrouillees AVANT d'etre comptees:
+            // sans le verrou, le compte est une photo deja perimee quand on
+            // s'en sert.
+            const rows = await Modele.findAll({
+                where: { produit: ligne.produit },
+                transaction: t, lock: t.LOCK.UPDATE
+            });
+            if (rows.length <= 1) return true;
+            await ligne.destroy({ transaction: t });
+            return false;
+        });
+        if (refus) {
             return res.status(409).json({
                 success: false,
                 error: 'Dernière entrée de ce produit : la supprimer ferait suivre le catalogue '
                      + 'courant à toutes les ventes passées. Corrigez sa valeur plutôt.'
             });
         }
-        const trace = { produit: ligne.produit, valeur: ligne[def.champ], created_at: ligne.created_at };
-        await ligne.destroy();
 
         try {
-            const audit = require('../lib/finance-audit');
             if (typeof audit.log === 'function') {
                 audit.log(req, 'finance.historique.supprime', { type: req.params.type, ...trace });
             }

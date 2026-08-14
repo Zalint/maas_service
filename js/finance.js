@@ -961,16 +961,21 @@
      */
     function brancherEditionHistorique(type, labelPrix, produit, bodyField) {
         const table = document.getElementById('fin-hist-table');
-        const retour = document.getElementById('fin-hist-retour');
         if (!table) return;
+        // L'element de retour est resolu A L'APPEL, jamais retenu: rouvrir()
+        // reconstruit tout le corps de la modale, donc une reference prise au
+        // branchement pointerait sur un noeud detache et le message
+        // n'apparaitrait nulle part.
         const dire = (msg, ok) => {
-            if (retour) retour.innerHTML = `<span class="text-${ok ? 'success' : 'danger'}">${esc(msg)}</span>`;
+            const el = document.getElementById('fin-hist-retour');
+            if (el) el.innerHTML = `<span class="text-${ok ? 'success' : 'danger'}">${esc(msg)}</span>`;
         };
         const rouvrir = async () => {
             const res = await fetch('/api/finance/' + type + '/' + encodeURIComponent(produit) + '/history',
                 { credentials: 'include' });
             const j = await res.json();
-            if (j.success) showPrixHistoryModal(labelPrix, produit, bodyField, j.data, type);
+            if (!j.success) throw new Error(j.error || 'historique illisible');
+            showPrixHistoryModal(labelPrix, produit, bodyField, j.data, type);
         };
 
         table.addEventListener('click', async (ev) => {
@@ -1006,10 +1011,23 @@
                 }
                 const j = await res.json();
                 if (!j.success) throw new Error(j.error || 'refusé');
-                dire(majeur ? 'Enregistré.' : 'Entrée supprimée.', true);
-                await rouvrir();
             } catch (e) {
+                // ECHEC D'ECRITURE: rien n'a change en base.
                 dire('Échec : ' + (e && e.message), false);
+                ev.target.disabled = false;
+                return;
+            }
+            // L'ecriture a REUSSI. Ce qui suit peut echouer sans la remettre
+            // en cause: annoncer « Échec » sur un rafraichissement rate ferait
+            // recommencer une correction deja enregistree.
+            const fait = majeur ? 'Enregistré.' : 'Entrée supprimée.';
+            try {
+                await rouvrir();
+                // APRES le re-rendu, sinon le message est efface par lui.
+                dire(fait, true);
+            } catch (e) {
+                dire(fait + ' Affichage non rafraîchi (' + (e && e.message)
+                    + ') — rouvrez l\'historique pour le voir à jour.', true);
                 ev.target.disabled = false;
             }
         });
