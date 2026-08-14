@@ -411,39 +411,6 @@ async function updateSchema() {
               AND LOWER(TRIM(produit)) = 'boeuf'
         `);
 
-        // Colonne vendu_a_l_unite: le produit se compte et se paie A LA PIECE,
-        // pas au kilo. Un animal SUR PIED est l'exemple: il entre en stock en
-        // nombre de tetes, et son prix d'achat est un prix par tete.
-        //
-        // Sans ce drapeau, rien ne distinguait une tete de betail d'un kilo de
-        // carcasse. Une regle de nommage - /^(boeuf|veau)/ - rangeait « Boeuf
-        // sur pied » dans la famille bovine et lui imposait le prix du KILO de
-        // carcasse: une tete valorisee au prix d'un kilo de viande, sans qu'
-        // aucun reglage ne puisse le corriger. Cette regle a disparu; ce
-        // drapeau la remplace par une propriete du PRODUIT, declaree et
-        // visible, au lieu d'une devinette sur son libelle.
-        //
-        // Il interdit AUSSI de mapper le produit vers une entree au kilo: le
-        // mapping convertit des unites, il ne convertit pas une tete en kilo.
-        await sequelize.query(`
-            ALTER TABLE fournisseur_prix
-            ADD COLUMN IF NOT EXISTS vendu_a_l_unite BOOLEAN
-        `);
-        // Seed par noms EXACTS, jamais par motif: c'est tout l'objet du
-        // changement. NULL = jamais configure, donc un decochage tient et un
-        // redeploy ne le rallume pas - meme idempotence que prix_achat_dynamique.
-        await sequelize.query(`
-            UPDATE fournisseur_prix
-            SET vendu_a_l_unite = TRUE
-            WHERE vendu_a_l_unite IS NULL
-              AND LOWER(TRIM(produit)) IN (
-                  'boeuf sur pied', 'boeuf sur pieds',
-                  'veau sur pied', 'veau sur pieds',
-                  'agneau sur pied', 'agneau sur pieds',
-                  'mouton sur pied', 'mouton sur pieds'
-              )
-        `);
-
         // Colonne hors_mata: produit achete HORS circuit Mata. Quand TRUE,
         // ses transferts entrants ne generent aucune commission fournisseur
         // (routes/finance-creances.js), mais son prix d'achat continue de
@@ -934,6 +901,40 @@ async function updateSchema() {
                 ADD CONSTRAINT produit_alias_coefficient_positif CHECK (coefficient > 0);
             EXCEPTION WHEN duplicate_object THEN NULL; END $$
         `);
+
+        // UNE SEULE LIGNE PAR PRODUIT, quelle que soit la CASSE.
+        //
+        // alias_produit est une PK sensible a la casse, mais tout le code
+        // resout en minuscules (lib/produit-resolver.js) ou via normaliserNom
+        // (lib/prix-achat-date.js). « Boeuf en détail » et « Boeuf En Détail »
+        // sont donc DEUX lignes en base et UNE SEULE entree de Map a l'usage -
+        // et les deux graphies existent reellement dans les ventes (1 411 et
+        // 82 lignes mesurees sur mbao).
+        //
+        // Consequences mesurees, toutes silencieuses:
+        //  - l'ecran Mapping liste les graphies vues dans les VENTES et affiche
+        //    « Alias -> Boeuf » sur les deux, alors qu'une seule a sa ligne;
+        //  - la corbeille compare en egalite exacte, supprime 0 ligne, et
+        //    l'ecran annonce quand meme « Alias supprime »;
+        //  - saisir un coefficient sur l'autre graphie CREE une seconde ligne,
+        //    et c'est l'ordre physique des tuples qui decide si le produit le
+        //    plus vendu du point de vente coute le prix plein de la carcasse
+        //    ou sa moitie. Un facteur 2, sans trace.
+        //
+        // On deduplique d'abord - en gardant la graphie la plus ancienne, a
+        // egalite la premiere par ordre alphabetique - puis on rend l'etat
+        // impossible a reproduire.
+        await sequelize.query(`
+            DELETE FROM produit_alias a
+            USING produit_alias b
+            WHERE LOWER(TRIM(a.alias_produit)) = LOWER(TRIM(b.alias_produit))
+              AND a.alias_produit <> b.alias_produit
+              AND (a.updated_at, a.alias_produit) > (b.updated_at, b.alias_produit)
+        `);
+        await sequelize.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_produit_alias_nom_insensible
+            ON produit_alias (LOWER(TRIM(alias_produit)))
+        `);
         // MATERIALISATION DE LA FAMILLE BOVINE EN LIGNES DE MAPPING.
         //
         // Une regex /^(boeuf|veau)/ donnait naguere le prix de la carcasse a
@@ -1003,21 +1004,15 @@ async function updateSchema() {
               -- LES BETES SUR PIED SONT EXCLUES, et c'est le coeur du sujet.
               -- Un animal vivant se compte a la TETE; lui donner le prix d'un
               -- kilo de carcasse est exactement l'erreur que la regex commettait.
-              -- Le drapeau vendu_a_l_unite ci-dessous ne suffit pas a les
-              -- proteger: ces produits vivent dans la table produits, pas
-              -- dans fournisseur_prix, donc ils n'ont pas encore de ligne ou
-              -- porter le drapeau. Ils restent SANS mapping - leur cout sera
-              -- signale comme inconnu jusqu'a ce qu'on leur donne un prix par
-              -- tete, ce qui vaut infiniment mieux qu'un cout faux en silence.
+              -- Ils restent SANS mapping et prennent leur PROPRE prix, comme
+              -- « Foie »: une ligne au catalogue avec un prix par tete, et
+              -- rien d'autre. Tant qu'ils n'en ont pas, leur cout est signale
+              -- comme inconnu - ce qui vaut infiniment mieux qu'un cout faux
+              -- en silence.
               AND LOWER(TRIM(libelle.nom)) !~ 'sur pieds?$'
               AND NOT EXISTS (
                   SELECT 1 FROM produit_alias a
                   WHERE LOWER(TRIM(a.alias_produit)) = LOWER(TRIM(libelle.nom))
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM fournisseur_prix f
-                  WHERE LOWER(TRIM(f.produit)) = LOWER(TRIM(libelle.nom))
-                    AND f.vendu_a_l_unite = TRUE
               )
               AND EXISTS (
                   SELECT 1 FROM fournisseur_prix f WHERE f.produit = 'Boeuf'
@@ -1029,6 +1024,41 @@ async function updateSchema() {
             ORDER BY LOWER(TRIM(libelle.nom)), libelle.nom
             ON CONFLICT DO NOTHING
         `);
+        // LES DEUX AUTRES FAMILLES, celles qui ne commencent pas par « boeuf ».
+        //
+        // La regex ne couvrait que la famille bovine. Mais deux reglages
+        // supprimes par ce chantier portaient leurs valeurs par defaut EN DUR
+        // dans lib/simulation-v2/reglages.js, donc actives sur tous les tenants
+        // meme sans ligne de finance_config:
+        //
+        //   familleBoeuf  = [{ nom: 'Jarret', poids: 0.5 }]
+        //   famillePoulet = ['Poulet en détail', 'Poulet en gros']
+        //
+        // « Jarret » n'a aucun prix propre au catalogue et ne commence ni par
+        // boeuf ni par veau: sans cette reprise il passait de 0,5 x prix
+        // carcasse a AUCUN cout. Meme chose pour les deux libelles de poulet,
+        // dont la ligne catalogue s'appelle « Poulet ».
+        //
+        // Ecrit en clair, un couple a la fois: ce sont trois relations connues,
+        // pas un motif. La cible doit exister, sinon la FK refuse la ligne.
+        const REPRISES = [
+            { alias: 'Jarret', cible: 'Boeuf', coef: 0.5 },
+            { alias: 'Poulet en détail', cible: 'Poulet', coef: 1 },
+            { alias: 'Poulet en gros', cible: 'Poulet', coef: 1 }
+        ];
+        for (const r of REPRISES) {
+            await sequelize.query(`
+                INSERT INTO produit_alias (alias_produit, produit_catalog, coefficient, updated_at)
+                SELECT :alias, :cible, :coef, NOW()
+                WHERE EXISTS (SELECT 1 FROM fournisseur_prix WHERE produit = :cible)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM produit_alias
+                      WHERE LOWER(TRIM(alias_produit)) = LOWER(TRIM(CAST(:alias AS TEXT)))
+                  )
+                ON CONFLICT DO NOTHING
+            `, { replacements: { alias: r.alias, cible: r.cible, coef: r.coef } });
+        }
+
         // Le marqueur est pose APRES l'insertion, dans la meme sequence: si
         // l'insertion echoue, il n'est pas pose et la migration sera retentee.
         await sequelize.query(

@@ -60,11 +60,7 @@ function poser({ dynamique = false, catalogue = [], alias = [], historique = [] 
         catalogue.map((c) => ({
             produit: c.produit,
             prix_achat: dec(c.prix_achat, 2),
-            prix_achat_dynamique: c.produit.toLowerCase() === 'boeuf' ? dynamique : false,
-            // Le produit se compte A LA PIECE (bete sur pied). Propriete
-            // DECLAREE de la ligne, la ou un motif sur le libelle rangeait
-            // « Boeuf sur pied » avec les kilos de carcasse.
-            vendu_a_l_unite: c.a_l_unite === true
+            prix_achat_dynamique: c.produit.toLowerCase() === 'boeuf' ? dynamique : false
         }))
     );
     mockModeles.PrixAchatHistory.findAll.mockResolvedValue(
@@ -191,69 +187,79 @@ describe('2e rang : le prix PROPRE', () => {
     });
 });
 
-describe('les betes SUR PIED se comptent a la TETE, jamais au kilo', () => {
-    // « Boeuf sur pied » entre en stock en nombre de tetes. La regex le
+describe('les betes SUR PIED prennent leur PROPRE prix, comme Foie', () => {
+    // « Boeuf sur pied » entre en stock en nombre de TETES. La regex le
     // rangeait dans la famille bovine et lui imposait le prix d'un KILO de
     // carcasse - une tete valorisee au prix d'un kilo de viande, sans qu'aucun
     // reglage ne puisse le corriger.
+    //
+    // La solution retenue est la plus simple qui marche, et c'est celle qui
+    // existait deja pour « Foie »: une ligne au catalogue avec son prix, et
+    // rien d'autre. Pas de drapeau, pas de garde, pas de regle - le produit
+    // porte son prix, le rang 2 le rend.
     const CAT_PIED = CATALOGUE.concat([
-        { produit: 'Boeuf sur pied', prix_achat: 400000, a_l_unite: true }
+        { produit: 'Boeuf sur pied', prix_achat: 400000 }
     ]);
 
-    test('elle prend SON prix par tete, pas celui de la carcasse', async () => {
+    test('son prix par tete est rendu tel quel', async () => {
         const p = await resoudre({ dynamique: true, catalogue: CAT_PIED });
         expect(p.prixAchat('Boeuf sur pied')).toBe(400000);
         expect(p.origine('Boeuf sur pied')).toBe('prix propre');
     });
 
-    test('la mapper vers un produit au kilo est REFUSE, et signale', async () => {
-        // Le rendement d'abattage n'est pas une conversion d'unite: c'est une
-        // transformation. Un coefficient ne doit pas faire payer la bete au
-        // prix de ce qu'elle deviendra.
+    test('sans ligne au catalogue, le cout est INCONNU - jamais celui du kilo', async () => {
+        // L'etat au deploiement: le produit existe dans produits et dans les
+        // ventes, mais pas encore dans fournisseur_prix. Inconnu et signale
+        // vaut mieux que 4 057 F la tete.
+        const p = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(p.prixAchat('Boeuf sur pied')).toBeNull();
+        expect(p.origine('Boeuf sur pied')).toBeNull();
+    });
+});
+
+describe('une cible SANS prix ne passe pas en silence', () => {
+    test('le mapping sans effet est SIGNALE, pas deguise en prix propre', async () => {
+        // Le menu deroulant propose des cibles absentes du catalogue; la route
+        // les auto-cree avec prix_achat null. Le mapping que l'admin vient
+        // d'ecrire n'a alors aucun effet, et sans avertissement il serait
+        // etiquete « prix propre » - indiscernable d'un produit jamais mappe.
         poser({
             dynamique: true,
-            catalogue: CAT_PIED,
-            alias: [{ alias_produit: 'Boeuf sur pied', produit_catalog: 'Boeuf', coefficient: 0.55 }]
+            catalogue: CATALOGUE.concat([{ produit: 'Carcasse Avant', prix_achat: null }]),
+            alias: [{ alias_produit: 'Filet De Boeuf', produit_catalog: 'Carcasse Avant', coefficient: 1 }]
         });
         const r = await creerResolveurPrixAchat('2026-08-13');
         const p = r.pourDate('2026-08-13');
-        expect(p.prixAchat('Boeuf sur pied')).toBe(400000);
-        expect(r.avertissements.join(' ')).toMatch(/Mapping ignoré/);
-        expect(r.avertissements.join(' ')).toMatch(/à la pièce/);
+        expect(p.prixAchat('Filet De Boeuf')).toBeNull();
+        const a = r.avertissements.join(' ');
+        expect(a).toMatch(/Mapping sans effet/);
+        expect(a).toMatch(/Filet De Boeuf/);
+        expect(a).toMatch(/Carcasse Avant/);
     });
 
-    test('le refus vaut dans les DEUX sens', async () => {
-        // Mapper un produit au kilo vers une tete est tout aussi faux.
+    test("il n'est signale QU'UNE fois sur toute la periode", async () => {
         poser({
             dynamique: true,
-            catalogue: CAT_PIED,
-            alias: [{ alias_produit: 'Jarret', produit_catalog: 'Boeuf sur pied', coefficient: 1 }]
-        });
-        const r = await creerResolveurPrixAchat('2026-08-13');
-        expect(r.pourDate('2026-08-13').prixAchat('Jarret')).toBeNull();
-        expect(r.avertissements.join(' ')).toMatch(/Mapping ignoré/);
-    });
-
-    test('le refus n est signale QU UNE fois', async () => {
-        poser({
-            dynamique: true,
-            catalogue: CAT_PIED,
-            alias: [{ alias_produit: 'Boeuf sur pied', produit_catalog: 'Boeuf', coefficient: 0.55 }]
+            catalogue: CATALOGUE.concat([{ produit: 'Carcasse Avant', prix_achat: null }]),
+            alias: [{ alias_produit: 'Filet De Boeuf', produit_catalog: 'Carcasse Avant', coefficient: 1 }]
         });
         const r = await creerResolveurPrixAchat('2026-08-13');
         for (const d of ['2026-08-11', '2026-08-12', '2026-08-13']) {
-            r.pourDate(d).prixAchat('Boeuf sur pied');
+            r.pourDate(d).prixAchat('Filet De Boeuf');
         }
-        expect(r.avertissements.filter((a) => /Mapping ignoré/.test(a))).toHaveLength(1);
+        expect(r.avertissements.filter((x) => /Mapping sans effet/.test(x))).toHaveLength(1);
     });
 
-    test('piece vers piece reste licite', async () => {
-        const p = await resoudre({
+    test('le produit garde son prix propre quand il en a un, et on le DIT', async () => {
+        poser({
             dynamique: true,
-            catalogue: CAT_PIED.concat([{ produit: 'Veau sur pied', prix_achat: 0, a_l_unite: true }]),
-            alias: [{ alias_produit: 'Veau sur pied', produit_catalog: 'Boeuf sur pied', coefficient: 0.6 }]
+            catalogue: CATALOGUE.concat([{ produit: 'Carcasse Avant', prix_achat: null }]),
+            alias: [{ alias_produit: 'Foie', produit_catalog: 'Carcasse Avant', coefficient: 1 }]
         });
-        expect(p.prixAchat('Veau sur pied')).toBe(400000 * 0.6);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        const p = r.pourDate('2026-08-13');
+        expect(p.prixAchat('Foie')).toBe(2500);
+        expect(r.avertissements.join(' ')).toMatch(/Mapping sans effet/);
     });
 });
 

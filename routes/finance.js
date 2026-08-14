@@ -1283,12 +1283,36 @@ router.put('/alias', async (req, res) => {
                     changed_by: username || '_autocreate_alias_'
                 }, { transaction: t });
             }
-            await ProduitAlias.upsert({
-                alias_produit: aliasProduit,
-                produit_catalog: produitCatalog,
-                coefficient,
-                updated_at: new Date()
-            }, { transaction: t });
+            // La ligne EXISTANTE, retrouvee sans egard a la casse. upsert()
+            // porte sur la PK, sensible a la casse: enregistrer « Boeuf En
+            // Détail » quand la base porte « Boeuf en détail » creait une
+            // SECONDE ligne. Les deux resolvent vers la meme cle normalisee,
+            // donc l'ordre physique des tuples decidait laquelle s'applique -
+            // un coefficient corrige pouvait rester sans effet.
+            const existante = await ProduitAlias.findOne({
+                where: sequelize.where(
+                    sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('alias_produit'))),
+                    aliasProduit.toLowerCase()
+                ),
+                transaction: t
+            });
+            if (existante) {
+                // On garde la graphie DEJA stockee: la changer reviendrait a
+                // supprimer puis recreer la PK, et ferait perdre l'historique
+                // d'audit attache au nom.
+                await existante.update({
+                    produit_catalog: produitCatalog,
+                    coefficient,
+                    updated_at: new Date()
+                }, { transaction: t });
+            } else {
+                await ProduitAlias.create({
+                    alias_produit: aliasProduit,
+                    produit_catalog: produitCatalog,
+                    coefficient,
+                    updated_at: new Date()
+                }, { transaction: t });
+            }
             return { catalog_created: createdCatalog };
         });
         if (result.catalog_created) {
@@ -1316,11 +1340,24 @@ router.delete('/alias/:alias', async (req, res) => {
         if (!alias) {
             return res.status(400).json({ success: false, error: 'alias requis' });
         }
-        const n = await ProduitAlias.destroy({ where: { alias_produit: alias } });
+        // Comparaison INSENSIBLE A LA CASSE, comme partout ailleurs dans la
+        // resolution. L'egalite exacte supprimait 0 ligne des que l'ecran
+        // renvoyait une autre graphie que celle stockee - or l'ecran liste les
+        // graphies vues dans les VENTES, pas celles de la table. « Boeuf En
+        // Détail » (82 ventes) affichait « Alias -> Boeuf » et sa corbeille ne
+        // supprimait rien, sous un bandeau vert « Alias supprime ».
+        const n = await ProduitAlias.destroy({
+            where: sequelize.where(
+                sequelize.fn('LOWER', sequelize.fn('TRIM', sequelize.col('alias_produit'))),
+                alias.toLowerCase()
+            )
+        });
         if (n > 0) {
             audit.log(req, 'alias.delete', { alias_produit: alias });
             invalidateFinanceDerivedCaches();
         }
+        // deleted: 0 n'est PAS un succes silencieux. Le client doit pouvoir le
+        // dire, sinon l'utilisateur croit avoir supprime un mapping qui reste.
         res.json({ success: true, deleted: n });
     } catch (e) {
         console.error('DELETE /api/finance/alias/:alias:', e);
@@ -1356,9 +1393,37 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
         const now = new Date();
         const toUpsert = [];
         const created = [];
+        // Produits qui portent DEJA leur propre prix d'achat. Les convertir
+        // changerait leur cout, pas seulement sa forme.
+        //
+        // Convertir un prefixe en alias sert a figer une resolution qui
+        // s'applique deja - jamais a deplacer un prix. Or depuis que le
+        // mapping passe AVANT le prix propre (lib/prix-achat-date.js), ecrire
+        // un alias sur un produit qui a son prix ECRASE ce prix.
+        //
+        // Le cas concret: « Boeuf sur pied » se resout en 'prefix' vers
+        // « Boeuf », parce que son libelle commence par ce mot. Un clic sur
+        // « Convertir tous les prefixes » lui donnait donc le prix d'un KILO
+        // de carcasse, alors que c'est une bete comptee a la TETE qui porte
+        // son propre prix par tete. Un seul bouton recreait en masse l'erreur
+        // que la suppression de la regex venait de corriger.
+        const aPrixPropre = new Set(
+            catalog
+                .filter((c) => {
+                    const v = parseFloat(c.prix_achat);
+                    return Number.isFinite(v) && v > 0;
+                })
+                .map((c) => c.produit.trim().toLowerCase())
+        );
+
+        const ignores = [];
         for (const r of distinctRows) {
             const resolved = resolveProduit(r.produit, resolverMaps);
             if (resolved.statut !== 'prefix') continue;
+            if (aPrixPropre.has(String(r.produit).trim().toLowerCase())) {
+                ignores.push(r.produit);
+                continue;
+            }
             toUpsert.push({
                 alias_produit: r.produit,
                 produit_catalog: resolved.resolved,
@@ -1376,11 +1441,16 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
             });
             audit.log(req, 'alias.bulk-from-prefix', {
                 count: created.length,
-                created
+                created,
+                ignores
             });
             invalidateFinanceDerivedCaches();
         }
-        res.json({ success: true, created });
+        // `ignores` est RENDU, pas seulement journalise: une conversion en
+        // masse qui saute des lignes sans le dire laisse croire qu'elle a tout
+        // traite, et l'utilisateur cherche ensuite pourquoi un produit n'a
+        // pas d'alias.
+        res.json({ success: true, created, ignores });
     } catch (e) {
         console.error('POST /api/finance/alias/bulk-from-prefix:', e);
         res.status(500).json({ success: false, error: e.message });

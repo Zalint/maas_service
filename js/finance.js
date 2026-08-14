@@ -1749,7 +1749,15 @@
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
-                    if (typeof showToast === 'function') showToast('Alias supprimé', 'success');
+                    // deleted vaut 0 quand aucune ligne ne correspondait. Un
+                    // bandeau vert sur zéro suppression laissait croire à un
+                    // mapping retiré qui continuait de s'appliquer.
+                    if (typeof showToast === 'function') {
+                        showToast(
+                            j.deleted ? 'Alias supprimé' : 'Aucun alias à supprimer pour ce libellé',
+                            j.deleted ? 'success' : 'warning'
+                        );
+                    }
                     loadMapping();
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
