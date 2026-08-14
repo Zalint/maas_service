@@ -754,7 +754,7 @@
         if (!liste.length) return '';
 
         // L'origine arrive DEJA redigee par lib/prix-achat-date.js - « prix
-        // propre », « mappé vers Boeuf × 0,5 », « famille bovine ». Une table
+        // propre », « mappé vers Boeuf × 0,5 », « sources multiples ». Une table
         // de traduction ici serait une seconde definition de la resolution, et
         // c'est exactement celle qui vient de disparaitre.
         var lignes = liste.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })

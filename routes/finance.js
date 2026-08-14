@@ -2406,7 +2406,7 @@ router.get('/simulation', async (req, res) => {
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0,
                 // D'ou vient le cout: 'propre' (catalogue ou historique du
-                // produit lui-meme, mapping, ou famille bovine) ou null
+                // produit lui-meme) ou « mappé vers X » ou null
                 // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
                 // un chiffre dont on ne peut pas nommer la source ne se
                 // verifie pas. Null hors Simulation 2.0, ou la notion n'existe
