@@ -16,7 +16,8 @@
 const mockModeles = {
     FournisseurPrix: { findAll: jest.fn() },
     PrixAchatHistory: { findAll: jest.fn() },
-    ProduitAlias: { findAll: jest.fn() }
+    ProduitAlias: { findAll: jest.fn() },
+    Transfert: { findAll: jest.fn() }
 };
 jest.mock('../db/models', () => mockModeles);
 
@@ -70,6 +71,7 @@ function poser({ dynamique = false, catalogue = [], alias = [], historique = [] 
             created_at: h.created_at
         }))
     );
+    mockModeles.Transfert.findAll.mockResolvedValue([]);
     mockModeles.ProduitAlias.findAll.mockResolvedValue(
         alias.map((a) => ({
             alias_produit: a.alias_produit,
@@ -413,5 +415,79 @@ describe('le prix suit la DATE, pas la borne de la periode', () => {
         poser({ catalogue: [{ produit: 'Foie', prix_achat: 0 }] });
         const r = await creerResolveurPrixAchat('2026-08-13');
         expect(r.pourDate('2026-08-13').prixAchat('Foie')).toBeNull();
+    });
+});
+
+describe('le prix du boeuf suit la RECEPTION, pas le calendrier', () => {
+    // Le prix du lot est demande a MATA pour une DATE. Prendre la journee
+    // courante revient a valoriser le stock au cours du jour, alors que la
+    // viande en rayon a ete payee a la reception.
+    //
+    // Mesure sur aout 2026: le boeuf passe de 3 835 a 4 500 F/kg, et 29 % de
+    // la variation de stock devient une pure reevaluation - du benefice
+    // affiche sans qu'un seul kilo ait ete vendu.
+    //
+    // Receptions reelles du mois: 04, 05, 06, 07, 10, 12, 14 - environ tous
+    // les deux jours. Les 08, 09, 11 et 13 n'en ont pas: ces journees doivent
+    // reprendre le prix de la derniere reception, pas celui du jour.
+
+    const poserAvecReceptions = (receptions) => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        mockModeles.Transfert = mockModeles.Transfert || { findAll: jest.fn() };
+        mockModeles.Transfert.findAll.mockResolvedValue(
+            receptions.map((d) => {
+                const [a, m, j] = d.split('-');
+                return { date: `${j}-${m}-${a}`, produit: 'Boeuf', quantite: '80', impact: '1' };
+            })
+        );
+    };
+
+    test('une journee SANS reception reprend le prix de la derniere', async () => {
+        poserAvecReceptions(['2026-08-11', '2026-08-12']);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        // atDate rend 3990 le 11, 4100 le 12, 4057 le 13 (cf la fabrique).
+        // Le 13 n'a PAS de reception: il doit prendre le lot du 12.
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4100);
+    });
+
+    test('une journee AVEC reception prend son propre lot', async () => {
+        poserAvecReceptions(['2026-08-11', '2026-08-13']);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4057);
+    });
+
+    test('une sortie de stock n est PAS une reception', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        mockModeles.Transfert.findAll.mockResolvedValue([
+            { date: '11-08-2026', produit: 'Boeuf', quantite: '80', impact: '1' },
+            { date: '13-08-2026', produit: 'Boeuf', quantite: '20', impact: '-1' }
+        ]);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        // Le 13 ne porte qu'une SORTIE: on reste sur le lot du 11 (3990).
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(3990);
+    });
+
+    test('un transfert d un AUTRE produit ne fait pas date', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        mockModeles.Transfert.findAll.mockResolvedValue([
+            { date: '11-08-2026', produit: 'Boeuf', quantite: '80', impact: '1' },
+            { date: '13-08-2026', produit: 'Foie', quantite: '2.25', impact: '1' }
+        ]);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(3990);
+    });
+
+    test('sans AUCUNE reception connue, on retombe sur la journee demandee', async () => {
+        poserAvecReceptions([]);
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4057);
+    });
+
+    test('des transferts illisibles ne privent pas le PL de son prix', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        mockModeles.Transfert.findAll.mockRejectedValue(new Error('relation inexistante'));
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4057);
+        expect(r.avertissements.join(' ')).toMatch(/Transferts illisibles/);
     });
 });
