@@ -464,7 +464,10 @@
             pv: {
                 bovin: sim.catalogue ? sim.catalogue.pv_boeuf : null,
                 ovin: sim.catalogue ? sim.catalogue.pv_agneau : null,
-                volaille: sim.catalogue ? sim.catalogue.pv_poulet : null
+                volaille: sim.catalogue ? sim.catalogue.pv_poulet : null,
+                // Le prix catalogue de chaque produit qui en a un: c'est lui
+                // qui prime sur la carcasse de l'espece.
+                par_produit: (sim.catalogue && sim.catalogue.par_produit) || {}
             }
         };
         etat.base.avertissements = [];
@@ -699,8 +702,108 @@
             + equilibre(s)
             + matrice(s)
             + projection()
+            + tousLesProduits(s)
             + (etat.debug ? debug(s, g, total) : '');
         cablerLeviers();
+
+        // L'ouverture du bloc « Tous les produits » survit au prochain rendu.
+        // Le `toggle` est ASYNCHRONE: on lit det.open depuis l'evenement, pas
+        // avant, sinon on enregistre l'etat d'avant le clic.
+        var det = document.getElementById('sim2-tous-produits');
+        if (det) {
+            det.addEventListener('toggle', function () { etat.tousProduitsOuverts = det.open; });
+        }
+    }
+
+    /**
+     * TOUS les produits vendus, avec leur prix de vente et leur cout, tels que
+     * le calcul les a retenus. Pour information, replie par defaut.
+     *
+     * Le tableau de sensibilite ne montre que les produits SUIVIS - cinq, plus
+     * ceux qu'un admin ajoute. C'est voulu: un tableau dont les lignes vont et
+     * viennent d'un mois a l'autre ne se compare pas. Mais du coup rien ne
+     * disait ce que le calcul retient pour les AUTRES, alors qu'ils pesent
+     * dans le chiffre d'affaires et que leurs couts viennent d'etre corriges.
+     *
+     * Les deux prix sont des moyennes PONDEREES par les quantites vendues, pas
+     * des prix de catalogue: c'est ce que la periode a reellement coute et
+     * rapporte. D'ou l'ecart possible avec l'ecran Prix fournisseur, qui
+     * montre le prix courant.
+     */
+    function tousLesProduits(scenario) {
+        var liste = (etat.sim && etat.sim.produits_vendus) || [];
+        if (!liste.length) return '';
+
+        var ORIGINES = {
+            propre: 'prix propre',
+            famille_boeuf: 'carcasse bœuf × poids',
+            famille_poulet: 'carcasse poulet'
+        };
+        var lignes = liste.slice().sort(function (a, b) { return nb(b.ca) - nb(a.ca); })
+            .map(function (p) {
+                var pv = (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
+                var pa = (p.prix_achat === null || p.prix_achat === undefined) ? null : nb(p.prix_achat);
+                // Le MEME diviseur que la marge du tableau de sensibilite: le
+                // recalculer ici en ferait une seconde definition, et deux
+                // parages differents pour le meme produit sur le meme ecran.
+                var div = M.diviseurParage(p, scenario || { leviers: {}, globaux: {} }, etat.contexte);
+                var parage = (div === null || div >= 1) ? null : (1 - div) * 100;
+                var paPare = (pa === null || parage === null) ? null : pa / div;
+                // Marge NETTE de parage, comme partout ailleurs sur cet ecran:
+                // c'est le cout de la carcasse qu'il faut acheter pour vendre
+                // une unite, pas celui de l'unite elle-meme.
+                var m = (pv === null || pa === null) ? null : pv - (paPare === null ? pa : paPare);
+                return '<tr>'
+                    + '<td>' + esc(p.nom)
+                      + (pa === null
+                         ? ' <span class="badge bg-danger-subtle text-danger">coût inconnu</span>' : '')
+                    + '</td>'
+                    + '<td class="text-end">' + esc(nb(p.quantite).toLocaleString('fr-FR')) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(pv)) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(pa))
+                      + (paPare === null ? ''
+                         : ' <span class="text-muted">(' + esc(fmt(paPare)) + ')</span>') + '</td>'
+                    + '<td class="text-end text-muted">'
+                      + (parage === null ? '—' : esc(pct2(parage)) + ' %') + '</td>'
+                    + '<td class="small text-muted">' + esc(ORIGINES[p.prix_achat_origine] || '—') + '</td>'
+                    + '<td class="text-end' + (m !== null && m < 0 ? ' text-danger fw-medium' : '') + '">'
+                      + esc(fmt(m)) + '</td>'
+                    + '<td class="text-end">' + esc(fmt(p.ca)) + '</td>'
+                    + '</tr>';
+            }).join('');
+
+        var sansCout = liste.filter(function (p) {
+            return p.prix_achat === null || p.prix_achat === undefined;
+        }).length;
+
+        // L'etat vit dans une VARIABLE, pas dans le DOM: rendre() reconstruit
+        // innerHTML, donc relire l'ouverture au moment du rendu rendrait
+        // toujours « ferme » et le bloc se refermerait a chaque changement de
+        // levier - exactement le defaut deja corrige sur la composition du
+        // parage.
+        var ouvert = etat.tousProduitsOuverts === true;
+        return '<details class="mb-3"' + (ouvert ? ' open' : '') + ' id="sim2-tous-produits">'
+            + '<summary class="fin-subheading" style="cursor:pointer">'
+            + 'Tous les produits vendus — prix et coût retenus '
+            + '<span class="badge bg-secondary">' + liste.length + '</span>'
+            + (sansCout
+               ? ' <span class="badge bg-danger-subtle text-danger">' + sansCout + ' sans coût</span>' : '')
+            + '</summary>'
+            + '<div class="small text-muted mb-2 mt-1">Pour information : ce tableau ne pilote aucun '
+            + 'levier. Les deux prix sont des moyennes <strong>pondérées par les quantités vendues</strong> '
+            + 'sur la période — ce que la période a réellement coûté et rapporté, et non le prix courant '
+            + 'du catalogue. Le second coût entre parenthèses est celui <strong>réellement '
+            + 'soustrait</strong> : le prix de la carcasse ÷ (1 − parage), puisqu\'il faut en acheter '
+            + 'davantage que ce qu\'on vend. La colonne Parage est vide pour ce qui ne se pare pas — '
+            + 'volaille, épicerie. La marge est nette de parage mais <strong>brute de commission</strong>.'
+            + '</div>'
+            + '<div class="table-responsive"><table class="table table-sm table-hover mb-0">'
+            + '<thead><tr><th>Produit</th><th class="text-end">Quantité</th>'
+            + '<th class="text-end">Prix de vente pondéré</th><th class="text-end">Coût pondéré</th>'
+            + '<th class="text-end">Parage</th>'
+            + '<th>Source du coût</th><th class="text-end">Marge nette de parage</th>'
+            + '<th class="text-end">Ventes</th></tr></thead>'
+            + '<tbody>' + lignes + '</tbody></table></div></details>';
     }
 
     function marquerEnAttente() {
@@ -780,7 +883,8 @@
             return '<tr>'
                 + '<td>' + esc(p.nom)
                   + (p.prix_achat_origine === 'famille_poulet' ? ' <span class="badge bg-success-subtle text-success">famille poulet</span>' : '')
-                  + (p.prix_achat_origine === 'repli_poulet' ? ' <span class="badge bg-warning-subtle text-warning">prix de repli</span>' : '')
+                  + (p.prix_achat_origine === 'famille_boeuf' ? ' <span class="badge bg-info-subtle text-info">famille bœuf</span>' : '')
+                  + (p.prix_achat === null || p.prix_achat === undefined ? ' <span class="badge bg-danger-subtle text-danger">coût inconnu</span>' : '')
                   + (m !== null && m < 0 ? ' <span class="badge bg-danger-subtle text-danger">marge négative</span>' : '')
                   + (p.sans_vente ? ' <span class="badge bg-light text-muted">aucune vente</span>' : '')
                 + '</td>'
@@ -1187,6 +1291,80 @@
         return M.effetsGlobaux({ produits: restants, contexte: ctxSansStock }, sc).total;
     }
 
+    /**
+     * L'ASSIETTE de la commission pour un produit: son prix de vente au
+     * catalogue fournisseur.
+     *
+     * Son propre prix d'abord, la carcasse de son espece ensuite, rien du
+     * tout en dernier. L'ancienne regle disait « bovin, sinon ovin, sinon
+     * VOLAILLE » - un `else` qui rangeait d'office dans le poulet tout ce
+     * qu'elle ne reconnaissait pas. Le Laxass, vendu 200 F, se voyait ainsi
+     * commissionne sur les 3 500 F de la carcasse de poulet: 105 F l'unite,
+     * de quoi le faire ressortir a -62 F de marge nette quand il en gagne 43.
+     * Un produit declare a perte, c'est un produit qu'on arrete.
+     *
+     * Les noms de decoupe (« Boeuf en detail ») n'ont pas de ligne au
+     * catalogue: c'est la carcasse qui porte le prix, d'ou le repli par
+     * espece. Les produits qui ont leur PROPRE ligne - Laxass, Foie, Cuisse
+     * de poulet - sont desormais servis par elle.
+     */
+    function prixCatalogueDe(p) {
+        var c = etat.contexte || {};
+        var pv = c.pv || {};
+        var propre = (pv.par_produit || {})[M.normaliserNom(p && p.nom)];
+        if (nb(propre) > 0) return nb(propre);
+        if (M.estBoeuf(p)) return pv.bovin;
+        if (M.estOvin(p)) return pv.ovin;
+        if (M.estVolaille(p)) return pv.volaille;
+        return null;
+    }
+
+    /**
+     * Les produits ABSENTS du catalogue fournisseur.
+     *
+     * Leur marge nette vaut leur marge brute, et c'est EXACT: un produit hors
+     * catalogue ne genere aucune commission. routes/finance-creances.js le
+     * tranche a la source - `if (!prix) continue;` - et ne facture rien.
+     *
+     * A NE PAS CONFONDRE avec la regle de lib/valorisation-stock.js, ou un
+     * prix d'ACHAT manquant fait retomber sur le prix de vente: la, il faut
+     * bien valoriser des kilos qui existent, donc une approximation vaut mieux
+     * qu'un zero. Ici la commission n'est pas inconnue, elle est NULLE -
+     * substituer le prix de vente inventerait une facture que MaaS n'emet pas.
+     *
+     * On les nomme quand meme, comme le stock nomme les siens: lire « marge
+     * nette » sans savoir qu'aucune commission n'a ete deduite laisse croire
+     * a une comparaison a armes egales avec les produits qui, eux, en portent.
+     */
+    function produitsHorsCatalogue(univers) {
+        var vus = {};
+        var out = [];
+        (univers || []).forEach(function (p) {
+            if (p.sans_vente) return;
+            if (prixCatalogueDe(p)) return;
+            var n = String(p.nom || '');
+            if (vus[n]) return;
+            vus[n] = true;
+            out.push(n);
+        });
+        return out;
+    }
+
+    /** Le bandeau qui NOMME les produits sans commission, ou rien. */
+    function noteHorsCatalogue(univers) {
+        var noms = produitsHorsCatalogue(univers);
+        if (!noms.length) return '';
+        return '<div class="small text-muted mb-2">'
+            + '<i class="bi bi-info-circle"></i> '
+            + noms.map(esc).join(', ')
+            + (noms.length > 1 ? ' sont absents' : ' est absent')
+            + ' du catalogue fournisseur : aucune commission n\'est facturée sur '
+            + (noms.length > 1 ? 'leurs livraisons' : 'ses livraisons')
+            + (noms.length > 1 ? ', leur marge nette vaut donc leur marge brute'
+                               : ', sa marge nette vaut donc sa marge brute')
+            + '. Ce n\'est pas une estimation manquante — c\'est zéro.</div>';
+    }
+
     function margeApresCommission(p) {
         var m = margeBase(p);
         if (m === null) return null;
@@ -1194,8 +1372,10 @@
         var pv = c.pv || {};
         var taux = nb(c.commissionPct) / 100;
         if (!taux) return m;
-        var prixCatalogue = M.estBoeuf(p) ? pv.bovin
-            : (M.estOvin(p) ? pv.ovin : pv.volaille);
+        var prixCatalogue = prixCatalogueDe(p);
+        // Prix catalogue inconnu: on rend la marge BRUTE de parage plutot que
+        // d'inventer un cout. C'est la regle deja suivie ailleurs pour les
+        // prix manquants, et l'ecran signale cette part non chiffree.
         if (!prixCatalogue) return m;
         // Meme diviseur de parage que la marge elle-meme: le taux MESURE de
         // l'espece, pas le parametre. Deux diviseurs differents dans le meme
@@ -1896,6 +2076,7 @@
             var s0 = eq.seul;
             h += '<h6 class="small fw-medium mb-1">Revenir à l\'équilibre d\'ici le '
                 + esc(ca.finMois) + ' — ' + eq.joursRestants + ' jours restants</h6>'
+                + noteHorsCatalogue(universEq)
                 + '<div class="alert alert-light border py-2 small mb-2">'
                 + 'Manque à combler : <strong>' + esc(fmt(eq.manque)) + ' F</strong>. '
                 + 'Sur ces ' + eq.joursRestants + ' jours, on attend encore <strong>'

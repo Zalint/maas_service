@@ -351,3 +351,64 @@ describe('le reglage des dimanches accompagne la calibration', () => {
         expect(c.dimanches).toBeNull();
     });
 });
+
+describe('famille boeuf: un POIDS unitaire, pas un simple nom', () => {
+    beforeEach(() => { jest.clearAllMocks(); });
+
+    test('le Jarret y est par defaut, AVEC son poids', async () => {
+        // Le poids est ce qui rend le rattachement juste: la carcasse se paie
+        // au kilo, le jarret se vend a la piece. Sans lui, -3 557 F de marge.
+        FinanceConfig.findAll.mockResolvedValue([]);
+        expect((await reglages.lireReglages()).familleBoeuf)
+            .toEqual([{ nom: 'Jarret', poids: 0.5 }]);
+    });
+
+    test('« Nom:poids » est relu en {nom, poids}', async () => {
+        FinanceConfig.findAll.mockResolvedValue([
+            { key: 'famille_boeuf', value: 'Jarret:0.4, Gigot' }
+        ]);
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual([
+            { nom: 'Jarret', poids: 0.4 },
+            // Sans ':', le poids vaut 1 - meme unite que la carcasse.
+            { nom: 'Gigot', poids: 1 }
+        ]);
+    });
+
+    test('un poids illisible ECARTE l entree au lieu de la ramener a 1', async () => {
+        // La ramener a 1 serait un cout faux d'un facteur inconnu; ecartee, le
+        // produit repart sans cout et sera nomme comme tel.
+        FinanceConfig.findAll.mockResolvedValue([
+            { key: 'famille_boeuf', value: 'Jarret:abc, Gigot:0, Osso:-2, Bon:0.5' }
+        ]);
+        expect((await reglages.lireReglages()).familleBoeuf).toEqual([{ nom: 'Bon', poids: 0.5 }]);
+    });
+
+    test('l ecriture accepte les deux formes et normalise en CSV', () => {
+        const a = reglages.valider({ familleBoeuf: [{ nom: 'Jarret', poids: 0.4 }] });
+        expect(a.ok).toBe(true);
+        expect(a.aEcrire[0]).toEqual({ key: 'famille_boeuf', value: 'Jarret:0.4' });
+
+        const b = reglages.valider({ familleBoeuf: 'Jarret:0.4, Gigot' });
+        expect(b.ok).toBe(true);
+        expect(b.aEcrire[0].value).toBe('Jarret:0.4,Gigot:1');
+    });
+
+    test('un poids invraisemblable est refuse', () => {
+        // 100 kg l'unite n'est pas une decoupe: c'est une virgule qui a glisse.
+        expect(reglages.valider({ familleBoeuf: [{ nom: 'Jarret', poids: 400 }] }).ok).toBe(false);
+    });
+
+    test('une entree qui n est ni chaine ni {nom} est refusee', () => {
+        expect(reglages.valider({ familleBoeuf: [{ poids: 0.4 }] }).ok).toBe(false);
+        expect(reglages.valider({ familleBoeuf: [42] }).ok).toBe(false);
+    });
+
+    test('le defaut n est pas expose par reference', async () => {
+        FinanceConfig.findAll.mockResolvedValue([]);
+        const a = await reglages.lireReglages();
+        a.familleBoeuf.push({ nom: 'POLLUTION', poids: 1 });
+        a.familleBoeuf[0].poids = 99;
+        expect((await reglages.lireReglages()).familleBoeuf)
+            .toEqual([{ nom: 'Jarret', poids: 0.5 }]);
+    });
+});

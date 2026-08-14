@@ -72,6 +72,7 @@ router.get('/reglages', async (req, res) => {
             data: {
                 actif: r.actif,
                 famille_poulet: r.famillePoulet,
+                famille_boeuf: r.familleBoeuf,
                 prix_achat_defaut_poulet: r.prixPouletDefaut,
                 produits_simulation: r.produitsSuivis,
                 coeff_p1_p2: r.coeffP1P2,
@@ -87,6 +88,7 @@ router.get('/reglages', async (req, res) => {
 /**
  * PUT /api/simulation-v2/reglages
  * Body: { actif?: boolean, famillePoulet?: string[]|string,
+ *         familleBoeuf?: string[]|string,
  *         prixPouletDefaut?: number, produitsSuivis?: string[]|string,
  *         coeffP1P2?: {valeur: number, fenetre?: string, jours?: number,
  *                      dimanches?: 'exclus'|'comptes'} | number | null }
@@ -154,6 +156,7 @@ router.put('/reglages', adminStrict, async (req, res) => {
             data: {
                 actif: apres.actif,
                 famille_poulet: apres.famillePoulet,
+                famille_boeuf: apres.familleBoeuf,
                 prix_achat_defaut_poulet: apres.prixPouletDefaut,
                 // Rendu au client pour qu'il affiche la signature - date et
                 // auteur - sans avoir a recharger l'ecran.

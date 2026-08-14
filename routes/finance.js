@@ -115,7 +115,7 @@ async function lireReglagesSimulationV2() {
         // manquaient, et seul le garde `v2 &&` du premier evitait un
         // « Cannot read properties of undefined » sur une panne de base.
         return {
-            actif: false, famillePoulet: [], prixPouletDefaut: 0,
+            actif: false, famillePoulet: [], familleBoeuf: [], prixPouletDefaut: 0,
             produitsSuivis: [], coeffP1P2: null, avertissements: []
         };
     }
@@ -827,6 +827,170 @@ router.get('/prix-achat/:produit/history', async (req, res) => {
         res.json({ success: true, data: rows });
     } catch (e) {
         console.error('GET /api/finance/prix-achat/:produit/history:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// EDITION DE L'HISTORIQUE DES PRIX — reserve aux administrateurs
+// =====================================================
+//
+// L'historique ne s'ecrivait qu'en AJOUT: on pouvait poser une nouvelle
+// valeur, jamais corriger une saisie fautive ni ancrer un prix d'origine.
+// Trois anomalies constatees le meme jour, toutes irreparables depuis
+// l'application:
+//
+//   - Laxass portait 200 F d'ACHAT depuis un seed de migration - c'etait son
+//     prix de VENTE, le prix d'achat etant inconnu a l'amorcage. Deux unites
+//     sur quinze se valorisaient donc a marge nulle;
+//   - Viande Hachee portait 5 000 F pendant vingt secondes, entre deux saisies
+//     a 3 600: une faute de frappe restee en base pour toujours;
+//   - le meme produit n'avait aucune valeur AVANT le 12 aout, donc les ventes
+//     anterieures suivaient le catalogue COURANT et auraient change de cout
+//     le jour ou ce catalogue bouge.
+//
+// Corriger cela demandait du SQL a la main. C'est desormais un ecran.
+//
+// ADMIN STRICT, et non checkAdvancedAccess: reecrire un prix passe change le
+// cout de ventes deja enregistrees, donc le PL de journees deja figees. Ce
+// n'est pas une operation de supervision.
+
+/** Les trois historiques editables, et la colonne qui porte leur valeur. */
+const HISTORIQUES_PRIX = {
+    'prix-achat': { modele: () => PrixAchatHistory, champ: 'prix_achat' },
+    'prix-vente-fournisseur': { modele: () => PrixVenteHistory, champ: 'prix_vente' },
+    'prix-cdc': { modele: () => PrixVenteCdcHistory, champ: 'prix_vente_cdc' }
+};
+
+function adminStrictFinance(req, res, next) {
+    if (!req.session || !req.session.user) {
+        return res.status(401).json({ success: false, error: 'Non authentifié' });
+    }
+    if (String(req.session.user.role || '').toLowerCase() !== 'admin') {
+        return res.status(403).json({ success: false, error: 'Accès réservé aux administrateurs' });
+    }
+    next();
+}
+
+/**
+ * PUT /api/finance/historique/:type/:id
+ * Body: { valeur: number, created_at?: ISO }
+ *
+ * La DATE est modifiable: c'est elle qui decide a partir de quand le prix
+ * s'applique, et une valeur juste posee a la mauvaise date reste fausse. C'est
+ * ce qui permet d'ancrer un prix « depuis toujours ».
+ */
+router.put('/historique/:type/:id', adminStrictFinance, async (req, res) => {
+    try {
+        const def = HISTORIQUES_PRIX[String(req.params.type || '')];
+        if (!def) return res.status(400).json({ success: false, error: 'type d\'historique inconnu' });
+
+        const valeur = parseFloat((req.body || {}).valeur);
+        if (!Number.isFinite(valeur) || valeur < 0) {
+            return res.status(400).json({ success: false, error: 'valeur attendue: un nombre positif' });
+        }
+        const ligne = await def.modele().findByPk(req.params.id);
+        if (!ligne) return res.status(404).json({ success: false, error: 'entrée introuvable' });
+
+        const maj = { [def.champ]: valeur };
+        const brutDate = (req.body || {}).created_at;
+        if (brutDate) {
+            // UN SEUL format accepte: l'instant UTC complet que rend
+            // toISOString(). new Date() avale bien d'autres formes, et deux
+            // d'entre elles sont des pieges sur un champ qui decide a partir
+            // de QUAND un prix s'applique: '2026-08-13' est lu comme minuit
+            // UTC, et '2026-08-13T10:00' comme minuit heure LOCALE DU SERVEUR.
+            // Le meme corps donnerait donc deux instants differents selon la
+            // machine qui l'execute.
+            if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(String(brutDate))) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'created_at attendu au format UTC complet (AAAA-MM-JJTHH:mm:ss.sssZ)'
+                });
+            }
+            const d = new Date(brutDate);
+            if (isNaN(d.getTime())) {
+                return res.status(400).json({ success: false, error: 'date invalide' });
+            }
+            maj.created_at = d;
+        }
+        // L'auteur devient celui qui CORRIGE. Laisser le nom d'origine ferait
+        // porter la correction a quelqu'un qui ne l'a pas faite.
+        maj.changed_by = String(req.session.user.username || 'admin');
+
+        const avant = { valeur: ligne[def.champ], created_at: ligne.created_at };
+        await ligne.update(maj);
+
+        try {
+            if (typeof audit.log === 'function') {
+                audit.log(req, 'finance.historique.modifie', {
+                    type: req.params.type, id: req.params.id, produit: ligne.produit, avant, apres: maj
+                });
+            }
+        } catch (e) { /* la trace ne doit jamais faire echouer l'ecriture */ }
+
+        invalidateFinanceDerivedCaches();
+        res.json({ success: true, data: ligne });
+    } catch (e) {
+        console.error('PUT /api/finance/historique:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * DELETE /api/finance/historique/:type/:id
+ *
+ * Pour les saisies qui n'auraient jamais du exister. La DERNIERE entree d'un
+ * produit est refusee: sans elle, le resolveur retombe sur le catalogue
+ * courant, et toutes les ventes passees changeraient de cout des la prochaine
+ * modification de ce catalogue - exactement le piege qu'on vient de fermer.
+ */
+router.delete('/historique/:type/:id', adminStrictFinance, async (req, res) => {
+    try {
+        const def = HISTORIQUES_PRIX[String(req.params.type || '')];
+        if (!def) return res.status(400).json({ success: false, error: 'type d\'historique inconnu' });
+
+        const Modele = def.modele();
+        const ligne = await Modele.findByPk(req.params.id);
+        if (!ligne) return res.status(404).json({ success: false, error: 'entrée introuvable' });
+
+        // COMPTER PUIS SUPPRIMER SOUS VERROU. Deux suppressions concurrentes
+        // sur un produit qui n'a plus que deux entrees comptaient toutes deux
+        // « 2 », passaient toutes deux la garde, et le produit se retrouvait
+        // sans aucune entree - exactement l'etat que cette garde existe pour
+        // empecher, et qui ferait suivre le catalogue courant a toutes ses
+        // ventes passees.
+        const trace = { produit: ligne.produit, valeur: ligne[def.champ], created_at: ligne.created_at };
+        const refus = await sequelize.transaction(async (t) => {
+            // Les lignes du produit sont verrouillees AVANT d'etre comptees:
+            // sans le verrou, le compte est une photo deja perimee quand on
+            // s'en sert.
+            const rows = await Modele.findAll({
+                where: { produit: ligne.produit },
+                transaction: t, lock: t.LOCK.UPDATE
+            });
+            if (rows.length <= 1) return true;
+            await ligne.destroy({ transaction: t });
+            return false;
+        });
+        if (refus) {
+            return res.status(409).json({
+                success: false,
+                error: 'Dernière entrée de ce produit : la supprimer ferait suivre le catalogue '
+                     + 'courant à toutes les ventes passées. Corrigez sa valeur plutôt.'
+            });
+        }
+
+        try {
+            if (typeof audit.log === 'function') {
+                audit.log(req, 'finance.historique.supprime', { type: req.params.type, ...trace });
+            }
+        } catch (e) { /* idem */ }
+
+        invalidateFinanceDerivedCaches();
+        res.json({ success: true, data: trace });
+    } catch (e) {
+        console.error('DELETE /api/finance/historique:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -1612,10 +1776,23 @@ router.get('/simulation', async (req, res) => {
                 const v = r ? parseFloat(r.prix_vente) : NaN;
                 return Number.isFinite(v) && v > 0 ? v : null;
             };
+            // Le prix catalogue de CHAQUE produit, pas seulement des trois
+            // carcasses. L'ecran rangeait d'office tout produit ni bovin ni
+            // ovin dans la volaille: le Laxass, vendu 200 F, se voyait
+            // commissionne sur les 3 500 F du poulet - 105 F l'unite - et
+            // ressortait a -62 F de marge nette quand il en gagne 43.
+            const pvParProduit = {};
+            for (const r of rowsPv) {
+                const v = parseFloat(r.prix_vente);
+                if (Number.isFinite(v) && v > 0) {
+                    pvParProduit[normaliserNomProduit(r.produit)] = v;
+                }
+            }
             catalogueV2 = {
                 pv_boeuf: pvDe('boeuf'),
                 pv_agneau: pvDe('agneau'),
-                pv_poulet: pvDe('poulet')
+                pv_poulet: pvDe('poulet'),
+                par_produit: pvParProduit
             };
 
             // ---- Donnees de PROJECTION fin de mois (methode P1/P2).
@@ -1918,7 +2095,7 @@ router.get('/simulation', async (req, res) => {
             // Quand les origines different, on rend la MOINS sure des trois:
             // c'est celle qui doit alerter, et c'est aussi la seule lecture
             // honnete d'un prix qui n'a pas la meme provenance tous les jours.
-            const RANG = { propre: 0, famille_poulet: 1, repli_poulet: 2 };
+            const RANG = { propre: 0, famille_boeuf: 1, famille_poulet: 2 };
             origineDe = (nom) => {
                 const c = cumul.get(normaliserNomProduit(nom));
                 if (!c || !c.origines.size) return finDePeriode.origine(nom);
@@ -2033,7 +2210,7 @@ router.get('/simulation', async (req, res) => {
                 // sensibilite vaut zero et l'ecran doit pouvoir le dire.
                 sans_vente: agg.quantite === 0,
                 // D'ou vient le cout: 'propre' (catalogue ou historique du
-                // produit lui-meme), 'famille_poulet', 'repli_poulet', ou null
+                // produit lui-meme), 'famille_boeuf', 'famille_poulet', ou null
                 // quand il reste inconnu. Le mode debut de l'ecran en a besoin:
                 // un chiffre dont on ne peut pas nommer la source ne se
                 // verifie pas. Null hors Simulation 2.0, ou la notion n'existe

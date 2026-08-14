@@ -853,7 +853,7 @@
                     });
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
-                    showPrixHistoryModal(cfg.label, produit, cfg.bodyField, j.data);
+                    showPrixHistoryModal(cfg.label, produit, cfg.bodyField, j.data, cfg.endpoint);
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
                 }
@@ -864,37 +864,80 @@
     // Modale historique générique pour les 3 types de prix.
     // labelPrix = libellé affiché (ex: "Prix vente CDC").
     // bodyField = nom du champ dans les rows (ex: "prix_vente_cdc").
-    function showPrixHistoryModal(labelPrix, produit, bodyField, rows) {
+    /**
+     * @param {string} [typeEditable] 'prix-achat' | 'prix-vente-fournisseur' |
+     *   'prix-cdc'. Fourni, et si l'utilisateur est ADMIN, chaque ligne devient
+     *   modifiable: valeur, date d'effet, suppression.
+     */
+    function showPrixHistoryModal(labelPrix, produit, bodyField, rows, typeEditable) {
         const title = document.getElementById('fin-cdc-details-title');
         const body = document.getElementById('fin-cdc-details-body');
         const modalEl = document.getElementById('fin-cdc-details-modal');
         if (!title || !body || !modalEl) return;
         title.innerHTML = `<i class="bi bi-clock-history me-2"></i>Historique ${esc(labelPrix)} — <strong>${esc(produit)}</strong>`;
         const list = Array.isArray(rows) ? rows : [];
+        const estAdmin = String((window.currentUser || {}).role || '').toLowerCase() === 'admin';
+        const editable = !!typeEditable && estAdmin;
+
+        // 'AAAA-MM-JJTHH:MM' pour <input type="datetime-local">, en heure
+        // LOCALE: l'input n'accepte pas de fuseau, et lui donner de l'UTC
+        // decalerait la date affichee de l'ecart horaire.
+        const pourInput = (v) => {
+            const d = v ? new Date(v) : null;
+            if (!d || isNaN(d.getTime())) return '';
+            const p2 = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+                + `T${p2(d.getHours())}:${p2(d.getMinutes())}`;
+        };
+
         const rowsHtml = list.map((h) => {
             const when = h.created_at ? new Date(h.created_at).toLocaleString('fr-FR') : '—';
             const isSeed = h.changed_by === '_seed_';
             const whenLabel = isSeed ? 'Valeur initiale' : when;
             const whoLabel = isSeed ? '(seed migration)' : (h.changed_by || 'anonymous');
-            return `
+            if (!editable) {
+                return `
                 <tr${isSeed ? ' class="text-muted"' : ''}>
                     <td class="text-nowrap">${esc(whenLabel)}</td>
                     <td class="text-end fw-medium">${esc(fmtMoney(h[bodyField]))}</td>
                     <td>${esc(whoLabel)}</td>
-                </tr>
-            `;
+                </tr>`;
+            }
+            return `
+                <tr data-hist-id="${esc(String(h.id))}"${isSeed ? ' class="table-warning"' : ''}>
+                    <td><input type="datetime-local" class="form-control form-control-sm hist-date"
+                               value="${esc(pourInput(h.created_at))}"
+                               title="Date d'effet : le prix s'applique aux ventes à partir de cet instant."></td>
+                    <td><input type="number" step="0.01" min="0"
+                               class="form-control form-control-sm text-end hist-valeur"
+                               value="${esc(String(h[bodyField]))}"></td>
+                    <td class="small text-nowrap">${esc(whoLabel)}
+                        <div class="mt-1 d-flex gap-1">
+                            <button type="button" class="btn btn-sm btn-outline-primary hist-maj">Enregistrer</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger hist-suppr">×</button>
+                        </div>
+                    </td>
+                </tr>`;
         }).join('') || '<tr><td colspan="3" class="text-muted text-center py-3">Aucun changement enregistré.</td></tr>';
+
         body.innerHTML = `
             <div class="alert alert-light border small mb-3">
                 <i class="bi bi-info-circle"></i> Chaque sauvegarde est historisée (point-in-time).
                 La valeur la plus récente (en haut) s'applique aux futures ventes; les ventes passées
                 conservent le prix effectif à leur date.
             </div>
+            ${editable ? `<div class="alert alert-warning small mb-3">
+                <strong>Édition réservée aux administrateurs.</strong> Corriger une valeur ou une date
+                change le coût de ventes <strong>déjà enregistrées</strong>, donc le résultat de journées
+                déjà closes. La ligne surlignée est une valeur d'amorçage de migration : elle n'a jamais
+                été saisie par personne, et vaut souvent le prix de vente faute de mieux.
+                <div class="mt-1">Pour ancrer un prix « depuis toujours », reculez sa date d'effet.</div>
+            </div>` : ''}
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0" id="fin-hist-table">
                     <thead>
                         <tr>
-                            <th>Date</th>
+                            <th>Date${editable ? ' d\'effet' : ''}</th>
                             <th class="text-end">${esc(labelPrix)}</th>
                             <th>Modifié par</th>
                         </tr>
@@ -902,9 +945,92 @@
                     <tbody>${rowsHtml}</tbody>
                 </table>
             </div>
+            <div id="fin-hist-retour" class="small mt-2"></div>
         `;
+        if (editable) brancherEditionHistorique(typeEditable, labelPrix, produit, bodyField);
         const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
         modal.show();
+    }
+
+    /**
+     * Les boutons de la modale d'historique, poses APRES le rendu.
+     *
+     * Un seul ecouteur delegue sur le tableau: innerHTML detruit les
+     * precedents a chaque ouverture, et rebrancher ligne par ligne en aurait
+     * laisse trainer autant que d'ouvertures.
+     */
+    function brancherEditionHistorique(type, labelPrix, produit, bodyField) {
+        const table = document.getElementById('fin-hist-table');
+        if (!table) return;
+        // L'element de retour est resolu A L'APPEL, jamais retenu: rouvrir()
+        // reconstruit tout le corps de la modale, donc une reference prise au
+        // branchement pointerait sur un noeud detache et le message
+        // n'apparaitrait nulle part.
+        const dire = (msg, ok) => {
+            const el = document.getElementById('fin-hist-retour');
+            if (el) el.innerHTML = `<span class="text-${ok ? 'success' : 'danger'}">${esc(msg)}</span>`;
+        };
+        const rouvrir = async () => {
+            const res = await fetch('/api/finance/' + type + '/' + encodeURIComponent(produit) + '/history',
+                { credentials: 'include' });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'historique illisible');
+            showPrixHistoryModal(labelPrix, produit, bodyField, j.data, type);
+        };
+
+        table.addEventListener('click', async (ev) => {
+            const tr = ev.target.closest('tr[data-hist-id]');
+            if (!tr) return;
+            const id = tr.dataset.histId;
+            const majeur = ev.target.closest('.hist-maj');
+            const suppr = ev.target.closest('.hist-suppr');
+            if (!majeur && !suppr) return;
+            ev.target.disabled = true;
+            try {
+                let res;
+                if (majeur) {
+                    const valeur = tr.querySelector('.hist-valeur').value;
+                    const d = tr.querySelector('.hist-date').value;
+                    res = await fetch('/api/finance/historique/' + type + '/' + id, {
+                        method: 'PUT', credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        // L'input rend une heure LOCALE sans fuseau: on la
+                        // convertit en instant avant l'envoi, sinon le serveur
+                        // la lirait comme de l'UTC.
+                        body: JSON.stringify({ valeur, created_at: d ? new Date(d).toISOString() : undefined })
+                    });
+                } else {
+                    const ok = typeof showConfirmModal === 'function'
+                        ? await showConfirmModal('Supprimer cette entrée d\'historique ? '
+                            + 'Les ventes de cette période reprendront le prix de l\'entrée précédente.',
+                            { title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger' })
+                        : confirm('Supprimer cette entrée d\'historique ?');
+                    if (!ok) { ev.target.disabled = false; return; }
+                    res = await fetch('/api/finance/historique/' + type + '/' + id,
+                        { method: 'DELETE', credentials: 'include' });
+                }
+                const j = await res.json();
+                if (!j.success) throw new Error(j.error || 'refusé');
+            } catch (e) {
+                // ECHEC D'ECRITURE: rien n'a change en base.
+                dire('Échec : ' + (e && e.message), false);
+                ev.target.disabled = false;
+                return;
+            }
+            // L'ecriture a REUSSI. Ce qui suit peut echouer sans la remettre
+            // en cause: annoncer « Échec » sur un rafraichissement rate ferait
+            // recommencer une correction deja enregistree.
+            const fait = majeur ? 'Enregistré.' : 'Entrée supprimée.';
+            try {
+                await rouvrir();
+                // APRES le re-rendu, sinon le message est efface par lui.
+                dire(fait, true);
+            } catch (e) {
+                dire(fait + ' Affichage non rafraîchi (' + (e && e.message)
+                    + ') — rouvrez l\'historique pour le voir à jour.', true);
+                ev.target.disabled = false;
+            }
+        });
     }
 
     // Affiche la modale avec le detail des ventes individuelles ayant
@@ -1258,7 +1384,7 @@
                     );
                     const j = await res.json();
                     if (!j.success) throw new Error(j.error || 'Erreur');
-                    showPrixHistoryModal(histLabel, produit, histField, j.data);
+                    showPrixHistoryModal(histLabel, produit, histField, j.data, histEndpoint);
                 } catch (e) {
                     if (typeof showToast === 'function') showToast('Erreur historique: ' + e.message, 'danger');
                 }
