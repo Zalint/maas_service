@@ -1146,7 +1146,12 @@ router.get('/alias', async (req, res) => {
                 produit: r.produit,
                 count: r.n,
                 statut: resolved.statut,
-                resolved: resolved.resolved
+                resolved: resolved.resolved,
+                // Le coefficient DEJA enregistre, sans quoi le champ de saisie
+                // repartirait a 1 a chaque rechargement - et le prochain
+                // Enregistrer, meme pour ne changer que la cible, ecraserait
+                // silencieusement un 0,5 pose la veille.
+                coefficient: resolved.coefficient
             };
         });
 
