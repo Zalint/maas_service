@@ -66,7 +66,7 @@ const {
     PlSnapshot,
     sequelize
 } = require('../db/models');
-const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
+const { resolveProduit, buildResolverMaps, cibleDe } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
 
@@ -1416,7 +1416,37 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 .map((c) => c.produit.trim().toLowerCase())
         );
 
+        /**
+         * La cible FINALE, quand la cible calculee est elle-meme un alias.
+         *
+         * « Veau haché » se resout par prefixe vers « Veau », et « Veau » est
+         * mappe vers « Boeuf ». Ecrire la chaine telle quelle donnerait deux
+         * couts pour le meme animal: lib/prix-achat-date.js ne suit qu'UN
+         * maillon, donc « Veau haché » lirait le prix de catalogue FIGE de
+         * « Veau » (4 035) pendant que « Veau » lui-meme prend le lot du jour.
+         * Jusqu'a 400 F/kg d'ecart, dans le sens qui gonfle la marge.
+         *
+         * On ecrit donc ce qu'un humain aurait ecrit: « Veau haché -> Boeuf ».
+         * Aplatir a l'ECRITURE plutot que resoudre a la lecture garde la table
+         * lisible - une ligne dit ce qu'elle fait.
+         *
+         * La boucle est bornee par la taille de la table et s'arrete sur un
+         * cycle: on ne repasse jamais deux fois par le meme nom.
+         */
+        const cibleFinale = (depart) => {
+            const vus = new Set();
+            let cible = depart;
+            while (cible && !vus.has(cible.toLowerCase())) {
+                vus.add(cible.toLowerCase());
+                const suivant = cibleDe(resolverMaps.aliasMap, cible.toLowerCase());
+                if (!suivant) break;
+                cible = suivant;
+            }
+            return cible;
+        };
+
         const ignores = [];
+        const aplatis = [];
         for (const r of distinctRows) {
             const resolved = resolveProduit(r.produit, resolverMaps);
             if (resolved.statut !== 'prefix') continue;
@@ -1424,14 +1454,18 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
                 ignores.push(r.produit);
                 continue;
             }
+            const cible = cibleFinale(resolved.resolved);
+            if (cible !== resolved.resolved) {
+                aplatis.push({ alias_produit: r.produit, via: resolved.resolved, cible });
+            }
             toUpsert.push({
                 alias_produit: r.produit,
-                produit_catalog: resolved.resolved,
+                produit_catalog: cible,
                 updated_at: now
             });
             created.push({
                 alias_produit: r.produit,
-                produit_catalog: resolved.resolved
+                produit_catalog: cible
             });
         }
 
@@ -1442,15 +1476,16 @@ router.post('/alias/bulk-from-prefix', async (req, res) => {
             audit.log(req, 'alias.bulk-from-prefix', {
                 count: created.length,
                 created,
-                ignores
+                ignores,
+                aplatis
             });
             invalidateFinanceDerivedCaches();
         }
-        // `ignores` est RENDU, pas seulement journalise: une conversion en
-        // masse qui saute des lignes sans le dire laisse croire qu'elle a tout
-        // traite, et l'utilisateur cherche ensuite pourquoi un produit n'a
-        // pas d'alias.
-        res.json({ success: true, created, ignores });
+        // `ignores` et `aplatis` sont RENDUS, pas seulement journalises: une
+        // conversion en masse qui saute des lignes ou change une cible sans le
+        // dire laisse croire qu'elle a tout traite tel quel, et l'utilisateur
+        // cherche ensuite pourquoi un produit pointe ailleurs qu'attendu.
+        res.json({ success: true, created, ignores, aplatis });
     } catch (e) {
         console.error('POST /api/finance/alias/bulk-from-prefix:', e);
         res.status(500).json({ success: false, error: e.message });
