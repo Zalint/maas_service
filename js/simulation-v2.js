@@ -112,6 +112,13 @@
             // permet de repondre a « et si la carcasse passait a X ». null =
             // le champ part du cout moyen constate, donc a effet nul.
             prixBoeufTeste: null,
+            // Taux de parage TESTE a la main sur la ligne de prix libre, en
+            // POURCENTAGE absolu (et non en points d'ecart comme
+            // `ecartParage`). Le cout et le parage se subissent ensemble - une
+            // carcasse plus chere qui rend moins - et les lire separement
+            // laissait le boucher additionner deux effets de tete. null = le
+            // champ part du taux bovin constate, donc a effet nul.
+            parageBoeufTeste: null,
             // Prix de vente retenu pour les jours qui RESTENT, par produit.
             // Vide = celui que le serveur propose (majoritaire du dernier jour
             // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
@@ -251,6 +258,16 @@
             // donc com absent, donc un gain fantome egal a TOUTE la
             // commission (+194 139 F sur juillet).
             reinitGlobaux();
+            // Les HYPOTHESES testees de la projection repartent elles aussi.
+            // Elles vivaient hors de portee du bouton: on remettait les leviers
+            // a zero, les cartes revenaient a leur valeur, et la ligne
+            // d'hypothese gardait en silence son parage a 20 % et sa carcasse a
+            // 6 000 F. Seuls ces deux champs-la sont remis - le reste d'
+            // `etat.proj` porte des REGLAGES d'affichage (stockOption,
+            // facteurMax...), que personne ne demande a perdre en remettant un
+            // scenario a zero.
+            etat.proj.prixBoeufTeste = null;
+            etat.proj.parageBoeufTeste = null;
             rendre();
         });
         // Le mode debug revele l'etat courant, il n'est pas un levier: il
@@ -2056,6 +2073,19 @@
             return bd ? nb(bd.prix_achat) : null;
         }());
         var ep = nb(etat.proj.ecartParage);
+        // Les taux de parage COURANTS, par espece. Ils etaient declares plus
+        // bas, dans le bloc « ecart de parage »; la ligne de saisie libre, qui
+        // vient avant, en a desormais besoin pour son parage par defaut - et un
+        // `var` hoiste s'y serait lu `undefined`.
+        var ctxPar = etat.contexte || {};
+        // MEME repli que le moteur (simulation-v2-moteur.js, p0B/p0O): un taux
+        // absent decrit le PARAMETRE, pas un taux nul. `nb(null)` valait 0, et
+        // la ligne de saisie affichait alors « 0 % » en l'annoncant comme le
+        // taux constate - une boucherie qui ne parerait rien.
+        var parageOu = function (v) {
+            return (v === undefined || v === null) ? nb(ctxPar.parageBase) : nb(v);
+        };
+        var bovin = parageOu(ctxPar.parageBovin), ovin = parageOu(ctxPar.parageOvin);
         var sensis = [];
         if (stats && paMoyen !== null && stats.max > paMoyen) {
             sensis.push({ lib: 'Coût du bœuf au plus haut (' + fmt(stats.max) + ' F)',
@@ -2075,14 +2105,24 @@
         //
         // La ligne part du cout moyen constate: a l'ouverture elle affiche donc
         // un effet nul, et c'est voulu - on voit d'ou l'on part avant de bouger.
+        // Le PARAGE de cette ligne se regle a cote du prix, et le calcul les
+        // applique dans le MEME appel: c'est l'effet croise qu'on cherche, pas
+        // la somme de deux lignes. Le taux part du bovin constate, comme le
+        // prix part du cout moyen - a l'ouverture la ligne affiche donc un
+        // effet nul, et l'on voit d'ou l'on part avant de bouger l'un ou
+        // l'autre. Seul le bovin bouge ici: c'est le cout du BOEUF qu'on teste.
         var prixTeste = etat.proj.prixBoeufTeste;
+        var parageTeste = etat.proj.parageBoeufTeste;
         if (paMoyen !== null) {
             var pxRef = prixTeste === null ? paMoyen : prixTeste;
+            var parRef = parageTeste === null ? bovin : parageTeste;
             sensis.push({
                 saisie: true,
                 lib: 'Coût du bœuf à',
                 valeur: pxRef,
-                effet: effetSurLaSuite(univSens, propSuite, { dPa: pxRef - paMoyen })
+                parage: parRef,
+                effet: effetSurLaSuite(univSens, propSuite,
+                    { dPa: pxRef - paMoyen, parBov: parRef })
             });
         }
 
@@ -2091,7 +2131,6 @@
             // pourcentage absolu aux deux revenait, depuis que les taux sont
             // mesures separement, a deplacer l'agneau de plusieurs points sans
             // que personne ne l'ait demande.
-            var bovin = nb(etat.contexte.parageBovin), ovin = nb(etat.contexte.parageOvin);
             var hautB = Math.min(99, bovin + ep), hautO = Math.min(99, ovin + ep);
             var basB = Math.max(0, bovin - ep), basO = Math.max(0, ovin - ep);
             // Le libelle nomme les DEUX taux, parce que l'effet deplace les
@@ -2126,8 +2165,20 @@
                           + ' data-k="prixBoeufTeste" style="width:7rem" min="1" max="100000" step="10"'
                           + ' value="' + esc(String(Math.round(s.valeur))) + '">'
                           + ' <span class="text-muted">F/kg</span>'
-                          + (etat.proj.prixBoeufTeste === null
-                             ? ' <span class="text-muted small">— coût constaté, effet nul</span>'
+                          + '<span class="text-muted">, parage bœuf</span> '
+                          + '<input type="number" class="form-control form-control-sm d-inline-block sim2-proj-ctl"'
+                          // step au CENTIEME, pas au dixieme: le taux constate
+                          // vaut 3,59 % et pct2() explique plus haut pourquoi
+                          // ce centieme compte - il porte sur un DIVISEUR, et
+                          // 3,96 contre 4 deplace deja 700 F sur le mois. Au
+                          // dixieme, la fleche du spinner ramenait 3,59 a 3,6.
+                          + ' data-k="parageBoeufTeste" style="width:5.5rem" min="0" max="99" step="0.01"'
+                          + ' title="Videz le champ pour revenir au taux constaté ('
+                          + esc(pct2(bovin)) + ' %)."'
+                          + ' value="' + esc(String(Math.round(nb(s.parage) * 100) / 100)) + '">'
+                          + ' <span class="text-muted">%</span>'
+                          + (etat.proj.prixBoeufTeste === null && etat.proj.parageBoeufTeste === null
+                             ? ' <span class="text-muted small">— coût et parage constatés, effet nul</span>'
                              : '')
                         : esc(s.lib);
                     return '<tr' + (s.saisie ? ' class="table-light"' : '') + '><td>' + libelle + '</td>'
@@ -2666,6 +2717,16 @@
                     // refuse plutot que de l'afficher comme un gain.
                     var pb = nb(el.value);
                     etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0)) ? null : pb;
+                }
+                else if (k === 'parageBoeufTeste') {
+                    // Contrairement au prix, un parage de ZERO est legitime -
+                    // une carcasse qui ne perd rien a la decoupe. On ne revient
+                    // donc au taux constate que sur un champ vide, jamais sur
+                    // un zero saisi. Borne a 99: a 100 % la carcasse ne rend
+                    // plus rien et 1/(1-parage) partirait a l'infini.
+                    etat.proj.parageBoeufTeste = el.value === ''
+                        ? null
+                        : Math.min(99, Math.max(0, nb(el.value)));
                 }
                 else if (k === 'exclureDimanche') etat.proj.exclureDimanche = el.checked;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
