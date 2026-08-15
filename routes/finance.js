@@ -406,12 +406,23 @@ async function estimerBorneSoir(args) {
         ovin: tauxMois && tauxMois.ovin ? tauxMois.ovin.ratio : null
     };
 
+    // La cible d'une vente vient du MEME mapping que le cout: « Boeuf en
+    // gros » consomme du « Boeuf », un Jarret en consomme 0,5 kg. Sans elle,
+    // l'estimation retomberait sur un pool a repartir au prorata.
+    const pourCible = resolveurPrix && typeof resolveurPrix.pourDate === 'function'
+        ? resolveurPrix.pourDate(dateFin)
+        : null;
+    const cibleDe = pourCible && typeof pourCible.cibleDuCout === 'function'
+        ? (produit) => pourCible.cibleDuCout(produit)
+        : undefined;
+
     const estimation = estimerStockSoir({
         lignesAncre,
         transferts,
         ventes: ventesFenetre,
         ratios,
         ratioRepli,
+        cibleDe,
         categorieDe: contexte.categorieDe,
         estBoucherie,
         exclusions: contexte.exclusions,
@@ -430,7 +441,10 @@ async function estimerBorneSoir(args) {
     // silencieusement des qu'une estimation remplace le comptage.
     const valorisation = valoriserLignes({
         lignes: retenues,
-        prixAchat: resolveurPrix.pourDate(dateFin).prixAchat,
+        // Le resolveur de la date de fin est deja construit plus haut pour
+        // `cibleDe`: le rebatir ici refaisait tout l'index des prix a la meme
+        // date. On garde le repli au cas ou pourCible n'ait pas pu l'etre.
+        prixAchat: (pourCible || resolveurPrix.pourDate(dateFin)).prixAchat,
         estBoucherie,
         categorieDe: contexte.categorieDe
     });
@@ -452,6 +466,23 @@ async function estimerBorneSoir(args) {
             nb_lignes_sans_parage: estimation.nb_lignes_sans_parage,
             valeur_ancre: round2(ancre.valeur),
             valeur_estimee: round2(valorisation.valeur),
+            // LE CALCUL LIGNE PAR LIGNE, pour que l'ecran puisse le montrer et
+            // laisser l'utilisateur le corriger. `boucherie` est indispensable
+            // au recalcul cote client: le coefficient de pertes de decoupe ne
+            // s'applique qu'a elle, et l'ignorer ferait diverger le PL simule
+            // du PL reel des la premiere modification.
+            // `retenues`, PAS estimation.lignes: valoriserLignes n'a compte
+            // que celles-la. Exposer les produits non fiables donnait au
+            // panneau des lignes absentes de valeur_estimee, et corriger l'une
+            // d'elles greffait un delta sur une base qui ne l'avait jamais
+            // incluse - le PL simule divergeait du reel sans rien dire.
+            lignes: (retenues || []).map((l) => ({
+                produit: l.produit,
+                quantite: l.quantite,
+                prix_unitaire: l.prix_unitaire,
+                boucherie: !!estBoucherie(l.produit),
+                calcul: l.calcul || null
+            })),
             avertissements: estimation.avertissements
         }
     };
@@ -3037,6 +3068,7 @@ async function computePl(dateDebut, dateFin) {
         const { chargerContexteParage } = require('../lib/parage-contexte');
         const ctxFamille = await chargerContexteParage(sequelize);
         const estBoucherie = ctxFamille.estBoucherie;
+
         // Ventilation des ventes par famille, pour information: savoir quelle
         // part du chiffre d'affaires ne vient pas de la viande. Meme resolveur
         // que le stock, donc les deux se lisent avec la meme definition.
@@ -3112,6 +3144,27 @@ async function computePl(dateDebut, dateFin) {
             stockSoirEffectif = estimation.valorisation;
             stockSoirDate = estimation.date_demandee_jjmmaaaa;
         }
+
+        // LE CATALOGUE, pour le panneau de simulation du stock estime.
+        //
+        // Seuls les produits qui portent un PRIX D'ACHAT y figurent: on ne
+        // peut pas ajouter a la main une ligne dont la valeur serait zero, ce
+        // qui gonflerait le stock d'une quantite sans montant, en silence.
+        // `boucherie` decide si le coefficient de pertes de decoupe s'applique.
+        //
+        // Construit APRES l'estimation et seulement si elle existe: il ne sert
+        // qu'a ce panneau, et la requete partait jusqu'ici sur chaque calcul de
+        // PL - y compris l'immense majorite qui a un comptage du soir reel.
+        const catalogueProduits = estimation
+            ? (await FournisseurPrix.findAll({ raw: true }))
+                .map((r) => ({
+                    produit: r.produit,
+                    prix: r.prix_achat == null ? null : parseFloat(r.prix_achat),
+                    boucherie: !!estBoucherie(r.produit)
+                }))
+                .filter((p) => Number.isFinite(p.prix) && p.prix > 0)
+                .sort((a, b) => a.produit.localeCompare(b.produit, 'fr'))
+            : [];
 
         const stockSoirFin = stockSoirEffectif.valeur;
         const stockSoirAuPrixDeVente = stockSoirEffectif.produits_au_prix_de_vente;
@@ -3252,6 +3305,12 @@ async function computePl(dateDebut, dateFin) {
                     // utilise, base achat/vente): l'ecran l'affiche a la
                     // demande, l'export Excel l'emporte, et les snapshots le
                     // portent d'office puisqu'ils stockent cette reponse.
+                    // LE CATALOGUE, pour le panneau de simulation du stock
+                    // estime: on ne peut ajouter qu'un produit qui porte un
+                    // prix d'achat, sinon la ligne vaudrait zero en silence.
+                    // `boucherie` decide si le coefficient de pertes de
+                    // decoupe s'applique a la ligne ajoutee.
+                    produits_catalogue: catalogueProduits,
                     matin_detail: stockMatinVal.detail_lignes || [],
                     soir_detail: stockSoirEffectif.detail_lignes || [],
                     // Borne du soir ESTIMEE faute de comptage a la date de fin.
