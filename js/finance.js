@@ -2700,6 +2700,153 @@
         const mentionEstime = stock.soir_estime === true ? ' [estimé]' : '';
         const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir${mentionEstime} (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
 
+        // Lecture numerique tolerante, locale a ce rendu. js/simulation-v2.js
+        // porte un helper du meme nom; ce fichier-ci n'en avait pas, et
+        // l'emprunter sans le definir cassait tout le PL sur un « nb is not
+        // defined » que les tests ne voient pas - ils n'exercent pas le rendu.
+        const nb = (v) => {
+            const x = parseFloat(v);
+            return Number.isFinite(x) ? x : 0;
+        };
+
+        // Remontees ici: le panneau de detail et le calcul du delta les
+        // consomment, et ils precedent desormais `postes`.
+        const estimation = stock.estimation || null;
+        const soirEstime = stock.soir_estime === true && !!estimation;
+
+        // ON NE MONTRE QUE LES LIGNES QUI DISENT QUELQUE CHOSE.
+        //
+        // L'ancre porte tout le catalogue, epicerie comprise: 97 lignes dont
+        // « Ail », « ALWAYS », « ARICOTS BLANC PM », toutes a zero et sans
+        // mouvement. Les afficher noierait les huit lignes qui portent le
+        // stock, et un tableau qu'on ne peut pas parcourir ne se verifie pas.
+        //
+        // Une ligne compte des qu'elle a une quantite, un mouvement ou une
+        // vente - ou qu'elle a ete corrigee a la main.
+        const lignesToutes = (estimation && estimation.lignes) || [];
+        const lignesEst = lignesToutes.filter((l) => {
+            if (plStockEdite.has(l.produit)) return true;
+            const c = l.calcul || {};
+            return nb(l.quantite) !== 0 || nb(c.ancre) !== 0
+                || nb(c.transferts) !== 0 || nb(c.vendus) !== 0;
+        });
+        const lignesMasquees = lignesToutes.length - lignesEst.length;
+        // Le prix REELLEMENT employe par la valorisation, pas celui de l'ancre:
+        // valoriserLignes retient le prix d'achat quand il existe et retombe
+        // sur le prix de vente sinon. Afficher l'autre ferait un total qui ne
+        // se recompose pas.
+        const prixValorises = new Map();
+        for (const dl of (stock.soir_detail || [])) {
+            if (dl && dl.produit && dl.prix_utilise != null) prixValorises.set(dl.produit, nb(dl.prix_utilise));
+        }
+        const prixDe = (l) => {
+            const px = prixValorises.get(l.produit);
+            return Number.isFinite(px) && px > 0 ? px : nb(l.prix_unitaire);
+        };
+        const qteDe = (l) => (plStockEdite.has(l.produit) ? plStockEdite.get(l.produit) : nb(l.quantite));
+        const fmtQ = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+
+        const lignesHtml = lignesEst.map((l, i) => {
+            const c = l.calcul || {};
+            const q = qteDe(l), px = prixDe(l);
+            const modifiee = plStockEdite.has(l.produit);
+            return '<tr' + (modifiee ? ' class="table-warning"' : '') + '>'
+                + '<td>' + esc(l.produit)
+                  + (l.boucherie ? '' : ' <span class="badge bg-light text-muted border">hors boucherie</span>')
+                  + '</td>'
+                + '<td class="text-end text-muted">' + esc(fmtQ(c.ancre)) + '</td>'
+                + '<td class="text-end text-muted">' + (c.transferts ? esc(fmtQ(c.transferts)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">' + (c.vendus ? esc(fmtQ(c.vendus)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">'
+                  + (c.taux_parage == null ? '\u2014' : esc(String(c.taux_parage).replace('.', ',')) + ' %') + '</td>'
+                + '<td class="text-end text-muted">' + (c.sortis ? esc(fmtQ(c.sortis)) : '\u2014') + '</td>'
+                + '<td class="text-end"><input type="number" step="0.01" min="0"'
+                  + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+                  + ' data-pl-est="' + i + '" value="' + esc(String(q)) + '"></td>'
+                + '<td class="text-end text-muted">' + esc(fmtMoney(px)) + '</td>'
+                + '<td class="text-end">' + esc(fmtMoney(q * px)) + '</td>'
+                + '</tr>';
+        }).join('');
+
+        const ajoutsHtml = plStockAjoute.map((a, i) =>
+            '<tr class="table-info">'
+            + '<td>' + esc(a.produit) + ' <span class="badge bg-info-subtle text-info">ajout\u00e9</span></td>'
+            + '<td class="text-end text-muted" colspan="5">ligne ajout\u00e9e \u00e0 la main</td>'
+            + '<td class="text-end"><input type="number" step="0.01" min="0"'
+              + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+              + ' data-pl-add="' + i + '" value="' + esc(String(a.quantite)) + '"></td>'
+            + '<td class="text-end text-muted">' + esc(fmtMoney(a.prix)) + '</td>'
+            + '<td class="text-end">' + esc(fmtMoney(a.quantite * a.prix)) + '</td>'
+            + '</tr>').join('');
+
+        // Le catalogue vit dans `stock`, pas a la racine: il est rendu a cote
+        // des autres donnees de stock. Le lire sur `d` donnait un menu vide -
+        // et un menu vide ne dit pas qu'on cherche au mauvais endroit.
+        const optionsAjout = ((stock.produits_catalogue) || []).map((pc) =>
+            '<option value="' + esc(pc.produit) + '" data-prix="' + esc(String(pc.prix || 0))
+            + '" data-bouch="' + (pc.boucherie ? '1' : '0') + '">' + esc(pc.produit) + '</option>').join('');
+
+        const plDetailEstimation = (soirEstime && lignesEst.length)
+            ? '<details class="mb-3" id="pl-detail-estimation"' + (plDetailEstimationOuvert ? ' open' : '') + '>'
+              + '<summary class="small text-muted" style="cursor:pointer">'
+              + 'D\u00e9tail du calcul, produit par produit \u2014 <strong>modifiable</strong> '
+              + '<span class="text-muted">(' + lignesEst.length + ' lignes'
+                + (lignesMasquees ? ', ' + lignesMasquees + ' à zéro masquées' : '')
+                + ')</span></summary>'
+              + '<div class="alert alert-light border small mt-2 mb-2">'
+              + '<code>estim\u00e9 = dernier comptage + transferts \u2212 ventes \u00f7 (1 \u2212 parage)</code>. '
+              + 'Les ventes sont celles qui <strong>consomment cette ligne</strong> : '
+              + '\u00ab Boeuf \u00bb perd ses ventes en gros, en d\u00e9tail, et la moiti\u00e9 de chaque Jarret, '
+              + 'selon la colonne <b>Mapp\u00e9 vers</b> du Mapping produits.'
+              + '<br>Vous pouvez corriger une quantit\u00e9 ou ajouter un produit : '
+              + '<strong>rien n\u2019est enregistr\u00e9</strong>, le PL passe simplement en simulation.</div>'
+              + '<div class="table-responsive"><table class="table table-sm align-middle mb-2">'
+              + '<thead><tr><th>Produit</th><th class="text-end">Dernier comptage</th>'
+              + '<th class="text-end">Transferts</th><th class="text-end">Ventes</th>'
+              + '<th class="text-end">Parage</th><th class="text-end">Sortis du stock</th>'
+              + '<th class="text-end">Estim\u00e9</th><th class="text-end">Prix</th>'
+              + '<th class="text-end">Valeur</th></tr></thead>'
+              + '<tbody>' + lignesHtml + ajoutsHtml + '</tbody></table></div>'
+              + '<div class="d-flex gap-2 align-items-center flex-wrap">'
+              + '<select class="form-select form-select-sm" id="pl-est-produit" style="max-width:16rem">'
+              + '<option value="">\u2014 ajouter un produit \u2014</option>' + optionsAjout + '</select>'
+              + '<input type="number" step="0.01" min="0" class="form-control form-control-sm"'
+              + ' id="pl-est-qte" placeholder="quantit\u00e9" style="max-width:9rem">'
+              + '<button class="btn btn-sm btn-outline-primary" id="pl-est-ajouter">Ajouter</button>'
+              + ((plStockEdite.size || plStockAjoute.length)
+                 ? '<button class="btn btn-sm btn-outline-secondary" id="pl-est-reset">R\u00e9initialiser</button>'
+                 : '')
+              + '</div></details>'
+            : '';
+
+        // L'ECART DE STOCK PRODUIT PAR LES CORRECTIONS.
+        //
+        // On travaille en DELTA, jamais en recomposant la valorisation
+        // entiere: valoriserLignes applique ses propres regles - prix d'achat
+        // quand il existe, prix de vente sinon, quantites negatives ecartees -
+        // et les rejouer ici en ferait une seconde definition, libre de
+        // diverger. Un delta se greffe sur le chiffre du serveur sans le
+        // recalculer.
+        //
+        // Boucherie et hors boucherie sont SEPARES: le coefficient de pertes
+        // de decoupe ne porte que sur la premiere. Les melanger ferait diverger
+        // le PL simule du PL reel des la premiere modification.
+        let deltaBoucherie = 0, deltaHors = 0;
+        for (const l of lignesEst) {
+            if (!plStockEdite.has(l.produit)) continue;
+            const dv = (plStockEdite.get(l.produit) - nb(l.quantite)) * prixDe(l);
+            if (l.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        for (const a of plStockAjoute) {
+            const dv = nb(a.quantite) * nb(a.prix);
+            if (a.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        const stockModifie = plStockEdite.size > 0 || plStockAjoute.length > 0;
+        const coeffStockUi = nb(stock.coeff) || 1;
+        const variationSimulee = stockModifie
+            ? nb(stock.variation_nette) + coeffStockUi * deltaBoucherie + deltaHors
+            : nb(stock.variation_nette);
+
         const postes = [
             { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
               libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes'
@@ -2730,34 +2877,6 @@
                             : ''),
               titre: stockTooltip }
         ];
-
-        // L'ECART DE STOCK PRODUIT PAR LES CORRECTIONS.
-        //
-        // On travaille en DELTA, jamais en recomposant la valorisation
-        // entiere: valoriserLignes applique ses propres regles - prix d'achat
-        // quand il existe, prix de vente sinon, quantites negatives ecartees -
-        // et les rejouer ici en ferait une seconde definition, libre de
-        // diverger. Un delta se greffe sur le chiffre du serveur sans le
-        // recalculer.
-        //
-        // Boucherie et hors boucherie sont SEPARES: le coefficient de pertes
-        // de decoupe ne porte que sur la premiere. Les melanger ferait diverger
-        // le PL simule du PL reel des la premiere modification.
-        let deltaBoucherie = 0, deltaHors = 0;
-        for (const l of lignesEst) {
-            if (!plStockEdite.has(l.produit)) continue;
-            const dv = (plStockEdite.get(l.produit) - nb(l.quantite)) * prixDe(l);
-            if (l.boucherie) deltaBoucherie += dv; else deltaHors += dv;
-        }
-        for (const a of plStockAjoute) {
-            const dv = nb(a.quantite) * nb(a.prix);
-            if (a.boucherie) deltaBoucherie += dv; else deltaHors += dv;
-        }
-        const stockModifie = plStockEdite.size > 0 || plStockAjoute.length > 0;
-        const coeffStockUi = nb(stock.coeff) || 1;
-        const variationSimulee = stockModifie
-            ? nb(stock.variation_nette) + coeffStockUi * deltaBoucherie + deltaHors
-            : nb(stock.variation_nette);
 
         const actif = (p) => !plPostesNeutralises.has(p.cle);
         // Le PL affiche se recalcule sur les postes actifs. Il vaut exactement
@@ -2903,8 +3022,6 @@
         // d'avertissement (deja pris par les produits ecartes) ne sont
         // reutilises ici: un badge en toutes lettres, sinon trois signaux
         // differents finissent par dire la meme chose et plus rien.
-        const estimation = stock.estimation || null;
-        const soirEstime = stock.soir_estime === true && !!estimation;
         const fmtQte = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
         const badgeEstime = soirEstime
             ? ' <span class="badge bg-warning text-dark" title="Le stock du soir de cette date n\'a pas encore été compté : il est estimé à partir du dernier inventaire.">estimé</span>'
@@ -2957,90 +3074,6 @@
         // Rien n'est enregistre. Le PL passe alors en simulation, comme
         // lorsqu'un poste est neutralise: un chiffre simule ne doit jamais
         // pouvoir se lire comme le PL reel.
-        const lignesEst = (estimation && estimation.lignes) || [];
-        // Le prix REELLEMENT employe par la valorisation, pas celui de l'ancre:
-        // valoriserLignes retient le prix d'achat quand il existe et retombe
-        // sur le prix de vente sinon. Afficher l'autre ferait un total qui ne
-        // se recompose pas.
-        const prixValorises = new Map();
-        for (const dl of (stock.soir_detail || [])) {
-            if (dl && dl.produit && dl.prix_utilise != null) prixValorises.set(dl.produit, nb(dl.prix_utilise));
-        }
-        const prixDe = (l) => {
-            const px = prixValorises.get(l.produit);
-            return Number.isFinite(px) && px > 0 ? px : nb(l.prix_unitaire);
-        };
-        const qteDe = (l) => (plStockEdite.has(l.produit) ? plStockEdite.get(l.produit) : nb(l.quantite));
-        const fmtQ = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
-
-        const lignesHtml = lignesEst.map((l, i) => {
-            const c = l.calcul || {};
-            const q = qteDe(l), px = prixDe(l);
-            const modifiee = plStockEdite.has(l.produit);
-            return '<tr' + (modifiee ? ' class="table-warning"' : '') + '>'
-                + '<td>' + esc(l.produit)
-                  + (l.boucherie ? '' : ' <span class="badge bg-light text-muted border">hors boucherie</span>')
-                  + '</td>'
-                + '<td class="text-end text-muted">' + esc(fmtQ(c.ancre)) + '</td>'
-                + '<td class="text-end text-muted">' + (c.transferts ? esc(fmtQ(c.transferts)) : '\u2014') + '</td>'
-                + '<td class="text-end text-muted">' + (c.vendus ? esc(fmtQ(c.vendus)) : '\u2014') + '</td>'
-                + '<td class="text-end text-muted">'
-                  + (c.taux_parage == null ? '\u2014' : esc(String(c.taux_parage).replace('.', ',')) + ' %') + '</td>'
-                + '<td class="text-end text-muted">' + (c.sortis ? esc(fmtQ(c.sortis)) : '\u2014') + '</td>'
-                + '<td class="text-end"><input type="number" step="0.01" min="0"'
-                  + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
-                  + ' data-pl-est="' + i + '" value="' + esc(String(q)) + '"></td>'
-                + '<td class="text-end text-muted">' + esc(fmtMoney(px)) + '</td>'
-                + '<td class="text-end">' + esc(fmtMoney(q * px)) + '</td>'
-                + '</tr>';
-        }).join('');
-
-        const ajoutsHtml = plStockAjoute.map((a, i) =>
-            '<tr class="table-info">'
-            + '<td>' + esc(a.produit) + ' <span class="badge bg-info-subtle text-info">ajout\u00e9</span></td>'
-            + '<td class="text-end text-muted" colspan="5">ligne ajout\u00e9e \u00e0 la main</td>'
-            + '<td class="text-end"><input type="number" step="0.01" min="0"'
-              + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
-              + ' data-pl-add="' + i + '" value="' + esc(String(a.quantite)) + '"></td>'
-            + '<td class="text-end text-muted">' + esc(fmtMoney(a.prix)) + '</td>'
-            + '<td class="text-end">' + esc(fmtMoney(a.quantite * a.prix)) + '</td>'
-            + '</tr>').join('');
-
-        const optionsAjout = (d.produits_catalogue || []).map((pc) =>
-            '<option value="' + esc(pc.produit) + '" data-prix="' + esc(String(pc.prix || 0))
-            + '" data-bouch="' + (pc.boucherie ? '1' : '0') + '">' + esc(pc.produit) + '</option>').join('');
-
-        const plDetailEstimation = (soirEstime && lignesEst.length)
-            ? '<details class="mb-3" id="pl-detail-estimation"' + (plDetailEstimationOuvert ? ' open' : '') + '>'
-              + '<summary class="small text-muted" style="cursor:pointer">'
-              + 'D\u00e9tail du calcul, produit par produit \u2014 <strong>modifiable</strong> '
-              + '<span class="text-muted">(' + lignesEst.length + ' lignes)</span></summary>'
-              + '<div class="alert alert-light border small mt-2 mb-2">'
-              + '<code>estim\u00e9 = dernier comptage + transferts \u2212 ventes \u00f7 (1 \u2212 parage)</code>. '
-              + 'Les ventes sont celles qui <strong>consomment cette ligne</strong> : '
-              + '\u00ab Boeuf \u00bb perd ses ventes en gros, en d\u00e9tail, et la moiti\u00e9 de chaque Jarret, '
-              + 'selon la colonne <b>Mapp\u00e9 vers</b> du Mapping produits.'
-              + '<br>Vous pouvez corriger une quantit\u00e9 ou ajouter un produit : '
-              + '<strong>rien n\u2019est enregistr\u00e9</strong>, le PL passe simplement en simulation.</div>'
-              + '<div class="table-responsive"><table class="table table-sm align-middle mb-2">'
-              + '<thead><tr><th>Produit</th><th class="text-end">Dernier comptage</th>'
-              + '<th class="text-end">Transferts</th><th class="text-end">Ventes</th>'
-              + '<th class="text-end">Parage</th><th class="text-end">Sortis du stock</th>'
-              + '<th class="text-end">Estim\u00e9</th><th class="text-end">Prix</th>'
-              + '<th class="text-end">Valeur</th></tr></thead>'
-              + '<tbody>' + lignesHtml + ajoutsHtml + '</tbody></table></div>'
-              + '<div class="d-flex gap-2 align-items-center flex-wrap">'
-              + '<select class="form-select form-select-sm" id="pl-est-produit" style="max-width:16rem">'
-              + '<option value="">\u2014 ajouter un produit \u2014</option>' + optionsAjout + '</select>'
-              + '<input type="number" step="0.01" min="0" class="form-control form-control-sm"'
-              + ' id="pl-est-qte" placeholder="quantit\u00e9" style="max-width:9rem">'
-              + '<button class="btn btn-sm btn-outline-primary" id="pl-est-ajouter">Ajouter</button>'
-              + ((plStockEdite.size || plStockAjoute.length)
-                 ? '<button class="btn btn-sm btn-outline-secondary" id="pl-est-reset">R\u00e9initialiser</button>'
-                 : '')
-              + '</div></details>'
-            : '';
-
         // DERNIERE JOURNEE SANS VENTE. Une date de fin posee au-dela de la
         // derniere saisie donne un PL qui a l'air complet: meme nombre de
         // jours, memes charges proratisees, un total simplement plus bas. Le
