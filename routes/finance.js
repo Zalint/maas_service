@@ -406,12 +406,23 @@ async function estimerBorneSoir(args) {
         ovin: tauxMois && tauxMois.ovin ? tauxMois.ovin.ratio : null
     };
 
+    // La cible d'une vente vient du MEME mapping que le cout: « Boeuf en
+    // gros » consomme du « Boeuf », un Jarret en consomme 0,5 kg. Sans elle,
+    // l'estimation retomberait sur un pool a repartir au prorata.
+    const pourCible = resolveurPrix && typeof resolveurPrix.pourDate === 'function'
+        ? resolveurPrix.pourDate(dateFin)
+        : null;
+    const cibleDe = pourCible && typeof pourCible.cibleDuCout === 'function'
+        ? (produit) => pourCible.cibleDuCout(produit)
+        : undefined;
+
     const estimation = estimerStockSoir({
         lignesAncre,
         transferts,
         ventes: ventesFenetre,
         ratios,
         ratioRepli,
+        cibleDe,
         categorieDe: contexte.categorieDe,
         estBoucherie,
         exclusions: contexte.exclusions,
@@ -452,6 +463,18 @@ async function estimerBorneSoir(args) {
             nb_lignes_sans_parage: estimation.nb_lignes_sans_parage,
             valeur_ancre: round2(ancre.valeur),
             valeur_estimee: round2(valorisation.valeur),
+            // LE CALCUL LIGNE PAR LIGNE, pour que l'ecran puisse le montrer et
+            // laisser l'utilisateur le corriger. `boucherie` est indispensable
+            // au recalcul cote client: le coefficient de pertes de decoupe ne
+            // s'applique qu'a elle, et l'ignorer ferait diverger le PL simule
+            // du PL reel des la premiere modification.
+            lignes: (estimation.lignes || []).map((l) => ({
+                produit: l.produit,
+                quantite: l.quantite,
+                prix_unitaire: l.prix_unitaire,
+                boucherie: !!estBoucherie(l.produit),
+                calcul: l.calcul || null
+            })),
             avertissements: estimation.avertissements
         }
     };
@@ -3037,6 +3060,22 @@ async function computePl(dateDebut, dateFin) {
         const { chargerContexteParage } = require('../lib/parage-contexte');
         const ctxFamille = await chargerContexteParage(sequelize);
         const estBoucherie = ctxFamille.estBoucherie;
+
+        // LE CATALOGUE, pour le panneau de simulation du stock estime.
+        //
+        // Seuls les produits qui portent un PRIX D'ACHAT y figurent: on ne
+        // peut pas ajouter a la main une ligne dont la valeur serait zero, ce
+        // qui gonflerait le stock d'une quantite sans montant, en silence.
+        // `boucherie` decide si le coefficient de pertes de decoupe s'applique.
+        const catalogueProduits = (await FournisseurPrix.findAll({ raw: true }))
+            .map((r) => ({
+                produit: r.produit,
+                prix: r.prix_achat == null ? null : parseFloat(r.prix_achat),
+                boucherie: !!estBoucherie(r.produit)
+            }))
+            .filter((p) => Number.isFinite(p.prix) && p.prix > 0)
+            .sort((a, b) => a.produit.localeCompare(b.produit, 'fr'));
+
         // Ventilation des ventes par famille, pour information: savoir quelle
         // part du chiffre d'affaires ne vient pas de la viande. Meme resolveur
         // que le stock, donc les deux se lisent avec la meme definition.
@@ -3252,6 +3291,12 @@ async function computePl(dateDebut, dateFin) {
                     // utilise, base achat/vente): l'ecran l'affiche a la
                     // demande, l'export Excel l'emporte, et les snapshots le
                     // portent d'office puisqu'ils stockent cette reponse.
+                    // LE CATALOGUE, pour le panneau de simulation du stock
+                    // estime: on ne peut ajouter qu'un produit qui porte un
+                    // prix d'achat, sinon la ligne vaudrait zero en silence.
+                    // `boucherie` decide si le coefficient de pertes de
+                    // decoupe s'applique a la ligne ajoutee.
+                    produits_catalogue: catalogueProduits,
                     matin_detail: stockMatinVal.detail_lignes || [],
                     soir_detail: stockSoirEffectif.detail_lignes || [],
                     // Borne du soir ESTIMEE faute de comptage a la date de fin.

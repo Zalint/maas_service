@@ -106,6 +106,12 @@
             // Ecart de parage teste par les scenarios de la projection, en
             // POINTS de pourcentage (5 % -> 8 % et 2 % a 3 points).
             ecartParage: 3,
+            // Prix du boeuf TESTE a la main, en F/kg, pour les jours qui
+            // restent. Les deux lignes « au plus haut » et « au plus bas »
+            // n'offrent que les bornes deja connues du mois; un prix libre
+            // permet de repondre a « et si la carcasse passait a X ». null =
+            // le champ part du cout moyen constate, donc a effet nul.
+            prixBoeufTeste: null,
             // Prix de vente retenu pour les jours qui RESTENT, par produit.
             // Vide = celui que le serveur propose (majoritaire du dernier jour
             // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
@@ -2059,6 +2065,27 @@
             sensis.push({ lib: 'Coût du bœuf au plus bas (' + fmt(stats.min) + ' F)',
                 effet: effetSurLaSuite(univSens, propSuite, { dPa: stats.min - paMoyen }) });
         }
+        // LE PRIX DU BOEUF EN SAISIE LIBRE.
+        //
+        // Les deux lignes ci-dessus n'offrent que les bornes deja connues du
+        // mois - « au plus haut », « au plus bas ». Elles ne repondent pas a la
+        // question qu'on se pose vraiment devant un fournisseur: « et s'il
+        // passait a 5 000 ? ». Ce prix-la n'a jamais ete pratique, donc aucune
+        // borne ne le porte.
+        //
+        // La ligne part du cout moyen constate: a l'ouverture elle affiche donc
+        // un effet nul, et c'est voulu - on voit d'ou l'on part avant de bouger.
+        var prixTeste = etat.proj.prixBoeufTeste;
+        if (paMoyen !== null) {
+            var pxRef = prixTeste === null ? paMoyen : prixTeste;
+            sensis.push({
+                saisie: true,
+                lib: 'Coût du bœuf à',
+                valeur: pxRef,
+                effet: effetSurLaSuite(univSens, propSuite, { dPa: pxRef - paMoyen })
+            });
+        }
+
         if (ep > 0) {
             // Chaque espece bouge depuis SON taux. Appliquer un meme
             // pourcentage absolu aux deux revenait, depuis que les taux sont
@@ -2090,7 +2117,20 @@
                 + '</tr></thead><tbody>'
                 + sensis.map(function (s) {
                     var pl = d0.pl + s.effet;
-                    return '<tr><td>' + esc(s.lib) + '</td>'
+                    // La ligne de SAISIE porte son champ dans la cellule: le
+                    // prix teste se lit et se change au meme endroit que son
+                    // effet, sans avoir a le chercher ailleurs sur l'ecran.
+                    var libelle = s.saisie
+                        ? esc(s.lib)
+                          + ' <input type="number" class="form-control form-control-sm d-inline-block sim2-proj-ctl"'
+                          + ' data-k="prixBoeufTeste" style="width:7rem" min="1" max="100000" step="10"'
+                          + ' value="' + esc(String(Math.round(s.valeur))) + '">'
+                          + ' <span class="text-muted">F/kg</span>'
+                          + (etat.proj.prixBoeufTeste === null
+                             ? ' <span class="text-muted small">— coût constaté, effet nul</span>'
+                             : '')
+                        : esc(s.lib);
+                    return '<tr' + (s.saisie ? ' class="table-light"' : '') + '><td>' + libelle + '</td>'
                         + '<td class="text-end ' + cls(s.effet) + '">' + esc(signe(s.effet)) + '</td>'
                         + '<td class="text-end fw-bold ' + cls(pl) + '">' + esc(fmt(pl)) + '</td></tr>';
                 }).join('')
@@ -2620,6 +2660,13 @@
                 else if (k === 'depensesOption') etat.proj.depensesOption = el.value;
                 else if (k === 'facteurMax') etat.proj.facteurMax = Math.max(1, nb(el.value) || 1);
                 else if (k === 'ecartParage') etat.proj.ecartParage = Math.max(0, nb(el.value));
+                else if (k === 'prixBoeufTeste') {
+                    // Champ vide = on revient au cout constate, donc a un effet
+                    // nul. Un zero, lui, serait une carcasse gratuite: on le
+                    // refuse plutot que de l'afficher comme un gain.
+                    var pb = nb(el.value);
+                    etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0)) ? null : pb;
+                }
                 else if (k === 'exclureDimanche') etat.proj.exclureDimanche = el.checked;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);

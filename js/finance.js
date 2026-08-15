@@ -2354,6 +2354,17 @@
     // optimiste, un test qui importe le fichier - aurait leve
     // « Cannot access before initialization » et emporte tout l'ecran PL.
     const plPostesNeutralises = new Set();
+    // SIMULATION DU STOCK ESTIME. Rien n'est enregistre - decision du
+    // proprietaire du produit: on modifie pour VOIR l'effet sur le PL, et un
+    // rechargement repart de l'estimation calculee.
+    //   plStockEdite  : produit -> quantite corrigee
+    //   plStockAjoute : lignes ajoutees a la main
+    // L'etat d'ouverture vit dans une variable et non dans le DOM: <details>
+    // bascule de facon asynchrone, et le relire au rendu suivant rendrait un
+    // panneau qui se referme tout seul.
+    const plStockEdite = new Map();
+    let plStockAjoute = [];
+    let plDetailEstimationOuvert = false;
 
     // PL DU JOUR: la difference entre deux cumuls voisins.
     //
@@ -2710,7 +2721,7 @@
               libelle: `<i class="bi bi-cart-dash text-danger"></i> Dépenses (période)${doubleCompte}` },
             { cle: 'paiements', signe: -1, montant: d.paiements_fournisseur || 0, couleur: 'danger', neutralisable: true,
               libelle: '<i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur' },
-            { cle: 'stock', signe: 1, montant: stock.variation_nette || 0, couleur: stockCouleur, neutralisable: true,
+            { cle: 'stock', signe: 1, montant: variationSimulee, couleur: stockCouleur, neutralisable: true,
               libelle: `<i class="bi bi-box-seam text-${stockCouleur}"></i> Variation stock ×
                         <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
                         <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`
@@ -2720,6 +2731,34 @@
               titre: stockTooltip }
         ];
 
+        // L'ECART DE STOCK PRODUIT PAR LES CORRECTIONS.
+        //
+        // On travaille en DELTA, jamais en recomposant la valorisation
+        // entiere: valoriserLignes applique ses propres regles - prix d'achat
+        // quand il existe, prix de vente sinon, quantites negatives ecartees -
+        // et les rejouer ici en ferait une seconde definition, libre de
+        // diverger. Un delta se greffe sur le chiffre du serveur sans le
+        // recalculer.
+        //
+        // Boucherie et hors boucherie sont SEPARES: le coefficient de pertes
+        // de decoupe ne porte que sur la premiere. Les melanger ferait diverger
+        // le PL simule du PL reel des la premiere modification.
+        let deltaBoucherie = 0, deltaHors = 0;
+        for (const l of lignesEst) {
+            if (!plStockEdite.has(l.produit)) continue;
+            const dv = (plStockEdite.get(l.produit) - nb(l.quantite)) * prixDe(l);
+            if (l.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        for (const a of plStockAjoute) {
+            const dv = nb(a.quantite) * nb(a.prix);
+            if (a.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        const stockModifie = plStockEdite.size > 0 || plStockAjoute.length > 0;
+        const coeffStockUi = nb(stock.coeff) || 1;
+        const variationSimulee = stockModifie
+            ? nb(stock.variation_nette) + coeffStockUi * deltaBoucherie + deltaHors
+            : nb(stock.variation_nette);
+
         const actif = (p) => !plPostesNeutralises.has(p.cle);
         // Le PL affiche se recalcule sur les postes actifs. Il vaut exactement
         // d.pl quand rien n'est neutralise - verifie a l'ecran.
@@ -2728,7 +2767,9 @@
         // serveur arrondit le total: les deux peuvent differer de quelques
         // centimes, et l'ecran afficherait alors un chiffre qui n'est celui de
         // personne. Le recalcul ne sert qu'a la simulation.
-        const simulation = plPostesNeutralises.size > 0;
+        // Une correction de stock est une simulation au meme titre qu'un poste
+        // neutralise: le PL affiche cesse d'etre celui du serveur.
+        const simulation = plPostesNeutralises.size > 0 || stockModifie;
         const pl = simulation
             ? postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0)
             : (d.pl || 0);
@@ -2906,6 +2947,100 @@
                </div>`
             : '';
 
+        // DETAIL DU CALCUL, REPLIE PAR DEFAUT ET MODIFIABLE.
+        //
+        // Un chiffre estime qu'on ne peut pas decomposer ne se verifie pas: on
+        // le croit ou on ne le croit pas. Les quatre termes - ancre,
+        // transferts, ventes, parage - permettent de le refaire a la main, et
+        // la colonne de quantite permet de le corriger quand on SAIT.
+        //
+        // Rien n'est enregistre. Le PL passe alors en simulation, comme
+        // lorsqu'un poste est neutralise: un chiffre simule ne doit jamais
+        // pouvoir se lire comme le PL reel.
+        const lignesEst = (estimation && estimation.lignes) || [];
+        // Le prix REELLEMENT employe par la valorisation, pas celui de l'ancre:
+        // valoriserLignes retient le prix d'achat quand il existe et retombe
+        // sur le prix de vente sinon. Afficher l'autre ferait un total qui ne
+        // se recompose pas.
+        const prixValorises = new Map();
+        for (const dl of (stock.soir_detail || [])) {
+            if (dl && dl.produit && dl.prix_utilise != null) prixValorises.set(dl.produit, nb(dl.prix_utilise));
+        }
+        const prixDe = (l) => {
+            const px = prixValorises.get(l.produit);
+            return Number.isFinite(px) && px > 0 ? px : nb(l.prix_unitaire);
+        };
+        const qteDe = (l) => (plStockEdite.has(l.produit) ? plStockEdite.get(l.produit) : nb(l.quantite));
+        const fmtQ = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+
+        const lignesHtml = lignesEst.map((l, i) => {
+            const c = l.calcul || {};
+            const q = qteDe(l), px = prixDe(l);
+            const modifiee = plStockEdite.has(l.produit);
+            return '<tr' + (modifiee ? ' class="table-warning"' : '') + '>'
+                + '<td>' + esc(l.produit)
+                  + (l.boucherie ? '' : ' <span class="badge bg-light text-muted border">hors boucherie</span>')
+                  + '</td>'
+                + '<td class="text-end text-muted">' + esc(fmtQ(c.ancre)) + '</td>'
+                + '<td class="text-end text-muted">' + (c.transferts ? esc(fmtQ(c.transferts)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">' + (c.vendus ? esc(fmtQ(c.vendus)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">'
+                  + (c.taux_parage == null ? '\u2014' : esc(String(c.taux_parage).replace('.', ',')) + ' %') + '</td>'
+                + '<td class="text-end text-muted">' + (c.sortis ? esc(fmtQ(c.sortis)) : '\u2014') + '</td>'
+                + '<td class="text-end"><input type="number" step="0.01" min="0"'
+                  + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+                  + ' data-pl-est="' + i + '" value="' + esc(String(q)) + '"></td>'
+                + '<td class="text-end text-muted">' + esc(fmtMoney(px)) + '</td>'
+                + '<td class="text-end">' + esc(fmtMoney(q * px)) + '</td>'
+                + '</tr>';
+        }).join('');
+
+        const ajoutsHtml = plStockAjoute.map((a, i) =>
+            '<tr class="table-info">'
+            + '<td>' + esc(a.produit) + ' <span class="badge bg-info-subtle text-info">ajout\u00e9</span></td>'
+            + '<td class="text-end text-muted" colspan="5">ligne ajout\u00e9e \u00e0 la main</td>'
+            + '<td class="text-end"><input type="number" step="0.01" min="0"'
+              + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+              + ' data-pl-add="' + i + '" value="' + esc(String(a.quantite)) + '"></td>'
+            + '<td class="text-end text-muted">' + esc(fmtMoney(a.prix)) + '</td>'
+            + '<td class="text-end">' + esc(fmtMoney(a.quantite * a.prix)) + '</td>'
+            + '</tr>').join('');
+
+        const optionsAjout = (d.produits_catalogue || []).map((pc) =>
+            '<option value="' + esc(pc.produit) + '" data-prix="' + esc(String(pc.prix || 0))
+            + '" data-bouch="' + (pc.boucherie ? '1' : '0') + '">' + esc(pc.produit) + '</option>').join('');
+
+        const plDetailEstimation = (soirEstime && lignesEst.length)
+            ? '<details class="mb-3" id="pl-detail-estimation"' + (plDetailEstimationOuvert ? ' open' : '') + '>'
+              + '<summary class="small text-muted" style="cursor:pointer">'
+              + 'D\u00e9tail du calcul, produit par produit \u2014 <strong>modifiable</strong> '
+              + '<span class="text-muted">(' + lignesEst.length + ' lignes)</span></summary>'
+              + '<div class="alert alert-light border small mt-2 mb-2">'
+              + '<code>estim\u00e9 = dernier comptage + transferts \u2212 ventes \u00f7 (1 \u2212 parage)</code>. '
+              + 'Les ventes sont celles qui <strong>consomment cette ligne</strong> : '
+              + '\u00ab Boeuf \u00bb perd ses ventes en gros, en d\u00e9tail, et la moiti\u00e9 de chaque Jarret, '
+              + 'selon la colonne <b>Mapp\u00e9 vers</b> du Mapping produits.'
+              + '<br>Vous pouvez corriger une quantit\u00e9 ou ajouter un produit : '
+              + '<strong>rien n\u2019est enregistr\u00e9</strong>, le PL passe simplement en simulation.</div>'
+              + '<div class="table-responsive"><table class="table table-sm align-middle mb-2">'
+              + '<thead><tr><th>Produit</th><th class="text-end">Dernier comptage</th>'
+              + '<th class="text-end">Transferts</th><th class="text-end">Ventes</th>'
+              + '<th class="text-end">Parage</th><th class="text-end">Sortis du stock</th>'
+              + '<th class="text-end">Estim\u00e9</th><th class="text-end">Prix</th>'
+              + '<th class="text-end">Valeur</th></tr></thead>'
+              + '<tbody>' + lignesHtml + ajoutsHtml + '</tbody></table></div>'
+              + '<div class="d-flex gap-2 align-items-center flex-wrap">'
+              + '<select class="form-select form-select-sm" id="pl-est-produit" style="max-width:16rem">'
+              + '<option value="">\u2014 ajouter un produit \u2014</option>' + optionsAjout + '</select>'
+              + '<input type="number" step="0.01" min="0" class="form-control form-control-sm"'
+              + ' id="pl-est-qte" placeholder="quantit\u00e9" style="max-width:9rem">'
+              + '<button class="btn btn-sm btn-outline-primary" id="pl-est-ajouter">Ajouter</button>'
+              + ((plStockEdite.size || plStockAjoute.length)
+                 ? '<button class="btn btn-sm btn-outline-secondary" id="pl-est-reset">R\u00e9initialiser</button>'
+                 : '')
+              + '</div></details>'
+            : '';
+
         // DERNIERE JOURNEE SANS VENTE. Une date de fin posee au-dela de la
         // derniere saisie donne un PL qui a l'air complet: meme nombre de
         // jours, memes charges proratisees, un total simplement plus bas. Le
@@ -2974,6 +3109,7 @@
         resultEl.innerHTML = `
             ${plBandeauSansVente}
             ${plBandeauEstimation}
+            ${plDetailEstimation}
             <!-- Cartes PL et marge brute -->
             <div class="row g-2 mb-3">
                 <div class="col-md-6">
@@ -3119,10 +3255,87 @@
                 renderPl(plDernieresDonnees);
             });
         }
+        // PANNEAU DE DETAIL DE L'ESTIMATION. Meme motif que ci-dessus: les
+        // ecouteurs sont reposes a chaque rendu, innerHTML ayant detruit les
+        // precedents.
+        const det = document.getElementById('pl-detail-estimation');
+        if (det) {
+            // L'etat d'ouverture vit dans la variable, pas dans le DOM:
+            // <details> bascule de facon asynchrone, et le relire au rendu
+            // suivant refermerait le panneau tout seul.
+            det.addEventListener('toggle', () => { plDetailEstimationOuvert = det.open; });
+
+            // On rerend sur 'change', pas sur 'input': un rendu a chaque frappe
+            // ferait perdre le focus au champ qu'on est en train de remplir.
+            det.addEventListener('change', (ev) => {
+                const cible = ev.target;
+                const iEst = cible.getAttribute && cible.getAttribute('data-pl-est');
+                const iAdd = cible.getAttribute && cible.getAttribute('data-pl-add');
+                if (iEst !== null && iEst !== undefined && lignesEst[iEst]) {
+                    const l = lignesEst[iEst];
+                    const v = parseFloat(cible.value);
+                    // Revenir a la valeur calculee EFFACE la correction: sans
+                    // ca, le PL resterait marque « simulation » alors que plus
+                    // rien ne differe.
+                    if (!Number.isFinite(v) || v === nb(l.quantite)) plStockEdite.delete(l.produit);
+                    else plStockEdite.set(l.produit, v);
+                    renderPl(plDernieresDonnees);
+                } else if (iAdd !== null && iAdd !== undefined && plStockAjoute[iAdd]) {
+                    const v = parseFloat(cible.value);
+                    if (!Number.isFinite(v) || v <= 0) plStockAjoute.splice(iAdd, 1);
+                    else plStockAjoute[iAdd].quantite = v;
+                    renderPl(plDernieresDonnees);
+                }
+            });
+
+            const btnAjout = document.getElementById('pl-est-ajouter');
+            if (btnAjout) {
+                btnAjout.addEventListener('click', () => {
+                    const sel = document.getElementById('pl-est-produit');
+                    const qte = document.getElementById('pl-est-qte');
+                    const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+                    const nom = sel ? sel.value : '';
+                    const v = qte ? parseFloat(qte.value) : NaN;
+                    if (!nom || !Number.isFinite(v) || v <= 0) {
+                        if (typeof showToast === 'function') showToast('Choisir un produit et une quantité', 'warning');
+                        return;
+                    }
+                    const prix = opt ? parseFloat(opt.getAttribute('data-prix')) : NaN;
+                    // Un produit SANS prix ne compte pas: le valoriser a zero
+                    // gonflerait le stock d'une ligne qui ne vaut rien, en
+                    // silence. On le dit et on refuse.
+                    if (!Number.isFinite(prix) || prix <= 0) {
+                        if (typeof showToast === 'function') {
+                            showToast('« ' + nom + ' » n\'a pas de prix d\'achat au catalogue : '
+                                + 'renseignez-le dans Prix fournisseur avant de l\'ajouter ici.', 'warning');
+                        }
+                        return;
+                    }
+                    plDetailEstimationOuvert = true;
+                    plStockAjoute.push({
+                        produit: nom, quantite: v, prix,
+                        boucherie: opt ? opt.getAttribute('data-bouch') === '1' : false
+                    });
+                    renderPl(plDernieresDonnees);
+                });
+            }
+            const btnReset = document.getElementById('pl-est-reset');
+            if (btnReset) {
+                btnReset.addEventListener('click', () => {
+                    plStockEdite.clear();
+                    plStockAjoute = [];
+                    plDetailEstimationOuvert = true;
+                    renderPl(plDernieresDonnees);
+                });
+            }
+        }
+
         const reset = document.getElementById('fin-pl-reset');
         if (reset) {
             reset.addEventListener('click', () => {
                 plPostesNeutralises.clear();
+                plStockEdite.clear();
+                plStockAjoute = [];
                 renderPl(plDernieresDonnees);
             });
         }

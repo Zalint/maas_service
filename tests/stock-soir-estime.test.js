@@ -19,10 +19,26 @@ const CAT = {
 };
 const BOUCHERIE = new Set(Object.keys(CAT).concat(['Poulet', 'Poulet en détail']));
 
+// Le Mapping produits, tel que routes/finance.js le fournit: quelle LIGNE DE
+// STOCK une vente consomme, et dans quelle proportion. Sans lui, une vente de
+// « Boeuf en détail » ne decrementerait rien - le module le signale.
+const CIBLES = {
+    'Boeuf en détail': { cible: 'Boeuf', coefficient: 1 },
+    'Boeuf en gros': { cible: 'Boeuf', coefficient: 1 },
+    'Jarret': { cible: 'Boeuf', coefficient: 0.5 },
+    'Poulet en détail': { cible: 'Poulet', coefficient: 1 },
+    'Yell': { cible: 'Yell', coefficient: 1 },
+    // Le dechet se VEND sous « Dechet » et se STOCKE sous « Déchet 400 ».
+    // C'est un mapping comme les autres: sans lui, la vente ne decrementerait
+    // rien et le module le signalerait.
+    'Dechet': { cible: 'Déchet 400', coefficient: 1 }
+};
+
 const base = (o) => Object.assign({
     lignesAncre: [], transferts: [], ventes: [],
     ratios: { bovin: 0.96, ovin: null },
     ratioRepli: 0.95,
+    cibleDe: (p) => CIBLES[p] || { cible: p, coefficient: 1 },
     categorieDe: (p) => CAT[p] || null,
     estBoucherie: (p) => BOUCHERIE.has(p),
     exclusions: new Set(),
@@ -82,9 +98,18 @@ describe('la formule: on retranche les kilos SORTIS, pas les kilos vendus', () =
 });
 
 describe('repartition au prorata sur les produits de la categorie', () => {
-    test('deux produits bovins descendent du meme facteur', () => {
-        // Ancre bovin = 70 + 30 = 100 kg. 48 kg vendus, ratio 0,96 -> 50 sortis.
-        // Estime = 50 kg, facteur 0,5: chaque ligne est divisee par deux.
+    test('chaque ligne perd SES ventes, pas celles de sa voisine', () => {
+        // LA REGLE A CHANGE, et c'est le coeur du correctif.
+        //
+        // AVANT: le pool bovin faisait 70 + 30 = 100 kg, on estimait 50 pour
+        // l'ensemble puis on repartissait au prorata - Boeuf 35, Foie 15. Le
+        // Foie perdait donc 15 kg SANS avoir rien vendu, uniquement parce que
+        // le boeuf s'etait vendu. C'est ce que le proprietaire du produit a
+        // signale sur ses vrais chiffres.
+        //
+        // MAINTENANT: le Mapping produits dit que « Boeuf en détail » consomme
+        // du « Boeuf ». Le Boeuf perd ses 48/0,96 = 50 kg, le Foie ne bouge
+        // pas.
         const r = estimerStockSoir(base({
             lignesAncre: [
                 { produit: 'Boeuf', quantite: 70, total: 268450, prix_unitaire: 3835 },
@@ -92,11 +117,34 @@ describe('repartition au prorata sur les produits de la categorie', () => {
             ],
             ventes: [{ produit: 'Boeuf en détail', nombre: 48 }]
         }));
-        expect(r.parCategorie.bovin.kg_estime).toBeCloseTo(50, 3);
-        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(35, 3);
-        expect(ligne('Foie')(r).quantite).toBeCloseTo(15, 3);
-        // La somme de la categorie vaut bien l'estimation.
-        expect(ligne('Boeuf')(r).quantite + ligne('Foie')(r).quantite).toBeCloseTo(50, 3);
+        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(20, 3);
+        expect(ligne('Foie')(r).quantite).toBeCloseTo(30, 3);
+    });
+
+    test('le JARRET consomme un demi-kilo de carcasse par piece', () => {
+        // Le coefficient du mapping sert des DEUX cotes: au cout comme a la
+        // quantite. 10 jarrets vendus retirent 5 kg de carcasse, pas 10 -
+        // divises ensuite par le parage.
+        const r = estimerStockSoir(base({
+            lignesAncre: [{ produit: 'Boeuf', quantite: 70, total: 0, prix_unitaire: 3835 }],
+            ventes: [{ produit: 'Jarret', nombre: 10 }]
+        }));
+        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(70 - (10 * 0.5) / 0.96, 3);
+    });
+
+    test('les trois libelles bovins se cumulent sur la MEME ligne', () => {
+        // La formule posee par le proprietaire:
+        //   ventes(Boeuf) = Boeuf en gros + Boeuf en détail + 0,5 x Jarret
+        const r = estimerStockSoir(base({
+            lignesAncre: [{ produit: 'Boeuf', quantite: 200, total: 0, prix_unitaire: 3835 }],
+            ventes: [
+                { produit: 'Boeuf en détail', nombre: 30 },
+                { produit: 'Boeuf en gros', nombre: 12 },
+                { produit: 'Jarret', nombre: 8 }
+            ]
+        }));
+        const consomme = (30 + 12 + 8 * 0.5) / 0.96;
+        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(200 - consomme, 3);
     });
 
     test('les categories ne se melangent pas', () => {
@@ -271,24 +319,79 @@ describe('robustesse', () => {
         expect(boeuf.quantite).toBeLessThan(80);
     });
 
-    test('la repartition suit le DISPONIBLE du jour, pas les parts d hier', () => {
-        // Le cas mesure en production le 14-08-2026. Hier: Boeuf 57,3 et
-        // Viande Hachee 13,75, soit 80,6 % / 19,4 %. Une carcasse de 87,8 kg
-        // arrive sur le Boeuf: les parts reelles deviennent 91,3 % / 8,7 %.
-        // Repartir sur les parts d'HIER rendait 12,7 kg de boeuf a la viande
-        // hachee - la valeur reelle de « Boeuf » etait 108,3 kg.
+    test('le cas du 14-08-2026, valeur reelle du Boeuf 108,3 kg', () => {
+        // Le cas qui a fait tomber le prorata. Hier: Boeuf 57,3 et Viande
+        // Hachee 13,75. Une carcasse de 87,8 kg arrive sur le Boeuf, 38,75 kg
+        // de boeuf se vendent, parage mesure 4 %.
+        //
+        // Le prorata du comptage d'hier donnait 95,57 kg (-12,73), celui du
+        // disponible 108,24 (-0,06). Le calcul PAR PRODUIT n'a plus rien a
+        // repartir: il tombe sur la valeur exacte, et la Viande Hachee - qui
+        // n'a rien vendu ce jour-la - ne bouge pas d'un gramme.
         const r = estimerStockSoir(base({
+            ratios: { bovin: 0.96036, ovin: null },
             lignesAncre: [
                 { produit: 'Boeuf', quantite: 57.3, total: 0, prix_unitaire: 4480 },
                 { produit: 'Viande Hachée', quantite: 13.75, total: 0, prix_unitaire: 3600 }
             ],
             transferts: [{ produit: 'Boeuf', quantite: 87.8, impact: '1' }],
-            ventes: [{ produit: 'Boeuf en détail', nombre: 38.75 }]
+            // Les 38,75 kg de ventes bovines de la journee se REPARTISSENT:
+            // 35,34 de boeuf et 3,41 de viande hachee. Les mettre tous sous
+            // « Boeuf en détail » - mon premier jeu d'essai - donnait 104,75 kg
+            // au lieu de 108,3: le boeuf absorbait des kilos partis de la
+            // hachee. La justesse de la formule tient donc entierement a
+            // l'attribution des ventes, ce que le Mapping produits fournit.
+            ventes: [
+                { produit: 'Boeuf en détail', nombre: 35.34 },
+                { produit: 'Viande Hachée', nombre: 3.41 }
+            ]
         }));
-        const boeuf = r.lignes.find((l) => l.produit === 'Boeuf');
-        // Le prorata d'hier donnait 95,57: on exige nettement mieux.
-        expect(boeuf.quantite).toBeGreaterThan(105);
-        expect(boeuf.quantite).toBeLessThan(111);
+        // 57,3 + 87,8 - 35,34/0,96036 = 108,3 kg — la valeur REELLE relevee.
+        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(108.3, 1);
+        // La hachee ne perd que SES ventes. Elle est encore classee bovine
+        // ici, donc elle subit le parage: 13,75 - 3,41/0,96036 = 10,20.
+        expect(ligne('Viande Hachée')(r).quantite).toBeCloseTo(10.2, 1);
+    });
+
+    test("sortir la hachee du parage la rapproche du releve", () => {
+        // Le proprietaire du produit doit ajouter « Viande Hachée » a
+        // parage_exclusions: elle a son propre stock et ne sort pas de la
+        // carcasse. On mesure ici ce que ce reglage change, pour qu'il le
+        // decide sur un chiffre et non sur une intuition.
+        //
+        // Le parage est une perte de DECOUPE. De la viande deja hachee n'en
+        // subit pas: lui appliquer les 4 % du boeuf lui retire 0,14 kg qui
+        // n'ont jamais ete pares.
+        const commun = {
+            ratios: { bovin: 0.96036, ovin: null },
+            lignesAncre: [{ produit: 'Viande Hachée', quantite: 13.75, total: 0, prix_unitaire: 3600 }],
+            ventes: [{ produit: 'Viande Hachée', nombre: 3.41 }]
+        };
+        const avec = estimerStockSoir(base(commun));
+        const sans = estimerStockSoir(base(Object.assign({}, commun, {
+            exclusions: new Set(['Viande Hachée'])
+        })));
+        expect(ligne('Viande Hachée')(avec).quantite).toBeCloseTo(13.75 - 3.41 / 0.96036, 2);
+        expect(ligne('Viande Hachée')(sans).quantite).toBeCloseTo(13.75 - 3.41, 2);
+        // 10,20 contre 10,34: le releve reel penche pour la seconde.
+        expect(ligne('Viande Hachée')(sans).quantite)
+            .toBeGreaterThan(ligne('Viande Hachée')(avec).quantite);
+    });
+
+    test('une vente SANS ligne de stock a decrementer est SIGNALEE', () => {
+        // Le repli le plus dangereux du module: une vente dont la cible n'a
+        // pas de ligne ne decremente rien, et l'ecran affiche une journee sans
+        // consommation. Il ne casse pas, il ment - donc il parle.
+        const r = estimerStockSoir(base({
+            cibleDe: (p) => ({ cible: p, coefficient: 1 }),   // aucun mapping
+            lignesAncre: [{ produit: 'Boeuf', quantite: 70, total: 0, prix_unitaire: 3835 }],
+            ventes: [{ produit: 'Boeuf en détail', nombre: 48 }]
+        }));
+        expect(ligne('Boeuf')(r).quantite).toBeCloseTo(70, 3);   // rien retranche
+        const a = r.avertissements.join(' ');
+        expect(a).toMatch(/sans ligne de stock/i);
+        expect(a).toMatch(/boeuf en detail/i);
+        expect(a).toMatch(/Mappe vers/i);
     });
 
     test('une estimation peut sortir negative et passe telle quelle', () => {
