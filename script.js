@@ -7105,6 +7105,12 @@ async function onTypeStockChange() {
         // Format plat attendu: { "Keur Bali-Ail": { Nombre: "5", PU: "552", ... } }
         // Les données sont déjà au format plat depuis le serveur
         const donnees = donneesRecues || {};
+
+        // INDEX PAR CONTENU, pas par forme de cle. Voir lib/stock-index.js
+        // pour le pourquoi: deux producteurs ecrivent ce fichier avec deux
+        // formats de cle, et l'ecran n'en connaissait qu'un.
+        const indexDonnees = window.stockIndex.construire(donnees);
+        console.log('%cIndex par contenu:', 'color: #00ff00;', indexDonnees.size, 'entrees');
         
         console.log('%cDonnées chargées (format plat):', 'color: #00ff00;', Object.keys(donnees).length, 'entrées');
 
@@ -7256,11 +7262,14 @@ async function onTypeStockChange() {
 
                 // Restaurer les données sauvegardées si elles existent
                 const key = `${pointVente}-${produit}`;
-                if (donnees[key]) {
-                    console.log(`%cRestauration des données pour ${key}:`, 'color: #00ff00;', donnees[key]);
-                    inputQuantite.value = donnees[key].Nombre || donnees[key].quantite || '0';
-                    inputPrixUnitaire.value = donnees[key].PU || donnees[key].prixUnitaire || produitsInventaire.getPrixDefaut(produit, pointVente) || '0';
-                    inputCommentaire.value = donnees[key].Commentaire || donnees[key].commentaire || '';
+                // Cle exacte d'abord - le cas courant - puis l'index par
+                // contenu, qui rattrape les formats de cle exotiques.
+                const enr = window.stockIndex.trouver(donnees, indexDonnees, pointVente, produit);
+                if (enr) {
+                    console.log(`%cRestauration des données pour ${key}:`, 'color: #00ff00;', enr);
+                    inputQuantite.value = enr.Nombre || enr.quantite || '0';
+                    inputPrixUnitaire.value = enr.PU || enr.prixUnitaire || produitsInventaire.getPrixDefaut(produit, pointVente) || '0';
+                    inputCommentaire.value = enr.Commentaire || enr.commentaire || '';
                     // Recalculer le total
                     const total = (parseFloat(inputQuantite.value) * parseFloat(inputPrixUnitaire.value));
                     tdTotal.textContent = total.toLocaleString('fr-FR');

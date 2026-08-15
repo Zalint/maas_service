@@ -436,10 +436,18 @@ class StockCopyProcessor {
             // sont l'ancien format JSON; saveTargetStockToDB accepte les deux
             // (e['Point de Vente'] || e.pointVente) donc ca passe en aval.
             const dict = {};
-            rows.forEach((r, idx) => {
-                const safePv = String(r.pointVente || '').replace(/\s+/g, '_');
-                const safeProd = String(r.produit || '').replace(/\s+/g, '_');
-                const key = `${safePv}-${safeProd}-stock-soir-${idx}`;
+            rows.forEach((r) => {
+                // CLE AU FORMAT COMMUN: « <Point de Vente>-<Produit> ».
+                //
+                // Ce repli ecrivait « Mbao-Boeuf-stock-soir-4 », espaces
+                // remplaces par des underscores. L'ecran de stock, lui, cherche
+                // `${pointVente}-${produit}` a l'exact: le stock matin du
+                // 15/08/2026 - 108,3 kg de boeuf recopies du 14 au soir -
+                // arrivait au navigateur et n'etait affiche nulle part. La
+                // Reconciliation, qui itere au lieu de chercher par cle, le
+                // voyait; la grille non. Un seul format, desormais, celui que
+                // la saisie et le repli base du serveur produisent deja.
+                const key = `${r.pointVente}-${r.produit}`;
                 dict[key] = {
                     date: sourceDateFormatted,
                     'Point de Vente': r.pointVente,
