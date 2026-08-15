@@ -351,6 +351,34 @@ describe('robustesse', () => {
         // La hachee ne perd que SES ventes. Elle est encore classee bovine
         // ici, donc elle subit le parage: 13,75 - 3,41/0,96036 = 10,20.
         expect(ligne('Viande Hachée')(r).quantite).toBeCloseTo(10.2, 1);
+
+        // LA DECOMPOSITION, terme a terme. L'ecran l'affiche et laisse
+        // l'utilisateur corriger sur sa foi: un total juste obtenu de termes
+        // faux passerait les deux assertions ci-dessus sans qu'on le voie.
+        // On verifie donc que chaque terme vaut ce qu'il doit ET qu'ils se
+        // recomposent en la quantite affichee.
+        const cB = ligne('Boeuf')(r).calcul;
+        expect(cB.ancre).toBeCloseTo(57.3, 2);
+        expect(cB.transferts).toBeCloseTo(87.8, 2);
+        expect(cB.vendus).toBeCloseTo(35.34, 2);
+        expect(cB.diviseur).toBeCloseTo(0.96036, 4);
+        expect(cB.taux_parage).toBeCloseTo(4, 1);
+        expect(cB.sortis).toBeCloseTo(35.34 / 0.96036, 2);
+        expect(cB.pool).toBe('bovin');
+        expect(cB.ancre + cB.transferts - cB.sortis)
+            .toBeCloseTo(ligne('Boeuf')(r).quantite, 1);
+
+        // La hachee n'a AUCUN transfert: le terme doit valoir zero, pas etre
+        // absent - une case vide se lit comme « on ne sait pas ».
+        const cH = ligne('Viande Hachée')(r).calcul;
+        expect(cH.ancre).toBeCloseTo(13.75, 2);
+        expect(cH.transferts).toBe(0);
+        expect(cH.vendus).toBeCloseTo(3.41, 2);
+        expect(cH.diviseur).toBeCloseTo(0.96036, 4);
+        expect(cH.sortis).toBeCloseTo(3.41 / 0.96036, 2);
+        expect(cH.pool).toBe('bovin');
+        expect(cH.ancre + cH.transferts - cH.sortis)
+            .toBeCloseTo(ligne('Viande Hachée')(r).quantite, 1);
     });
 
     test("sortir la hachee du parage la rapproche du releve", () => {
@@ -390,7 +418,9 @@ describe('robustesse', () => {
         expect(ligne('Boeuf')(r).quantite).toBeCloseTo(70, 3);   // rien retranche
         const a = r.avertissements.join(' ');
         expect(a).toMatch(/sans ligne de stock/i);
-        expect(a).toMatch(/boeuf en detail/i);
+        // La graphie D'ORIGINE, pas la cle normalisee: le message renvoie vers
+        // la colonne « Mappe vers », qui ecrit « Boeuf en détail ».
+        expect(a).toContain('Boeuf en détail');
         expect(a).toMatch(/Mappe vers/i);
     });
 

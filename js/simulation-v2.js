@@ -2715,8 +2715,14 @@
                     // Champ vide = on revient au cout constate, donc a un effet
                     // nul. Un zero, lui, serait une carcasse gratuite: on le
                     // refuse plutot que de l'afficher comme un gain.
+                    // Le max="100000" du champ ne contraint que les fleches du
+                    // spinner: une valeur saisie ou collee le franchit sans
+                    // rien declencher. On borne donc ici aussi, comme le fait
+                    // le champ de parage juste a cote.
                     var pb = nb(el.value);
-                    etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0)) ? null : pb;
+                    etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0))
+                        ? null
+                        : Math.min(100000, pb);
                 }
                 else if (k === 'parageBoeufTeste') {
                     // Contrairement au prix, un parage de ZERO est legitime -

@@ -2365,6 +2365,11 @@
     const plStockEdite = new Map();
     let plStockAjoute = [];
     let plDetailEstimationOuvert = false;
+    // La periode deja rendue, pour detecter qu'on en change. Les corrections
+    // portent sur les lignes d'UNE journee estimee; les laisser vivre d'une
+    // periode a l'autre appliquerait a aujourd'hui une quantite saisie pour
+    // hier. null = rien n'a encore ete rendu.
+    let plPeriodeChargee = null;
 
     // PL DU JOUR: la difference entre deux cumuls voisins.
     //
@@ -2674,6 +2679,20 @@
     function renderPl(d) {
         const resultEl = document.getElementById('fin-pl-result');
         if (!resultEl) return;
+        // LA SIMULATION DU STOCK NE TRAVERSE PAS UN CHANGEMENT DE PERIODE.
+        //
+        // plStockEdite et plStockAjoute vivent au niveau du module: ils
+        // survivaient a un changement de dates, et les quantites saisies pour
+        // une journee s'appliquaient a une autre. On les remet a zero des que
+        // la periode bouge, jamais quand elle est identique - sinon un simple
+        // re-rendu (bascule d'un poste neutralise) effacerait la saisie.
+        const periodeCourante = d && d.periode
+            ? String(d.periode.dateDebut) + '|' + String(d.periode.dateFin) : '';
+        if (plPeriodeChargee !== null && plPeriodeChargee !== periodeCourante) {
+            plStockEdite.clear();
+            plStockAjoute = [];
+        }
+        plPeriodeChargee = periodeCourante;
         // Memorise pour pouvoir re-rendre a chaque bascule sans rappeler l'API.
         plDernieresDonnees = d;
         majBoutonFigerPl(d);
@@ -2691,7 +2710,6 @@
         const doubleCompte = (d.depenses_double_compte && d.depenses_double_compte.montant > 0)
             ? `<span class="badge bg-warning text-dark ms-2" title="Ces dépenses sont dans des catégories déjà couvertes par les charges fixes proratisées ci-dessus. Si elles correspondent au paiement de l'abonnement mensuel, elles sont comptées deux fois. Si ce sont des surcoûts ponctuels, tout est correct.">⚠ ${esc(fmtMoney(d.depenses_double_compte.montant))} en ${esc(d.depenses_double_compte.categories.join(', '))}</span>`
             : '';
-        const stockCouleur = stock.variation_nette >= 0 ? 'success' : 'danger';
 
         // Le meme chiffre est rejoue ici, dans la Decomposition et dans les
         // termes de la marge brute: sans la mention "estime" aux trois
@@ -2837,15 +2855,24 @@
             const dv = (plStockEdite.get(l.produit) - nb(l.quantite)) * prixDe(l);
             if (l.boucherie) deltaBoucherie += dv; else deltaHors += dv;
         }
-        for (const a of plStockAjoute) {
+        // SANS ESTIMATION, aucune correction ne s'applique. La boucle des
+        // lignes editees est inerte d'elle-meme - lignesEst est vide - mais
+        // celle des lignes AJOUTEES ne l'etait pas: elle deplacait le PL d'une
+        // periode qui n'a pas d'estimation, donc pas de panneau pour le dire.
+        for (const a of (soirEstime ? plStockAjoute : [])) {
             const dv = nb(a.quantite) * nb(a.prix);
             if (a.boucherie) deltaBoucherie += dv; else deltaHors += dv;
         }
-        const stockModifie = plStockEdite.size > 0 || plStockAjoute.length > 0;
+        const stockModifie = soirEstime && (plStockEdite.size > 0 || plStockAjoute.length > 0);
         const coeffStockUi = nb(stock.coeff) || 1;
         const variationSimulee = stockModifie
             ? nb(stock.variation_nette) + coeffStockUi * deltaBoucherie + deltaHors
             : nb(stock.variation_nette);
+        // La COULEUR suit le montant affiche, donc le simule. Elle se lisait
+        // sur stock.variation_nette pendant que le poste montrait deja
+        // variationSimulee: une correction qui fait passer la variation sous
+        // zero affichait un nombre negatif en vert, avec l'icone verte.
+        const stockCouleur = variationSimulee >= 0 ? 'success' : 'danger';
 
         const postes = [
             { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
@@ -3235,10 +3262,26 @@
                             <td>× Coefficient (1 − ${esc(stock.pertes_decoupe_pct)}%)</td>
                             <td class="text-end">× ${esc(stock.coeff)}</td>
                         </tr>
-                        <tr class="table-light fw-bold">
+                        <tr class="${stockModifie ? '' : 'table-light fw-bold'}">
                             <td>= Variation stock nette</td>
                             <td class="text-end text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
                         </tr>
+                        ${stockModifie ? `
+                        <!-- La derivation ci-dessus reste celle du SERVEUR:
+                             brute x coefficient = nette est une identite, et y
+                             substituer le simule rendrait faux le calcul
+                             affiche juste au-dessus. La correction se pose
+                             donc en terme supplementaire, et le total repris
+                             est celui que le poste PL utilise. -->
+                        <tr>
+                            <td>+ Correction simulée
+                                <span class="badge bg-secondary">simulé</span></td>
+                            <td class="text-end">${variationSimulee - nb(stock.variation_nette) >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee - nb(stock.variation_nette))))}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>= Variation retenue au PL</td>
+                            <td class="text-end text-${stockCouleur}">${variationSimulee >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee)))}</td>
+                        </tr>` : ''}
                     </tbody>
                 </table>
                 ${plLegendePrix}
@@ -3331,6 +3374,21 @@
                     const v = qte ? parseFloat(qte.value) : NaN;
                     if (!nom || !Number.isFinite(v) || v <= 0) {
                         if (typeof showToast === 'function') showToast('Choisir un produit et une quantité', 'warning');
+                        return;
+                    }
+                    // UN PRODUIT DEJA ESTIME NE S'AJOUTE PAS.
+                    //
+                    // Sa ligne existe et se modifie directement dans le
+                    // tableau. L'ajouter une seconde fois ne remplacait pas la
+                    // premiere: les deux quantites s'additionnaient dans le
+                    // delta, et le stock comptait le produit deux fois sans
+                    // que rien ne le signale.
+                    const dejaEstime = lignesEst.some((l) => l.produit === nom);
+                    if (dejaEstime) {
+                        if (typeof showToast === 'function') {
+                            showToast('« ' + nom + ' » a déjà une ligne estimée : '
+                                + 'modifiez sa quantité dans le tableau plutôt que de l\'ajouter.', 'warning');
+                        }
                         return;
                     }
                     const prix = opt ? parseFloat(opt.getAttribute('data-prix')) : NaN;
