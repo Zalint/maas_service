@@ -1055,3 +1055,37 @@ describe('les trois lectures visent la MEME cible', () => {
         expect(r.find((x) => x.type === 'volume').detail).toMatch(/écart de 15\s?920/);
     });
 });
+
+describe('un PL inconnu n est pas un PL a zero', () => {
+    // projeterPL declare pl nullable (pl = marge === null ? null : ...) et
+    // margeNette s'en garde. Le convertir en zero ferait chiffrer un ecart
+    // vers la cible depuis un equilibre suppose.
+    const PRODUITS = [{ nom: 'Boeuf en détail', quantite: 390 }];
+    const margeDe = () => 968;
+
+    test('plCentral null rend sans_pl, pas un delta depuis zero', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe,
+            plCentral: null, cible: 100000
+        });
+        expect(v.raison).toBe('sans_pl');
+        expect(v.deltaTotal).toBeNull();
+    });
+
+    test('un PL a zero, lui, se chiffre bien vers la cible', () => {
+        // La distinction porte: zero est une valeur, null est une absence.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe,
+            plCentral: 0, cible: 100000
+        });
+        expect(v.raison).toBeNull();
+        expect(v.deltaTotal).toBeCloseTo(100000 / 968, 6);
+    });
+
+    test('planEquilibre refuse aussi de projeter depuis un PL absent', () => {
+        expect(P.planEquilibre({
+            plCentral: null, cible: 100000, produits: PRODUITS, margeDe,
+            caRealise: 2853150, caProjete: 5445304, joursRestants: 13
+        })).toBeNull();
+    });
+});

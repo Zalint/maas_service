@@ -2062,7 +2062,15 @@
             produits: bovinsActifs,
             proportion: propSuite,
             margeDe: margeApresCommission,
-            plCentral: (scen && scen.central) ? nb(scen.central.pl) : null,
+            // Un PL INCONNU se transmet tel quel. nb() l'aurait converti en
+            // zero, et volumesProjetes aurait alors chiffre un ecart vers la
+            // cible depuis un equilibre suppose, au lieu de rendre la raison
+            // 'sans_pl'. projeterPL declare pl nullable (pl = marge === null
+            // ? null : ...) et margeNette s'en garde deja: on tient le meme
+            // contrat plutot que d'aplatir le cas ici.
+            plCentral: (scen && scen.central
+                && scen.central.pl !== null && scen.central.pl !== undefined)
+                ? nb(scen.central.pl) : null,
             cible: nb(etat.proj.plCible)
         });
         if (vp) {
@@ -2336,8 +2344,10 @@
         // 100 000. Le reglage vit donc au-dessus, toujours visible.
         var plCibleUi = nb(etat.proj.plCible);
         h += '<div class="d-flex align-items-center gap-2 mb-2 small flex-wrap">'
-            + '<span class="fw-medium">Objectif de PL fin de mois</span>'
-            + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
+            + '<label class="fw-medium mb-0" for="sim2-pl-cible">'
+            + 'Objectif de PL fin de mois</label>'
+            + '<input type="number" id="sim2-pl-cible" '
+            + 'class="form-control form-control-sm sim2-proj-ctl" '
             + 'data-k="plCible" style="width:9rem" step="10000" value="'
             + esc(String(Math.round(plCibleUi))) + '">'
             + '<span class="text-muted">FCFA — 0 = l\'équilibre</span></div>';
@@ -2516,7 +2526,7 @@
                     + 'L\'équilibre ne se joue pas sur le seul volume ce mois-ci — '
                     + 'il faut agir sur les prix, les charges ou les dépenses.</div>';
             }
-        } else if (d0 && nb(d0.pl) >= plCibleUi) {
+        } else if (d0 && d0.pl !== null && d0.pl !== undefined && nb(d0.pl) >= plCibleUi) {
             // CIBLE DEJA ATTEINTE. L'ecran se taisait completement dans ce cas,
             // et l'absence de plan se lisait comme une panne plutot que comme
             // une bonne nouvelle. On dit l'avance, et on renvoie vers la
