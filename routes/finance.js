@@ -3693,11 +3693,11 @@ router.get('/pl/ecart-jour', async (req, res) => {
         // de les figer dans le payload, ce qui rend le detail disponible sur
         // TOUT l'historique deja fige, pas seulement sur les jours a venir.
         //
-        // `Op` est requis ICI: computePl en declare un local (SeqOp) qui n'est
-        // pas visible depuis cette route.
+        // `Op` vient de l'import de tete (ligne 47). computePl en declare un
+        // local sous le nom SeqOp, ce qui pouvait laisser croire qu'aucun
+        // n'etait disponible ici - il l'etait.
         let depensesRows = [], paiementsRows = [];
         if (payloadJour && payloadVeille) {
-            const { Op } = require('sequelize');
             const f = fenetreEntrees(veilleISO, dateISO);
             [depensesRows, paiementsRows] = await Promise.all([
                 Depense.findAll({
@@ -3740,10 +3740,16 @@ router.get('/pl/ecart-jour', async (req, res) => {
                 // comparer les deux ferait apparaitre une demi-journee comme
                 // un ecart. L'ecran le dit plutot que de le taire.
                 mode: mode,
-                source_jour: snapJour ? snapJour.source : (jourRecalcule ? 'recalcul' : null),
-                source_veille: snapVeille ? snapVeille.source : (veilleRecalculee ? 'recalcul' : null),
-                fige_jour: snapJour ? snapJour.updated_at : null,
-                fige_veille: snapVeille ? snapVeille.updated_at : null
+                // LE RECALCUL PRIME sur le snapshot. En mode force, un PL fige
+                // existe mais n'a PAS servi: annoncer sa source et sa date de
+                // figeage decrirait une photo que le calcul a ecartee. La date
+                // de figeage tombe alors a null - il n'y a pas de figeage
+                // derriere le chiffre rendu.
+                source_jour: jourRecalcule ? 'recalcul' : (snapJour ? snapJour.source : null),
+                source_veille: veilleRecalculee ? 'recalcul'
+                    : (snapVeille ? snapVeille.source : null),
+                fige_jour: jourRecalcule ? null : (snapJour ? snapJour.updated_at : null),
+                fige_veille: veilleRecalculee ? null : (snapVeille ? snapVeille.updated_at : null)
             }, r)
         });
     } catch (e) {
