@@ -69,6 +69,7 @@ const {
 const { resolveProduit, buildResolverMaps, cibleDe } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
+const { ecartJour, resoudreMode, fenetreEntrees } = require('../lib/pl-ecart-jour');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
 const ALIAS_PRODUIT_MAX_LENGTH = 150;
@@ -3593,6 +3594,160 @@ router.get('/pl/snapshots/:date', async (req, res) => {
         res.json({ success: true, data: snap });
     } catch (e) {
         console.error('GET /api/finance/pl/snapshots/:date:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * D'OU VIENT L'ECART DE PL entre une journee et la veille.
+ *
+ * Les deux PL figes sont des CUMULS depuis le 1er: leur difference poste par
+ * poste est la contribution de la journee. Tout le calcul vit dans
+ * lib/pl-ecart-jour.js, module pur et teste; cette route ne fait que charger
+ * les deux lignes et le brancher.
+ *
+ * PARAMETRES
+ *   date       la journee expliquee (obligatoire)
+ *   reference  la photo a laquelle on la compare. Defaut: J-1. Le client
+ *              envoie J-1, mais le parametre reste explicite: l'ecran, lui,
+ *              se compare au dernier PL FIGE, qui peut dater de trois jours.
+ *              Les deux lectures sont legitimes, et chacune annonce la sienne.
+ *   debut      le 1er jour du cumul. Defaut: le 1er du mois de `date`. Sans
+ *              lui, un PL affiche du 05 au 14 serait explique par des cumuls
+ *              partant du 1er, et aucune colonne ne correspondrait a l'ecran.
+ *   mode       auto (defaut) | force | fige — voir plus bas.
+ */
+router.get('/pl/ecart-jour', async (req, res) => {
+    try {
+        const dateISO = parseDateVersISO(String(req.query.date || ''));
+        if (!dateISO) {
+            return res.status(400).json({ success: false, error: 'date invalide' });
+        }
+        const veilleISO = parseDateVersISO(String(req.query.reference || ''))
+            || new Date(new Date(dateISO + 'T00:00:00Z').getTime() - 86400000)
+                .toISOString().slice(0, 10);
+        if (veilleISO >= dateISO) {
+            return res.status(400).json({ success: false,
+                error: 'la référence doit précéder la date' });
+        }
+        const [snapJour, snapVeille] = await Promise.all([
+            PlSnapshot.findByPk(dateISO, { raw: true }),
+            PlSnapshot.findByPk(veilleISO, { raw: true })
+        ]);
+        // TROIS MODES, parce que « figé » et « à jour » ne sont pas la meme
+        // question. Le recalcul passe par computePl, qui valorise le stock AUX
+        // PRIX DE LA DATE demandee - il n'invente donc pas de revalorisation -
+        // mais lit les donnees TELLES QU'ELLES SONT MAINTENANT: une vente
+        // saisie en retard y figure, alors qu'un snapshot pris ce soir-la ne
+        // l'aurait pas contenue. Le module le signale.
+        //   auto  (defaut) - les photos figees, completees par un recalcul
+        //                    quand elles manquent. La journee en cours n'est
+        //                    jamais figee avant 23h35.
+        //   force          - tout recalculer MAINTENANT, meme si un PL a ete
+        //                    fige. Un snapshot peut etre perime: une vente
+        //                    saisie en retard, un stock corrige depuis. Ce
+        //                    mode montre l'etat courant, et signale l'ecart
+        //                    avec ce qui avait ete fige.
+        //   fige           - ne comparer que des photos figees, sans rien
+        //                    recalculer.
+        // `recalculer=0/1` reste accepte: c'est l'ancien parametre.
+        const mode = resoudreMode(req.query);
+        // LE DEBUT DU CUMUL vient du client, qui sait quelle periode il
+        // affiche. Sans lui, un PL du 05 au 14 aurait ete explique par des
+        // cumuls partant du 1er: l'ecart de la journee serait reste juste -
+        // les deux cumuls partagent leur base - mais les colonnes « veille »
+        // et « jour » auraient montre des totaux etrangers a l'ecran.
+        const debutPeriode = parseDateVersISO(String(req.query.debut || ''))
+            || ((snapJour && snapJour.payload && snapJour.payload.periode) || {}).dateDebut
+            || dateISO.slice(0, 8) + '01';
+        let payloadJour = snapJour ? snapJour.payload : null;
+        let payloadVeille = snapVeille ? snapVeille.payload : null;
+        let veilleRecalculee = false, jourRecalcule = false;
+        // Ce que le PL FIGE disait, garde pour le comparer au recalcul.
+        const plFige = {
+            jour: snapJour ? parseFloat(snapJour.pl) : null,
+            veille: snapVeille ? parseFloat(snapVeille.pl) : null
+        };
+        if (mode !== 'fige') {
+            for (const cote of [
+                { a: 'jour', iso: dateISO, present: !!payloadJour },
+                { a: 'veille', iso: veilleISO, present: !!payloadVeille }
+            ]) {
+                if (cote.present && mode !== 'force') continue;
+                try {
+                    const calcule = await computePlMemoise(debutPeriode, cote.iso);
+                    if (cote.a === 'jour') { payloadJour = calcule; jourRecalcule = true; }
+                    else { payloadVeille = calcule; veilleRecalculee = true; }
+                } catch (e) {
+                    // Un recalcul qui echoue ne doit pas emporter la route: le
+                    // module rendra son refus habituel, qui dit quoi faire.
+                    console.warn('[PL] recalcul ' + cote.a + ' echoue:', e.message);
+                }
+            }
+        }
+        // LES LIGNES ENTREES DANS LE CUMUL entre les deux photos, lues APRES
+        // avoir su qu'il y a deux photos a comparer.
+        //
+        // Depenses et paiements vivent dans des tables locales datees: la
+        // journee est l'intervalle ]veille, jour]. On les lit ici plutot que
+        // de les figer dans le payload, ce qui rend le detail disponible sur
+        // TOUT l'historique deja fige, pas seulement sur les jours a venir.
+        //
+        // `Op` est requis ICI: computePl en declare un local (SeqOp) qui n'est
+        // pas visible depuis cette route.
+        let depensesRows = [], paiementsRows = [];
+        if (payloadJour && payloadVeille) {
+            const { Op } = require('sequelize');
+            const f = fenetreEntrees(veilleISO, dateISO);
+            [depensesRows, paiementsRows] = await Promise.all([
+                Depense.findAll({
+                    where: { date: { [Op.between]: [f.debut, f.fin] } },
+                    attributes: ['date', 'montant', 'categorie'],
+                    raw: true
+                }),
+                // Pas de colonne « fournisseur »: la table ne porte qu'UN
+                // fournisseur, et decrit chaque versement par son mode, sa
+                // reference et son commentaire. Le libelle se compose donc.
+                FournisseurPaiement.findAll({
+                    where: { date: { [Op.between]: [f.debut, f.fin] } },
+                    attributes: ['date', 'montant', 'mode', 'reference', 'commentaire'],
+                    raw: true
+                })
+            ]);
+        }
+        const r = ecartJour({
+            jour: payloadJour,
+            veille: payloadVeille,
+            veilleRecalculee: veilleRecalculee,
+            jourRecalcule: jourRecalcule,
+            plFige: plFige,
+            depenses: depensesRows.map((d) => ({
+                date: d.date, montant: d.montant, libelle: d.categorie
+            })),
+            paiements: paiementsRows.map((p) => ({
+                date: p.date, montant: p.montant,
+                libelle: [p.mode, p.reference ? 'réf. ' + p.reference : null, p.commentaire]
+                    .filter(Boolean).join(' · ') || 'versement fournisseur'
+            }))
+        });
+        res.json({
+            success: true,
+            data: Object.assign({
+                date_jour: dateISO,
+                date_veille: veilleISO,
+                // La SOURCE de chaque photo: un snapshot manuel fige a 14 h ne
+                // couvre pas la meme journee que celui du cron de 23h35, et
+                // comparer les deux ferait apparaitre une demi-journee comme
+                // un ecart. L'ecran le dit plutot que de le taire.
+                mode: mode,
+                source_jour: snapJour ? snapJour.source : (jourRecalcule ? 'recalcul' : null),
+                source_veille: snapVeille ? snapVeille.source : (veilleRecalculee ? 'recalcul' : null),
+                fige_jour: snapJour ? snapJour.updated_at : null,
+                fige_veille: snapVeille ? snapVeille.updated_at : null
+            }, r)
+        });
+    } catch (e) {
+        console.error('GET /api/finance/pl/ecart-jour:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
