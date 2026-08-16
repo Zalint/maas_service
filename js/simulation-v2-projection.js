@@ -878,8 +878,85 @@
         return evaluees.slice(0, args.limite || 3);
     }
 
+    /**
+     * LES VOLUMES qu'une projection suppose, et l'ecart a l'equilibre en
+     * quantite.
+     *
+     * Le CA projete ne dit pas combien de MARCHANDISE il faudra vendre. C'est
+     * pourtant ce chiffre-la qui se commande: une projection a 5,4 M F ne se
+     * prepare pas, 250 kg de boeuf si.
+     *
+     * Chaque produit garde sa PART du melange - meme hypothese que
+     * effetSurLaSuite, qui multiplie deja les quantites par la proportion des
+     * jours restants. En prendre une autre ici ferait diverger deux lectures
+     * du meme mois.
+     *
+     * L'ECART A L'EQUILIBRE garde son SIGNE: un PL projete positif autorise a
+     * vendre moins, et un nombre negatif le dit mieux qu'un zero. La marge
+     * retenue est celle passee en `margeDe` - la meme que planEquilibre, donc
+     * commission induite deduite. Un produit dont la marge est inconnue ne
+     * participe ni a la moyenne ni au partage: l'inclure au denominateur
+     * diluerait la moyenne et gonflerait les kilos demandes, sur un chiffre
+     * qu'on ne sait pas etablir.
+     *
+     * `raison` nomme pourquoi l'ecart n'est pas chiffre, plutot que de laisser
+     * l'ecran deviner: 'sans_pl' n'est PAS 'marge_non_positive', et les deux
+     * ne se disent pas a l'utilisateur de la meme facon.
+     */
+    function volumesProjetes(args) {
+        var produits = (args && args.produits) || [];
+        var proportion = nb(args && args.proportion);
+        var margeDe = (args && args.margeDe) || function () { return null; };
+        var plCentral = args ? args.plCentral : null;
+        if (!produits.length || !(proportion > 0)) return null;
+
+        var margeParNom = {};
+        produits.forEach(function (p) { margeParNom[p.nom] = margeDe(p); });
+        var chiffrables = produits.filter(function (p) {
+            return margeParNom[p.nom] !== null && margeParNom[p.nom] !== undefined;
+        });
+        var qEq = 0, margePonderee = 0;
+        chiffrables.forEach(function (p) {
+            var q = nb(p.quantite);
+            qEq += q;
+            margePonderee += q * nb(margeParNom[p.nom]);
+        });
+        var margeMoy = qEq > 0 ? margePonderee / qEq : 0;
+
+        var raison = null;
+        if (plCentral === null || plCentral === undefined) raison = 'sans_pl';
+        else if (!(margeMoy > 0)) raison = 'marge_non_positive';
+        var deltaTotal = raison ? null : -nb(plCentral) / margeMoy;
+
+        var tot = { vendu: 0, reste: 0, mois: 0, delta: 0 };
+        var lignes = produits.map(function (p) {
+            var q = nb(p.quantite);
+            var reste = q * proportion;
+            var mois = q + reste;
+            var chiffrable = margeParNom[p.nom] !== null && margeParNom[p.nom] !== undefined;
+            var delta = (deltaTotal !== null && chiffrable && qEq > 0)
+                ? deltaTotal * (q / qEq) : null;
+            tot.vendu += q;
+            tot.reste += reste;
+            tot.mois += mois;
+            if (delta !== null) tot.delta += delta;
+            return {
+                nom: p.nom, vendu: q, reste: reste, mois: mois,
+                delta: delta, equilibre: delta === null ? null : mois + delta,
+                marge: chiffrable ? nb(margeParNom[p.nom]) : null
+            };
+        });
+        tot.equilibre = deltaTotal === null ? null : tot.mois + tot.delta;
+        return {
+            lignes: lignes, totaux: tot, margeMoyenne: margeMoy,
+            deltaTotal: deltaTotal, raison: raison,
+            nbSansMarge: produits.length - chiffrables.length
+        };
+    }
+
     return {
         COEFFS_DOCUMENT: COEFFS_DOCUMENT,
+        volumesProjetes: volumesProjetes,
         typeJour: typeJour,
         finDuMois: finDuMois,
         joursEntre: joursEntre,

@@ -2027,6 +2027,106 @@
             + esc((ca.rythmes.sources || {}).P2 || '—') + '). '
             + 'CA estimé fin de mois : <strong>' + esc(fmt(ca.caProjete)) + '</strong> F.</div>';
 
+        // L'univers des produits et la PROPORTION que representent les jours
+        // qui restent. Declares ici et non plus dans le bloc des sensibilites:
+        // le tableau des volumes ci-dessous en a besoin, et il vient avant.
+        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
+        var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
+
+        // ---- CE QUE LA PROJECTION SUPPOSE EN MARCHANDISE.
+        //
+        // Le CA projete ne dit pas combien de KILOS il faudra vendre. C'est
+        // pourtant ce chiffre-la qui se commande: une projection a 5,4 M F ne
+        // se prepare pas, 250 kg de boeuf si.
+        //
+        // Chaque produit garde sa PART du melange: on n'a aucune raison de
+        // croire que le gros progresserait plus vite que le detail d'ici la
+        // fin du mois. C'est deja l'hypothese que porte effetSurLaSuite, et en
+        // prendre une autre ici ferait diverger deux lectures du meme mois.
+        var bovinsVol = univSens.filter(function (p) { return M.estBoeuf(p); });
+        // Les bovins ENCORE INVENDUS ce mois-ci sont hors tableau: on ne sait
+        // pas extrapoler un rythme depuis zero. L'ecran le NOMME plus bas
+        // plutot que de les escamoter - il le fait deja pour les produits hors
+        // catalogue, et une ligne absente en silence se lit comme une ligne
+        // qui n'existe pas.
+        var bovinsMuets = bovinsVol.filter(function (p) { return !(nb(p.quantite) > 0); });
+        var bovinsActifs = bovinsVol.filter(function (p) { return nb(p.quantite) > 0; });
+        var vp = PJ.volumesProjetes({
+            produits: bovinsActifs,
+            proportion: propSuite,
+            margeDe: margeApresCommission,
+            plCentral: (scen && scen.central) ? nb(scen.central.pl) : null
+        });
+        if (vp) {
+            // Un delta EXACTEMENT nul n'est pas un coussin: il dit que le mois
+            // finit pile a zero. Il garde donc sa couleur neutre, la ou un
+            // negatif est vert (on peut vendre moins) et un positif rouge.
+            var cellDelta = function (v) {
+                if (v === null) return '<td class="text-end">—</td>';
+                var cls = v > 0 ? 'text-danger' : (v < 0 ? 'text-success' : 'text-muted');
+                return '<td class="text-end fw-bold ' + cls + '">'
+                    + (v > 0 ? '+' : '') + esc(fmtDec(v)) + '</td>';
+            };
+            var volLignes = vp.lignes.map(function (l) {
+                return '<tr><td>' + esc(l.nom) + '</td>'
+                    + '<td class="text-end text-muted">' + esc(fmtDec(l.vendu)) + '</td>'
+                    + '<td class="text-end">' + esc(fmtDec(l.reste)) + '</td>'
+                    + '<td class="text-end">' + esc(fmtDec(l.mois)) + '</td>'
+                    + cellDelta(l.delta)
+                    + '<td class="text-end fw-bold">'
+                    + (l.equilibre === null ? '—' : esc(fmtDec(l.equilibre))) + '</td></tr>';
+            }).join('');
+            var t = vp.totaux;
+            // Le TITRE au-dessus du tableau, comme le fait la section
+            // equilibre: la colonne des produits le portait, et six colonnes
+            // chiffrees repliaient l'entete sur quatre lignes.
+            h += '<h6 class="small fw-medium mb-1">Volumes projetés d\'ici la fin du mois</h6>'
+                + '<div class="table-responsive"><table class="table table-sm mb-1">'
+                + '<thead><tr><th>Produit</th>'
+                + '<th class="text-end">Vendu à ce jour</th>'
+                + '<th class="text-end">Reste à vendre</th>'
+                + '<th class="text-end">Total mois</th>'
+                + '<th class="text-end">Δ équilibre</th>'
+                + '<th class="text-end">Total à l\'équilibre</th></tr></thead>'
+                + '<tbody>' + volLignes
+                + (vp.lignes.length > 1
+                    ? '<tr class="table-light fw-bold"><td>Total bœuf</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.vendu)) + '</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.reste)) + '</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.mois)) + '</td>'
+                      + cellDelta(vp.deltaTotal === null ? null : t.delta)
+                      + '<td class="text-end">'
+                      + (t.equilibre === null ? '—' : esc(fmtDec(t.equilibre))) + '</td></tr>'
+                    : '')
+                + '</tbody></table></div>'
+                + '<div class="small text-muted mb-2">Quantités vendues, au rythme de CA projeté '
+                + 'ci-dessus (+' + esc(pct2(propSuite * 100)) + ' % sur les jours qui restent), '
+                + '<strong>à prix de vente inchangé</strong> — un tarif relevé pour la suite '
+                + 'ferait le même chiffre d\'affaires avec moins de kilos. C\'est de la viande '
+                + 'VENDUE : la carcasse à commander est plus lourde du parage. '
+                + (vp.raison === null
+                    ? '<strong>Δ équilibre</strong> : les kilos à vendre en plus (ou en moins) '
+                      + 'pour amener le PL projeté à zéro, répartis au prorata du mélange actuel, '
+                      + 'à ' + esc(fmt(vp.margeMoyenne)) + ' F de marge nette le kilo — '
+                      + 'commission induite déduite.'
+                    : vp.raison === 'sans_pl'
+                        ? '<strong>Δ équilibre non chiffré</strong> : le PL projeté n\'a pas pu '
+                          + 'être calculé, il n\'y a donc pas d\'écart à combler à afficher.'
+                        : '<strong>Δ équilibre non chiffré</strong> : la marge nette au kilo '
+                          + 'n\'est pas positive, l\'équilibre ne s\'atteint donc pas en '
+                          + 'vendant plus.')
+                + (vp.nbSansMarge > 0
+                    ? ' Un produit au moins n\'a pas de marge chiffrable : il est exclu du '
+                      + 'partage plutôt que compté à zéro.'
+                    : '')
+                + (bovinsMuets.length
+                    ? ' Sans vente depuis le début du mois, donc hors tableau : '
+                      + esc(bovinsMuets.map(function (p) { return p.nom; }).join(', ')) + '.'
+                    : '')
+                + '</div>';
+        }
+
         if (!scen || !scen.central) {
             // Regle du document: sans realise exploitable, on ne projette que
             // le CA et on le DIT.
@@ -2064,9 +2164,6 @@
         // ne disent rien de ce qui se passe si la carcasse renchérit ou si la
         // découpe rend moins - deux aléas que le boucher subit sans les
         // choisir, et qui pèsent plus lourd que 10 % de CA.
-        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
-            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
-        var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
         var stats = (etat.sim.prix_achat || {}).boeuf_stats || null;
         var paMoyen = (function () {
             var bd = univSens.filter(function (p) { return M.estBoeuf(p) && nb(p.prix_achat) > 0; })[0];
