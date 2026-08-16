@@ -853,3 +853,239 @@ describe('recommandations: des gestes chiffres, pas des generalites', () => {
         expect(r.filter((x) => x.type === 'client')).toHaveLength(0);
     });
 });
+
+describe('volumesProjetes: la marchandise que la projection suppose', () => {
+    // Le melange de Mbao au 15-08-2026: le detail pese 80,9 % des kilos, le
+    // gros 19,1 %. Marges nettes apres commission induite.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 390 },
+        { nom: 'Boeuf en gros', quantite: 92.25 }
+    ];
+    const MARGES = { 'Boeuf en détail': 968, 'Boeuf en gros': 668 };
+    const margeDe = (p) => (p.nom in MARGES ? MARGES[p.nom] : null);
+
+    test('les volumes suivent la proportion des jours restants', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: -15920
+        });
+        expect(v.lignes[0].reste).toBeCloseTo(390 * 0.9085, 2);
+        expect(v.lignes[0].mois).toBeCloseTo(390 * 1.9085, 2);
+        // Les totaux sont des CUMULS, pas des derivations.
+        expect(v.totaux.vendu).toBeCloseTo(482.25, 2);
+        expect(v.totaux.mois).toBeCloseTo(v.totaux.vendu + v.totaux.reste, 6);
+    });
+
+    test('le delta comble exactement le trou, et se repartit au prorata', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: -15920
+        });
+        // La moyenne est PONDEREE par les quantites, pas une moyenne simple:
+        // une moyenne simple donnerait 818 F et surestimerait de 12 % les
+        // kilos demandes.
+        const attendue = (390 * 968 + 92.25 * 668) / 482.25;
+        expect(v.margeMoyenne).toBeCloseTo(attendue, 6);
+        expect(v.deltaTotal).toBeCloseTo(15920 / attendue, 6);
+        // Le trou est comble: kilos x marge = manque.
+        expect(v.totaux.delta * attendue).toBeCloseTo(15920, 4);
+        // Chaque part suit le poids du produit, et les parts SOMMENT au total.
+        expect(v.lignes[0].delta / v.totaux.delta).toBeCloseTo(390 / 482.25, 6);
+        expect(v.lignes[0].delta + v.lignes[1].delta).toBeCloseTo(v.totaux.delta, 6);
+        expect(v.lignes[0].equilibre).toBeCloseTo(v.lignes[0].mois + v.lignes[0].delta, 6);
+    });
+
+    test('un PL POSITIF rend un delta negatif: le coussin, en kilos', () => {
+        // Le plan d'equilibre se tait quand le PL est positif - il n'a rien a
+        // combler. Le volume, lui, dit encore quelque chose: de combien on
+        // peut se permettre de vendre moins.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe, plCentral: 45000
+        });
+        expect(v.raison).toBeNull();
+        expect(v.deltaTotal).toBeLessThan(0);
+        expect(v.totaux.equilibre).toBeLessThan(v.totaux.mois);
+    });
+
+    test('sans PL, la raison est SANS_PL et non une marge en cause', () => {
+        // Les deux silences ne se disent pas pareil: accuser la marge quand
+        // c'est le PL qui manque est un diagnostic economique inverse.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe, plCentral: null
+        });
+        expect(v.raison).toBe('sans_pl');
+        expect(v.deltaTotal).toBeNull();
+        expect(v.lignes[0].delta).toBeNull();
+        // Les volumes, eux, restent chiffres: ils ne dependent pas du PL.
+        expect(v.lignes[0].mois).toBeCloseTo(585, 2);
+    });
+
+    test('une marge non positive ne se comble pas en vendant plus', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            margeDe: () => -10, plCentral: -15920
+        });
+        expect(v.raison).toBe('marge_non_positive');
+        expect(v.deltaTotal).toBeNull();
+    });
+
+    test('un produit sans marge est exclu du partage, pas compte a zero', () => {
+        // L'inclure au denominateur diluerait la moyenne et gonflerait les
+        // kilos demandes, sur un chiffre qu'on ne sait pas etablir.
+        const v = P.volumesProjetes({
+            produits: PRODUITS.concat([{ nom: 'Veau', quantite: 100 }]),
+            proportion: 0.9085, margeDe, plCentral: -15920
+        });
+        expect(v.nbSansMarge).toBe(1);
+        const veau = v.lignes.find((l) => l.nom === 'Veau');
+        expect(veau.delta).toBeNull();
+        expect(veau.mois).toBeCloseTo(190.85, 2);   // son volume reste chiffre
+        // La moyenne ignore le veau: elle vaut celle des deux autres.
+        expect(v.margeMoyenne).toBeCloseTo((390 * 968 + 92.25 * 668) / 482.25, 6);
+        expect(v.totaux.delta).toBeCloseTo(v.deltaTotal, 6);
+    });
+
+    test('sans produit ou sans jours restants, rien a projeter', () => {
+        expect(P.volumesProjetes({ produits: [], proportion: 0.5, margeDe, plCentral: -1 }))
+            .toBeNull();
+        expect(P.volumesProjetes({ produits: PRODUITS, proportion: 0, margeDe, plCentral: -1 }))
+            .toBeNull();
+    });
+});
+
+describe('PL cible: l equilibre n est qu une cible a zero', () => {
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 390, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 92.25, prix_moyen: 4800 }
+    ];
+    const MARGES = { 'Boeuf en détail': 968, 'Boeuf en gros': 668 };
+    const margeDe = (p) => (p.nom in MARGES ? MARGES[p.nom] : null);
+    const plan = (plCentral, cible) => P.planEquilibre({
+        plCentral, cible, produits: PRODUITS, margeDe,
+        caRealise: 2853150, caProjete: 5445304, joursRestants: 13,
+        jours: { ecoules: 13, mois: 26 }, facteurMax: 3,
+        principal: 'Boeuf en détail', nbProduits: 5
+    });
+
+    test('sans cible, le comportement d avant: le manque est le PL negatif', () => {
+        expect(plan(-15920, undefined).manque).toBeCloseTo(15920, 6);
+        expect(plan(-15920, 0).manque).toBeCloseTo(15920, 6);
+    });
+
+    test('un PL POSITIF sous la cible redonne un plan', () => {
+        // C'est le cas de la PROD: le plan se taisait des que le PL passait
+        // au-dessus de zero, alors qu'un objectif de 100 000 F demande encore
+        // un effort. 45 000 realises sur 100 000 vises: il en manque 55 000.
+        expect(plan(45000, 0)).toBeNull();
+        const p = plan(45000, 100000);
+        expect(p).not.toBeNull();
+        expect(p.manque).toBeCloseTo(55000, 6);
+    });
+
+    test('cible atteinte: aucun plan, jamais un effort negatif', () => {
+        // Un manque negatif se lirait comme une consigne de vendre moins.
+        expect(plan(120000, 100000)).toBeNull();
+        expect(plan(100000, 100000)).toBeNull();
+    });
+
+    test('une cible NEGATIVE est un arbitrage, pas une erreur', () => {
+        // Accepter de perdre 50 000 ce mois-ci se saisit; il reste alors
+        // 30 000 a combler depuis -80 000.
+        const p = plan(-80000, -50000);
+        expect(p.manque).toBeCloseTo(30000, 6);
+    });
+
+    test('le volume requis suit la cible, pas seulement le signe du PL', () => {
+        const bas = plan(-15920, 0).seul.volumeAdditionnel;
+        const haut = plan(-15920, 100000).seul.volumeAdditionnel;
+        // 115 920 F a combler au lieu de 15 920: l'effort suit exactement.
+        expect(haut / bas).toBeCloseTo(115920 / 15920, 6);
+    });
+
+    test('volumesProjetes vise la MEME cible que le plan', () => {
+        // Deux cibles differentes sur le meme ecran se contrediraient.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe,
+            plCentral: 45000, cible: 100000
+        });
+        const margeMoy = (390 * 968 + 92.25 * 668) / 482.25;
+        expect(v.deltaTotal).toBeCloseTo(55000 / margeMoy, 6);
+        expect(v.totaux.delta * margeMoy).toBeCloseTo(55000, 4);
+    });
+
+    test('au-dessus de la cible, le delta reste negatif: le coussin', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe,
+            plCentral: 150000, cible: 100000
+        });
+        expect(v.deltaTotal).toBeLessThan(0);
+        expect(v.raison).toBeNull();
+    });
+});
+
+describe('les trois lectures visent la MEME cible', () => {
+    const PRODUITS = [{ nom: 'Foie', quantite: 17, prix_moyen: 4000 }];
+    const margeDe = () => 1380;
+
+    test('les recommandations chiffrent l ecart vers la cible, pas vers zero', () => {
+        const r = P.recommandations({
+            plCentral: -15920, cible: 100000, produits: PRODUITS, margeDe,
+            dateAnalyse: '2026-08-16'
+        });
+        const vol = r.find((x) => x.type === 'volume');
+        // fmt() separe les milliers par une espace fine insecable (U+202F):
+        // une assertion sur une espace ordinaire ne correspondrait jamais.
+        expect(vol.detail).toMatch(/écart de 115\s?920/);
+        expect(vol.detail).not.toMatch(/écart de 15\s?920/);
+        expect(vol.detail).toMatch(/environ 84 u/);   // 115 920 / 1 380
+    });
+
+    test('cible atteinte: aucune consigne de volume sous un bandeau de succes', () => {
+        // Le defaut vu a l'ecran: le bandeau annoncait l'objectif atteint et
+        // les conseils juste dessous reclamaient encore de combler 15 920 F.
+        const r = P.recommandations({
+            plCentral: -15920, cible: -50000, produits: PRODUITS, margeDe,
+            dateAnalyse: '2026-08-16'
+        });
+        expect(r.filter((x) => x.type === 'volume')).toHaveLength(0);
+    });
+
+    test('sans cible, le comportement d avant est preserve', () => {
+        const r = P.recommandations({
+            plCentral: -15920, produits: PRODUITS, margeDe, dateAnalyse: '2026-08-16'
+        });
+        expect(r.find((x) => x.type === 'volume').detail).toMatch(/écart de 15\s?920/);
+    });
+});
+
+describe('un PL inconnu n est pas un PL a zero', () => {
+    // projeterPL declare pl nullable (pl = marge === null ? null : ...) et
+    // margeNette s'en garde. Le convertir en zero ferait chiffrer un ecart
+    // vers la cible depuis un equilibre suppose.
+    const PRODUITS = [{ nom: 'Boeuf en détail', quantite: 390 }];
+    const margeDe = () => 968;
+
+    test('plCentral null rend sans_pl, pas un delta depuis zero', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe,
+            plCentral: null, cible: 100000
+        });
+        expect(v.raison).toBe('sans_pl');
+        expect(v.deltaTotal).toBeNull();
+    });
+
+    test('un PL a zero, lui, se chiffre bien vers la cible', () => {
+        // La distinction porte: zero est une valeur, null est une absence.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe,
+            plCentral: 0, cible: 100000
+        });
+        expect(v.raison).toBeNull();
+        expect(v.deltaTotal).toBeCloseTo(100000 / 968, 6);
+    });
+
+    test('planEquilibre refuse aussi de projeter depuis un PL absent', () => {
+        expect(P.planEquilibre({
+            plCentral: null, cible: 100000, produits: PRODUITS, margeDe,
+            caRealise: 2853150, caProjete: 5445304, joursRestants: 13
+        })).toBeNull();
+    });
+});

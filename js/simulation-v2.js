@@ -119,6 +119,12 @@
             // laissait le boucher additionner deux effets de tete. null = le
             // champ part du taux bovin constate, donc a effet nul.
             parageBoeufTeste: null,
+            // LE PL VISE par le plan et par l'ecart en kilos, en FCFA. Zero =
+            // l'equilibre, et c'est le defaut. Mais ne pas perdre n'est pas un
+            // objectif d'exploitation: celui qui veut degager 100 000 F le
+            // saisit ici, et les deux lectures - le plan et les volumes -
+            // s'ajustent ensemble.
+            plCible: 0,
             // Prix de vente retenu pour les jours qui RESTENT, par produit.
             // Vide = celui que le serveur propose (majoritaire du dernier jour
             // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
@@ -2027,6 +2033,115 @@
             + esc((ca.rythmes.sources || {}).P2 || '—') + '). '
             + 'CA estimé fin de mois : <strong>' + esc(fmt(ca.caProjete)) + '</strong> F.</div>';
 
+        // L'univers des produits et la PROPORTION que representent les jours
+        // qui restent. Declares ici et non plus dans le bloc des sensibilites:
+        // le tableau des volumes ci-dessous en a besoin, et il vient avant.
+        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
+        var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
+
+        // ---- CE QUE LA PROJECTION SUPPOSE EN MARCHANDISE.
+        //
+        // Le CA projete ne dit pas combien de KILOS il faudra vendre. C'est
+        // pourtant ce chiffre-la qui se commande: une projection a 5,4 M F ne
+        // se prepare pas, 250 kg de boeuf si.
+        //
+        // Chaque produit garde sa PART du melange: on n'a aucune raison de
+        // croire que le gros progresserait plus vite que le detail d'ici la
+        // fin du mois. C'est deja l'hypothese que porte effetSurLaSuite, et en
+        // prendre une autre ici ferait diverger deux lectures du meme mois.
+        var bovinsVol = univSens.filter(function (p) { return M.estBoeuf(p); });
+        // Les bovins ENCORE INVENDUS ce mois-ci sont hors tableau: on ne sait
+        // pas extrapoler un rythme depuis zero. L'ecran le NOMME plus bas
+        // plutot que de les escamoter - il le fait deja pour les produits hors
+        // catalogue, et une ligne absente en silence se lit comme une ligne
+        // qui n'existe pas.
+        var bovinsMuets = bovinsVol.filter(function (p) { return !(nb(p.quantite) > 0); });
+        var bovinsActifs = bovinsVol.filter(function (p) { return nb(p.quantite) > 0; });
+        var vp = PJ.volumesProjetes({
+            produits: bovinsActifs,
+            proportion: propSuite,
+            margeDe: margeApresCommission,
+            // Un PL INCONNU se transmet tel quel. nb() l'aurait converti en
+            // zero, et volumesProjetes aurait alors chiffre un ecart vers la
+            // cible depuis un equilibre suppose, au lieu de rendre la raison
+            // 'sans_pl'. projeterPL declare pl nullable (pl = marge === null
+            // ? null : ...) et margeNette s'en garde deja: on tient le meme
+            // contrat plutot que d'aplatir le cas ici.
+            plCentral: (scen && scen.central
+                && scen.central.pl !== null && scen.central.pl !== undefined)
+                ? nb(scen.central.pl) : null,
+            cible: nb(etat.proj.plCible)
+        });
+        if (vp) {
+            // Un delta EXACTEMENT nul n'est pas un coussin: il dit que le mois
+            // finit pile a zero. Il garde donc sa couleur neutre, la ou un
+            // negatif est vert (on peut vendre moins) et un positif rouge.
+            var cellDelta = function (v) {
+                if (v === null) return '<td class="text-end">—</td>';
+                var cls = v > 0 ? 'text-danger' : (v < 0 ? 'text-success' : 'text-muted');
+                return '<td class="text-end fw-bold ' + cls + '">'
+                    + (v > 0 ? '+' : '') + esc(fmtDec(v)) + '</td>';
+            };
+            var volLignes = vp.lignes.map(function (l) {
+                return '<tr><td>' + esc(l.nom) + '</td>'
+                    + '<td class="text-end text-muted">' + esc(fmtDec(l.vendu)) + '</td>'
+                    + '<td class="text-end">' + esc(fmtDec(l.reste)) + '</td>'
+                    + '<td class="text-end">' + esc(fmtDec(l.mois)) + '</td>'
+                    + cellDelta(l.delta)
+                    + '<td class="text-end fw-bold">'
+                    + (l.equilibre === null ? '—' : esc(fmtDec(l.equilibre))) + '</td></tr>';
+            }).join('');
+            var t = vp.totaux;
+            // Le TITRE au-dessus du tableau, comme le fait la section
+            // equilibre: la colonne des produits le portait, et six colonnes
+            // chiffrees repliaient l'entete sur quatre lignes.
+            h += '<h6 class="small fw-medium mb-1">Volumes projetés d\'ici la fin du mois</h6>'
+                + '<div class="table-responsive"><table class="table table-sm mb-1">'
+                + '<thead><tr><th>Produit</th>'
+                + '<th class="text-end">Vendu à ce jour</th>'
+                + '<th class="text-end">Reste à vendre</th>'
+                + '<th class="text-end">Total mois</th>'
+                + '<th class="text-end">Δ équilibre</th>'
+                + '<th class="text-end">Total à l\'équilibre</th></tr></thead>'
+                + '<tbody>' + volLignes
+                + (vp.lignes.length > 1
+                    ? '<tr class="table-light fw-bold"><td>Total bœuf</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.vendu)) + '</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.reste)) + '</td>'
+                      + '<td class="text-end">' + esc(fmtDec(t.mois)) + '</td>'
+                      + cellDelta(vp.deltaTotal === null ? null : t.delta)
+                      + '<td class="text-end">'
+                      + (t.equilibre === null ? '—' : esc(fmtDec(t.equilibre))) + '</td></tr>'
+                    : '')
+                + '</tbody></table></div>'
+                + '<div class="small text-muted mb-2">Quantités vendues, au rythme de CA projeté '
+                + 'ci-dessus (+' + esc(pct2(propSuite * 100)) + ' % sur les jours qui restent), '
+                + '<strong>à prix de vente inchangé</strong> — un tarif relevé pour la suite '
+                + 'ferait le même chiffre d\'affaires avec moins de kilos. C\'est de la viande '
+                + 'VENDUE : la carcasse à commander est plus lourde du parage. '
+                + (vp.raison === null
+                    ? '<strong>Δ équilibre</strong> : les kilos à vendre en plus (ou en moins) '
+                      + 'pour amener le PL projeté à zéro, répartis au prorata du mélange actuel, '
+                      + 'à ' + esc(fmt(vp.margeMoyenne)) + ' F de marge nette le kilo — '
+                      + 'commission induite déduite.'
+                    : vp.raison === 'sans_pl'
+                        ? '<strong>Δ équilibre non chiffré</strong> : le PL projeté n\'a pas pu '
+                          + 'être calculé, il n\'y a donc pas d\'écart à combler à afficher.'
+                        : '<strong>Δ équilibre non chiffré</strong> : la marge nette au kilo '
+                          + 'n\'est pas positive, l\'équilibre ne s\'atteint donc pas en '
+                          + 'vendant plus.')
+                + (vp.nbSansMarge > 0
+                    ? ' Un produit au moins n\'a pas de marge chiffrable : il est exclu du '
+                      + 'partage plutôt que compté à zéro.'
+                    : '')
+                + (bovinsMuets.length
+                    ? ' Sans vente depuis le début du mois, donc hors tableau : '
+                      + esc(bovinsMuets.map(function (p) { return p.nom; }).join(', ')) + '.'
+                    : '')
+                + '</div>';
+        }
+
         if (!scen || !scen.central) {
             // Regle du document: sans realise exploitable, on ne projette que
             // le CA et on le DIT.
@@ -2064,9 +2179,6 @@
         // ne disent rien de ce qui se passe si la carcasse renchérit ou si la
         // découpe rend moins - deux aléas que le boucher subit sans les
         // choisir, et qui pèsent plus lourd que 10 % de CA.
-        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
-            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
-        var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
         var stats = (etat.sim.prix_achat || {}).boeuf_stats || null;
         var paMoyen = (function () {
             var bd = univSens.filter(function (p) { return M.estBoeuf(p) && nb(p.prix_achat) > 0; })[0];
@@ -2221,11 +2333,32 @@
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
-            principal: 'Boeuf en détail', nbProduits: 5
+            principal: 'Boeuf en détail', nbProduits: 5,
+            cible: nb(etat.proj.plCible)
         });
+        // LE PL VISE se regle ICI, HORS du bloc `if (eq)`.
+        //
+        // Le mettre a l'interieur l'aurait enferme: des que la cible est
+        // atteinte le plan disparait, et avec lui le seul champ permettant de
+        // la relever. Un boucher a +45 000 F n'aurait plus jamais pu demander
+        // 100 000. Le reglage vit donc au-dessus, toujours visible.
+        var plCibleUi = nb(etat.proj.plCible);
+        h += '<div class="d-flex align-items-center gap-2 mb-2 small flex-wrap">'
+            + '<label class="fw-medium mb-0" for="sim2-pl-cible">'
+            + 'Objectif de PL fin de mois</label>'
+            + '<input type="number" id="sim2-pl-cible" '
+            + 'class="form-control form-control-sm sim2-proj-ctl" '
+            + 'data-k="plCible" style="width:9rem" step="10000" value="'
+            + esc(String(Math.round(plCibleUi))) + '">'
+            + '<span class="text-muted">FCFA — 0 = l\'équilibre</span></div>';
+
         if (eq) {
             var s0 = eq.seul;
-            h += '<h6 class="small fw-medium mb-1">Revenir à l\'équilibre d\'ici le '
+            h += '<h6 class="small fw-medium mb-1">'
+                + (plCibleUi === 0
+                    ? 'Revenir à l\'équilibre'
+                    : 'Atteindre ' + esc(fmt(plCibleUi)) + ' F')
+                + ' d\'ici le '
                 + esc(ca.finMois) + ' — ' + eq.joursRestants + ' jours restants</h6>'
                 + noteHorsCatalogue(universEq)
                 + '<div class="alert alert-light border py-2 small mb-2">'
@@ -2393,6 +2526,19 @@
                     + 'L\'équilibre ne se joue pas sur le seul volume ce mois-ci — '
                     + 'il faut agir sur les prix, les charges ou les dépenses.</div>';
             }
+        } else if (d0 && d0.pl !== null && d0.pl !== undefined && nb(d0.pl) >= plCibleUi) {
+            // CIBLE DEJA ATTEINTE. L'ecran se taisait completement dans ce cas,
+            // et l'absence de plan se lisait comme une panne plutot que comme
+            // une bonne nouvelle. On dit l'avance, et on renvoie vers la
+            // colonne qui la traduit en marchandise.
+            h += '<div class="alert alert-success py-2 small mb-2">'
+                + '<i class="bi bi-check-circle"></i> Objectif déjà atteint : le PL projeté de '
+                + '<strong>' + esc(fmt(d0.pl)) + ' F</strong> dépasse la cible de '
+                + esc(fmt(plCibleUi)) + ' F de <strong>' + esc(fmt(nb(d0.pl) - plCibleUi))
+                + ' F</strong>. Aucun effort de volume à demander — la colonne '
+                + '<em>Δ équilibre</em> plus haut dit de combien vous pourriez vendre moins '
+                + 'tout en tenant l\'objectif. Relevez la cible pour voir l\'effort qu\'un '
+                + 'objectif plus ambitieux demanderait.</div>';
         }
 
         h += panneauProduitsSuivis();
@@ -2465,6 +2611,7 @@
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
             plCentral: d0.pl,
+            cible: nb(etat.proj.plCible),
             // universEq, le MEME univers que le plan d'equilibre - pas
             // etat.produits. Les deux blocs repondent a la meme question, « que
             // vendre en plus pour combler le manque »: les faire raisonner sur
@@ -2723,6 +2870,12 @@
                     etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0))
                         ? null
                         : Math.min(100000, pb);
+                }
+                else if (k === 'plCible') {
+                    // Champ vide = l'equilibre, pas « pas de cible ». Et une
+                    // cible NEGATIVE est legitime: accepter de perdre 50 000 F
+                    // ce mois-ci est un arbitrage, pas une erreur de saisie.
+                    etat.proj.plCible = el.value === '' ? 0 : nb(el.value);
                 }
                 else if (k === 'parageBoeufTeste') {
                     // Contrairement au prix, un parage de ZERO est legitime -
