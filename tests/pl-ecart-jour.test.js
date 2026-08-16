@@ -259,17 +259,21 @@ describe('les bornes du stock: rendre la ligne auditable', () => {
             soir_fin: 0, coeff: 0.95, soir_estime: false, soir_detail: [] }, sJ) })
     });
 
-    test('la variation se REFAIT depuis les bornes', () => {
-        // L'identite verifiee sur les snapshots reels: le tableau n'affiche
-        // que deux nets, et un net ne se verifie pas sans ses bornes.
-        const r = avecStock({ soir_fin: 316387 }, { soir_fin: 586090 });
+    test('les bornes rendent les valeurs, et la variation DU SERVEUR', () => {
+        // Ce test affirmait `variation = (fin - depart) x coeff` et passait -
+        // parce que le module appliquait la meme regle fausse. Code et test
+        // partageaient la premisse; seules les donnees reelles l'ont montree.
+        // Le coefficient ne porte que sur la boucherie (voir plus bas).
+        const r = avecStock(
+            { soir_fin: 316387, variation_nette: -13483.35 },
+            { soir_fin: 586090, variation_nette: 242734.5 });
         const b = r.stock.bornes;
         expect(b.depart).toBeCloseTo(330580, 2);
         expect(b.fin_veille).toBeCloseTo(316387, 2);
         expect(b.fin_jour).toBeCloseTo(586090, 2);
-        // Recalcule a la main, pas par le module.
-        expect(b.variation_veille).toBeCloseTo((316387 - 330580) * 0.95, 2);
-        expect(b.variation_jour).toBeCloseTo((586090 - 330580) * 0.95, 2);
+        // La variation est LUE, pas reconstruite.
+        expect(b.variation_veille).toBeCloseTo(-13483.35, 2);
+        expect(b.variation_jour).toBeCloseTo(242734.5, 2);
     });
 
     test('le depart est COMMUN aux deux cumuls, et son changement est signale', () => {
@@ -656,5 +660,48 @@ describe('la couche route, extraite pour etre testable', () => {
             .toEqual({ debut: '2026-08-01', fin: '2026-08-01' });
         // Annee bissextile: le 29 fevrier existe en 2028.
         expect(fenetreEntrees('2028-02-28', '2028-02-29').debut).toBe('2028-02-29');
+    });
+});
+
+describe('la variation nette n est PAS (fin - depart) x coeff', () => {
+    // Ma premiere ecriture appliquait le coefficient a TOUT. Le coefficient de
+    // pertes de decoupe ne porte que sur la boucherie: l epicerie ne se pare
+    // pas. Sur le 15-08 reel, l ecart entre les deux formules valait 1 200 F -
+    // assez peu pour passer inapercu, assez pour qu un lecteur qui refait le
+    // calcul ne retombe jamais sur ses pieds.
+    const jour = (o) => payload({ stock: Object.assign({
+        matin_debut: 325080, soir_fin: 426033, coeff: 0.95,
+        variation_boucherie: 76953, variation_hors_boucherie: 24000,
+        variation_nette: 76953 * 0.95 + 24000,
+        soir_estime: false, soir_detail: []
+    }, o) });
+
+    test('les bornes rendent la variation du SERVEUR, pas une reconstruction', () => {
+        const r = ecartJour({ veille: jour({}), jour: jour({}) });
+        const b = r.stock.bornes;
+        // La vraie valeur, celle du payload.
+        expect(b.variation_veille).toBeCloseTo(97105.35, 2);
+        // Et surtout PAS la formule approchee, qui donnerait 95 905,35.
+        expect(b.variation_veille).not.toBeCloseTo((426033 - 325080) * 0.95, 2);
+        expect(b.boucherie_veille).toBeCloseTo(76953, 2);
+        expect(b.hors_boucherie_veille).toBeCloseTo(24000, 2);
+    });
+
+    test('le pont chiffre les trois termes qui separent le tableau du poste', () => {
+        // Le cas reel qui a souleve la question: -71 684 au tableau produit
+        // contre -39 994 au poste. Le depart avait bouge de -30 690.
+        const r = ecartJour({
+            veille: jour({}),
+            jour: jour({ matin_debut: 294390, soir_fin: 354349,
+                variation_boucherie: 34695, variation_hors_boucherie: 24000,
+                variation_nette: 34695 * 0.95 + 24000 })
+        });
+        const p = r.stock.bornes.pont;
+        expect(p.ecart_soir).toBeCloseTo(354349 - 426033, 2);      // -71 684
+        expect(p.ecart_depart).toBeCloseTo(294390 - 325080, 2);    // -30 690
+        // Le poste, lui, vient des variations nettes reelles.
+        expect(p.ecart_poste).toBeCloseTo((34695 * 0.95 + 24000) - (76953 * 0.95 + 24000), 2);
+        // Et les trois ne sont PAS egaux: c est tout l objet du pont.
+        expect(p.ecart_soir).not.toBeCloseTo(p.ecart_poste, 2);
     });
 });

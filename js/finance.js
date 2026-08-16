@@ -2680,8 +2680,11 @@
                     <div>· Stock de <strong>fin</strong> au ${esc(fmtDateFr(d.date_jour))} :
                         ${esc(fmtMoney(b.fin_jour))}
                         <span class="text-muted">→ variation ${esc(fmtMoney(b.variation_jour))}</span></div>
-                    <div class="text-muted">variation = (fin − départ) × coefficient
-                        ${esc(String(b.coeff_jour))}</div>
+                    <div class="text-muted">variation = boucherie
+                        (${esc(fmtMoney(b.boucherie_jour))}) × coefficient
+                        ${esc(String(b.coeff_jour))} + hors boucherie
+                        (${esc(fmtMoney(b.hors_boucherie_jour))}). Le coefficient de pertes
+                        de découpe ne porte que sur la boucherie — l'épicerie ne se pare pas.</div>
                    </div>`
                 : '';
             // Le partage n'a de sens que si le stock a bouge. Sur une journee
@@ -2775,6 +2778,23 @@
                         photo ; une valeur <span style="text-decoration:underline dotted">soulignée</span>
                         est adossée au prix de VENTE, faute de prix d'achat connu — elle ne dit
                         pas ce que la marchandise a coûté.</div>
+                    ${(b.pont && Math.abs(nb(b.pont.ecart_soir) - nb(b.pont.ecart_poste)) >= 1)
+                        // LE PONT vers le poste. Ce tableau mesure le stock DU
+                        // SOIR, le poste mesure la variation DEPUIS LE DEPART:
+                        // comparer les deux totaux sans cette explication fait
+                        // conclure que l'un est faux.
+                        ? `<div class="alert alert-light border py-2 small mb-0 mt-2">
+                            <div class="fw-medium">Pourquoi ce total diffère du poste
+                                « Variation de stock »</div>
+                            <div>· Ce tableau mesure le <strong>stock du soir</strong> :
+                                ${esc(fmtMoney(b.pont.ecart_soir))}</div>
+                            <div>· Le stock de <strong>départ</strong> a bougé lui aussi :
+                                ${esc(fmtMoney(b.pont.ecart_depart))}</div>
+                            <div>· Le <strong>coefficient</strong> ${esc(String(b.coeff_jour))}
+                                ne s'applique qu'à la boucherie</div>
+                            <div>· = poste <strong>${esc(fmtMoney(b.pont.ecart_poste))}</strong></div>
+                           </div>`
+                        : ''}
                    </details>`
                 : '';
 
