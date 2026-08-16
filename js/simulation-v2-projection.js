@@ -369,8 +369,14 @@
 
         // Le manque a combler, traduit en gestes concrets sur les meilleurs
         // leviers. margeDe(p) est la marge NETTE du moteur de simulation.
-        if (plCentral !== null && plCentral < 0) {
-            var gap = -plCentral;
+        // MEME cible que planEquilibre et volumesProjetes. Sans elle, ces
+        // conseils continuaient d'annoncer « comblent l'ecart de 15 920 F »
+        // sous un bandeau disant que l'objectif est atteint, ou de se taire
+        // alors qu'un objectif de 100 000 F reclame encore un effort. Trois
+        // lectures du meme mois doivent viser le meme chiffre.
+        var gap = (plCentral === null || plCentral === undefined)
+            ? 0 : nb(args.cible) - plCentral;
+        if (gap > 0) {
             var margees = produits
                 .map(function (p) { return { p: p, m: args.margeDe(p) }; })
                 .filter(function (x) { return x.m !== null && x.m > 0; })
@@ -492,8 +498,18 @@
      */
     function planEquilibre(args) {
         var plCentral = args.plCentral;
-        if (plCentral === null || plCentral === undefined || plCentral >= 0) return null;
-        var manque = -plCentral;
+        if (plCentral === null || plCentral === undefined) return null;
+        // LE PL VISE. Zero par defaut - l'equilibre - mais ce n'en est qu'un
+        // cas particulier: un boucher qui veut degager 100 000 F ne se
+        // contente pas de ne pas perdre, et le plan doit alors chiffrer
+        // l'effort vers CE chiffre-la. Tout ce qui suit ne connait que
+        // `manque`, donc la generalisation ne coute rien de plus.
+        var cible = nb(args.cible);
+        var manque = cible - plCentral;
+        // Cible deja atteinte: il n'y a pas d'effort a demander. On se tait
+        // plutot que d'afficher un plan a effort negatif, qui se lirait comme
+        // une consigne de vendre moins.
+        if (!(manque > 0)) return null;
         var caRealise = nb(args.caRealise);
         var caRestant = nb(args.caProjete) - caRealise;
         if (caRealise <= 0 || caRestant <= 0) return null;
@@ -926,7 +942,11 @@
         var raison = null;
         if (plCentral === null || plCentral === undefined) raison = 'sans_pl';
         else if (!(margeMoy > 0)) raison = 'marge_non_positive';
-        var deltaTotal = raison ? null : -nb(plCentral) / margeMoy;
+        // MEME cible que planEquilibre: les deux repondent a la meme question
+        // - combien pour atteindre ce PL-la - et deux cibles differentes sur
+        // le meme ecran se contrediraient. Zero reste le defaut, et l'ecart
+        // garde son signe: au-dessus de la cible, on peut vendre moins.
+        var deltaTotal = raison ? null : (nb(args.cible) - nb(plCentral)) / margeMoy;
 
         var tot = { vendu: 0, reste: 0, mois: 0, delta: 0 };
         var lignes = produits.map(function (p) {

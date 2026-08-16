@@ -119,6 +119,12 @@
             // laissait le boucher additionner deux effets de tete. null = le
             // champ part du taux bovin constate, donc a effet nul.
             parageBoeufTeste: null,
+            // LE PL VISE par le plan et par l'ecart en kilos, en FCFA. Zero =
+            // l'equilibre, et c'est le defaut. Mais ne pas perdre n'est pas un
+            // objectif d'exploitation: celui qui veut degager 100 000 F le
+            // saisit ici, et les deux lectures - le plan et les volumes -
+            // s'ajustent ensemble.
+            plCible: 0,
             // Prix de vente retenu pour les jours qui RESTENT, par produit.
             // Vide = celui que le serveur propose (majoritaire du dernier jour
             // vendu). Une saisie ici le remplace: le tarif courant peut n'avoir
@@ -2056,7 +2062,8 @@
             produits: bovinsActifs,
             proportion: propSuite,
             margeDe: margeApresCommission,
-            plCentral: (scen && scen.central) ? nb(scen.central.pl) : null
+            plCentral: (scen && scen.central) ? nb(scen.central.pl) : null,
+            cible: nb(etat.proj.plCible)
         });
         if (vp) {
             // Un delta EXACTEMENT nul n'est pas un coussin: il dit que le mois
@@ -2318,11 +2325,30 @@
             caRealise: b.ventes, caProjete: ca.caProjete,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
-            principal: 'Boeuf en détail', nbProduits: 5
+            principal: 'Boeuf en détail', nbProduits: 5,
+            cible: nb(etat.proj.plCible)
         });
+        // LE PL VISE se regle ICI, HORS du bloc `if (eq)`.
+        //
+        // Le mettre a l'interieur l'aurait enferme: des que la cible est
+        // atteinte le plan disparait, et avec lui le seul champ permettant de
+        // la relever. Un boucher a +45 000 F n'aurait plus jamais pu demander
+        // 100 000. Le reglage vit donc au-dessus, toujours visible.
+        var plCibleUi = nb(etat.proj.plCible);
+        h += '<div class="d-flex align-items-center gap-2 mb-2 small flex-wrap">'
+            + '<span class="fw-medium">Objectif de PL fin de mois</span>'
+            + '<input type="number" class="form-control form-control-sm sim2-proj-ctl" '
+            + 'data-k="plCible" style="width:9rem" step="10000" value="'
+            + esc(String(Math.round(plCibleUi))) + '">'
+            + '<span class="text-muted">FCFA — 0 = l\'équilibre</span></div>';
+
         if (eq) {
             var s0 = eq.seul;
-            h += '<h6 class="small fw-medium mb-1">Revenir à l\'équilibre d\'ici le '
+            h += '<h6 class="small fw-medium mb-1">'
+                + (plCibleUi === 0
+                    ? 'Revenir à l\'équilibre'
+                    : 'Atteindre ' + esc(fmt(plCibleUi)) + ' F')
+                + ' d\'ici le '
                 + esc(ca.finMois) + ' — ' + eq.joursRestants + ' jours restants</h6>'
                 + noteHorsCatalogue(universEq)
                 + '<div class="alert alert-light border py-2 small mb-2">'
@@ -2490,6 +2516,19 @@
                     + 'L\'équilibre ne se joue pas sur le seul volume ce mois-ci — '
                     + 'il faut agir sur les prix, les charges ou les dépenses.</div>';
             }
+        } else if (d0 && nb(d0.pl) >= plCibleUi) {
+            // CIBLE DEJA ATTEINTE. L'ecran se taisait completement dans ce cas,
+            // et l'absence de plan se lisait comme une panne plutot que comme
+            // une bonne nouvelle. On dit l'avance, et on renvoie vers la
+            // colonne qui la traduit en marchandise.
+            h += '<div class="alert alert-success py-2 small mb-2">'
+                + '<i class="bi bi-check-circle"></i> Objectif déjà atteint : le PL projeté de '
+                + '<strong>' + esc(fmt(d0.pl)) + ' F</strong> dépasse la cible de '
+                + esc(fmt(plCibleUi)) + ' F de <strong>' + esc(fmt(nb(d0.pl) - plCibleUi))
+                + ' F</strong>. Aucun effort de volume à demander — la colonne '
+                + '<em>Δ équilibre</em> plus haut dit de combien vous pourriez vendre moins '
+                + 'tout en tenant l\'objectif. Relevez la cible pour voir l\'effort qu\'un '
+                + 'objectif plus ambitieux demanderait.</div>';
         }
 
         h += panneauProduitsSuivis();
@@ -2562,6 +2601,7 @@
         var clientsHisto = (etat.sim.clients_historique || {}).clients || [];
         var recos = PJ.recommandations({
             plCentral: d0.pl,
+            cible: nb(etat.proj.plCible),
             // universEq, le MEME univers que le plan d'equilibre - pas
             // etat.produits. Les deux blocs repondent a la meme question, « que
             // vendre en plus pour combler le manque »: les faire raisonner sur
@@ -2820,6 +2860,12 @@
                     etat.proj.prixBoeufTeste = (el.value === '' || !(pb > 0))
                         ? null
                         : Math.min(100000, pb);
+                }
+                else if (k === 'plCible') {
+                    // Champ vide = l'equilibre, pas « pas de cible ». Et une
+                    // cible NEGATIVE est legitime: accepter de perdre 50 000 F
+                    // ce mois-ci est un arbitrage, pas une erreur de saisie.
+                    etat.proj.plCible = el.value === '' ? 0 : nb(el.value);
                 }
                 else if (k === 'parageBoeufTeste') {
                     // Contrairement au prix, un parage de ZERO est legitime -

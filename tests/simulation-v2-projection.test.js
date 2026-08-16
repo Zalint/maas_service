@@ -950,3 +950,108 @@ describe('volumesProjetes: la marchandise que la projection suppose', () => {
             .toBeNull();
     });
 });
+
+describe('PL cible: l equilibre n est qu une cible a zero', () => {
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 390, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 92.25, prix_moyen: 4800 }
+    ];
+    const MARGES = { 'Boeuf en détail': 968, 'Boeuf en gros': 668 };
+    const margeDe = (p) => (p.nom in MARGES ? MARGES[p.nom] : null);
+    const plan = (plCentral, cible) => P.planEquilibre({
+        plCentral, cible, produits: PRODUITS, margeDe,
+        caRealise: 2853150, caProjete: 5445304, joursRestants: 13,
+        jours: { ecoules: 13, mois: 26 }, facteurMax: 3,
+        principal: 'Boeuf en détail', nbProduits: 5
+    });
+
+    test('sans cible, le comportement d avant: le manque est le PL negatif', () => {
+        expect(plan(-15920, undefined).manque).toBeCloseTo(15920, 6);
+        expect(plan(-15920, 0).manque).toBeCloseTo(15920, 6);
+    });
+
+    test('un PL POSITIF sous la cible redonne un plan', () => {
+        // C'est le cas de la PROD: le plan se taisait des que le PL passait
+        // au-dessus de zero, alors qu'un objectif de 100 000 F demande encore
+        // un effort. 45 000 realises sur 100 000 vises: il en manque 55 000.
+        expect(plan(45000, 0)).toBeNull();
+        const p = plan(45000, 100000);
+        expect(p).not.toBeNull();
+        expect(p.manque).toBeCloseTo(55000, 6);
+    });
+
+    test('cible atteinte: aucun plan, jamais un effort negatif', () => {
+        // Un manque negatif se lirait comme une consigne de vendre moins.
+        expect(plan(120000, 100000)).toBeNull();
+        expect(plan(100000, 100000)).toBeNull();
+    });
+
+    test('une cible NEGATIVE est un arbitrage, pas une erreur', () => {
+        // Accepter de perdre 50 000 ce mois-ci se saisit; il reste alors
+        // 30 000 a combler depuis -80 000.
+        const p = plan(-80000, -50000);
+        expect(p.manque).toBeCloseTo(30000, 6);
+    });
+
+    test('le volume requis suit la cible, pas seulement le signe du PL', () => {
+        const bas = plan(-15920, 0).seul.volumeAdditionnel;
+        const haut = plan(-15920, 100000).seul.volumeAdditionnel;
+        // 115 920 F a combler au lieu de 15 920: l'effort suit exactement.
+        expect(haut / bas).toBeCloseTo(115920 / 15920, 6);
+    });
+
+    test('volumesProjetes vise la MEME cible que le plan', () => {
+        // Deux cibles differentes sur le meme ecran se contrediraient.
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe,
+            plCentral: 45000, cible: 100000
+        });
+        const margeMoy = (390 * 968 + 92.25 * 668) / 482.25;
+        expect(v.deltaTotal).toBeCloseTo(55000 / margeMoy, 6);
+        expect(v.totaux.delta * margeMoy).toBeCloseTo(55000, 4);
+    });
+
+    test('au-dessus de la cible, le delta reste negatif: le coussin', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe,
+            plCentral: 150000, cible: 100000
+        });
+        expect(v.deltaTotal).toBeLessThan(0);
+        expect(v.raison).toBeNull();
+    });
+});
+
+describe('les trois lectures visent la MEME cible', () => {
+    const PRODUITS = [{ nom: 'Foie', quantite: 17, prix_moyen: 4000 }];
+    const margeDe = () => 1380;
+
+    test('les recommandations chiffrent l ecart vers la cible, pas vers zero', () => {
+        const r = P.recommandations({
+            plCentral: -15920, cible: 100000, produits: PRODUITS, margeDe,
+            dateAnalyse: '2026-08-16'
+        });
+        const vol = r.find((x) => x.type === 'volume');
+        // fmt() separe les milliers par une espace fine insecable (U+202F):
+        // une assertion sur une espace ordinaire ne correspondrait jamais.
+        expect(vol.detail).toMatch(/écart de 115\s?920/);
+        expect(vol.detail).not.toMatch(/écart de 15\s?920/);
+        expect(vol.detail).toMatch(/environ 84 u/);   // 115 920 / 1 380
+    });
+
+    test('cible atteinte: aucune consigne de volume sous un bandeau de succes', () => {
+        // Le defaut vu a l'ecran: le bandeau annoncait l'objectif atteint et
+        // les conseils juste dessous reclamaient encore de combler 15 920 F.
+        const r = P.recommandations({
+            plCentral: -15920, cible: -50000, produits: PRODUITS, margeDe,
+            dateAnalyse: '2026-08-16'
+        });
+        expect(r.filter((x) => x.type === 'volume')).toHaveLength(0);
+    });
+
+    test('sans cible, le comportement d avant est preserve', () => {
+        const r = P.recommandations({
+            plCentral: -15920, produits: PRODUITS, margeDe, dateAnalyse: '2026-08-16'
+        });
+        expect(r.find((x) => x.type === 'volume').detail).toMatch(/écart de 15\s?920/);
+    });
+});
