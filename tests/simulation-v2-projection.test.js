@@ -1089,3 +1089,62 @@ describe('un PL inconnu n est pas un PL a zero', () => {
         })).toBeNull();
     });
 });
+
+describe('volumesProjetes: le prix requis par produit, meme manque que les kilos', () => {
+    // Memes fixtures que le bloc precedent, avec un prix_moyen par produit -
+    // le mix (390/92.25) reste le ratio reel/historique confirme par
+    // l'utilisateur pour repartir l'effort.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 390, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 92.25, prix_moyen: 5200 }
+    ];
+    const MARGES = { 'Boeuf en détail': 968, 'Boeuf en gros': 668 };
+    const margeDe = (p) => (p.nom in MARGES ? MARGES[p.nom] : null);
+
+    test('sans manque (cible = PL), le prix requis EGALE le prix actuel', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: -15920, cible: -15920
+        });
+        v.lignes.forEach((l) => expect(l.prixRequis).toBeCloseTo(l.prixMoyen, 6));
+    });
+
+    test('le manque se repartit au MEME ratio que le delta en kilos', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: -15920, cible: 0
+        });
+        const detail = v.lignes.find((l) => l.nom === 'Boeuf en détail');
+        const gros = v.lignes.find((l) => l.nom === 'Boeuf en gros');
+        // manque total 15 920, reparti 390/482.25 et 92.25/482.25.
+        const manqueDetail = 15920 * (390 / 482.25);
+        const manqueGros = 15920 * (92.25 / 482.25);
+        expect(detail.prixRequis).toBeCloseTo(5400 + manqueDetail / detail.reste, 4);
+        expect(gros.prixRequis).toBeCloseTo(5200 + manqueGros / gros.reste, 4);
+        // Le prix requis augmente quand il manque de la marge.
+        expect(detail.prixRequis).toBeGreaterThan(5400);
+        expect(gros.prixRequis).toBeGreaterThan(5200);
+    });
+
+    test('un PL au-dessus de la cible fait BAISSER le prix requis', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: 45000, cible: 0
+        });
+        const detail = v.lignes.find((l) => l.nom === 'Boeuf en détail');
+        expect(detail.prixRequis).toBeLessThan(detail.prixMoyen);
+    });
+
+    test('sans prix_moyen connu, le prix requis reste null', () => {
+        const sans = [{ nom: 'Boeuf en détail', quantite: 390 }];
+        const v = P.volumesProjetes({
+            produits: sans, proportion: 0.9085, margeDe, plCentral: -15920, cible: 0
+        });
+        expect(v.lignes[0].prixRequis).toBeNull();
+        expect(v.lignes[0].prixMoyen).toBeNull();
+    });
+
+    test('sans PL (raison sans_pl), le prix requis reste null - pas de manque a chiffrer', () => {
+        const v = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.9085, margeDe, plCentral: null, cible: 0
+        });
+        v.lignes.forEach((l) => expect(l.prixRequis).toBeNull());
+    });
+});

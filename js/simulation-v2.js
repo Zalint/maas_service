@@ -2140,6 +2140,58 @@
                       + esc(bovinsMuets.map(function (p) { return p.nom; }).join(', ')) + '.'
                     : '')
                 + '</div>';
+
+            // ---- LE PRIX CONSEILLE, meme manque, a volume inchange.
+            //
+            // Deuxieme lecture du MEME manque, pas un remplacement du Δ
+            // equilibre: celui-ci demande "combien de kilos en plus", celui-la
+            // "a quel prix vendre ce qui reste". Repartition au meme ratio
+            // reel/historique (q/qEq) que le Δ equilibre - deux cles de
+            // repartition differentes sur le meme ecran se contrediraient.
+            //
+            // Le cout n'est pas recalcule ici: margeDe (donc
+            // margeApresCommission) divise deja le cout carcasse par
+            // (1-parage) et deduit la commission induite. Reecrire cette
+            // division ici en ferait une seconde formule, libre de diverger.
+            var lignesPrix = vp.lignes.filter(function (l) { return l.prixRequis !== null; });
+            if (!lignesPrix.length && vp.raison) {
+                // MEME message que le Δ equilibre juste au-dessus: un bloc qui
+                // disparait sans un mot se lit comme un bug d'affichage, la ou
+                // c'est la consequence normale de l'absence de PL ou de marge.
+                h += '<div class="small text-muted mb-2">'
+                    + '<strong>Prix conseillé non chiffré</strong> : '
+                    + (vp.raison === 'sans_pl'
+                        ? 'le PL projeté n\'a pas pu être calculé.'
+                        : 'la marge nette au kilo n\'est pas positive.') + '</div>';
+            } else if (lignesPrix.length) {
+                var cellEcartPx = function (actuel, requis) {
+                    var e = requis - actuel;
+                    if (Math.abs(e) < 0.5) return '<td class="text-end text-muted">inchangé</td>';
+                    var cls = e > 0 ? 'text-danger' : 'text-success';
+                    return '<td class="text-end fw-bold ' + cls + '">'
+                        + (e > 0 ? '+' : '') + esc(fmt(e)) + ' F/kg</td>';
+                };
+                h += '<h6 class="small fw-medium mb-1">Prix conseillé, à volume inchangé</h6>'
+                    + '<div class="table-responsive"><table class="table table-sm mb-1">'
+                    + '<thead><tr><th>Produit</th>'
+                    + '<th class="text-end">Reste à vendre</th>'
+                    + '<th class="text-end">Prix actuel</th>'
+                    + '<th class="text-end">Prix conseillé</th>'
+                    + '<th class="text-end">Écart</th></tr></thead><tbody>'
+                    + lignesPrix.map(function (l) {
+                        return '<tr><td>' + esc(l.nom) + '</td>'
+                            + '<td class="text-end">' + esc(fmtDec(l.reste)) + '</td>'
+                            + '<td class="text-end text-muted">' + esc(fmt(l.prixMoyen)) + ' F/kg</td>'
+                            + '<td class="text-end fw-bold">' + esc(fmt(l.prixRequis)) + ' F/kg</td>'
+                            + cellEcartPx(l.prixMoyen, l.prixRequis) + '</tr>';
+                    }).join('')
+                    + '</tbody></table></div>'
+                    + '<div class="small text-muted mb-2">Le prix qu\'il faudrait pratiquer sur le '
+                    + 'reste à vendre de <strong>chaque</strong> produit — sans changer les volumes '
+                    + '— pour combler le même manque que le Δ équilibre ci-dessus, réparti au même '
+                    + 'prorata du mélange. Le coût carcasse est déjà celui du dernier prix connu, '
+                    + 'divisé par (1 − parage) : vendre 1 kg en consomme davantage à la découpe.</div>';
+            }
         }
 
         if (!scen || !scen.central) {
