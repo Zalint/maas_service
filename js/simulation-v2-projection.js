@@ -496,6 +496,21 @@
      * @param {string} [args.principal]    produit mis en avant
      * @param {number} [args.nbProduits]   taille du plan cumule (defaut 5)
      */
+
+    /**
+     * Le PRIX qu'il faudrait pratiquer, a VOLUME INCHANGE, pour degager `manque`
+     * F de marge supplementaire sur `volumeRestant` unites.
+     *
+     * Une seule ecriture pour les deux endroits qui posent la meme question -
+     * planEquilibre (un seul produit) et volumesProjetes (chaque produit) -
+     * pour qu'une correction future (la commission induite par une hausse de
+     * prix, par exemple) ne se fasse pas a un seul des deux endroits.
+     */
+    function prixPourCombler(prixActuel, manque, volumeRestant) {
+        if (prixActuel === null || prixActuel === undefined) return null;
+        if (!(volumeRestant > 0)) return null;
+        return nb(prixActuel) + nb(manque) / volumeRestant;
+    }
     function planEquilibre(args) {
         var plCentral = args.plCentral;
         if (plCentral === null || plCentral === undefined) return null;
@@ -563,8 +578,7 @@
             // Le prix de vente qu'il faudrait pratiquer pour degager la marge
             // requise, a cout inchange: c'est la meme hausse, exprimee sur le
             // chiffre que le boucher affiche.
-            prixRequis: principal.prixMoyen === null
-                ? null : principal.prixMoyen + manque / principal.volumeRestant,
+            prixRequis: prixPourCombler(principal.prixMoyen, manque, principal.volumeRestant),
             // (a) meme volume, marge plus haute.
             margeRequise: margeRequise,
             hausseMarge: margeRequise - principal.marge,
@@ -946,7 +960,8 @@
         // - combien pour atteindre ce PL-la - et deux cibles differentes sur
         // le meme ecran se contrediraient. Zero reste le defaut, et l'ecart
         // garde son signe: au-dessus de la cible, on peut vendre moins.
-        var deltaTotal = raison ? null : (nb(args.cible) - nb(plCentral)) / margeMoy;
+        var manqueTotal = raison ? null : (nb(args.cible) - nb(plCentral));
+        var deltaTotal = manqueTotal === null ? null : manqueTotal / margeMoy;
 
         var tot = { vendu: 0, reste: 0, mois: 0, delta: 0 };
         var lignes = produits.map(function (p) {
@@ -960,10 +975,29 @@
             tot.reste += reste;
             tot.mois += mois;
             if (delta !== null) tot.delta += delta;
+            // LE PRIX AU LIEU DU VOLUME: meme manque, meme repartition au
+            // prorata du melange (q/qEq) - la question demandee n'est pas
+            // "combien de kilos en plus" mais "a quel prix vendre CE QUI
+            // RESTE". Le cout est deja net de parage: margeDe() (donc
+            // margeApresCommission cote ecran) divise le cout carcasse par
+            // (1-parage) en interne, ce n'est pas reecrit ici.
+            //
+            // prix requis = prix actuel + (part du manque) / (kilos restants):
+            // une marge qui doit monter de X F/kg fait monter le prix du
+            // meme X, le cout ne bougeant pas. Meme principe que le Plan A
+            // "a volume inchange" du plan d'equilibre, applique ici a chaque
+            // produit plutot qu'a un seul.
+            var prixMoyen = (p.prix_moyen === null || p.prix_moyen === undefined)
+                ? null : nb(p.prix_moyen);
+            var manquePart = (manqueTotal !== null && chiffrable && qEq > 0)
+                ? manqueTotal * (q / qEq) : null;
+            var prixRequis = manquePart === null ? null
+                : prixPourCombler(prixMoyen, manquePart, reste);
             return {
                 nom: p.nom, vendu: q, reste: reste, mois: mois,
                 delta: delta, equilibre: delta === null ? null : mois + delta,
-                marge: chiffrable ? nb(margeParNom[p.nom]) : null
+                marge: chiffrable ? nb(margeParNom[p.nom]) : null,
+                prixMoyen: prixMoyen, prixRequis: prixRequis
             };
         });
         tot.equilibre = deltaTotal === null ? null : tot.mois + tot.delta;
