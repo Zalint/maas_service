@@ -233,6 +233,70 @@
      *
      * `postes` vient du PL realise (payload serveur), jamais recalcule ici.
      */
+    /**
+     * LE TAUX DE MARGE AUX PRIX COURANTS, pour projeter les jours qui restent.
+     *
+     * `taux_marge` rendu par le serveur est le taux CONSTATE depuis le 1er: il
+     * melange les journees ou la carcasse etait a 3 835 F a celles ou elle est
+     * a 4 500. Projeter dessus revient a supposer que le mois qui reste se
+     * paiera au prix moyen du mois ecoule - il se paiera au dernier prix.
+     *
+     * On recalcule donc le taux a partir des DEUX prix courants:
+     *   - le dernier prix d'ACHAT connu   (prix_achat, deja bascule par
+     *     auPrixDeLaSuite sur prix_achat_fin);
+     *   - le dernier prix de VENTE constate (prix_moyen, deja bascule sur le
+     *     tarif de la suite).
+     *
+     *   marge unitaire = prix vente − prix achat / (1 − parage)
+     *   taux courant   = Σ(marge × quantite) / Σ(CA)
+     *
+     * Le parage divise le cout d'achat et RIEN d'autre: la commission n'entre
+     * pas ici, elle est deja un poste du PL et la compter dans le taux la
+     * ferait deduire deux fois.
+     *
+     * Les produits dont le cout est INCONNU sont exclus du calcul, pas comptes
+     * a zero - les inclure a marge pleine gonflerait le taux. La couverture en
+     * CA est rendue: en dessous de `couvertureMin`, on refuse et l'appelant
+     * retombe sur le taux constate, en le DISANT.
+     */
+    function tauxMargeCourant(args) {
+        var produits = (args && args.produits) || [];
+        var margeDe = (args && args.margeDe) || null;
+        var couvertureMin = (args && args.couvertureMin !== undefined)
+            ? nb(args.couvertureMin) : 0.8;
+
+        var caTotal = 0, caChiffre = 0, margeTotale = 0;
+        var sansCout = [];
+        produits.forEach(function (p) {
+            var ca = nb(p.ca);
+            caTotal += ca;
+            var m = margeDe ? margeDe(p) : null;
+            if (m === null || m === undefined) { sansCout.push(p.nom); return; }
+            caChiffre += ca;
+            margeTotale += nb(m) * nb(p.quantite);
+        });
+
+        var couverture = caTotal > 0 ? caChiffre / caTotal : 0;
+        // Le taux se calcule sur le CA CHIFFRABLE, pas sur le total: rapporter
+        // une marge partielle au CA entier la diluerait mecaniquement.
+        var taux = caChiffre > 0 ? margeTotale / caChiffre : null;
+        return {
+            taux: taux,
+            taux_pct: taux === null ? null : taux * 100,
+            couverture: couverture,
+            ca_total: caTotal,
+            ca_chiffre: caChiffre,
+            // La marge ABSOLUE que les volumes REALISES degageraient aux prix
+            // courants. C'est elle qui sert a projeter les jours restants:
+            // le taux, lui, ne sert plus qu'a l'affichage.
+            marge_totale: margeTotale,
+            sans_cout: sansCout,
+            // Utilisable seulement si assez de CA est chiffre. Sinon le taux
+            // decrit une minorite de l'activite et ne doit pas piloter le PL.
+            utilisable: taux !== null && couverture >= couvertureMin
+        };
+    }
+
     function projeterPL(args) {
         var p = args.postes;
         var caRealise = nb(args.caRealise);
@@ -288,11 +352,60 @@
                 - nb(p.stock_variation_nette);
             tauxMarge = (caRealise - coutR) / caRealise;
         }
+        // LE TAUX COURANT PRIME, quand l'appelant le fournit et qu'il couvre
+        // assez de CA.
+        //
+        // Le taux ci-dessus est CONSTATE depuis le 1er: il melange les
+        // journees ou la carcasse etait a 3 835 F a celles ou elle est a
+        // 4 500. Projeter les jours qui RESTENT dessus revient a supposer
+        // qu'ils se paieront au prix moyen du passe. Le taux courant, lui,
+        // est bati sur le dernier prix d'achat connu et le dernier prix de
+        // vente constate - ce que ces jours-la coutent vraiment.
+        //
+        // `origine` est rendu pour que l'ecran DISE lequel il a utilise: un
+        // PL projete sur deux taux differents selon la couverture, sans le
+        // dire, serait indefendable.
+        //
+        // LE MOIS SE COUPE EN DEUX, chaque moitie a SON prix.
+        //
+        // Appliquer un taux unique a `caCible` traite tout le mois de la meme
+        // facon. Avec le taux constate, on projette les jours restants au prix
+        // moyen du passe. Avec le taux courant, pire: on REEVALUE le passe
+        // deja vendu a des prix qu'il n'a pas eus - une vente faite a 5 282 F
+        // recomptee a 5 400 F.
+        //
+        //   marge = marge REALISEE          (un fait: CA realise x taux constate)
+        //         + marge des jours RESTANTS (volumes restants x marge unitaire
+        //                                     aux prix courants)
+        //
+        // Les volumes restants sont proportionnels aux volumes realises - meme
+        // hypothese de melange que partout ailleurs - donc:
+        //   marge restante = proportion x marge_totale(prix courants)
+        // ou proportion = (caCible - caRealise) / caRealise.
+        //
+        // `marge_totale` est la marge ABSOLUE des volumes realises aux prix
+        // courants: la rapporter au CA realise donnerait un taux qui melange
+        // deux niveaux de prix, et c'est exactement ce qu'on evite ici.
+        var origineTaux = 'constate';
+        var marge = tauxMarge === null ? null : caCible * tauxMarge;
+        var tc = args.tauxCourant;
+        if (tc && tc.utilisable && tc.marge_totale !== null
+            && tc.marge_totale !== undefined && tauxMarge !== null) {
+            // Un scenario qui finirait SOUS le realise n'a pas de sens: il n'y
+            // a pas de vente negative. Le plancher est « plus rien vendu ».
+            var proportion = Math.max(0, (caCible - caRealise) / caRealise);
+            marge = caRealise * tauxMarge + proportion * nb(tc.marge_totale);
+            origineTaux = 'courant';
+        }
 
         var d = {
             ca: caCible,
-            tauxMarge: tauxMarge,
-            marge: tauxMarge === null ? null : caCible * tauxMarge,
+            // Le taux EFFECTIF, celui que la marge retenue represente. Rendu
+            // apres coup pour que l'affichage et le calcul ne divergent pas.
+            tauxMarge: (marge === null || caCible === 0) ? tauxMarge : marge / caCible,
+            tauxMargeConstate: tauxMarge,
+            tauxMargeOrigine: origineTaux,
+            marge: marge,
             commission: nb(p.commission_maas) * r,
             margeCdc: nb(p.marge_cdc) * r,
             charges: nb(args.chargesMensuel),
@@ -318,7 +431,10 @@
             return projeterPL({
                 postes: args.postes, caRealise: args.caRealise, caCible: cible,
                 chargesMensuel: args.chargesMensuel, stockOption: args.stockOption,
-                depensesOption: args.depensesOption, jours: args.jours
+                depensesOption: args.depensesOption, jours: args.jours,
+                // Le MEME taux pour les trois scenarios: ils ne different que
+                // par le CA, jamais par la structure de cout.
+                tauxCourant: args.tauxCourant
             });
         };
         return {
@@ -1011,6 +1127,7 @@
     return {
         COEFFS_DOCUMENT: COEFFS_DOCUMENT,
         volumesProjetes: volumesProjetes,
+        tauxMargeCourant: tauxMargeCourant,
         typeJour: typeJour,
         finDuMois: finDuMois,
         joursEntre: joursEntre,

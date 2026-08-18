@@ -3169,6 +3169,10 @@
                                             title="Télécharger le PL affiché et ses composants (synthèse, charges, détail stock) en classeur Excel.">
                                         <i class="bi bi-file-earmark-excel"></i> Export Excel
                                     </button>
+                                    <button class="btn btn-sm btn-outline-dark" id="fin-pl-export-json"
+                                            title="Télécharger le PL affiché ET l'explication de l'écart du jour en JSON, structuré pour être lu par un LLM. Si le panneau « D'où vient cet écart ? » n'a pas été ouvert, l'explication est calculée à la demande.">
+                                        <i class="bi bi-filetype-json"></i> Export JSON
+                                    </button>
                                     <button class="btn btn-sm btn-outline-primary" id="fin-pl-snapshot"
                                             title="Fige le PL du jour (période du 1ᵉʳ du mois à aujourd'hui). Un snapshot par date, le dernier écrase. Le cron du soir en fige un automatiquement à 23h35.">
                                         <i class="bi bi-camera"></i> Figer le PL du jour
@@ -4012,12 +4016,12 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260817-pont"></script>
+    <script src="js/finance.js?v=20260817-revue6"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>
-    <script src="js/simulation-v2-projection.js?v=20260817-prixconseille2"></script>
-    <script src="js/simulation-v2.js?v=20260817-prixconseille2"></script>
+    <script src="js/simulation-v2-projection.js?v=20260817-revue6"></script>
+    <script src="js/simulation-v2.js?v=20260817-revue6"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

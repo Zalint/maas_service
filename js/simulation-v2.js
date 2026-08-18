@@ -224,6 +224,9 @@
         +   '<div class="col-md-3"><label class="form-label">&nbsp;</label><div class="d-flex gap-2">'
         +     '<button class="btn btn-sm btn-primary" id="sim2-calc"><i class="bi bi-calculator"></i> Calculer</button>'
         +     '<button class="btn btn-sm btn-outline-secondary" id="sim2-reset">Réinitialiser</button>'
+        +     '<button class="btn btn-sm btn-outline-dark ms-1" id="sim2-export-json" '
+        +       'title="Télécharger la projection calculée (rythmes, scénarios, volumes, plan équilibre, recommandations) en JSON, structuré pour être lu par un LLM.">'
+        +       'Export JSON</button>'
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-hors-stock">'
         +       '<label class="form-check-label small ms-1" for="sim2-hors-stock" '
@@ -255,6 +258,9 @@
         // charger() enchaine sur rendre(): un seul chemin, et le meme que
         // celui du changement de periode.
         $('calc').addEventListener('click', charger);
+        // EXPORT JSON de la couche calculee. `$` prefixe par 'sim2-'.
+        var btnExport = $('export-json');
+        if (btnExport) btnExport.addEventListener('click', exporterProjectionJson);
         $('reset').addEventListener('click', function () {
             etat.leviers = {};
             // reinitGlobaux(), PAS null. Poser null laissait nbActifs() lire
@@ -951,6 +957,15 @@
            + 'Prix d\'achat : ' + (etat.sim && etat.sim.prix_achat && etat.sim.prix_achat.mode === 'periode'
                ? 'moyenne de la période pondérée par les quantités vendues.'
                : 'figé au dernier jour de la période.')
+           // CE BANDEAU DECRIT LE RESULTAT DE REFERENCE, pas la projection.
+           //
+           // Les deux ne lisent plus le meme prix depuis que la projection est
+           // passee au dernier cout connu: laisser une seule phrase pour les
+           // deux aurait fait croire que la projection tourne sur la moyenne,
+           // exactement le defaut qu'on vient de corriger.
+           + ' <span class="text-muted">La projection de fin de mois, elle, part du '
+           + '<strong>dernier prix d’achat connu</strong> et du dernier prix de vente '
+           + 'constaté — voir « les deux méthodes » sous les scénarios.</span>'
            + '</div>';
         var av = (etat.sim && etat.sim.prix_achat && etat.sim.prix_achat.avertissements) || [];
         if (av.length) {
@@ -1330,13 +1345,39 @@
         return (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
     }
 
-    /** Le produit vu au prix de la SUITE du mois, pas au prix moyen passe. */
+    /**
+     * Le produit vu aux prix de la SUITE du mois - vente ET achat - plutot
+     * qu'aux moyennes du passe.
+     *
+     * Le prix de VENTE bascule sur le tarif courant depuis l'origine. Le prix
+     * d'ACHAT, lui, restait la moyenne ponderee des journees ecoulees: elle
+     * melange les lots anciens aux recents et sous-estime le cout des que la
+     * carcasse a rencheri. Mesure sur mbao: 4 157 F en projection contre
+     * 4 480 F au PL pour le meme boeuf, parce que le PL, lui, valorise au
+     * dernier prix connu.
+     *
+     * Les jours qui RESTENT se paieront au dernier prix connu - pour le boeuf,
+     * celui du dernier transfert recu. On bascule donc les deux prix ensemble:
+     * tout ce qui projette (marges, Δ equilibre, prix conseille, plan
+     * d'equilibre) lit `prix_achat`, et herite du correctif d'un seul coup.
+     *
+     * Le parage et la commission ne sont PAS inclus ici: `prix_achat` reste le
+     * cout carcasse NU. Le moteur applique ensuite le parage (division par
+     * 1-parage) et la commission induite comme deux ajustements distincts -
+     * les melanger dans un cout unique empecherait de les lire separement.
+     */
     function auPrixDeLaSuite(p) {
         var px = prixSuiteDe(p);
-        if (px === null) return p;
+        var pa = (p.prix_achat_fin === null || p.prix_achat_fin === undefined)
+            ? null : nb(p.prix_achat_fin);
+        if (px === null && pa === null) return p;
         var copie = {};
         Object.keys(p).forEach(function (k) { copie[k] = p[k]; });
-        copie.prix_moyen = px;
+        if (px !== null) copie.prix_moyen = px;
+        // Un prix de fin nul ou absent laisse la moyenne en place: mieux vaut
+        // un cout approche qu'aucun cout, et prix_achat_origine dit d'ou il
+        // vient.
+        if (pa !== null && pa > 0) copie.prix_achat = pa;
         return copie;
     }
 
@@ -1878,7 +1919,24 @@
             + '</div></details>';
     }
 
+    // LA COUCHE CALCULEE de la projection, capturee au fil du rendu pour
+    // l'export JSON.
+    //
+    // On MEMORISE ce que l'ecran vient d'afficher plutot que de le recalculer
+    // a l'export: refaire les appels en donnerait une seconde lecture, libre
+    // de diverger de celle qu'on regarde. Et on exporte cette couche-la, pas
+    // `etat.sim` brut - le payload serveur porte des champs internes sans
+    // interet, et n'a pas la structure des scenarios ni du plan.
+    var projCalculee = null;
+
     function projectionCorps() {
+        // REMIS A ZERO D'ABORD, avant tout retour anticipe.
+        //
+        // Il n'etait renseigne qu'apres les gardes (periode invalide, plus
+        // aucun jour d'ouverture). Un rendu qui sortait par l'une d'elles
+        // laissait donc en place la projection du rendu PRECEDENT, et
+        // l'export JSON l'aurait telechargee comme si elle etait courante.
+        projCalculee = null;
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
         var b = etat.base;
@@ -1967,12 +2025,42 @@
             ecoules: Math.max(1, PJ.joursOuvres(debut, fin, sansDim).length),
             mois: PJ.joursOuvres(debut, ca.finMois, sansDim).length
         };
+        // L'UNIVERS DES PRODUITS, aux prix de la suite (vente ET achat).
+        //
+        // Remonte ici: le taux de marge courant ci-dessous en a besoin, et il
+        // alimente les scenarios - donc tout ce qui suit. Il vivait 70 lignes
+        // plus bas, ou seuls les volumes et les sensibilites le lisaient.
+        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
+            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
+
+        // LE TAUX DE MARGE AUX PRIX COURANTS.
+        //
+        // `taux_marge` du serveur est constate depuis le 1er: il melange les
+        // journees ou la carcasse etait a 3 835 F a celles ou elle est a
+        // 4 500. Les jours qui RESTENT se paieront au dernier prix connu, et
+        // se vendront au dernier tarif constate - c'est ce que ce taux mesure.
+        //
+        // margeBase et NON margeApresCommission: la commission est deja un
+        // poste du PL projete, la compter dans le taux la deduirait deux fois.
+        var tauxCourant = PJ.tauxMargeCourant({
+            produits: univSens,
+            margeDe: margeBase
+        });
         var argsScen = {
             postes: postes, caRealise: b.ventes, caProjete: ca.caProjete,
             chargesMensuel: chargesMensuel, stockOption: etat.proj.stockOption,
-            depensesOption: etat.proj.depensesOption, jours: jours
+            depensesOption: etat.proj.depensesOption, jours: jours,
+            tauxCourant: tauxCourant
         };
         var scen = (ca.caProjete === null) ? null : PJ.scenarios(argsScen);
+        projCalculee = {
+            genere_le: null, periode: { debut: debut, fin: fin },
+            coeff: coeff, origine_coeff: origineCoeff,
+            ca: ca, scenarios: scen, jours: jours,
+            taux_marge_courant: tauxCourant,
+            taux_marge_constate: (etat.plBrut || {}).taux_marge,
+            volumes: null, plan_equilibre: null, recommandations: null, confiance: null
+        };
         var conf = PJ.confiance({
             rythmes: ca.rythmes, restants: ca.restants,
             sourcesFiables: !(b.sources && b.sources.fiable === false),
@@ -2033,11 +2121,6 @@
             + esc((ca.rythmes.sources || {}).P2 || '—') + '). '
             + 'CA estimé fin de mois : <strong>' + esc(fmt(ca.caProjete)) + '</strong> F.</div>';
 
-        // L'univers des produits et la PROPORTION que representent les jours
-        // qui restent. Declares ici et non plus dans le bloc des sensibilites:
-        // le tableau des volumes ci-dessous en a besoin, et il vient avant.
-        var univSens = ((!b.fige && etat.sim.produits_vendus && etat.sim.produits_vendus.length)
-            ? etat.sim.produits_vendus : etat.produits).map(auPrixDeLaSuite);
         var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
 
         // ---- CE QUE LA PROJECTION SUPPOSE EN MARCHANDISE.
@@ -2058,6 +2141,7 @@
         // qui n'existe pas.
         var bovinsMuets = bovinsVol.filter(function (p) { return !(nb(p.quantite) > 0); });
         var bovinsActifs = bovinsVol.filter(function (p) { return nb(p.quantite) > 0; });
+        if (projCalculee) projCalculee.confiance = conf;
         var vp = PJ.volumesProjetes({
             produits: bovinsActifs,
             proportion: propSuite,
@@ -2073,6 +2157,7 @@
                 ? nb(scen.central.pl) : null,
             cible: nb(etat.proj.plCible)
         });
+        if (projCalculee) projCalculee.volumes = vp;
         if (vp) {
             // Un delta EXACTEMENT nul n'est pas un coussin: il dit que le mois
             // finit pile a zero. Il garde donc sa couleur neutre, la ou un
@@ -2215,6 +2300,208 @@
             + carte('Central', scen.central, '')
             + carte('Haut (CA +10 %)', scen.haut, '')
             + '</div>';
+
+        // ---- D'OU VIENT LA MARGE PROJETEE, et laquelle des deux methodes
+        // a servi.
+        //
+        // Le basculement entre taux constate et taux courant changeait le PL
+        // projete SANS RIEN DIRE. C'est contraire a la regle du module - «
+        // chaque regle est une hypothese AFFICHEE » - et cela rendait deux
+        // captures d'ecran incomparables sans qu'on sache pourquoi.
+        var origineTaux = (scen.central && scen.central.tauxMargeOrigine) || 'constate';
+        var tauxUtilise = scen.central && scen.central.tauxMarge !== null
+            ? scen.central.tauxMarge * 100 : null;
+        var tauxConstateAff = (etat.plBrut || {}).taux_marge;
+        h += '<div class="small mb-3">'
+            + '<span class="text-muted">Marge projetée :</span> '
+            + '<strong>' + (tauxUtilise === null ? '—' : esc(pct2(tauxUtilise)) + ' %')
+            + '</strong> '
+            + (origineTaux === 'courant'
+                ? '<span class="badge bg-success-subtle text-success-emphasis border">'
+                  + 'aux prix du jour</span>'
+                : '<span class="badge bg-secondary-subtle text-secondary-emphasis border">'
+                  + 'au taux constaté</span>')
+            // LA COUVERTURE INCOMPLETE SE VOIT, sans depliage.
+            //
+            // Le seuil d'utilisabilite est a 80 %: entre 80 et 100, une part du
+            // CA est projetee a la marge moyenne des AUTRES produits, ce qui
+            // est une hypothese jamais verifiee. Elle etait ecrite en gris,
+            // dans le depliant, au meme niveau que le reste - rien ne
+            // distinguait 99,99 % de 80,1 %.
+            + (origineTaux === 'courant' && tauxCourant
+                && tauxCourant.couverture < 0.99
+                ? ' <span class="badge bg-warning-subtle text-warning-emphasis border" '
+                  + 'title="Le reste du chiffre d’affaires n’a pas de coût connu : '
+                  + 'il ne contribue AUCUNE marge aux jours restants. Le PL projeté est '
+                  + 'donc prudent à due concurrence.">'
+                  + esc(pct2(tauxCourant.couverture * 100)) + ' % du CA seulement</span>'
+                : '')
+            + ' <details class="d-inline">'
+            + '<summary class="text-primary d-inline" style="cursor:pointer">'
+            + 'les deux méthodes</summary>'
+            + '<div class="mt-2 border rounded p-2">'
+            + '<div class="mb-2"><strong>Taux constaté</strong> — '
+            + (tauxConstateAff === null || tauxConstateAff === undefined
+                ? 'indisponible' : '<strong>' + esc(pct2(nb(tauxConstateAff))) + ' %</strong>')
+            + '<div class="text-muted">'
+            + '(chiffre d’affaires − avances − paiements + variation de stock) ÷ chiffre '
+            + 'd’affaires, depuis le 1<sup>er</sup>. C’est une mesure de '
+            + '<em>trésorerie</em> : une carcasse reçue et pas encore vendue fait sortir '
+            + 'l’argent tout de suite et fait plonger le taux, sans qu’aucune '
+            + 'rentabilité n’ait changé. Il mélange aussi les lots anciens aux '
+            + 'récents.</div></div>'
+            + '<div class="mb-2"><strong>Taux aux prix du jour</strong> — '
+            + (tauxCourant && tauxCourant.taux_pct !== null && tauxCourant.taux_pct !== undefined
+                ? '<strong>' + esc(pct2(tauxCourant.taux_pct)) + ' %</strong>'
+                : 'non calculable')
+            + '<div class="text-muted">'
+            + 'Σ (prix de vente − prix d’achat ÷ (1 − parage)) × quantité, rapporté au '
+            + 'chiffre d’affaires. Le <strong>dernier prix d’achat connu</strong> et '
+            + 'le <strong>dernier prix de vente constaté</strong> — ce que les jours qui '
+            + 'restent coûteront et rapporteront vraiment. La commission n’y entre pas : '
+            + 'elle est déjà un poste du PL, la compter ici la déduirait deux fois.</div></div>'
+            + '<div class="text-muted">'
+            + (origineTaux === 'courant'
+                ? 'Le mois est coupé en <strong>deux</strong> : ce qui est '
+                  + '<strong>déjà vendu</strong> garde sa marge réelle (taux '
+                  + 'constaté), et seuls les <strong>jours restants</strong> sont '
+                  + 'valorisés aux prix du jour. Réévaluer le passé à '
+                  + 'des prix qu’il n’a pas eus aurait gonflé la marge. '
+                  + 'Le taux aux prix du jour couvre '
+                  + esc(pct2((tauxCourant ? tauxCourant.couverture : 0) * 100))
+                  + ' % du chiffre d’affaires.'
+                : 'C’est le taux <strong>constaté</strong> qui porte tout le mois : le '
+                  + 'taux aux prix du jour ne couvre pas assez de chiffre d’affaires pour '
+                  + 'être fiable.')
+            + ((tauxCourant && tauxCourant.sans_cout && tauxCourant.sans_cout.length)
+                ? ' Sans coût d’achat connu, donc exclus du calcul plutôt que comptés à '
+                  + 'zéro : ' + esc(tauxCourant.sans_cout.join(', ')) + '.'
+                : '')
+            + '</div></div></details></div>';
+
+        // ---- MODE DEBUG: la DERIVATION du taux, produit par produit.
+        //
+        // Un taux agrege ne se verifie pas: on le croit ou on ne le croit pas.
+        // Le detail rend chaque terme - prix de vente retenu, cout d'achat,
+        // diviseur de parage, marge unitaire, contribution - et se termine par
+        // un CONTROLE: la somme des marges rapportee au CA doit redonner le
+        // taux affiche. Meme forme que le debug du resultat de reference.
+        if (etat.debug && tauxCourant) {
+            var padD = function (t, n) {
+                t = String(t); return t + ' '.repeat(Math.max(0, n - t.length));
+            };
+            var padG = function (t, n) {
+                t = String(t); return ' '.repeat(Math.max(0, n - t.length)) + t;
+            };
+            var dbg = '<h6 class="fin-subheading">Détail du calcul — taux de marge aux prix du jour</h6>'
+                + '<pre class="small border rounded p-2 mb-3" '
+                + 'style="background:#f8fafc;overflow-x:auto">';
+            dbg += padD('PRODUIT', 24) + padG('VENTE', 10) + padG('ACHAT', 10)
+                + padG('DIVISEUR', 10) + padG('MARGE/u', 11) + padG('QTÉ', 10)
+                + padG('MARGE', 14) + padG('CA', 14) + '\n';
+            dbg += '─'.repeat(103) + '\n';
+            var sMarge = 0, sCa = 0, sCaTotal = 0;
+            univSens.forEach(function (pr) {
+                var m = margeBase(pr);
+                var ca2 = nb(pr.ca);
+                sCaTotal += ca2;
+                if (m === null || m === undefined) {
+                    dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
+                        + padG(fmt(pr.prix_moyen), 10) + padG('—', 10) + padG('—', 10)
+                        + padG('coût inconnu', 11) + padG(fmtDec(pr.quantite), 10)
+                        + padG('exclu', 14) + padG(fmt(ca2), 14) + '\n';
+                    return;
+                }
+                // LE DIVISEUR VIENT DU MOTEUR, pas d'un recalcul local.
+                //
+                // Le moteur expose diviseurParage precisement pour ca - son
+                // commentaire le dit: « le recalculer la-bas en ferait une
+                // seconde definition ». Ma premiere ecriture le redérivait
+                // depuis parageBovin/parageOvin, en ignorant le repli sur
+                // parageBase quand aucune journee de l'espece n'est mesurable.
+                // La colonne aurait alors affiche un diviseur incapable de
+                // refaire la marge de sa propre ligne.
+                var div = M.diviseurParage(pr, { leviers: {}, globaux: {} }, etat.contexte);
+                var q2 = nb(pr.quantite);
+                sMarge += m * q2;
+                sCa += ca2;
+                dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
+                    + padG(fmt(pr.prix_moyen), 10) + padG(fmt(pr.prix_achat), 10)
+                    + padG(div.toFixed(4), 10) + padG(fmt(m), 11)
+                    + padG(fmtDec(q2), 10) + padG(fmt(m * q2), 14) + padG(fmt(ca2), 14) + '\n';
+            });
+            dbg += '─'.repeat(103) + '\n';
+            dbg += padD('TOTAL chiffrable', 24) + padG('', 10) + padG('', 10) + padG('', 10)
+                + padG('', 11) + padG('', 10) + padG(fmt(sMarge), 14) + padG(fmt(sCa), 14) + '\n';
+            dbg += padD('CA total (chiffrable + exclu)', 24) + padG('', 55)
+                + padG(fmt(sCaTotal), 14) + '\n\n';
+            dbg += 'taux = marge totale ÷ CA chiffrable = ' + fmt(sMarge) + ' ÷ ' + fmt(sCa)
+                + ' = ' + (sCa > 0 ? ((sMarge / sCa) * 100).toFixed(4) : '—') + ' %\n';
+            dbg += 'couverture = CA chiffrable ÷ CA total = ' + fmt(sCa) + ' ÷ ' + fmt(sCaTotal)
+                + ' = ' + (sCaTotal > 0 ? ((sCa / sCaTotal) * 100).toFixed(2) : '—') + ' %\n';
+            // LE CONTROLE: ce que le module a rendu doit egaler ce qu'on vient
+            // de recalculer ici. Un ecart signale que les deux ne lisent pas
+            // les memes produits ou la meme marge.
+            var attendu = tauxCourant.taux_pct;
+            var recalc = sCa > 0 ? (sMarge / sCa) * 100 : null;
+            var dTaux = (attendu === null || recalc === null) ? null : recalc - attendu;
+            dbg += 'contrôle : recalcul − taux rendu par le module = '
+                + (dTaux === null ? '—' : dTaux.toFixed(6))
+                + (dTaux !== null && Math.abs(dTaux) < 0.0001 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
+            dbg += 'marge unitaire = prix de vente − prix d’achat ÷ diviseur\n';
+            dbg += 'diviseur = 1 − parage (bovin ' + pct2(nb((etat.contexte || {}).parageBovin))
+                + ' %, ovin ' + pct2(nb((etat.contexte || {}).parageOvin)) + ' %)\n';
+            dbg += 'la commission n’entre PAS ici : elle est déjà un poste du PL.\n';
+            // LA CHAINE COMPLETE, avec les nombres.
+            //
+            // Le bloc montrait 14,59 % puis 10,87 % sans jamais dire comment
+            // ils produisent les 12,34 % annonces en tete - trois pourcentages
+            // sans lien visible, et une ligne de formule coupee au milieu.
+            dbg += '\n=== DU TAUX AU PL PROJETE ===\n\n';
+            var caReal = nb(b.ventes);
+            var caProj = nb(ca.caProjete);
+            // LE TAUX EXACT du module, pas celui arrondi pour l'affichage.
+            // `taux_marge` du payload est arrondi au centieme: recalculer
+            // dessus faisait sortir le controle a -42 F systematiquement,
+            // un faux positif qui aurait fini par etre ignore.
+            var tConst = (scen.central && scen.central.tauxMargeConstate !== null
+                && scen.central.tauxMargeConstate !== undefined)
+                ? nb(scen.central.tauxMargeConstate)
+                : nb(tauxConstateAff) / 100;
+            var prop = caReal > 0 ? Math.max(0, (caProj - caReal) / caReal) : 0;
+            var mReal = caReal * tConst;
+            var mRest = prop * sMarge;
+            dbg += 'Le taux ci-dessus (' + (sCa > 0 ? ((sMarge / sCa) * 100).toFixed(2) : '—')
+                + ' %) ne porte QUE les jours restants.\n';
+            dbg += 'Le realise garde sa marge reelle, il n\u2019est jamais reevalue.\n\n';
+            dbg += padD('  marge du REALISE', 34) + '= ' + padG(fmt(caReal), 12) + ' x '
+                + padG(pct2(nb(tauxConstateAff)) + ' %', 8) + ' = ' + padG(fmt(mReal), 12) + '\n';
+            dbg += padD('  marge des JOURS RESTANTS', 34) + '= ' + padG(fmt(sMarge), 12) + ' x '
+                + padG(prop.toFixed(4), 8) + ' = ' + padG(fmt(mRest), 12) + '\n';
+            dbg += padD('', 34) + '  ' + padG('', 12) + '   ' + padG('', 8) + '   '
+                + padG('────────────', 12) + '\n';
+            dbg += padD('  = marge du MOIS', 34) + '  ' + padG('', 12) + '   '
+                + padG('', 8) + '   ' + padG(fmt(mReal + mRest), 12) + '\n\n';
+            dbg += 'taux effectif = marge du mois ÷ CA projete = ' + fmt(mReal + mRest)
+                + ' ÷ ' + fmt(caProj) + ' = '
+                + (caProj > 0 ? ((mReal + mRest) / caProj * 100).toFixed(2) : '—')
+                + ' %   <- celui affiche en tete\n';
+            var mModule = scen.central && scen.central.marge !== null
+                ? scen.central.marge : null;
+            var dM = mModule === null ? null : (mReal + mRest) - mModule;
+            dbg += 'contrôle : recalcul − marge rendue par le module = '
+                + (dM === null ? '—' : fmt(dM))
+                + (dM !== null && Math.abs(dM) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
+            dbg += 'proportion = (CA projete − CA realise) ÷ CA realise = ('
+                + fmt(caProj) + ' − ' + fmt(caReal) + ') ÷ ' + fmt(caReal) + ' = '
+                + prop.toFixed(4) + '\n';
+            dbg += 'taux retenu pour la projection : '
+                + (origineTaux === 'courant' ? 'CELUI-CI' : 'le taux constaté ('
+                    + esc(pct2(nb(tauxConstateAff))) + ' %), faute de couverture suffisante')
+                + '\n';
+            dbg += '</pre>';
+            h += dbg;
+        }
 
         // Le scenario CENTRAL sert a la fois au plan d'equilibre ci-dessous et
         // a la decomposition plus bas: declare ici, avant son premier usage.
@@ -2404,6 +2691,7 @@
             + esc(String(Math.round(plCibleUi))) + '">'
             + '<span class="text-muted">FCFA — 0 = l\'équilibre</span></div>';
 
+        if (projCalculee) projCalculee.plan_equilibre = eq;
         if (eq) {
             var s0 = eq.seul;
             h += '<h6 class="small fw-medium mb-1">'
@@ -2681,6 +2969,7 @@
             clientsHistorique: clientsHisto,
             dateAnalyse: fin
         });
+        if (projCalculee) projCalculee.recommandations = recos;
         if (recos.length) {
             var ico = { volume: 'graph-up-arrow', prix: 'tag', client: 'person-heart', donnee: 'database-exclamation' };
             h += '<div class="list-group mb-3">' + recos.slice(0, 6).map(function (r) {
@@ -2805,13 +3094,51 @@
         h += '   contrôle : somme − PL rendu = ' + fmt(ecart)
            + (Math.abs(ecart) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
 
-        h += '2. VOLUMES ET PÉRIMÈTRE\n';
+        // « SUIVIS » NE VOULAIT PAS DIRE « A COUT CONNU ».
+        //
+        // Ce perimetre est celui des LEVIERS: les produits sur lesquels
+        // l'ecran laisse tirer un prix ou un volume. Un produit peut avoir un
+        // cout parfaitement connu, entrer dans le calcul de la marge, et ne pas
+        // figurer ici - c'est le cas du Foie, du Yell, de la Viande Hachee.
+        // L'ancien libelle « produits suivis / hors perimetre » les faisait
+        // passer pour ignores du calcul, ce qu'ils ne sont pas.
+        h += '2. PÉRIMÈTRE DES LEVIERS DE SIMULATION\n';
+        h += '   (produits actionnables dans un scénario. Le calcul de la marge,\n';
+        h += '    lui, porte sur TOUT produit dont le coût est connu.)\n';
         var caSuivis = 0;
         etat.produits.forEach(function (p) { caSuivis += nb(p.ca); });
         h += '   ' + pad('chiffre d\'affaires total', 30) + padL(fmt(b.ventes), 14) + '\n';
-        h += '   ' + pad('dont produits suivis', 30) + padL(fmt(caSuivis), 14)
+        h += '   ' + pad('dont actionnables par levier', 30) + padL(fmt(caSuivis), 14)
            + '   ' + (b.ventes > 0 ? ((caSuivis / b.ventes) * 100).toFixed(1) : '0') + ' %\n';
-        h += '   ' + pad('hors périmètre', 30) + padL(fmt(b.ventes - caSuivis), 14) + '\n\n';
+        h += '   ' + pad('sans levier (coût connu quand même)', 30) + padL(fmt(b.ventes - caSuivis), 14) + '\n';
+        // CE QUI EST HORS PERIMETRE, NOMME.
+        //
+        // Le total seul ne se traite pas: « 320 625 F hors perimetre » laisse
+        // chercher. La liste dit s'il s'agit de miettes ou d'un produit qui
+        // aurait du etre suivi - et c'est la seule facon de decider d'agir.
+        var suivis = {};
+        etat.produits.forEach(function (p) { suivis[norm(p.nom)] = true; });
+        var tousVendus = (etat.sim && etat.sim.produits_vendus) || [];
+        var dehors = tousVendus.filter(function (p) {
+            return !suivis[norm(p.nom)] && nb(p.ca) > 0;
+        }).sort(function (x, y) { return nb(y.ca) - nb(x.ca); });
+        if (dehors.length) {
+            var sommeDehors = 0;
+            dehors.forEach(function (p) {
+                sommeDehors += nb(p.ca);
+                h += '      ' + esc(pad(String(p.nom).slice(0, 27), 27))
+                   + padL(fmt(nb(p.ca)), 14)
+                   + '   ' + (b.ventes > 0 ? ((nb(p.ca) / b.ventes) * 100).toFixed(2) : '0')
+                   + ' %\n';
+            });
+            // Controle: la liste doit redonner le total, sinon un produit vendu
+            // manque a produits_vendus et le perimetre affiche serait faux.
+            var ecartDehors = sommeDehors - (b.ventes - caSuivis);
+            h += '      ' + pad('contrôle : somme − sans levier', 27)
+               + padL(fmt(ecartDehors), 14)
+               + (Math.abs(ecartDehors) < 1 ? '   ✓' : '   ✗ ÉCART') + '\n';
+        }
+        h += '\n';
 
         h += '3. PRIX D\'ACHAT RETENUS\n';
         etat.produits.forEach(function (p) {
@@ -2847,6 +3174,86 @@
         h += '   ' + pad('', 26) + padL('──────────────', 14) + '\n';
         h += '   ' + pad('simulé', 26) + padL(fmt(plRef() + total), 14) + '\n';
         return h + '</pre>';
+    }
+
+    /**
+     * EXPORT JSON de la projection, couche CALCULEE.
+     *
+     * On exporte ce que l'ecran vient d'afficher - rythmes retenus et leurs
+     * sources, scenarios, volumes projetes, plan d'equilibre, prix conseille,
+     * recommandations - et NON `etat.sim`, le payload brut du serveur: celui-ci
+     * porte des champs internes sans interet et n'a pas la structure des
+     * scenarios ni du plan. Un LLM qui lit ce fichier doit trouver les
+     * conclusions, pas les avoir a rebatir.
+     */
+    function exporterProjectionJson() {
+        if (!projCalculee) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('Calcule la projection avant d’exporter.', 'warning');
+            }
+            return;
+        }
+        var c = etat.contexte || {};
+        var sortie = {
+            genere_le: new Date().toISOString(),
+            a_propos: {
+                source: 'Maas App — onglet Finance > Simulation 2.0 > Projection fin de mois',
+                methode: 'P1 = jours 1-10 et 25-fin, P2 = jours 11-24. Rythme par periode: '
+                    + '70 % du reel + 30 % de l’historique quand au moins 5 jours sont '
+                    + 'observes, sinon historique seul, sinon conversion depuis l’autre '
+                    + 'periode via le coefficient.',
+                ca_projete: 'CA realise + jours P1 restants x rythme P1 + jours P2 restants x rythme P2.',
+                volumes: 'Quantites vendues projetees a prix de vente INCHANGE. La carcasse a '
+                    + 'commander est plus lourde du parage: 1 kg vendu consomme 1/(1-parage) kg.',
+                delta_equilibre: 'Kilos a vendre en plus (ou en moins) pour amener le PL projete '
+                    + 'a la cible. Reparti au prorata du melange actuel.',
+                prix_conseille: 'Prix a pratiquer sur le reste a vendre, a volume inchange, pour '
+                    + 'combler le meme manque. Meme repartition que le delta equilibre.',
+                marge: 'Les marges sont NETTES: cout carcasse divise par (1-parage) et commission '
+                    + 'MaaS induite deduite.'
+            },
+            hypotheses: {
+                ponderation_reel: etat.proj.poidsReel,
+                min_jours_mesures: etat.proj.minJours,
+                exclure_dimanches: etat.proj.exclureDimanche,
+                coefficient_p1_p2: projCalculee.coeff,
+                origine_coefficient: projCalculee.origine_coeff,
+                pl_cible: etat.proj.plCible,
+                option_stock: etat.proj.stockOption,
+                option_depenses: etat.proj.depensesOption,
+                facteur_max_plafond: etat.proj.facteurMax,
+                parage_bovin_pct: c.parageBovin,
+                parage_ovin_pct: c.parageOvin,
+                parage_base_pct: c.parageBase,
+                commission_pct: c.commissionPct,
+                prix_boeuf_teste: etat.proj.prixBoeufTeste,
+                parage_boeuf_teste: etat.proj.parageBoeufTeste,
+                ecart_parage_scenarios_pts: etat.proj.ecartParage
+            },
+            periode: projCalculee.periode,
+            jours: projCalculee.jours,
+            ca: projCalculee.ca,
+            confiance: projCalculee.confiance,
+            // Les DEUX taux, pour qu'un lecteur voie lequel a servi et ce que
+            // l'autre aurait donne.
+            taux_marge_courant: projCalculee.taux_marge_courant,
+            taux_marge_constate_pct: projCalculee.taux_marge_constate,
+            scenarios: projCalculee.scenarios,
+            volumes_et_prix: projCalculee.volumes,
+            plan_equilibre: projCalculee.plan_equilibre,
+            recommandations: projCalculee.recommandations
+        };
+        var nom = 'projection-' + (projCalculee.periode.debut || '') + '-au-'
+            + (projCalculee.periode.fin || '') + '.json';
+        var blob = new Blob([JSON.stringify(sortie, null, 2)], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = nom;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 0);
     }
 
     function cablerLeviers() {
