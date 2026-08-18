@@ -1992,6 +1992,14 @@ router.get('/simulation', async (req, res) => {
 
         let resolveurPrix;
         let prixAchatDe;
+        // Le resolveur de la DATE DE FIN, resolu une seule fois.
+        //
+        // `prixAchatDe` rend la moyenne ponderee du mois; celui-ci rend le
+        // prix a la date de fin, dont produits_vendus a besoin pour
+        // `prix_achat_fin`. pourDate() fait un travail reel a chaque appel
+        // (historique, derniere reception, lot MATA): l'appeler dans le map
+        // des produits le refaisait une fois par ligne.
+        let prixAchatFinDe = null;
         let origineDe = () => null;
         // Prix de VENTE catalogue des carcasses, expose en v2 seulement.
         // C'est l'assiette reelle de la commission MaaS (commissionPct x prix
@@ -2358,6 +2366,7 @@ router.get('/simulation', async (req, res) => {
             };
 
             const finDePeriode = resolveurPrix.pourDate(dateFin);
+            prixAchatFinDe = finDePeriode.prixAchat;
             prixAchatDe = (nom) => {
                 const d = cumulDe(nom);
                 if (d && d.c.qte > 0) return (d.c.pondere / d.c.qte) * d.coef;
@@ -2535,6 +2544,20 @@ router.get('/simulation', async (req, res) => {
                     )[0] || a.cle;
                     const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
                     const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+                    // LE COUT D'ACHAT POUR LA SUITE, a cote de la moyenne du
+                    // mois.
+                    //
+                    // `prix_achat` est une moyenne PONDEREE des journees
+                    // ecoulees: elle explique le passe, et melange les lots
+                    // anciens aux recents. Les jours qui RESTENT se paieront au
+                    // dernier prix connu - celui du dernier transfert recu pour
+                    // le boeuf. Projeter sur la moyenne sous-estime le cout des
+                    // que la carcasse a rencheri (mesure: 4 157 contre 4 480).
+                    //
+                    // Meme raisonnement que `prix_retenu` cote VENTE, qui
+                    // existe deja pour la meme raison. La symetrie manquait.
+                    const paFin = prixAchatFinDe ? parseFloat(prixAchatFinDe(nom)) : NaN;
+                    const prixAchatFin = Number.isFinite(paFin) && paFin > 0 ? round2(paFin) : null;
                     return {
                         nom,
                         quantite: round2(a.quantite),
@@ -2542,6 +2565,7 @@ router.get('/simulation', async (req, res) => {
                         prix_moyen: a.prix_moyen === null ? null : round2(a.prix_moyen),
                         prix_retenu: prixRetenuDe(nom),
                         prix_achat: prixAchat,
+                        prix_achat_fin: prixAchatFin,
                         nb_lignes: a.nb_lignes,
                         sans_vente: false,
                         prix_achat_origine: origineDe(nom)

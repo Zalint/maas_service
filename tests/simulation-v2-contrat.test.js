@@ -53,6 +53,10 @@ const CLES = [
     'total_ventes',
     // simulation v2
     'prix_achat_origine',
+    // Le cout d'achat POUR LA SUITE, a cote de la moyenne du mois. Sans lui,
+    // la projection tournait sur la moyenne ponderee des journees ecoulees -
+    // 4 191 F mesures contre 4 500 au prix de fin, soit 7,4 % de cout invisible.
+    'prix_achat_fin',
     'volumes',
     'pv_boeuf',
     'pv_agneau',
@@ -107,4 +111,52 @@ test('la projection ne lit le module que par les fonctions qu il exporte', () =>
             expect(module_.includes(k + ':')).toBe(true);
             expect(ecran.includes('PJ.' + k)).toBe(true);
         });
+});
+
+/**
+ * LA PROJECTION SE FAIT AU COUT LE PLUS RECENT, pas a la moyenne du mois.
+ *
+ * `prix_achat` est une moyenne PONDEREE des journees ecoulees: elle explique le
+ * passe et melange les lots anciens aux recents. Les jours qui RESTENT se
+ * paieront au dernier prix connu. Mesure sur mbao au 16-08-2026: la moyenne
+ * donnait 4 191 F quand le prix de fin valait 4 500 - 7,4 % de cout que la
+ * projection ne voyait pas, sur ~400 kg restant a vendre.
+ *
+ * Ce test lit la SOURCE plutot que d'executer l'ecran: auPrixDeLaSuite vit
+ * dans une IIFE et n'est pas exportable. Il verrouille donc que la bascule
+ * existe, la ou seule une relecture humaine la protegeait.
+ */
+test('auPrixDeLaSuite bascule le prix d ACHAT, pas seulement celui de vente', () => {
+    const ecran = lire('js/simulation-v2.js');
+    const bloc = ecran.slice(
+        ecran.indexOf('function auPrixDeLaSuite'),
+        ecran.indexOf('function auPrixDeLaSuite') + 900
+    );
+    expect(bloc).toContain('prix_achat_fin');
+    // La bascule elle-meme: sans cette affectation, le champ serait lu et
+    // jete, et la projection resterait sur la moyenne du mois.
+    expect(bloc).toMatch(/copie\.prix_achat\s*=/);
+    // Et le prix de vente continue de basculer: le correctif ne doit pas
+    // avoir remplace un comportement par l'autre.
+    expect(bloc).toMatch(/copie\.prix_moyen\s*=/);
+});
+
+/**
+ * LE PARAGE ET LA COMMISSION restent DEUX ajustements distincts.
+ *
+ * Le cout carcasse doit rester NU: le moteur le divise par (1-parage), puis la
+ * commission induite se retranche separement. Les melanger dans un cout unique
+ * empecherait de les lire l'un sans l'autre - et ferait compter le parage deux
+ * fois le jour ou quelqu'un l'incorporerait aussi en amont.
+ */
+test('le cout d achat bascule NU, sans parage ni commission incorpores', () => {
+    const ecran = lire('js/simulation-v2.js');
+    const bloc = ecran.slice(
+        ecran.indexOf('function auPrixDeLaSuite'),
+        ecran.indexOf('function auPrixDeLaSuite') + 900
+    );
+    // Aucune division par un diviseur de parage, aucun taux de commission,
+    // dans la bascule du prix d'achat.
+    expect(bloc).not.toMatch(/parage/i);
+    expect(bloc).not.toMatch(/commission/i);
 });

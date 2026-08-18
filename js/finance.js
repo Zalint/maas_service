@@ -139,6 +139,8 @@
         // Export Excel + snapshots du PL.
         const plExport = document.getElementById('fin-pl-export');
         if (plExport) plExport.addEventListener('click', exporterPlExcel);
+        const plExportJson = document.getElementById('fin-pl-export-json');
+        if (plExportJson) plExportJson.addEventListener('click', () => exporterPlJson(plExportJson));
         const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
         if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
         const plHistorique = document.getElementById('fin-pl-historique');
@@ -2372,6 +2374,124 @@
         }
     }
 
+    /**
+     * EXPORT JSON du PL et de l'explication de son ecart.
+     *
+     * Destine a etre LU PAR UN LLM, pas par un tableur: on rend la structure
+     * telle que le serveur l'a calculee, avec les drapeaux et les controles de
+     * bouclage, plutot qu'un aplatissement en lignes.
+     *
+     * Si le panneau « D'ou vient cet ecart ? » n'a jamais ete ouvert, l'appel
+     * est DECLENCHE ici en mode auto - exporter un fichier sans l'explication
+     * alors que le bouton la promet serait pire qu'une attente d'une seconde.
+     */
+    async function exporterPlJson(bouton) {
+        const d = plDernieresDonnees;
+        if (!d) {
+            if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
+            return;
+        }
+        const libelleInitial = bouton ? bouton.innerHTML : null;
+        try {
+            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Préparation…'; }
+            const p = d.periode || {};
+            const fin = isoDeSnapshot(p.dateFin);
+            const debut = isoDeSnapshot(p.dateDebut);
+            // LA VEILLE REELLE, la meme que le panneau: le panneau explique
+            // J-1, pas le dernier PL fige. Deux definitions donneraient deux
+            // ecarts differents entre l'ecran et le fichier.
+            const veille = fin
+                ? new Date(new Date(fin + 'T00:00:00Z').getTime() - 86400000)
+                    .toISOString().slice(0, 10)
+                : null;
+
+            let ecart = null;
+            if (fin && veille) {
+                const cle = fin + '|' + veille + '|auto';
+                if (plDernierEcart && plDernierEcart.cle === cle) {
+                    // Deja calcule par le panneau: on ne refait pas l'appel.
+                    ecart = plDernierEcart.data;
+                } else {
+                    const url = '/api/finance/pl/ecart-jour?date=' + encodeURIComponent(fin)
+                        + '&reference=' + encodeURIComponent(veille)
+                        + '&mode=auto'
+                        + (debut ? '&debut=' + encodeURIComponent(debut) : '');
+                    const res = await fetch(url, { credentials: 'include' });
+                    const j = await res.json();
+                    // Un ecart indisponible ne doit pas faire echouer l'export
+                    // du PL: on exporte ce qu'on a, en DISANT ce qui manque.
+                    ecart = (j && j.success && j.data)
+                        ? j.data
+                        : { ok: false, raison: 'appel_echoue',
+                            message: (j && j.error) || 'écart non calculable' };
+                }
+            }
+
+            const sortie = {
+                genere_le: new Date().toISOString(),
+                // Ce que le fichier CONTIENT, en clair: un LLM qui le lit doit
+                // savoir de quoi il parle sans deviner d'apres les cles.
+                a_propos: {
+                    source: 'Maas App — onglet Finance > PL',
+                    pl: 'Cumul du 1er du mois a la date de fin. Formule: ventes '
+                        + '− avances − commission MaaS + marge CDC − charges proratisees '
+                        + '− depenses − paiements fournisseur + variation de stock nette.',
+                    ecart_du_jour: 'Difference poste par poste entre le PL de la date de fin '
+                        + 'et celui de la veille. Les deux partent du meme 1er du mois, '
+                        + 'donc leur difference est la contribution de la journee.',
+                    variation_stock: 'variation nette = variation boucherie × coefficient '
+                        + 'de pertes de decoupe + variation hors boucherie. Le coefficient '
+                        + 'ne porte QUE sur la boucherie.'
+                },
+                periode: p,
+                pl: d.pl,
+                postes: {
+                    total_ventes: d.total_ventes,
+                    ventes_boucherie: d.ventes_boucherie,
+                    ventes_hors_boucherie: d.ventes_hors_boucherie,
+                    total_avances: d.total_avances,
+                    commission_maas: d.commission_maas,
+                    marge_cdc: d.marge_cdc,
+                    charges_proratisees: (d.charges || {}).total_prorata,
+                    depenses_periode: d.depenses_periode,
+                    paiements_fournisseur: d.paiements_fournisseur,
+                    variation_stock_nette: (d.stock || {}).variation_nette
+                },
+                cout_des_ventes: d.cout_des_ventes,
+                marge_des_ventes: d.marge_des_ventes,
+                taux_marge: d.taux_marge,
+                charges: d.charges,
+                stock: d.stock,
+                volumes: d.volumes,
+                sources: d.sources,
+                ecart_du_jour: ecart
+            };
+
+            telechargerJson(sortie, 'pl-' + (p.dateDebut || 'periode') + '-au-'
+                + (p.dateFin || '') + '.json');
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur export JSON: ' + e.message, 'danger');
+        } finally {
+            if (bouton) { bouton.disabled = false; bouton.innerHTML = libelleInitial; }
+        }
+    }
+
+    /** Telechargement d'un objet en fichier .json. Une seule ecriture pour
+     *  les deux exports (PL et projection). */
+    function telechargerJson(objet, nomFichier) {
+        const blob = new Blob([JSON.stringify(objet, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nomFichier;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Liberer l'URL: sans revoke, le blob reste en memoire tant que
+        // l'onglet vit.
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+
     // ===== Snapshots: figer le PL du jour + historique =====
 
     // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
@@ -2617,6 +2737,7 @@
             const j = await res.json();
             const d = j && j.data;
             if (!j.success || !d) throw new Error((j && j.error) || 'réponse invalide');
+            plDernierEcart = { cle: dateJour + '|' + dateReference + '|' + modeUi, data: d };
 
             // REFUS ASSUME. Le module dit pourquoi il ne calcule pas; on le
             // repete tel quel plutot que d'afficher un tableau vide qui se
@@ -3109,6 +3230,14 @@
     }
 
     let plDernieresDonnees = null;
+    // LE DERNIER ECART CALCULE, memorise pour l'export.
+    //
+    // Le panneau « D'ou vient cet ecart ? » charge a la demande: sans ce
+    // cache, l'export aurait soit exporte du vide quand le panneau n'a jamais
+    // ete ouvert, soit refait un appel deja fait. On garde la reponse ET la
+    // paire de dates qu'elle couvre, pour ne pas resservir l'ecart d'une
+    // autre journee apres un changement de periode.
+    let plDernierEcart = null;
 
     function renderPl(d) {
         const resultEl = document.getElementById('fin-pl-result');

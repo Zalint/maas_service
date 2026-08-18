@@ -1148,3 +1148,207 @@ describe('volumesProjetes: le prix requis par produit, meme manque que les kilos
         v.lignes.forEach((l) => expect(l.prixRequis).toBeNull());
     });
 });
+
+describe('tauxMargeCourant: projeter aux prix du jour, pas a la moyenne du mois', () => {
+    // Le defaut corrige: `taux_marge` du serveur est constate depuis le 1er et
+    // melange les journees ou la carcasse etait a 3 835 F a celles ou elle est
+    // a 4 500. Projeter dessus suppose que les jours restants se paieront au
+    // prix moyen du PASSE.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 100, ca: 540000, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 50, ca: 255000, prix_moyen: 5100 }
+    ];
+
+    test('le taux vaut la marge rapportee au CA chiffrable', () => {
+        // Marges unitaires posees a la main: 1 000 et 800.
+        const margeDe = (p) => (p.nom === 'Boeuf en détail' ? 1000 : 800);
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        const attendu = (100 * 1000 + 50 * 800) / (540000 + 255000);
+        expect(r.taux).toBeCloseTo(attendu, 10);
+        expect(r.couverture).toBeCloseTo(1, 10);
+        expect(r.utilisable).toBe(true);
+    });
+
+    test('un cout qui MONTE fait BAISSER le taux', () => {
+        // C'est la question posee: un cout qui monte ne peut pas faire gagner
+        // du PL. Le taux doit donc baisser, et le PL avec lui.
+        const bas = P.tauxMargeCourant({ produits: PRODUITS, margeDe: () => 1000 });
+        const haut = P.tauxMargeCourant({ produits: PRODUITS, margeDe: () => 700 });
+        expect(haut.taux).toBeLessThan(bas.taux);
+    });
+
+    test('un produit sans cout est EXCLU, pas compte a marge pleine', () => {
+        // L'inclure a marge inconnue gonflerait le taux; le compter a zero le
+        // diluerait. On l'ecarte et on le NOMME.
+        const margeDe = (p) => (p.nom === 'Boeuf en gros' ? null : 1000);
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        expect(r.sans_cout).toEqual(['Boeuf en gros']);
+        // Le taux se rapporte au CA CHIFFRABLE (540 000), pas au total.
+        expect(r.taux).toBeCloseTo((100 * 1000) / 540000, 10);
+        expect(r.ca_chiffre).toBeCloseTo(540000, 2);
+        expect(r.ca_total).toBeCloseTo(795000, 2);
+    });
+
+    test('une couverture trop faible rend le taux INUTILISABLE', () => {
+        // 540 000 sur 795 000 = 68 %: en dessous du seuil de 80 %, le taux
+        // decrit une minorite de l'activite et ne doit pas piloter le PL.
+        const margeDe = (p) => (p.nom === 'Boeuf en gros' ? null : 1000);
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        expect(r.couverture).toBeCloseTo(540000 / 795000, 6);
+        expect(r.utilisable).toBe(false);
+    });
+
+    test('projeterPL utilise le taux COURANT quand il est utilisable', () => {
+        const postes = {
+            total_avances: 0, commission_maas: 0, marge_cdc: 0,
+            depenses_periode: 0, paiements_fournisseur: 0,
+            stock_variation_nette: 0, taux_marge: 20
+        };
+        // caCible = 2 x caRealise: la moitie du mois reste a vendre.
+        const base = {
+            postes, caRealise: 1000000, caCible: 2000000,
+            chargesMensuel: 0, stockOption: 'zero', depensesOption: 'realise'
+        };
+        const constate = P.projeterPL(base);
+        expect(constate.tauxMargeOrigine).toBe('constate');
+        expect(constate.marge).toBeCloseTo(2000000 * 0.20, 2);
+
+        // Ce test affirmait `marge = caCible x taux courant`, c'est-a-dire le
+        // taux courant applique a TOUT le mois - passe compris. Il encodait le
+        // defaut: une vente deja faite au prix d'hier etait recomptee au prix
+        // du jour. La regle est desormais une DECOMPOSITION.
+        const courant = P.projeterPL(Object.assign({}, base, {
+            tauxCourant: { taux: 0.12, utilisable: true, marge_totale: 120000 }
+        }));
+        expect(courant.tauxMargeOrigine).toBe('courant');
+        // 200 000 (realise au taux constate) + 120 000 (restant aux prix du jour)
+        expect(courant.marge).toBeCloseTo(200000 + 120000, 2);
+        // La marge unitaire courante etant plus basse que la constatee, le PL
+        // baisse: un cout qui monte ne fait pas gagner du PL.
+        expect(courant.pl).toBeLessThan(constate.pl);
+    });
+
+    test('un taux courant INUTILISABLE laisse le taux constate en place', () => {
+        const postes = {
+            total_avances: 0, commission_maas: 0, marge_cdc: 0,
+            depenses_periode: 0, paiements_fournisseur: 0,
+            stock_variation_nette: 0, taux_marge: 20
+        };
+        const r = P.projeterPL({
+            postes, caRealise: 1000000, caCible: 1000000,
+            chargesMensuel: 0, stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: { taux: 0.12, utilisable: false }
+        });
+        expect(r.tauxMargeOrigine).toBe('constate');
+        expect(r.marge).toBeCloseTo(200000, 2);
+    });
+});
+
+describe('le mois se coupe en deux: realise au prix passe, restant au prix courant', () => {
+    // Le defaut corrige: appliquer un taux unique a caCible traitait tout le
+    // mois pareil. Avec le taux courant, cela REEVALUAIT le passe deja vendu a
+    // des prix qu'il n'a pas eus - une vente faite a 5 282 F recomptee 5 400.
+    const postes = {
+        total_avances: 0, commission_maas: 0, marge_cdc: 0,
+        depenses_periode: 0, paiements_fournisseur: 0,
+        stock_variation_nette: 0, taux_marge: 10
+    };
+    const base = {
+        postes, caRealise: 1000000, chargesMensuel: 0,
+        stockOption: 'zero', depensesOption: 'realise'
+    };
+
+    test('la marge du REALISE reste au taux constate, jamais reevaluee', () => {
+        // caCible = caRealise: il ne reste rien a vendre, donc la marge doit
+        // valoir exactement celle du realise - le taux courant ne doit rien
+        // changer.
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 1000000,
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        }));
+        expect(r.marge).toBeCloseTo(1000000 * 0.10, 2);
+        expect(r.tauxMarge).toBeCloseTo(0.10, 6);
+    });
+
+    test('les jours restants portent la marge unitaire COURANTE', () => {
+        // caCible = 2 x caRealise: il reste autant a vendre que de deja vendu,
+        // donc proportion = 1 et la marge restante vaut marge_totale entiere.
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 2000000,
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        }));
+        // 100 000 (realise au taux constate) + 200 000 (restant au prix courant)
+        expect(r.marge).toBeCloseTo(100000 + 200000, 2);
+        // Et le taux EFFECTIF rendu est celui que cette marge represente.
+        expect(r.tauxMarge).toBeCloseTo(300000 / 2000000, 6);
+        expect(r.tauxMargeOrigine).toBe('courant');
+    });
+
+    test('un cout qui monte fait BAISSER le PL, meme decompose', () => {
+        const cher = P.projeterPL(Object.assign({}, base, {
+            caCible: 2000000,
+            tauxCourant: { utilisable: true, taux: 0.10, marge_totale: 100000 }
+        }));
+        const bonMarche = P.projeterPL(Object.assign({}, base, {
+            caCible: 2000000,
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        }));
+        expect(cher.pl).toBeLessThan(bonMarche.pl);
+    });
+
+    test('un scenario SOUS le realise ne cree pas de marge negative', () => {
+        // Pas de vente negative: le plancher est « plus rien vendu ».
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 800000,
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        }));
+        expect(r.marge).toBeCloseTo(100000, 2);   // le realise seul
+    });
+
+    test('sans taux courant utilisable, le taux constate porte tout le mois', () => {
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 2000000,
+            tauxCourant: { utilisable: false, taux: 0.20, marge_totale: 200000 }
+        }));
+        expect(r.marge).toBeCloseTo(2000000 * 0.10, 2);
+        expect(r.tauxMargeOrigine).toBe('constate');
+    });
+
+    test('le taux constate reste rendu a part, pour l affichage', () => {
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 2000000,
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        }));
+        expect(r.tauxMargeConstate).toBeCloseTo(0.10, 6);
+        expect(r.tauxMarge).not.toBeCloseTo(0.10, 6);
+    });
+});
+
+describe('tauxMargeCourant: la marge absolue, et non plus seulement le taux', () => {
+    // marge_totale est desormais ce qui pilote la projection: le taux ne sert
+    // plus qu'a l'affichage. Il doit donc etre rendu, et juste.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 100, ca: 540000, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 50, ca: 255000, prix_moyen: 5100 }
+    ];
+
+    test('marge_totale vaut la somme des marges unitaires x quantites', () => {
+        const margeDe = (p) => (p.nom === 'Boeuf en détail' ? 1000 : 800);
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        expect(r.marge_totale).toBeCloseTo(100 * 1000 + 50 * 800, 6);
+    });
+
+    test('un produit sans cout ne contribue PAS a marge_totale', () => {
+        const margeDe = (p) => (p.nom === 'Boeuf en gros' ? null : 1000);
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        expect(r.marge_totale).toBeCloseTo(100 * 1000, 6);
+        expect(r.sans_cout).toEqual(['Boeuf en gros']);
+    });
+
+    test('marge_totale et taux restent coherents entre eux', () => {
+        const margeDe = () => 900;
+        const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
+        // taux = marge_totale / CA chiffrable, par construction.
+        expect(r.taux).toBeCloseTo(r.marge_totale / r.ca_chiffre, 10);
+    });
+});
