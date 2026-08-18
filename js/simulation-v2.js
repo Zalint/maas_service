@@ -1930,6 +1930,13 @@
     var projCalculee = null;
 
     function projectionCorps() {
+        // REMIS A ZERO D'ABORD, avant tout retour anticipe.
+        //
+        // Il n'etait renseigne qu'apres les gardes (periode invalide, plus
+        // aucun jour d'ouverture). Un rendu qui sortait par l'une d'elles
+        // laissait donc en place la projection du rendu PRECEDENT, et
+        // l'export JSON l'aurait telechargee comme si elle etait courante.
+        projCalculee = null;
         if (!PJ || !etat.sim || !etat.sim.projection || !etat.base) return '';
         var pj = etat.sim.projection;
         var b = etat.base;
@@ -2325,7 +2332,8 @@
                 && tauxCourant.couverture < 0.99
                 ? ' <span class="badge bg-warning-subtle text-warning-emphasis border" '
                   + 'title="Le reste du chiffre d’affaires n’a pas de coût connu : '
-                  + 'il est projeté à la marge moyenne des autres produits.">'
+                  + 'il ne contribue AUCUNE marge aux jours restants. Le PL projeté est '
+                  + 'donc prudent à due concurrence.">'
                   + esc(pct2(tauxCourant.couverture * 100)) + ' % du CA seulement</span>'
                 : '')
             + ' <details class="d-inline">'
@@ -2398,7 +2406,7 @@
                 var ca2 = nb(pr.ca);
                 sCaTotal += ca2;
                 if (m === null || m === undefined) {
-                    dbg += padD(String(pr.nom).slice(0, 23), 24)
+                    dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
                         + padG(fmt(pr.prix_moyen), 10) + padG('—', 10) + padG('—', 10)
                         + padG('coût inconnu', 11) + padG(fmtDec(pr.quantite), 10)
                         + padG('exclu', 14) + padG(fmt(ca2), 14) + '\n';
@@ -2417,7 +2425,7 @@
                 var q2 = nb(pr.quantite);
                 sMarge += m * q2;
                 sCa += ca2;
-                dbg += padD(String(pr.nom).slice(0, 23), 24)
+                dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
                     + padG(fmt(pr.prix_moyen), 10) + padG(fmt(pr.prix_achat), 10)
                     + padG(div.toFixed(4), 10) + padG(fmt(m), 11)
                     + padG(fmtDec(q2), 10) + padG(fmt(m * q2), 14) + padG(fmt(ca2), 14) + '\n';
@@ -3118,7 +3126,7 @@
             var sommeDehors = 0;
             dehors.forEach(function (p) {
                 sommeDehors += nb(p.ca);
-                h += '      ' + pad(String(p.nom).slice(0, 27), 27)
+                h += '      ' + esc(pad(String(p.nom).slice(0, 27), 27))
                    + padL(fmt(nb(p.ca)), 14)
                    + '   ' + (b.ventes > 0 ? ((nb(p.ca) / b.ventes) * 100).toFixed(2) : '0')
                    + ' %\n';

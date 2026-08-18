@@ -35,6 +35,29 @@ const lire = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
+/**
+ * Le CORPS d'une fonction, borne par son accolade fermante.
+ *
+ * Les tests decoupaient 900 caracteres a partir du nom: une tranche fixe
+ * deborde sur la fonction suivante des que celle qu'on vise raccourcit, et
+ * l'assertion se met alors a passer grace au code VOISIN.
+ */
+const corpsDe = (source, nom) => {
+    const debut = source.indexOf('function ' + nom);
+    if (debut < 0) return '';
+    let prof = 0;
+    let i = source.indexOf('{', debut);
+    if (i < 0) return '';
+    for (let j = i; j < source.length; j++) {
+        if (source[j] === '{') prof++;
+        else if (source[j] === '}') {
+            prof--;
+            if (prof === 0) return source.slice(debut, j + 1);
+        }
+    }
+    return source.slice(debut);
+};
+
 /** La cle comme IDENTIFIANT ou propriete, jamais comme sous-chaine. */
 const porte = (source, cle) => new RegExp('\\b' + cle + '\\b').test(source);
 
@@ -128,10 +151,7 @@ test('la projection ne lit le module que par les fonctions qu il exporte', () =>
  */
 test('auPrixDeLaSuite bascule le prix d ACHAT, pas seulement celui de vente', () => {
     const ecran = lire('js/simulation-v2.js');
-    const bloc = ecran.slice(
-        ecran.indexOf('function auPrixDeLaSuite'),
-        ecran.indexOf('function auPrixDeLaSuite') + 900
-    );
+    const bloc = corpsDe(ecran, 'auPrixDeLaSuite');
     expect(bloc).toContain('prix_achat_fin');
     // La bascule elle-meme: sans cette affectation, le champ serait lu et
     // jete, et la projection resterait sur la moyenne du mois.
@@ -151,10 +171,7 @@ test('auPrixDeLaSuite bascule le prix d ACHAT, pas seulement celui de vente', ()
  */
 test('le cout d achat bascule NU, sans parage ni commission incorpores', () => {
     const ecran = lire('js/simulation-v2.js');
-    const bloc = ecran.slice(
-        ecran.indexOf('function auPrixDeLaSuite'),
-        ecran.indexOf('function auPrixDeLaSuite') + 900
-    );
+    const bloc = corpsDe(ecran, 'auPrixDeLaSuite');
     // Aucune division par un diviseur de parage, aucun taux de commission,
     // dans la bascule du prix d'achat.
     expect(bloc).not.toMatch(/parage/i);

@@ -73,7 +73,7 @@ seul côté sous-estimerait le rythme de 17 %.
 
 ## 4. Le CA projeté
 
-```
+```text
 CA estimé = CA réalisé
           + jours P1 restants × rythme P1
           + jours P2 restants × rythme P2
@@ -89,7 +89,8 @@ Chaque poste suit une règle **différente**, et c'est le cœur du modèle :
 |---|---|---|
 | Ventes | le CA estimé | — |
 | Commission MaaS, avances, marge CDC | **proportionnels au CA** | ils suivent l'activité |
-| Dépenses, paiements fournisseur | **réalisés à date, non extrapolés** | ce sont des actes ponctuels, pas des flux |
+| Dépenses | **réalisées à date, non extrapolées** | ce sont des actes ponctuels, pas des flux |
+| Avances, paiements fournisseur, variation de stock | **entrent dans le coût RÉALISÉ** (donc dans le taux constaté), pas dans la marge future | ils décrivent ce qui a déjà été payé ; les jours restants sont valorisés aux prix du jour (§ 14 bis) |
 | Charges fixes | **le mois COMPLET** (plus de prorata) | une charge mensuelle sera due en entier |
 | Variation de stock | au choix : « garder » ou « zéro » | c'est une **photo**, pas un flux |
 
@@ -101,7 +102,7 @@ La variation de stock est le poste le plus discutable : c'est pourquoi elle est 
 `projeterPL` n'applique pas la marge poste par poste : il utilise le **taux de
 marge** de la période (`taux_marge`), et à défaut le reconstitue :
 
-```
+```text
 coût réel   = avances + paiements fournisseur − variation de stock nette
 taux marge  = (CA réalisé − coût réel) / CA réalisé
 marge       = CA cible × taux marge
@@ -147,7 +148,7 @@ et l'écran le dit au lieu d'afficher un PL inventé.
 Le CA projeté ne dit pas combien de **marchandise** il suppose. C'est pourtant ce
 chiffre-là qui se commande.
 
-```
+```text
 reste à vendre (produit p) = quantité vendue (p) × proportion des jours restants
 ```
 
@@ -180,7 +181,7 @@ d'exploitation**. Le champ « Objectif de PL fin de mois » accepte n'importe qu
 valeur, y compris **négative** (accepter de perdre 50 000 F ce mois-ci est un
 arbitrage, pas une erreur de saisie).
 
-```
+```text
 manque = cible − PL central
 ```
 
@@ -189,7 +190,7 @@ plan disparaît, et l'enfermer dedans aurait supprimé le seul moyen de la relev
 
 ### Le Δ équilibre
 
-```
+```text
 marge moyenne = Σ(quantité × marge nette) / Σ quantité     [pondérée, pas simple]
 Δ total       = manque / marge moyenne
 Δ (produit p) = Δ total × (quantité p / Σ quantité)
@@ -217,7 +218,7 @@ catalogue fournisseur.
 Seconde lecture du **même** manque : au lieu de « combien de kilos en plus », « à
 quel prix vendre ce qui reste ».
 
-```
+```text
 prix requis (p) = prix actuel (p) + (part du manque de p) / (kilos restants de p)
 ```
 
@@ -330,7 +331,7 @@ contient — un lecteur automatique ne doit pas avoir à deviner d'après les cl
 Le PL projeté ne s'obtient pas en appliquant un taux unique au chiffre d'affaires
 du mois. **Le mois est coupé en deux, chaque moitié à son prix :**
 
-```
+```text
 marge = CA réalisé × taux constaté          ← un fait, jamais réévalué
       + proportion × marge aux prix du jour  ← seuls les jours restants
 ```
@@ -352,7 +353,7 @@ la compter ici la déduirait deux fois.
 **Pourquoi la décomposition.** Appliquer le taux aux prix du jour à tout le mois
 réévaluerait les ventes déjà faites à des prix qu'elles n'ont pas eus — une vente
 conclue à 5 282 F recomptée 5 400 F. Sur un cas réel, cette erreur gonflait le PL
-projeté de 293 427 F à 151 421 F, soit près du double.
+projeté de 151 421 F à 293 427 F, soit près du double.
 
 **Garde-fou.** Le taux aux prix du jour n'est retenu que s'il couvre au moins 80 %
 du chiffre d'affaires ; en dessous, le taux constaté reprend la main. Les produits

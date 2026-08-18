@@ -2407,7 +2407,11 @@
 
             let ecart = null;
             if (fin && veille) {
-                const cle = fin + '|' + veille + '|auto';
+                // La cle porte AUSSI le debut de periode: il part dans la
+                // requete, donc deux periodes de meme fin mais de debut
+                // different rendent des ecarts differents. Sans lui, la
+                // seconde aurait resservi le cache de la premiere.
+                const cle = fin + '|' + veille + '|auto|' + (debut || '');
                 if (plDernierEcart && plDernierEcart.cle === cle) {
                     // Deja calcule par le panneau: on ne refait pas l'appel.
                     ecart = plDernierEcart.data;
@@ -2416,14 +2420,24 @@
                         + '&reference=' + encodeURIComponent(veille)
                         + '&mode=auto'
                         + (debut ? '&debut=' + encodeURIComponent(debut) : '');
-                    const res = await fetch(url, { credentials: 'include' });
-                    const j = await res.json();
                     // Un ecart indisponible ne doit pas faire echouer l'export
                     // du PL: on exporte ce qu'on a, en DISANT ce qui manque.
-                    ecart = (j && j.success && j.data)
-                        ? j.data
-                        : { ok: false, raison: 'appel_echoue',
-                            message: (j && j.error) || 'écart non calculable' };
+                    //
+                    // Le try est INTERNE. Sans lui, une coupure reseau ou une
+                    // reponse non-JSON remontait au catch general et l'export
+                    // entier etait abandonne - alors que le PL, lui, etait deja
+                    // en memoire et parfaitement exportable.
+                    try {
+                        const res = await fetch(url, { credentials: 'include' });
+                        const j = await res.json();
+                        ecart = (j && j.success && j.data)
+                            ? j.data
+                            : { ok: false, raison: 'appel_echoue',
+                                message: (j && j.error) || 'écart non calculable' };
+                    } catch (eEcart) {
+                        ecart = { ok: false, raison: 'appel_echoue',
+                            message: eEcart.message || 'écart non calculable' };
+                    }
                 }
             }
 
@@ -2737,7 +2751,10 @@
             const j = await res.json();
             const d = j && j.data;
             if (!j.success || !d) throw new Error((j && j.error) || 'réponse invalide');
-            plDernierEcart = { cle: dateJour + '|' + dateReference + '|' + modeUi, data: d };
+            plDernierEcart = {
+                cle: dateJour + '|' + dateReference + '|' + modeUi + '|' + (debutPeriode || ''),
+                data: d
+            };
 
             // REFUS ASSUME. Le module dit pourquoi il ne calcule pas; on le
             // repete tel quel plutot que d'afficher un tableau vide qui se
