@@ -107,21 +107,55 @@
     }
 
     /**
-     * Moyenne journaliere par type de jour sur un intervalle: les jours SANS
-     * vente comptent zero — un jour ouvert sans vente est une information,
-     * pas un trou.
+     * Moyenne journaliere par type de jour sur un intervalle.
+     *
+     * LES JOURS SANS AUCUNE VENTE SONT EXCLUS DU DENOMINATEUR.
+     *
+     * L'ecriture precedente les comptait, au motif qu'« un jour ouvert sans
+     * vente est une information, pas un trou ». Sur les donnees reelles c'est
+     * faux: une boucherie ouverte qui ne vend rien de la journee n'existe pas.
+     * Ces jours sont des fermetures ou des saisies manquantes - Mbao en a 4 en
+     * mai (les 27, 28, 29 et 30, consecutifs), 4 en juin. Chacun divisait le
+     * rythme sans rien ajouter au numerateur, et comme la fenetre d'historique
+     * de 92 jours en contient toujours, l'effet contaminait meme les mois sains.
+     *
+     * Backtest sur juin et juillet 2026, 16 projections, deux sites:
+     *   avec les jours a zero  : 43,4 % d'erreur absolue, biais -41,4 %
+     *   sans les jours a zero  : 17,5 % d'erreur absolue, biais -10,8 %
+     * Gain confirme independamment sur chaque site (Mbao 46,3 -> 15,7 %,
+     * Keur Massar 40,5 -> 19,2 %). Aucun parametre n'a ete ajuste: c'est la
+     * correction d'un defaut, pas un reglage.
+     *
+     * `joursExclus` est rendu pour que l'ecran DISE combien de journees ont ete
+     * ecartees. Si la boutique etait vraiment fermee, c'est une information de
+     * gestion; si la saisie manque, il faut la faire plutot que la masquer.
      */
     function rythmeParType(caParJour, debut, fin, exclureDimanche) {
         var somme = { P1: 0, P2: 0 }, jours = { P1: 0, P2: 0 };
+        var ouverts = { P1: 0, P2: 0 };
+        var exclus = [];
         joursOuvres(debut, fin, exclureDimanche).forEach(function (j) {
             var t = typeJour(j);
+            ouverts[t] += 1;
+            var v = nb((caParJour || {})[j]);
+            if (!(v > 0)) { exclus.push(j); return; }
             jours[t] += 1;
-            somme[t] += nb((caParJour || {})[j]);
+            somme[t] += v;
         });
         return {
             P1: jours.P1 > 0 ? somme.P1 / jours.P1 : null,
             P2: jours.P2 > 0 ? somme.P2 / jours.P2 : null,
-            jours: jours, somme: somme
+            // `jours` = journees ACTIVES, le denominateur de la moyenne. C'est
+            // aussi, DELIBEREMENT, ce que rythmesRetenus compte pour son seuil
+            // des 5 journees observees: le seuil garde contre une moyenne
+            // batie sur trop peu d'observations, et une journee sans vente
+            // n'en est pas une. Le backtest qui valide l'exclusion (17,5 %
+            // d'erreur contre 43,4 %) a ete mesure avec ce couplage en place.
+            jours: jours, somme: somme,
+            // Les journees OUVERTES, pour que l'ecran puisse dire « 7 actives
+            // sur 8 ouvertes » plutot que de laisser croire a un mois court.
+            joursOuverts: ouverts,
+            joursExclus: exclus
         };
     }
 
@@ -265,7 +299,7 @@
         var couvertureMin = (args && args.couvertureMin !== undefined)
             ? nb(args.couvertureMin) : 0.8;
 
-        var caTotal = 0, caChiffre = 0, margeTotale = 0;
+        var caTotal = 0, caChiffre = 0, margeTotale = 0, caDerniers = 0;
         var sansCout = [];
         produits.forEach(function (p) {
             var ca = nb(p.ca);
@@ -274,18 +308,32 @@
             if (m === null || m === undefined) { sansCout.push(p.nom); return; }
             caChiffre += ca;
             margeTotale += nb(m) * nb(p.quantite);
+            // Le CA de ces memes volumes aux prix PORTES par les produits -
+            // les derniers connus, puisque l'ecran passe des produits deja
+            // au prix de la suite. C'est le denominateur du taux.
+            caDerniers += nb(p.prix_moyen) * nb(p.quantite);
         });
 
         var couverture = caTotal > 0 ? caChiffre / caTotal : 0;
-        // Le taux se calcule sur le CA CHIFFRABLE, pas sur le total: rapporter
-        // une marge partielle au CA entier la diluerait mecaniquement.
-        var taux = caChiffre > 0 ? margeTotale / caChiffre : null;
+        // LE TAUX DES JOURS RESTANTS: marge et CA aux MEMES prix.
+        //
+        // L'ancienne ecriture divisait la marge aux derniers prix par le CA de
+        // la PERIODE - numerateur aux prix de demain, denominateur aux prix
+        // d'hier. L'hybride surevaluait le taux des que les prix montaient, et
+        // ne servait a rien: le PL part de marge_totale, en francs. Divise par
+        // le CA des memes volumes aux memes prix, le taux redevient une vraie
+        // grandeur: marge de la suite / CA de la suite, quel que soit le
+        // volume restant (la proportion se simplifie).
+        var taux = caDerniers > 0 ? margeTotale / caDerniers : null;
         return {
             taux: taux,
             taux_pct: taux === null ? null : taux * 100,
             couverture: couverture,
             ca_total: caTotal,
             ca_chiffre: caChiffre,
+            // Le denominateur du taux, rendu pour que l'ecran puisse refaire
+            // la division sous les yeux du lecteur.
+            ca_derniers: caDerniers,
             // La marge ABSOLUE que les volumes REALISES degageraient aux prix
             // courants. C'est elle qui sert a projeter les jours restants:
             // le taux, lui, ne sert plus qu'a l'affichage.
@@ -297,6 +345,173 @@
         };
     }
 
+    /**
+     * Les quantites restant a vendre par produit, avec SURCHARGE manuelle.
+     *
+     * POURQUOI CE N'EST PAS UN ESTIMATEUR. Le backtest sur mai-juillet 2026 a
+     * mesure qu'une projection statistique par produit (rythmes P1/P2 par
+     * produit, regle 70/30) est MOINS precise que l'hypothese de mix qu'elle
+     * remplacerait: erreur de mix 38,4 % contre 35,8 %, defavorable sur les
+     * quatre mois testes. Trois raisons, toutes verifiees sur les donnees:
+     *   - trois produits seulement ont du signal (boeuf detail 97 jours de
+     *     vente, gros 72, poulet detail 70 sur 99 jours); la Dorade en a UN;
+     *   - le coefficient P1/P2 reel oscille de 0,767 (juin) a 1,533 (juillet)
+     *     quand le document en pose 1,243: rien de stable a calibrer;
+     *   - une seule commande - 189 u de boeuf en gros le 20/06/2026, 774 900 F,
+     *     21 % du CA du mois - fait la moitie de l'erreur de mix de juin.
+     * Cette derniere ligne resume tout: aucun rythme ne predit cet evenement,
+     * mais l'exploitant le connait d'avance. D'ou une SAISIE, pas un modele.
+     *
+     * MODE 'atelier' (defaut): le CA total projete ne bouge pas, la saisie ne
+     * fait que redistribuer. C'est le mode juste pour corriger un MIX, seul
+     * defaut que les mesures imputent a l'hypothese actuelle: les lignes non
+     * saisies absorbent la difference au prorata de leur propre reste.
+     * MODE 'ajout': la saisie s'ajoute, le CA projete grossit d'autant. Pour
+     * une commande qui vient EN PLUS de l'activite habituelle.
+     *
+     * Sans aucune surcharge, les deux modes rendent exactement q x proportion,
+     * l'hypothese de mix actuelle, au flottant pres. Aucune regression possible.
+     *
+     * @param {Array}  args.produits    {nom, quantite, prix_moyen}, au prix de la suite
+     * @param {number} args.proportion  part du volume encore a vendre
+     * @param {object} args.surcharges  { cle: {reste: nombre} }, saisie utilisateur
+     * @param {string} [args.mode]      'atelier' (defaut) | 'ajout'
+     * @param {Function} [args.cleDe]   normalisation du nom -> cle de surcharge
+     */
+    function repartirRestes(args) {
+        var produits = (args && args.produits) || [];
+        var proportion = Math.max(0, nb(args && args.proportion));
+        var surcharges = (args && args.surcharges) || {};
+        var mode = (args && args.mode) === 'ajout' ? 'ajout' : 'atelier';
+        var cleDe = (args && args.cleDe)
+            || function (n) { return String(n === null || n === undefined ? '' : n).trim().toLowerCase(); };
+
+        var notes = [];
+        var vues = {};
+        var lignes = produits.map(function (p) {
+            var q = nb(p.quantite);
+            var pv = (p.prix_moyen === null || p.prix_moyen === undefined) ? null : nb(p.prix_moyen);
+            var cle = cleDe(p.nom);
+            // Deux produits qui rendent la MEME cle ne se fusionnent pas: leurs
+            // prix different, et une surcharge ne saurait pas a qui elle
+            // s'applique. On la refuse sur ces lignes et on le dit.
+            var dupliquee = Object.prototype.hasOwnProperty.call(vues, cle);
+            if (dupliquee && notes.indexOf('cle_dupliquee') < 0) notes.push('cle_dupliquee');
+            vues[cle] = true;
+            var s = dupliquee ? null : surcharges[cle];
+            var brut = (s && s.reste !== null && s.reste !== undefined && isFinite(nb(s.reste)))
+                ? Math.max(0, nb(s.reste))
+                : null;
+            var resteMix = q * proportion;
+            return {
+                nom: p.nom, cle: cle, quantite: q, prix: pv,
+                reste_mix: resteMix,
+                reste: brut === null ? resteMix : brut,
+                source: brut === null ? 'mix' : 'saisie'
+            };
+        });
+
+        var caDe = function (l, r) { return (l.prix === null || !(l.prix > 0)) ? 0 : l.prix * r; };
+        var facteur = null;
+        var sature = false;
+        if (mode === 'atelier') {
+            // Le CA que l'atelier autorise pour la suite, inchange par la saisie.
+            var cible = 0, caSaisi = 0, caLibre = 0;
+            lignes.forEach(function (l) {
+                cible += caDe(l, l.reste_mix);
+                if (l.source === 'saisie') caSaisi += caDe(l, l.reste);
+                else caLibre += caDe(l, l.reste_mix);
+            });
+            var residuel = cible - caSaisi;
+            if (residuel < 0) {
+                // Les saisies depassent a elles seules le CA projete. On ne les
+                // rogne PAS - l'exploitant sait ce qu'il annonce - mais les
+                // lignes libres tombent a zero et le total depasse la cible.
+                // L'ecran doit le dire plutot que de rendre des negatifs.
+                sature = true;
+                residuel = 0;
+                notes.push('saisies_au_dela_du_ca');
+            }
+            if (caLibre > 0) {
+                facteur = residuel / caLibre;
+                lignes.forEach(function (l) {
+                    if (l.source === 'mix') l.reste = l.reste_mix * facteur;
+                });
+            } else if (lignes.some(function (l) { return l.source === 'mix'; })) {
+                // Des lignes libres existent mais ne portent aucun CA (prix
+                // absent): rien a redistribuer, elles restent au mix.
+                notes.push('libres_sans_prix');
+            } else if (lignes.length) {
+                notes.push('toutes_saisies');
+            }
+        }
+
+        var tot = { vendu: 0, reste: 0, mois: 0, ca_reste: 0, ca_reste_mix: 0, nb_saisies: 0 };
+        lignes.forEach(function (l) {
+            l.mois = l.quantite + l.reste;
+            l.ca_reste = caDe(l, l.reste);
+            tot.vendu += l.quantite;
+            tot.reste += l.reste;
+            tot.mois += l.mois;
+            tot.ca_reste += l.ca_reste;
+            tot.ca_reste_mix += caDe(l, l.reste_mix);
+            if (l.source === 'saisie') tot.nb_saisies += 1;
+        });
+
+        return {
+            lignes: lignes,
+            totaux: tot,
+            mode: mode,
+            // Ce qu'il a fallu appliquer aux lignes libres pour tenir le CA.
+            // 1 = la saisie n'a rien deplace; < 1 = elle a pris de la place aux
+            // autres; > 1 = elle leur en a rendu.
+            facteur: facteur,
+            sature: sature,
+            // Le CA de la suite EFFECTIF: egal a celui du mix en mode atelier
+            // (hors saturation), superieur en mode ajout.
+            ca_suite: tot.ca_reste,
+            ca_suite_mix: tot.ca_reste_mix,
+            actif: tot.nb_saisies > 0,
+            notes: notes
+        };
+    }
+
+    /**
+     * Marge des jours restants, produit par produit, depuis une repartition.
+     * Somme(marge unitaire x reste). C'est ce qui remplace
+     * proportion x marge_totale des que des quantites sont saisies a la main.
+     */
+    function margeDesRestes(lignesRepartition, margeDe, produitsParCle) {
+        var total = 0;
+        var sansMarge = [];
+        (lignesRepartition || []).forEach(function (l) {
+            var src = (produitsParCle && produitsParCle[l.cle]) || l;
+            var m = margeDe ? margeDe(src) : null;
+            if (m === null || m === undefined) { sansMarge.push(l.nom); return; }
+            total += nb(m) * nb(l.reste);
+        });
+        return { marge: total, sans_marge: sansMarge };
+    }
+
+    /**
+     * CA d'un « mois-equivalent » aux prix portes par les produits passes:
+     * Sigma(quantite x prix_moyen). L'ecran l'appelle avec des produits AU
+     * PRIX DE LA SUITE (auPrixDeLaSuite), il rend donc ce que les volumes de
+     * la periode feraient au DERNIER prix de vente connu. Aucun cout requis:
+     * les produits sans prix d'achat comptent aussi, un CA n'a pas besoin de
+     * marge. C'est l'assiette de la methode « volumes x derniers prix ».
+     */
+    function caAuxDerniersPrix(produits) {
+        var total = 0;
+        (produits || []).forEach(function (p) {
+            var pv = (p && p.prix_moyen !== null && p.prix_moyen !== undefined)
+                ? nb(p.prix_moyen) : null;
+            if (pv === null || !(pv > 0)) return;
+            total += pv * nb(p.quantite);
+        });
+        return total;
+    }
+
     function projeterPL(args) {
         var p = args.postes;
         var caRealise = nb(args.caRealise);
@@ -304,6 +519,21 @@
         if (caRealise <= 0) return null; // regle du document: on n'invente pas
         var r = caCible / caRealise;
         var stock = args.stockOption === 'zero' ? 0 : nb(p.stock_variation_nette);
+
+        // LA PROPORTION DES JOURS RESTANTS - en VOLUME.
+        //
+        // Sans caPleinDerniersPrix (methode rythmes), caCible est aux prix de
+        // la periode: la part de ce qui reste se lit sur le CA realise.
+        // Avec (methode volumes x derniers prix), caCible contient la hausse
+        // des prix de vente: diviser par le CA realise compterait cette
+        // hausse comme du volume en plus. On divise par le CA plein aux
+        // derniers prix - Sigma(quantite x dernier prix de vente) - et la
+        // proportion redevient purement du volume. L'identite qui en decoule,
+        // verifiable a l'ecran: caCible - caRealise = proportion x caPlein.
+        var caPlein = nb(args.caPleinDerniersPrix);
+        var proportion = caPlein > 0
+            ? Math.max(0, (caCible - caRealise) / caPlein)
+            : Math.max(0, (caCible - caRealise) / caRealise);
 
         // DEPENSES: trois lectures possibles, et le choix change le resultat.
         //
@@ -387,14 +617,35 @@
         // courants: la rapporter au CA realise donnerait un taux qui melange
         // deux niveaux de prix, et c'est exactement ce qu'on evite ici.
         var origineTaux = 'constate';
+        // D'ou vient la marge des jours restants: 'proportion' (hypothese de
+        // mix) ou 'produits' (quantites saisies). Rendu pour que l'ecran le
+        // dise au lieu de le laisser deviner.
+        var origineMarge = 'proportion';
         var marge = tauxMarge === null ? null : caCible * tauxMarge;
         var tc = args.tauxCourant;
-        if (tc && tc.utilisable && tc.marge_totale !== null
+        var mrd = args.margeRestanteDirecte;
+        var directe = (mrd !== null && mrd !== undefined && isFinite(nb(mrd)));
+        // LA SAISIE PRIME, MEME SANS TAUX COURANT UTILISABLE.
+        //
+        // Elle etait auparavant lue A L'INTERIEUR du test sur tc.utilisable:
+        // sur un point de vente dont plus de 20 % du CA n'a pas de prix
+        // d'achat, le taux courant est declare inutilisable, la branche etait
+        // sautee, et une quantite saisie a la main n'avait AUCUN effet sur le
+        // PL - alors que le tableau des volumes la montrait appliquee. Silence
+        // total. La saisie est une decision explicite de l'exploitant: elle ne
+        // depend pas de la couverture des couts, qui ne conditionne que le
+        // repli statistique.
+        if (directe && tauxMarge !== null) {
+            marge = caRealise * tauxMarge + nb(mrd);
+            origineMarge = 'produits';
+            origineTaux = 'courant';
+        } else if (tc && tc.utilisable && tc.marge_totale !== null
             && tc.marge_totale !== undefined && tauxMarge !== null) {
             // Un scenario qui finirait SOUS le realise n'a pas de sens: il n'y
-            // a pas de vente negative. Le plancher est « plus rien vendu ».
-            var proportion = Math.max(0, (caCible - caRealise) / caRealise);
+            // a pas de vente negative. Le plancher « plus rien vendu » est
+            // deja dans la proportion, calculee plus haut.
             marge = caRealise * tauxMarge + proportion * nb(tc.marge_totale);
+            origineMarge = 'proportion';
             origineTaux = 'courant';
         }
 
@@ -405,15 +656,27 @@
             tauxMarge: (marge === null || caCible === 0) ? tauxMarge : marge / caCible,
             tauxMargeConstate: tauxMarge,
             tauxMargeOrigine: origineTaux,
+            margeOrigine: origineMarge,
             marge: marge,
-            commission: nb(p.commission_maas) * r,
-            margeCdc: nb(p.marge_cdc) * r,
+            // Rendues pour l'affichage: la proportion effectivement utilisee
+            // et son assiette. Sans elles, l'ecran redivisait par le CA
+            // realise et ses controles sortaient faux en methode volumes.
+            proportion: proportion,
+            caPleinDerniersPrix: caPlein > 0 ? caPlein : null,
+            // En methode « derniers prix », r = caCible/caRealise contient la
+            // hausse du prix de VENTE. La commission se calcule sur le prix
+            // CATALOGUE des livraisons et la marge CDC comme les avances
+            // suivent la marchandise: tous suivent le VOLUME, pas le tarif en
+            // vitrine. En methode rythmes, (1 + proportion) egale r et rien
+            // ne change.
+            commission: nb(p.commission_maas) * (caPlein > 0 ? 1 + proportion : r),
+            margeCdc: nb(p.marge_cdc) * (caPlein > 0 ? 1 + proportion : r),
             charges: nb(args.chargesMensuel),
             depenses: nb(p.depenses_periode) * facteurDepenses,
             depensesFacteur: facteurDepenses,
             // Rendus pour l'affichage du detail: ils n'entrent PLUS dans le
             // calcul, la marge les contient deja.
-            avances: nb(p.total_avances) * r,
+            avances: nb(p.total_avances) * (caPlein > 0 ? 1 + proportion : r),
             paiements: nb(p.paiements_fournisseur),
             stock: stock
         };
@@ -434,7 +697,21 @@
                 depensesOption: args.depensesOption, jours: args.jours,
                 // Le MEME taux pour les trois scenarios: ils ne different que
                 // par le CA, jamais par la structure de cout.
-                tauxCourant: args.tauxCourant
+                tauxCourant: args.tauxCourant,
+                caPleinDerniersPrix: args.caPleinDerniersPrix,
+                // LA SAISIE VAUT DANS LES TROIS SCENARIOS.
+                //
+                // Une commande annoncee est un FAIT: elle ne devient pas plus
+                // petite parce qu'on regarde le scenario prudent. Ce sont les
+                // lignes NON saisies qui absorbent la variation de volume.
+                // Premiere ecriture: un scalaire fige au seul central. Elle
+                // cassait la monotonie des trois colonnes - une saisie sous le
+                // mix donnait un PL prudent SUPERIEUR au central, ce qu'aucun
+                // lecteur ne peut interpreter. Un callback, evalue a la cible
+                // de chaque scenario, garde la saisie ferme et le reste souple.
+                margeRestanteDirecte: (typeof args.margeRestanteDe === 'function')
+                    ? args.margeRestanteDe(cible)
+                    : null
             });
         };
         return {
@@ -1055,6 +1332,21 @@
         var margeDe = (args && args.margeDe) || function () { return null; };
         var plCentral = args ? args.plCentral : null;
         if (!produits.length || !(proportion > 0)) return null;
+        // LES RESTES PEUVENT VENIR DU DEHORS.
+        //
+        // Des qu'une quantite est saisie a la main, q x proportion n'est plus
+        // le reste de cette ligne. Sans cette entree, le tableau affichait le
+        // reste saisi mais calculait son delta d'equilibre et son prix
+        // conseille sur le reste du mix - deux volumes differents sur la meme
+        // ligne, et une ligne de total qui ne sommait plus sa propre colonne.
+        var restesFournis = (args && args.restes) || null;
+        var cleDeV = (args && args.cleDe)
+            || function (n) { return String(n === null || n === undefined ? '' : n); };
+        var resteDe = function (p, q) {
+            if (!restesFournis) return q * proportion;
+            var v = restesFournis[cleDeV(p.nom)];
+            return (v === null || v === undefined || !isFinite(nb(v))) ? q * proportion : nb(v);
+        };
 
         var margeParNom = {};
         produits.forEach(function (p) { margeParNom[p.nom] = margeDe(p); });
@@ -1082,7 +1374,7 @@
         var tot = { vendu: 0, reste: 0, mois: 0, delta: 0 };
         var lignes = produits.map(function (p) {
             var q = nb(p.quantite);
-            var reste = q * proportion;
+            var reste = resteDe(p, q);
             var mois = q + reste;
             var chiffrable = margeParNom[p.nom] !== null && margeParNom[p.nom] !== undefined;
             var delta = (deltaTotal !== null && chiffrable && qEq > 0)
@@ -1137,6 +1429,9 @@
         calibrerCoeff: calibrerCoeff,
         rythmesRetenus: rythmesRetenus,
         projeterCA: projeterCA,
+        caAuxDerniersPrix: caAuxDerniersPrix,
+        repartirRestes: repartirRestes,
+        margeDesRestes: margeDesRestes,
         projeterPL: projeterPL,
         scenarios: scenarios,
         confiance: confiance,
