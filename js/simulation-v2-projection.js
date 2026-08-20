@@ -399,9 +399,15 @@
             if (dupliquee && notes.indexOf('cle_dupliquee') < 0) notes.push('cle_dupliquee');
             vues[cle] = true;
             var s = dupliquee ? null : surcharges[cle];
-            var brut = (s && s.reste !== null && s.reste !== undefined && isFinite(nb(s.reste)))
-                ? Math.max(0, nb(s.reste))
-                : null;
+            // parseFloat DIRECT, pas nb(): nb rend 0 sur une entree illisible,
+            // donc isFinite(nb(x)) est toujours vrai et le garde ne gardait
+            // rien. 'abc', NaN, [] et {} devenaient une surcharge a ZERO, ce
+            // qui dans ce modele est une instruction VALIDE (« plus rien de ce
+            // produit ce mois-ci »). Une saisie corrompue se lisait donc comme
+            // une decision. Non finie = pas de surcharge, la ligne garde le mix.
+            var lu = (s && s.reste !== null && s.reste !== undefined)
+                ? parseFloat(s.reste) : NaN;
+            var brut = isFinite(lu) ? Math.max(0, lu) : null;
             var resteMix = q * proportion;
             return {
                 nom: p.nom, cle: cle, quantite: q, prix: pv,
@@ -1344,8 +1350,10 @@
             || function (n) { return String(n === null || n === undefined ? '' : n); };
         var resteDe = function (p, q) {
             if (!restesFournis) return q * proportion;
-            var v = restesFournis[cleDeV(p.nom)];
-            return (v === null || v === undefined || !isFinite(nb(v))) ? q * proportion : nb(v);
+            // Meme piege qu'au-dessus: nb() ne rend jamais NaN, donc le test
+            // laissait passer n'importe quoi a zero. parseFloat direct.
+            var lu = parseFloat(restesFournis[cleDeV(p.nom)]);
+            return isFinite(lu) ? lu : q * proportion;
         };
 
         var margeParNom = {};

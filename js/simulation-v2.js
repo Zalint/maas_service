@@ -1387,9 +1387,11 @@
      * silence - « Boeuf En Gros » et « Boeuf en gros » sont le meme produit.
      */
     function cleSurcharge(nom) {
-        return String(nom === null || nom === undefined ? '' : nom)
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .trim().toLowerCase();
+        // `norm` fait deja exactement cela (NFD, diacritiques retires, trim,
+        // minuscules) et couvre null comme undefined via `s == null`. Le
+        // dupliquer creait une seconde definition libre de diverger de celle
+        // qui sert partout ailleurs sur cet ecran.
+        return norm(nom);
     }
 
     function auPrixDeLaSuite(p) {
@@ -2215,7 +2217,7 @@
         // « prix/parage teste » des scenarios permet de forcer la main.
         var ctxP = etat.contexte || {};
         var pmSusp = ctxP.parageMesure || {};
-        [['bovin', 'parageBovin', 'bœuf'], ['ovin', 'parageOvin', 'mouton']]
+        [['bovin', 'parageBovin', 'bœuf'], ['ovin', 'parageOvin', 'agneau']]
             .forEach(function (e) {
                 var applique = nb(ctxP[e[1]]);
                 var base = nb(ctxP.parageBase);
@@ -2276,6 +2278,42 @@
         // le prix conseille d'une ligne se calculaient sur un volume different
         // de celui affiche juste a cote, et la ligne de total ne sommait plus
         // sa colonne.
+        // LES CONTROLES DE SAISIE VIVENT HORS DU TABLEAU.
+        //
+        // Ils etaient rendus DANS `if (vp)`. Or volumesProjetes rend null des
+        // qu'aucun bovin n'a vendu ou que la proportion est nulle (fin de mois,
+        // plus de jours ouvres): le bloc disparaissait alors que les surcharges
+        // CONTINUAIENT d'agir sur le PL via margeRestanteDe. Plus de bouton
+        // pour les effacer, plus de selecteur de mode, et pas un mot pour dire
+        // qu'elles etaient encore actives. On les sort donc du tableau, et on
+        // les affiche meme sans tableau des que quelque chose est saisi.
+        var htmlSurcharge = '<div class="small mb-2">'
+            + '<label class="me-2">Une quantité saisie</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl d-inline-block" '
+            + 'data-k="surchargeMode" style="width:auto">'
+            + '<option value="atelier"' + (modeSurcharge === 'atelier' ? ' selected' : '') + '>'
+            + 'redistribue à CA projeté constant</option>'
+            + '<option value="ajout"' + (modeSurcharge === 'ajout' ? ' selected' : '') + '>'
+            + 's\'ajoute au CA projeté</option></select>'
+            + (repart && repart.actif
+                ? ' <span class="badge bg-warning text-dark ms-1">'
+                  + repart.totaux.nb_saisies + ' saisie'
+                  + (repart.totaux.nb_saisies > 1 ? 's' : '') + '</span>'
+                  + ' <button type="button" class="btn btn-sm btn-outline-secondary ms-1" '
+                  + 'id="sim2-surcharge-reset">Tout effacer</button>'
+                  + (repart.facteur !== null
+                    ? ' <span class="text-muted ms-1">les autres lignes × '
+                      + esc(nb(repart.facteur).toFixed(3)) + '</span>'
+                    : '')
+                : '')
+            + (repart && repart.sature
+                ? '<div class="text-danger mt-1">Les quantités saisies dépassent à elles '
+                  + 'seules le CA projeté : les autres lignes tombent à zéro et le total '
+                  + 'dépasse la projection. Passez en « s\'ajoute » si c\'est bien une '
+                  + 'commande en plus.</div>'
+                : '')
+            + '</div>';
+
         var restesReels = {};
         if (repart) repart.lignes.forEach(function (l) { restesReels[l.cle] = l.reste; });
         var vp = PJ.volumesProjetes({
@@ -2366,32 +2404,7 @@
                       + (t.equilibre === null ? '—' : esc(fmtDec(t.equilibre))) + '</td></tr>'
                     : '')
                 + '</tbody></table></div>'
-                + '<div class="small mb-2">'
-                + '<label class="me-2">Une quantité saisie</label>'
-                + '<select class="form-select form-select-sm sim2-proj-ctl d-inline-block" '
-                + 'data-k="surchargeMode" style="width:auto">'
-                + '<option value="atelier"' + (modeSurcharge === 'atelier' ? ' selected' : '') + '>'
-                + 'redistribue à CA projeté constant</option>'
-                + '<option value="ajout"' + (modeSurcharge === 'ajout' ? ' selected' : '') + '>'
-                + 's\'ajoute au CA projeté</option></select>'
-                + (repart && repart.actif
-                    ? ' <span class="badge bg-warning text-dark ms-1">'
-                      + repart.totaux.nb_saisies + ' saisie'
-                      + (repart.totaux.nb_saisies > 1 ? 's' : '') + '</span>'
-                      + ' <button type="button" class="btn btn-sm btn-outline-secondary ms-1" '
-                      + 'id="sim2-surcharge-reset">Tout effacer</button>'
-                      + (repart.facteur !== null
-                        ? ' <span class="text-muted ms-1">les autres lignes × '
-                          + esc(nb(repart.facteur).toFixed(3)) + '</span>'
-                        : '')
-                    : '')
-                + (repart && repart.sature
-                    ? '<div class="text-danger mt-1">Les quantités saisies dépassent à elles '
-                      + 'seules le CA projeté : les autres lignes tombent à zéro et le total '
-                      + 'dépasse la projection. Passez en « s\'ajoute » si c\'est bien une '
-                      + 'commande en plus.</div>'
-                    : '')
-                + '</div>'
+                + htmlSurcharge
                 + '<div class="small text-muted mb-2">Quantités vendues, au rythme de CA projeté '
                 + 'ci-dessus (+' + esc(pct2(propSuite * 100)) + ' % sur les jours qui restent), '
                 + '<strong>à prix de vente inchangé</strong> — un tarif relevé pour la suite '
@@ -2418,7 +2431,19 @@
                     : '')
                 + '</div>';
 
-            // ---- LE PRIX CONSEILLE, meme manque, a volume inchange.
+            // Le tableau n'a pas pu etre construit mais des quantites sont
+        // saisies: elles agissent toujours sur le PL. Rendre les controles
+        // seuls, avec un mot d'explication, plutot que de laisser une saisie
+        // active et inatteignable.
+        if (!vp && repart && repart.actif) {
+            h += '<div class="alert alert-warning py-2 small mb-2">'
+                + '<strong>Quantités saisies actives</strong> sans tableau des volumes : '
+                + 'aucun produit bovin n\'a vendu ce mois-ci, ou il ne reste plus de jour '
+                + 'ouvré. Les saisies continuent de peser sur le PL projeté.</div>'
+                + htmlSurcharge;
+        }
+
+        // ---- LE PRIX CONSEILLE, meme manque, a volume inchange.
             //
             // Deuxieme lecture du MEME manque, pas un remplacement du Δ
             // equilibre: celui-ci demande "combien de kilos en plus", celui-la
@@ -2648,12 +2673,14 @@
             // volume compte dans l'assiette du CA mais pas dans le total des
             // marges ci-dessus. Sans cette ligne, l'assiette utilisee plus bas
             // ne retombait pas sur le tableau.
-            var caPleinTous = PJ.caAuxDerniersPrix(univSens);
-            if (Math.abs(caPleinTous - sCaSuite) >= 1) {
+            // caPlein vient de PJ.caAuxDerniersPrix(univSens), calcule en tete
+            // de projectionCorps: le rappeler ici referait le meme parcours et,
+            // pire, laisserait deux valeurs libres de diverger.
+            if (Math.abs(caPlein - sCaSuite) >= 1) {
                 dbg += padD('  dont produits sans coût, hors marge', 75)
-                    + padG(fmt(caPleinTous - sCaSuite), 14) + '\n';
+                    + padG(fmt(caPlein - sCaSuite), 14) + '\n';
                 dbg += padD('CA plein TOUS produits (assiette retenue)', 75)
-                    + padG(fmt(caPleinTous), 14) + '\n';
+                    + padG(fmt(caPlein), 14) + '\n';
             }
             dbg += '\n';
             // L'ORIGINE DU COUT, en clair sous le tableau.
@@ -2708,7 +2735,10 @@
             var origineParage = function (espece, applique) {
                 if (pmD[espece] !== null && pmD[espece] !== undefined
                     && nb(pmD[espece]) === nb(applique)) {
-                    return 'mesuré jusqu\u2019au ' + (pmD.jusquau || '—') + ' sur '
+                    // esc: `jusquau` vient du serveur et dbg est insere en
+                    // HTML brut dans un <pre>. Meme si la valeur est une date
+                    // ISO calculee, on ne fait pas d'exception a la regle.
+                    return 'mesuré jusqu\u2019au ' + esc(pmD.jusquau || '—') + ' sur '
                         + nb((pmD.jours_mesures || {})[espece]) + ' j';
                 }
                 return 'paramètre';
@@ -2783,7 +2813,9 @@
             dbg += '\n';
             var caRealProj = nb(ca.caRealise);
             var aj = ca.ajouts || {};
-            dbg += padD('  CA RÉALISÉ du ' + debut + ' au ' + fin, 54)
+            // esc APRES le padding: escaper avant gonflerait la chaine des
+            // entites HTML et decalerait la colonne.
+            dbg += esc(padD('  CA RÉALISÉ du ' + debut + ' au ' + fin, 54))
                 + padG(fmt(caRealProj), 14) + '\n';
             ['P1', 'P2'].forEach(function (t) {
                 dbg += padD('  + ' + nb((ca.restants || {})[t]) + ' jours ' + t
@@ -2791,7 +2823,7 @@
                     + padG(fmt(nb(aj[t])), 14) + '\n';
             });
             dbg += padD('', 54) + padG('──────────────', 14) + '\n';
-            dbg += padD('  = CA PROJETÉ au ' + (ca.finMois || '—'), 54)
+            dbg += esc(padD('  = CA PROJETÉ au ' + (ca.finMois || '—'), 54))
                 + padG(fmt(ca.caProjete), 14) + '\n\n';
             var caRecalc = caRealProj + nb(aj.P1) + nb(aj.P2);
             var dCa = (ca.caProjete === null || ca.caProjete === undefined)
@@ -2800,7 +2832,7 @@
                 + (dCa === null ? '—' : fmt(dCa))
                 + (dCa !== null && Math.abs(dCa) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
             dbg += 'jours d\u2019ouverture restants comptés jusqu\u2019au '
-                + (ca.finMois || '—') + ', dimanches '
+                + esc(ca.finMois || '—') + ', dimanches '
                 + (sansDim ? 'exclus' : 'comptés') + '\n';
             dbg += 'coefficient P1/P2 = ' + (coeff ? nb(coeff).toFixed(3) : '—')
                 + ' (' + esc(origineCoeff || '—') + '), pondération '
@@ -3683,6 +3715,11 @@
             },
             hypotheses: {
                 ca_methode: etat.proj.caMethode === 'rythmes' ? 'rythmes' : 'derniers',
+                // Les deux TERMES, pas seulement la phrase qui les decrit: sans
+                // eux, un lecteur de l'export ne peut pas refaire l'identite
+                // Somme(qte restante x dernier PV) = CA projete - CA realise.
+                ca_plein_derniers_prix: projCalculee.ca_plein_derniers_prix,
+                ca_projete_retenu: projCalculee.ca_projete_retenu,
                 ponderation_reel: etat.proj.poidsReel,
                 min_jours_mesures: etat.proj.minJours,
                 exclure_dimanches: etat.proj.exclureDimanche,

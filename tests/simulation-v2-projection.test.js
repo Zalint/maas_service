@@ -1366,6 +1366,61 @@ describe('le mois se coupe en deux: realise au prix passe, restant au prix coura
     });
 });
 
+describe('revue 2: une saisie ILLISIBLE ne vaut pas une saisie a zero', () => {
+    // Le defaut: nb() rend 0 sur toute entree illisible, donc isFinite(nb(x))
+    // etait TOUJOURS vrai et le garde ne gardait rien. 'abc', NaN, [] et {}
+    // devenaient une surcharge a ZERO - qui dans ce modele est une instruction
+    // VALIDE (« plus rien de ce produit ce mois-ci »). Une saisie corrompue se
+    // lisait donc comme une decision de l'exploitant.
+    const PRODUITS = [{ nom: 'Boeuf en gros', quantite: 100, prix_moyen: 5100 }];
+    const cleDe = (n) => String(n).trim().toLowerCase();
+    const avec = (reste) => P.repartirRestes({
+        produits: PRODUITS, proportion: 0.5, mode: 'ajout',
+        surcharges: { 'boeuf en gros': { reste: reste } }, cleDe
+    });
+
+    ['abc', NaN, Infinity, -Infinity, [], {}, '', '   ', 'NaN'].forEach((v) => {
+        test('entree illisible ' + JSON.stringify(String(v)) + ' : la ligne garde le mix', () => {
+            const r = avec(v);
+            expect(r.lignes[0].source).toBe('mix');
+            expect(r.lignes[0].reste).toBeCloseTo(50, 10);
+            expect(r.actif).toBe(false);
+        });
+    });
+
+    test('un ZERO reel reste une saisie, il n est pas confondu avec du bruit', () => {
+        const r = avec(0);
+        expect(r.lignes[0].source).toBe('saisie');
+        expect(r.lignes[0].reste).toBe(0);
+        expect(r.actif).toBe(true);
+    });
+
+    test('une chaine numerique reste acceptee', () => {
+        // L'ecran envoie el.value, donc une CHAINE. La refuser casserait tout.
+        const r = avec('42.5');
+        expect(r.lignes[0].source).toBe('saisie');
+        expect(r.lignes[0].reste).toBe(42.5);
+    });
+
+    test('volumesProjetes: un reste illisible retombe sur le mix', () => {
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 'abc' }, cleDe,
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        expect(vp.lignes[0].reste).toBeCloseTo(50, 10);
+    });
+
+    test('volumesProjetes: un reste a ZERO fourni est respecte', () => {
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 0 }, cleDe,
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        expect(vp.lignes[0].reste).toBe(0);
+    });
+});
+
 describe('revue: la saisie manuelle doit traverser TOUT le calcul', () => {
     // Cinq defauts trouves en revue le 19/08/2026, tous de la meme famille:
     // la saisie etait branchee sur l'affichage des lignes mais pas sur ce qui
@@ -1475,7 +1530,7 @@ describe('revue: la saisie manuelle doit traverser TOUT le calcul', () => {
         expect(r.marge).toBeCloseTo(100000 + 150000, 2);
     });
 
-    test('sans taux constate, la saisie ne peut RIEN sauver', () => {
+    test('taux_marge absent: le repli reconstitue la marge depuis les postes', () => {
         // Le realise n'a pas de marge connue: la decomposition n'a pas de
         // premier terme, on ne l'invente pas.
         const r = P.projeterPL({
