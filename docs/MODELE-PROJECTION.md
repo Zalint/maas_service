@@ -62,8 +62,47 @@ Pour chaque période (P1, P2), le rythme retenu suit une cascade :
 La pondération 70/30 est **réglable à l'écran**. La source retenue est toujours
 affichée : « 70 % réel + 30 % historique », « historique », « converti depuis P1 ».
 
-**Piège traité** : un jour sans vente compte **zéro**, il n'est pas ignoré. Deux
-jours vendus sur dix écoulés donnent un rythme dilué d'autant — c'est voulu.
+### Les jours sans vente sortent du dénominateur
+
+Règle **inversée le 19/08/2026, sur mesure**. Auparavant un jour ouvré sans
+vente comptait zéro au dénominateur, au motif qu'un jour ouvert sans vente est
+une information. Les données disent le contraire : une boucherie ouverte qui ne
+vend rien de la journée n'existe pas. Ces jours sont des fermetures ou des
+saisies manquantes (Mbao en a quatre consécutifs du 27 au 30 mai, quatre en
+juin). Chacun divisait le rythme sans rien apporter au numérateur, et comme la
+fenêtre d'historique de 92 jours en contient toujours, l'effet contaminait même
+les mois sains.
+
+Backtest sur 16 projections, deux sites (Mbao et Keur Massar), juin et juillet
+2026, quatre dates de coupe par mois :
+
+| Règle | Erreur absolue moyenne | Biais moyen | Pire cas |
+|---|---|---|---|
+| jours à zéro comptés | 43,4 % | −41,4 % | −76 % |
+| **jours à zéro exclus** | **17,5 %** | **−10,8 %** | −56 % |
+
+Gain confirmé séparément sur chaque site : Mbao 46,3 → 15,7 %, Keur Massar
+40,5 → 19,2 %. Aucun paramètre n'a été ajusté : c'est la correction d'un défaut.
+
+`rythmeParType` rend `joursExclus`, la liste des journées écartées, pour que
+l'écran puisse les nommer. Si la boutique était réellement fermée, c'est une
+information de gestion ; si la saisie manque, il faut la faire.
+
+**Ce qui n'a PAS été touché, et pourquoi.** Le balayage du poids du réel donne
+un minimum d'erreur à 40 % (18,1 %) contre 25,9 % à 70 %, mais sur trois mois
+seulement et avec des dates de coupe non indépendantes : trois observations
+réelles. Déplacer le curseur là-dessus serait du surapprentissage. Le découpage
+P1/P2 a lui aussi été mis en doute — un modèle plat le battait à 19,2 % contre
+25,9 % — mais uniquement parce que les jours à zéro l'empoisonnaient davantage.
+Corrigé, P1/P2 gagne sur les deux sites (17,5 % contre 26,0 %). Les approches
+mixtes (moyenne, médiane, min, max de deux modèles) se placent toutes entre
+leurs composants, jamais au-dessus du meilleur.
+
+**Attention à l'asymétrie qui subsiste** : le rythme se calcule par jour
+*actif*, puis se multiplie par les jours *ouvrés* restants. Si des journées à
+venir sont fermées, la projection les compte comme actives. Le biais résiduel
+étant négatif (−10,8 %, donc sous-projection), cet effet est dominé par
+d'autres, mais il reste une piste pour la suite.
 
 **Dimanches** : s'ils sont exclus (case à cocher), ils sortent des deux côtés — du
 dénominateur des jours écoulés *et* du compte des jours restants. Les compter d'un
@@ -73,11 +112,50 @@ seul côté sous-estimerait le rythme de 17 %.
 
 ## 4. Le CA projeté
 
+Deux méthodes, au choix à l'écran (« CA projeté » dans les options). Le champ
+`hypotheses.ca_methode` de l'export JSON dit laquelle a servi.
+
+### Méthode « volumes × derniers prix » (défaut)
+
+L'extrapolation P1/P2 est aux prix de la période : ses rythmes moyennent des
+journées vendues aux anciens tarifs. On la lit donc comme une proportion de
+volume, puis on revalorise ce volume au dernier prix de vente connu.
+
+```text
+CA rythmes    = CA réalisé + jours P1 restants × rythme P1
+                           + jours P2 restants × rythme P2
+proportion    = (CA rythmes − CA réalisé) ÷ CA réalisé        (du volume)
+CA plein      = Σ (quantité de la période × dernier prix de vente)
+CA de la suite = proportion × CA plein
+CA projeté    = CA réalisé + CA de la suite
+```
+
+Identité garantie par construction, contrôlée dans le bloc debug :
+`Σ(quantité restante × dernier prix de vente) = CA projeté − CA réalisé`.
+
+Le parage n'entre pas dans le CA : il ne touche que le coût (1 kg vendu
+consomme 1/(1−parage) kg de carcasse), déjà porté par la marge unitaire.
+
+Dans `projeterPL`, la proportion de volume se lit alors sur le CA plein —
+`(caCible − CA réalisé) ÷ caPleinDerniersPrix` — et les postes qui suivent la
+marchandise (commission MaaS, marge CDC, avances) sont extrapolés au facteur
+`1 + proportion`, pas au ratio de CA : une hausse du prix de vente n'augmente
+pas une commission calculée sur le prix catalogue des livraisons.
+
+### Méthode « rythmes P1/P2 »
+
+L'extrapolation seule, aux prix de la période :
+
 ```text
 CA estimé = CA réalisé
           + jours P1 restants × rythme P1
           + jours P2 restants × rythme P2
 ```
+
+Quand les prix montent en cours de mois, cette méthode sous-estime le CA de la
+suite (les rythmes traînent les anciens tarifs) ; le bloc debug affiche l'écart
+avec l'autre méthode. Quand les prix n'ont pas bougé, les deux méthodes rendent
+exactement le même chiffre.
 
 ---
 
@@ -169,6 +247,72 @@ tableau plutôt que laissé implicite.
 - Un produit **sans marge chiffrable** est exclu du partage plutôt que compté à
   zéro : l'inclure au dénominateur diluerait la moyenne et gonflerait les kilos
   demandés.
+
+---
+
+## 8 bis. La saisie manuelle des quantités restantes
+
+Dans le tableau des volumes, la colonne « Reste à vendre » est saisissable. Le
+placeholder porte la valeur de l'hypothèse de mix : un champ vide rend
+exactement le comportement d'avant cette fonctionnalité, au franc près.
+
+### Pourquoi une saisie et non un estimateur
+
+Un estimateur statistique par produit a été construit et backtesté avant d'être
+écarté, puis réévalué. L'histoire vaut d'être connue :
+
+- première mesure, sur Mbao seul et **avec** le défaut des jours à zéro : la
+  projection par produit dégradait le résultat, verdict négatif ;
+- seconde mesure, après correction du défaut et sur deux sites : elle gagne sur
+  **les six produits suivis, sans exception** (bœuf en détail +1,5 pt, bœuf en
+  gros +7,7, poulet en détail +1,7, foie +34,9, yell +7,2, jarret +8,7).
+
+Le premier verdict était donc faux, produit sur un modèle bugué. La leçon vaut
+au-delà de ce cas : **une mesure faite sur un modèle défectueux mesure le
+défaut, pas le modèle.**
+
+Reste que même le meilleur modèle laisse le bœuf en gros à 88 % d'erreur. La
+cause est identifiée : une commande unique de 189 unités le 20/06/2026, 774 900 F,
+21 % du CA du mois. Aucun rythme ne prédit cet événement, mais l'exploitant le
+connaît d'avance. C'est exactement ce que la saisie couvre.
+
+### Les deux modes
+
+**« redistribue à CA projeté constant »** (défaut) : la saisie ne change que le
+mix, le CA projeté ne bouge pas. Les lignes non saisies absorbent la différence
+au prorata, et l'écran affiche le facteur appliqué. C'est le mode juste pour
+corriger une répartition.
+
+**« s'ajoute au CA projeté »** : la saisie vient en plus. Pour une commande qui
+s'ajoute à l'activité habituelle.
+
+### Règles de saisie
+
+- champ **vide** = hypothèse de mix ;
+- **zéro** saisi est une information distincte et légitime (« plus de gros ce
+  mois-ci »), jamais confondue avec un champ vide ;
+- une valeur négative est ramenée à zéro ;
+- si les saisies dépassent à elles seules le CA projeté, les lignes libres
+  tombent à zéro, le total dépasse la projection, et l'écran le signale en rouge
+  plutôt que de rendre des quantités négatives ;
+- la clé de rapprochement est celle du serveur (`normaliserNom` : accents
+  retirés, minuscules), donc « Boeuf En Gros » et « Boeuf en gros » sont le même
+  produit.
+
+### Effet sur les scénarios
+
+La saisie vaut dans **les trois** scénarios : une commande annoncée ne rétrécit
+pas parce qu'on regarde le scénario prudent. Ce sont les lignes libres qui
+absorbent la variation de volume. Une première écriture figeait la saisie au
+seul scénario central et cassait la monotonie des trois colonnes — le prudent
+affichait un PL supérieur au central. Un test l'a rattrapée.
+
+### Contrôles
+
+Sans saisie, le bloc debug vérifie que la somme produit par produit égale
+`proportion × marge du mix` : c'est la preuve qu'aucune régression n'a été
+introduite. Avec saisie, les deux **doivent** différer, et le bloc affiche donc
+l'écart chiffré au lieu d'un contrôle.
 
 ---
 

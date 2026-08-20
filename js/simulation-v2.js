@@ -100,6 +100,20 @@
         proj: {
             coeff: null, poidsReel: 0.7, minJours: 5,
             stockOption: 'garder', depensesOption: 'realise',
+            // CA projete: 'derniers' = CA realise + quantites restantes x
+            // dernier prix de vente (le choix du proprietaire du produit);
+            // 'rythmes' = l'extrapolation P1/P2 seule, aux prix de la periode.
+            caMethode: 'derniers',
+            // QUANTITES RESTANTES SAISIES A LA MAIN, par cle normalisee.
+            // { 'boeuf en gros': { reste: 300 } }. Vide = hypothese de mix,
+            // c'est-a-dire le comportement d'avant cette fonctionnalite.
+            // Le backtest ayant montre qu'un estimateur par produit degrade le
+            // PL, c'est l'exploitant qui apporte l'information que les donnees
+            // n'ont pas: une commande de gros annoncee.
+            surchargesVolume: {},
+            // 'atelier' = la saisie redistribue a CA projete constant (le
+            // defaut: elle corrige un MIX). 'ajout' = elle s'ajoute au CA.
+            surchargeMode: 'atelier',
             // Combien de fois le rythme mensuel d'un produit on s'autorise a
             // lui demander, dans le plan d'equilibre.
             facteurMax: 3,
@@ -1366,6 +1380,20 @@
      * 1-parage) et la commission induite comme deux ajustements distincts -
      * les melanger dans un cout unique empecherait de les lire separement.
      */
+    /**
+     * La cle de surcharge d'un produit. MEME normalisation que le serveur
+     * (lib/parage.js normaliserNom): accents retires, espaces coupes,
+     * minuscules. Une cle divergente ferait rater sa cible a la saisie, en
+     * silence - « Boeuf En Gros » et « Boeuf en gros » sont le meme produit.
+     */
+    function cleSurcharge(nom) {
+        // `norm` fait deja exactement cela (NFD, diacritiques retires, trim,
+        // minuscules) et couvre null comme undefined via `s == null`. Le
+        // dupliquer creait une seconde definition libre de diverger de celle
+        // qui sert partout ailleurs sur cet ecran.
+        return norm(nom);
+    }
+
     function auPrixDeLaSuite(p) {
         var px = prixSuiteDe(p);
         var pa = (p.prix_achat_fin === null || p.prix_achat_fin === undefined)
@@ -2046,17 +2074,73 @@
             produits: univSens,
             margeDe: margeBase
         });
+        // LE CA PROJETE, selon la methode choisie.
+        //
+        // 'rythmes': l'extrapolation P1/P2 telle quelle - un CA aux prix de
+        // la PERIODE, puisque les rythmes moyennent des journees vendues aux
+        // anciens tarifs.
+        // 'derniers': la meme extrapolation lue comme une proportion de
+        // VOLUME, puis revalorisee - CA restant = proportion x
+        // Sigma(quantite x dernier prix de vente). C'est la lecture demandee:
+        // on connait les quantites qui restent, on les vend au dernier prix.
+        // L'identite « Sigma(qte restante x dernier PV) = CA projete - CA
+        // realise » devient exacte par construction; le debug la controle.
+        var caPlein = PJ.caAuxDerniersPrix(univSens);
+        var propVol = (b.ventes > 0 && ca.caProjete !== null)
+            ? Math.max(0, (ca.caProjete - b.ventes) / b.ventes) : 0;
+        var methodeCA = etat.proj.caMethode === 'rythmes' ? 'rythmes' : 'derniers';
+        var caRetenu = ca.caProjete;
+        if (methodeCA === 'derniers' && ca.caProjete !== null && caPlein > 0) {
+            caRetenu = b.ventes + propVol * caPlein;
+        }
+        // ---- LA REPARTITION DES RESTES, avec les saisies manuelles.
+        //
+        // Calculee AVANT les scenarios: c'est elle qui leur fournit la marge
+        // des jours restants des qu'une quantite est saisie. Sans saisie,
+        // margeRestanteDe rend null et projeterPL retombe sur
+        // proportion x marge_totale, a l'identique.
+        var surchargesVol = etat.proj.surchargesVolume || {};
+        var modeSurcharge = etat.proj.surchargeMode === 'ajout' ? 'ajout' : 'atelier';
+        var univParCle = {};
+        univSens.forEach(function (pr) { univParCle[cleSurcharge(pr.nom)] = pr; });
+        var propDe = function (cible) {
+            if (methodeCA === 'derniers' && caPlein > 0) {
+                return Math.max(0, (nb(cible) - nb(b.ventes)) / caPlein);
+            }
+            return b.ventes > 0 ? Math.max(0, (nb(cible) - nb(b.ventes)) / nb(b.ventes)) : 0;
+        };
+        var repartirA = function (cible) {
+            return PJ.repartirRestes({
+                produits: univSens, proportion: propDe(cible),
+                surcharges: surchargesVol, mode: modeSurcharge, cleDe: cleSurcharge
+            });
+        };
+        var repart = repartirA(caRetenu);
+        // La marge de CHAQUE scenario, recalculee a sa propre proportion: la
+        // saisie reste ferme, les lignes libres absorbent la variation.
+        var margeRestanteDe = !(repart && repart.actif) ? null : function (cible) {
+            var r = repartirA(cible);
+            return PJ.margeDesRestes(r.lignes, margeBase, univParCle).marge;
+        };
         var argsScen = {
-            postes: postes, caRealise: b.ventes, caProjete: ca.caProjete,
+            postes: postes, caRealise: b.ventes, caProjete: caRetenu,
+            margeRestanteDe: margeRestanteDe,
             chargesMensuel: chargesMensuel, stockOption: etat.proj.stockOption,
             depensesOption: etat.proj.depensesOption, jours: jours,
-            tauxCourant: tauxCourant
+            tauxCourant: tauxCourant,
+            caPleinDerniersPrix: (methodeCA === 'derniers' && caPlein > 0) ? caPlein : null
         };
-        var scen = (ca.caProjete === null) ? null : PJ.scenarios(argsScen);
+        var scen = (caRetenu === null) ? null : PJ.scenarios(argsScen);
         projCalculee = {
             genere_le: null, periode: { debut: debut, fin: fin },
             coeff: coeff, origine_coeff: origineCoeff,
             ca: ca, scenarios: scen, jours: jours,
+            // La methode de CA et ses termes: sans eux, l'export ne permettait
+            // pas de refaire le CA retenu ni de verifier l'identite
+            // Sigma(qte restante x dernier PV) = CA projete - CA realise.
+            ca_methode: methodeCA,
+            ca_plein_derniers_prix: caPlein > 0 ? caPlein : null,
+            ca_projete_retenu: caRetenu,
             taux_marge_courant: tauxCourant,
             taux_marge_constate: (etat.plBrut || {}).taux_marge,
             volumes: null, plan_equilibre: null, recommandations: null, confiance: null
@@ -2083,6 +2167,14 @@
             + '<option value="1"' + (etat.proj.poidsReel === 1 ? ' selected' : '') + '>100 % réel</option>'
             + '</select>'
             + '<div class="form-text">poids du mois en cours face aux 3 mois précédents</div></div>'
+            + '<div class="col-md-3"><label class="form-label small">CA projeté</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="caMethode">'
+            + '<option value="derniers"' + (methodeCA === 'derniers' ? ' selected' : '') + '>Volumes × derniers prix</option>'
+            + '<option value="rythmes"' + (methodeCA === 'rythmes' ? ' selected' : '') + '>Rythmes P1/P2 (prix de la période)</option>'
+            + '</select>'
+            + '<div class="form-text">' + (methodeCA === 'derniers'
+                ? 'quantités restantes × dernier prix de vente'
+                : 'extrapolation seule, prix de la période') + '</div></div>'
             + '<div class="col-md-3"><label class="form-label small">Variation de stock projetée</label>'
             + '<select class="form-select form-select-sm sim2-proj-ctl" data-k="stockOption">'
             + '<option value="garder"' + (etat.proj.stockOption === 'garder' ? ' selected' : '') + '>Garder la variation actuelle</option>'
@@ -2112,6 +2204,41 @@
 
         h += explicationPonderation(ca.rythmes, etat.proj.poidsReel, etat.proj.minJours, coeff, pj);
 
+        // ---- PARAGE MESURE SUSPECT: le dire AVANT les chiffres qu'il fausse.
+        //
+        // Le cumul du mois somme des kilos: une seule journee dont le stock
+        // du soir manque ou est saisi a zero pese plus lourd que quinze
+        // journees saines, et le seuil des 5 journees mesurables ne l'attrape
+        // pas. Constate le 19/08/2026 en local: soir du 18 copie a zero,
+        // bovin mesure 21,66 % au lieu de 3,90 %, marge du boeuf negative et
+        // PL projete effondre - sans un mot a l'ecran. On ne rebascule PAS
+        // sur le parametre (une journee soldee a zero est legitime quand tout
+        // est vendu): on previent, on nomme la cause probable, et le champ
+        // « prix/parage teste » des scenarios permet de forcer la main.
+        var ctxP = etat.contexte || {};
+        var pmSusp = ctxP.parageMesure || {};
+        [['bovin', 'parageBovin', 'bœuf'], ['ovin', 'parageOvin', 'agneau']]
+            .forEach(function (e) {
+                var applique = nb(ctxP[e[1]]);
+                var base = nb(ctxP.parageBase);
+                var mesure = pmSusp[e[0]];
+                // Suspect: le taux APPLIQUE vient de la mesure, et il vaut au
+                // moins le double du parametre avec 5 points d'ecart - le
+                // niveau ou la marge d'une carcasse change de signe.
+                if (mesure === null || mesure === undefined) return;
+                if (nb(mesure) !== applique) return;
+                if (!(applique >= 2 * base && applique - base >= 5)) return;
+                h += '<div class="alert alert-danger py-2 small mb-2">'
+                    + '<strong>Parage ' + e[2] + ' mesuré ' + esc(pct2(applique))
+                    + ' %</strong> contre ' + esc(pct2(base)) + ' % de paramètre. '
+                    + 'Une journée dont le stock du soir n\u2019est pas encore saisi '
+                    + '(ou enregistré à zéro) gonfle la mesure : vérifier le comptage du soir '
+                    + 'jusqu\u2019au ' + esc(pmSusp.jusquau || '—') + '. '
+                    + 'À ce taux, la marge de la carcasse peut changer de signe — tout le '
+                    + 'PL projeté ci-dessous en hérite. Un parage manuel peut être testé '
+                    + 'dans les scénarios plus bas.</div>';
+            });
+
         // ---- Le CA projete et ses rythmes, toujours dits.
         h += '<div class="alert alert-light border py-2 small mb-2">'
             + 'CA réalisé au ' + esc(fin) + ' : <strong>' + esc(fmt(ca.caRealise)) + '</strong> F. '
@@ -2119,7 +2246,12 @@
             + esc((ca.rythmes.sources || {}).P1 || '—') + ') et '
             + ca.restants.P2 + ' jours P2 à ' + esc(fmt(ca.rythmes.P2)) + ' F/j ('
             + esc((ca.rythmes.sources || {}).P2 || '—') + '). '
-            + 'CA estimé fin de mois : <strong>' + esc(fmt(ca.caProjete)) + '</strong> F.</div>';
+            + 'CA estimé fin de mois : <strong>' + esc(fmt(caRetenu)) + '</strong> F'
+            + (methodeCA === 'derniers' && caRetenu !== ca.caProjete
+                ? ' <span class="text-muted">(volumes × derniers prix · rythmes seuls : '
+                    + esc(fmt(ca.caProjete)) + ' F)</span>'
+                : '')
+            + '.</div>';
 
         var propSuite = b.ventes > 0 ? (ca.caProjete - b.ventes) / b.ventes : 0;
 
@@ -2142,9 +2274,53 @@
         var bovinsMuets = bovinsVol.filter(function (p) { return !(nb(p.quantite) > 0); });
         var bovinsActifs = bovinsVol.filter(function (p) { return nb(p.quantite) > 0; });
         if (projCalculee) projCalculee.confiance = conf;
+        // Les restes REELS, saisie comprise: sans eux, le delta d'equilibre et
+        // le prix conseille d'une ligne se calculaient sur un volume different
+        // de celui affiche juste a cote, et la ligne de total ne sommait plus
+        // sa colonne.
+        // LES CONTROLES DE SAISIE VIVENT HORS DU TABLEAU.
+        //
+        // Ils etaient rendus DANS `if (vp)`. Or volumesProjetes rend null des
+        // qu'aucun bovin n'a vendu ou que la proportion est nulle (fin de mois,
+        // plus de jours ouvres): le bloc disparaissait alors que les surcharges
+        // CONTINUAIENT d'agir sur le PL via margeRestanteDe. Plus de bouton
+        // pour les effacer, plus de selecteur de mode, et pas un mot pour dire
+        // qu'elles etaient encore actives. On les sort donc du tableau, et on
+        // les affiche meme sans tableau des que quelque chose est saisi.
+        var htmlSurcharge = '<div class="small mb-2">'
+            + '<label class="me-2">Une quantité saisie</label>'
+            + '<select class="form-select form-select-sm sim2-proj-ctl d-inline-block" '
+            + 'data-k="surchargeMode" style="width:auto">'
+            + '<option value="atelier"' + (modeSurcharge === 'atelier' ? ' selected' : '') + '>'
+            + 'redistribue à CA projeté constant</option>'
+            + '<option value="ajout"' + (modeSurcharge === 'ajout' ? ' selected' : '') + '>'
+            + 's\'ajoute au CA projeté</option></select>'
+            + (repart && repart.actif
+                ? ' <span class="badge bg-warning text-dark ms-1">'
+                  + repart.totaux.nb_saisies + ' saisie'
+                  + (repart.totaux.nb_saisies > 1 ? 's' : '') + '</span>'
+                  + ' <button type="button" class="btn btn-sm btn-outline-secondary ms-1" '
+                  + 'id="sim2-surcharge-reset">Tout effacer</button>'
+                  + (repart.facteur !== null
+                    ? ' <span class="text-muted ms-1">les autres lignes × '
+                      + esc(nb(repart.facteur).toFixed(3)) + '</span>'
+                    : '')
+                : '')
+            + (repart && repart.sature
+                ? '<div class="text-danger mt-1">Les quantités saisies dépassent à elles '
+                  + 'seules le CA projeté : les autres lignes tombent à zéro et le total '
+                  + 'dépasse la projection. Passez en « s\'ajoute » si c\'est bien une '
+                  + 'commande en plus.</div>'
+                : '')
+            + '</div>';
+
+        var restesReels = {};
+        if (repart) repart.lignes.forEach(function (l) { restesReels[l.cle] = l.reste; });
         var vp = PJ.volumesProjetes({
             produits: bovinsActifs,
             proportion: propSuite,
+            restes: restesReels,
+            cleDe: cleSurcharge,
             margeDe: margeApresCommission,
             // Un PL INCONNU se transmet tel quel. nb() l'aurait converti en
             // zero, et volumesProjetes aurait alors chiffre un ecart vers la
@@ -2168,10 +2344,38 @@
                 return '<td class="text-end fw-bold ' + cls + '">'
                     + (v > 0 ? '+' : '') + esc(fmtDec(v)) + '</td>';
             };
+            // La colonne « Reste a vendre » devient SAISISSABLE. Le placeholder
+            // porte la valeur du mix: champ vide = hypothese de mix, et le
+            // lecteur voit ce qu'il remplacerait avant de taper.
+            var repParCle = {};
+            if (repart) repart.lignes.forEach(function (l) { repParCle[l.cle] = l; });
             var volLignes = vp.lignes.map(function (l) {
-                return '<tr><td>' + esc(l.nom) + '</td>'
+                var cle = cleSurcharge(l.nom);
+                var rl = repParCle[cle];
+                var saisi = rl && rl.source === 'saisie';
+                // vp porte DEJA le reste reel (il recoit `restes`): le relire
+                // depuis la repartition en ferait une seconde source, libre de
+                // diverger de la colonne Total mois et de la ligne de total.
+                var effectif = l.reste;
+                return '<tr' + (saisi ? ' class="table-warning"' : '') + '><td>' + esc(l.nom) + '</td>'
                     + '<td class="text-end text-muted">' + esc(fmtDec(l.vendu)) + '</td>'
-                    + '<td class="text-end">' + esc(fmtDec(l.reste)) + '</td>'
+                    + '<td class="text-end"><input type="number" '
+                    + 'class="form-control form-control-sm text-end sim2-surcharge" '
+                    + 'style="width:7.5rem;display:inline-block" min="0" step="1" '
+                    + 'data-cle="' + esc(cle) + '" '
+                    + 'title="Quantité qui reste à vendre. Vide = hypothèse de mix."'
+                    // Le placeholder porte le reste EFFECTIF de la ligne, pas
+                    // celui du mix: c'est ce qu'on obtient en laissant le champ
+                    // vide. Avec une saisie ailleurs, la redistribution a deja
+                    // deplace cette ligne, et afficher le mix montrait un
+                    // nombre grise qui n'etait pas celui du calcul.
+                    // Point DECIMAL, pas la virgule de fmtDec: le champ est un
+                    // input type=number, il refuse la virgule. Recopier le
+                    // format propose rendait une valeur vide, et le
+                    // gestionnaire supprimait alors la surcharge au lieu de
+                    // l'enregistrer - l'inverse de l'intention.
+                    + ' placeholder="' + esc(String(Math.round(nb(l.reste) * 10) / 10)) + '"'
+                    + (saisi ? ' value="' + esc(nb(effectif)) + '"' : '') + '></td>'
                     + '<td class="text-end">' + esc(fmtDec(l.mois)) + '</td>'
                     + cellDelta(l.delta)
                     + '<td class="text-end fw-bold">'
@@ -2200,6 +2404,7 @@
                       + (t.equilibre === null ? '—' : esc(fmtDec(t.equilibre))) + '</td></tr>'
                     : '')
                 + '</tbody></table></div>'
+                + htmlSurcharge
                 + '<div class="small text-muted mb-2">Quantités vendues, au rythme de CA projeté '
                 + 'ci-dessus (+' + esc(pct2(propSuite * 100)) + ' % sur les jours qui restent), '
                 + '<strong>à prix de vente inchangé</strong> — un tarif relevé pour la suite '
@@ -2226,7 +2431,19 @@
                     : '')
                 + '</div>';
 
-            // ---- LE PRIX CONSEILLE, meme manque, a volume inchange.
+            // Le tableau n'a pas pu etre construit mais des quantites sont
+        // saisies: elles agissent toujours sur le PL. Rendre les controles
+        // seuls, avec un mot d'explication, plutot que de laisser une saisie
+        // active et inatteignable.
+        if (!vp && repart && repart.actif) {
+            h += '<div class="alert alert-warning py-2 small mb-2">'
+                + '<strong>Quantités saisies actives</strong> sans tableau des volumes : '
+                + 'aucun produit bovin n\'a vendu ce mois-ci, ou il ne reste plus de jour '
+                + 'ouvré. Les saisies continuent de peser sur le PL projeté.</div>'
+                + htmlSurcharge;
+        }
+
+        // ---- LE PRIX CONSEILLE, meme manque, a volume inchange.
             //
             // Deuxieme lecture du MEME manque, pas un remplacement du Δ
             // equilibre: celui-ci demande "combien de kilos en plus", celui-la
@@ -2356,7 +2573,8 @@
                 : 'non calculable')
             + '<div class="text-muted">'
             + 'Σ (prix de vente − prix d’achat ÷ (1 − parage)) × quantité, rapporté au '
-            + 'chiffre d’affaires. Le <strong>dernier prix d’achat connu</strong> et '
+            + 'CA de ces mêmes volumes aux mêmes prix (Σ vente × quantité) : c’est le '
+            + 'taux que porteront les jours restants. Le <strong>dernier prix d’achat connu</strong> et '
             + 'le <strong>dernier prix de vente constaté</strong> — ce que les jours qui '
             + 'restent coûteront et rapporteront vraiment. La commission n’y entre pas : '
             + 'elle est déjà un poste du PL, la compter ici la déduirait deux fois.</div></div>'
@@ -2393,14 +2611,18 @@
             var padG = function (t, n) {
                 t = String(t); return ' '.repeat(Math.max(0, n - t.length)) + t;
             };
-            var dbg = '<h6 class="fin-subheading">Détail du calcul — taux de marge aux prix du jour</h6>'
+            var dbg = '<h6 class="fin-subheading">Détail du calcul — marge des JOURS RESTANTS, aux derniers prix connus</h6>'
                 + '<pre class="small border rounded p-2 mb-3" '
                 + 'style="background:#f8fafc;overflow-x:auto">';
             dbg += padD('PRODUIT', 24) + padG('VENTE', 10) + padG('ACHAT', 10)
                 + padG('DIVISEUR', 10) + padG('MARGE/u', 11) + padG('QTÉ', 10)
-                + padG('MARGE', 14) + padG('CA', 14) + '\n';
-            dbg += '─'.repeat(103) + '\n';
-            var sMarge = 0, sCa = 0, sCaTotal = 0;
+                + padG('MARGE', 14) + '  ' + padD('ORIGINE DU COÛT', 24) + '\n';
+            dbg += '─'.repeat(115) + '\n';
+            var sMarge = 0, sCa = 0, sCaTotal = 0, sCaSuite = 0;
+            // Le CA encaisse, montre A PART apres le tableau: sur la meme
+            // ligne que MARGE, il se lisait comme son origine alors que la
+            // marge des jours restants ne s'en sert jamais.
+            var caLignes = [];
             univSens.forEach(function (pr) {
                 var m = margeBase(pr);
                 var ca2 = nb(pr.ca);
@@ -2409,7 +2631,9 @@
                     dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
                         + padG(fmt(pr.prix_moyen), 10) + padG('—', 10) + padG('—', 10)
                         + padG('coût inconnu', 11) + padG(fmtDec(pr.quantite), 10)
-                        + padG('exclu', 14) + padG(fmt(ca2), 14) + '\n';
+                        + padG('exclu', 14) + '  '
+                        + esc(padD(String(pr.prix_achat_origine || '—').slice(0, 23), 24)) + '\n';
+                    caLignes.push(esc(padD(String(pr.nom).slice(0, 23), 24)) + padG(fmt(ca2), 14));
                     return;
                 }
                 // LE DIVISEUR VIENT DU MOTEUR, pas d'un recalcul local.
@@ -2425,41 +2649,257 @@
                 var q2 = nb(pr.quantite);
                 sMarge += m * q2;
                 sCa += ca2;
+                sCaSuite += nb(pr.prix_moyen) * q2;
                 dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
                     + padG(fmt(pr.prix_moyen), 10) + padG(fmt(pr.prix_achat), 10)
                     + padG(div.toFixed(4), 10) + padG(fmt(m), 11)
-                    + padG(fmtDec(q2), 10) + padG(fmt(m * q2), 14) + padG(fmt(ca2), 14) + '\n';
+                    + padG(fmtDec(q2), 10) + padG(fmt(m * q2), 14) + '  '
+                    + esc(padD(String(pr.prix_achat_origine || 'prix propre').slice(0, 23), 24)) + '\n';
+                caLignes.push(esc(padD(String(pr.nom).slice(0, 23), 24)) + padG(fmt(ca2), 14));
             });
-            dbg += '─'.repeat(103) + '\n';
+            dbg += '─'.repeat(115) + '\n';
             dbg += padD('TOTAL chiffrable', 24) + padG('', 10) + padG('', 10) + padG('', 10)
-                + padG('', 11) + padG('', 10) + padG(fmt(sMarge), 14) + padG(fmt(sCa), 14) + '\n';
-            dbg += padD('CA total (chiffrable + exclu)', 24) + padG('', 55)
-                + padG(fmt(sCaTotal), 14) + '\n\n';
-            dbg += 'taux = marge totale ÷ CA chiffrable = ' + fmt(sMarge) + ' ÷ ' + fmt(sCa)
-                + ' = ' + (sCa > 0 ? ((sMarge / sCa) * 100).toFixed(4) : '—') + ' %\n';
+                + padG('', 11) + padG('', 10) + padG(fmt(sMarge), 14) + '\n';
+            // LE CA PLEIN, la ou ses deux termes sont sous les yeux.
+            //
+            // C'est l'assiette de la methode « volumes x derniers prix »: la
+            // proportion de volume s'y applique pour donner le CA de la suite.
+            // Il n'apparaissait que 40 lignes plus bas, sans qu'on puisse
+            // verifier qu'il vient bien des colonnes QTE et VENTE de ce
+            // tableau-ci.
+            dbg += padD('CA plein aux derniers prix = Σ(QTÉ × VENTE)', 75)
+                + padG(fmt(sCaSuite), 14) + '\n';
+            // Les produits sans cout portent du CA sans porter de marge: leur
+            // volume compte dans l'assiette du CA mais pas dans le total des
+            // marges ci-dessus. Sans cette ligne, l'assiette utilisee plus bas
+            // ne retombait pas sur le tableau.
+            // caPlein vient de PJ.caAuxDerniersPrix(univSens), calcule en tete
+            // de projectionCorps: le rappeler ici referait le meme parcours et,
+            // pire, laisserait deux valeurs libres de diverger.
+            if (Math.abs(caPlein - sCaSuite) >= 1) {
+                dbg += padD('  dont produits sans coût, hors marge', 75)
+                    + padG(fmt(caPlein - sCaSuite), 14) + '\n';
+                dbg += padD('CA plein TOUS produits (assiette retenue)', 75)
+                    + padG(fmt(caPlein), 14) + '\n';
+            }
+            dbg += '\n';
+            // L'ORIGINE DU COUT, en clair sous le tableau.
+            //
+            // « Boeuf x 0,5 » sur le Jarret explique qu'il coute 2 250 quand
+            // la carcasse est a 4 500: son prix d'achat en DERIVE par un
+            // coefficient d'alias, il n'est pas saisi. Sans cette colonne, une
+            // marge unitaire negative sur le Jarret passait pour une erreur de
+            // saisie alors qu'elle vient du mapping.
+            dbg += 'ORIGINE DU COÛT : « prix propre » = prix d\u2019achat saisi pour ce produit.\n';
+            dbg += 'Sinon le coût DÉRIVE d\u2019un autre produit par un coefficient d\u2019alias\n';
+            dbg += '(« Boeuf × 0,5 » : la moitié du prix de la carcasse). Corriger un coût\n';
+            dbg += 'dérivé se fait sur le mapping, pas sur le produit.\n\n';
+            dbg += 'taux des jours restants = marge totale ÷ Σ(VENTE × QTÉ) = ' + fmt(sMarge)
+                + ' ÷ ' + fmt(sCaSuite)
+                + ' = ' + (sCaSuite > 0 ? ((sMarge / sCaSuite) * 100).toFixed(4) : '—') + ' %\n';
             dbg += 'couverture = CA chiffrable ÷ CA total = ' + fmt(sCa) + ' ÷ ' + fmt(sCaTotal)
                 + ' = ' + (sCaTotal > 0 ? ((sCa / sCaTotal) * 100).toFixed(2) : '—') + ' %\n';
+            // Marge et CA aux MEMES prix: c'est litteralement le taux que
+            // porteront les jours restants, quel que soit le volume - la
+            // proportion se simplifie entre haut et bas.
+            dbg += 'Marge et CA aux mêmes prix : c\u2019est le taux de marge des JOURS\n';
+            dbg += 'RESTANTS (marge de la suite ÷ CA de la suite). Le PL projeté part,\n';
+            dbg += 'lui, de la marge en francs.\n\n';
             // LE CONTROLE: ce que le module a rendu doit egaler ce qu'on vient
             // de recalculer ici. Un ecart signale que les deux ne lisent pas
             // les memes produits ou la meme marge.
             var attendu = tauxCourant.taux_pct;
-            var recalc = sCa > 0 ? (sMarge / sCa) * 100 : null;
+            var recalc = sCaSuite > 0 ? (sMarge / sCaSuite) * 100 : null;
             var dTaux = (attendu === null || recalc === null) ? null : recalc - attendu;
             dbg += 'contrôle : recalcul − taux rendu par le module = '
                 + (dTaux === null ? '—' : dTaux.toFixed(6))
                 + (dTaux !== null && Math.abs(dTaux) < 0.0001 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
-            dbg += 'marge unitaire = prix de vente − prix d’achat ÷ diviseur\n';
-            dbg += 'diviseur = 1 − parage (bovin ' + pct2(nb((etat.contexte || {}).parageBovin))
-                + ' %, ovin ' + pct2(nb((etat.contexte || {}).parageOvin)) + ' %)\n';
-            dbg += 'la commission n’entre PAS ici : elle est déjà un poste du PL.\n';
-            // LA CHAINE COMPLETE, avec les nombres.
+            // CE QUE CHAQUE COLONNE EST, exactement.
             //
-            // Le bloc montrait 14,59 % puis 10,87 % sans jamais dire comment
-            // ils produisent les 12,34 % annonces en tete - trois pourcentages
-            // sans lien visible, et une ligne de formule coupee au milieu.
-            dbg += '\n=== DU TAUX AU PL PROJETE ===\n\n';
+            // Premiere ecriture: « QTE et CA sont ceux de la periode et ne
+            // servent qu'a supposer le mix ». Faux pour CA, qui n'entre pas
+            // du tout dans la marge des jours restants: celle-ci ne fait que
+            // marge unitaire x quantite restante. CA ne sert qu'a la
+            // couverture et au taux affiche juste au-dessus. Le dire
+            // separement, sinon la colonne passe pour un terme du calcul.
+            dbg += 'VENTE et ACHAT sont les DERNIERS prix connus, ceux auxquels les jours\n';
+            dbg += 'restants vont se faire.\n';
+            dbg += 'QTÉ est celle de la période. Elle porte l’HYPOTHÈSE DE MIX : on suppose\n';
+            dbg += 'que la suite du mois vendra dans les mêmes proportions. Multipliée par la\n';
+            dbg += 'proportion restante, elle donne la quantité qu’il reste à vendre, en bas.\n';
+            dbg += 'Aucune vente déjà faite n’est revalorisée : le passé garde sa marge\n';
+            dbg += 'réellement constatée, reprise plus bas.\n\n';
+            dbg += 'marge unitaire = prix de vente − prix d’achat ÷ diviseur\n';
+            var ctxD = etat.contexte || {};
+            var pmD = ctxD.parageMesure || {};
+            var origineParage = function (espece, applique) {
+                if (pmD[espece] !== null && pmD[espece] !== undefined
+                    && nb(pmD[espece]) === nb(applique)) {
+                    // esc: `jusquau` vient du serveur et dbg est insere en
+                    // HTML brut dans un <pre>. Meme si la valeur est une date
+                    // ISO calculee, on ne fait pas d'exception a la regle.
+                    return 'mesuré jusqu\u2019au ' + esc(pmD.jusquau || '—') + ' sur '
+                        + nb((pmD.jours_mesures || {})[espece]) + ' j';
+                }
+                return 'paramètre';
+            };
+            dbg += 'diviseur = 1 − parage (bovin ' + pct2(nb(ctxD.parageBovin))
+                + ' % — ' + origineParage('bovin', ctxD.parageBovin)
+                + ' · ovin ' + pct2(nb(ctxD.parageOvin))
+                + ' % — ' + origineParage('ovin', ctxD.parageOvin) + ')\n';
+            if (nb(ctxD.parageBovin) >= 2 * nb(ctxD.parageBase)
+                && nb(ctxD.parageBovin) - nb(ctxD.parageBase) >= 5) {
+                dbg += 'ATTENTION : parage bovin très au-dessus du paramètre ('
+                    + pct2(nb(ctxD.parageBase)) + ' %). Une journée au stock du soir '
+                    + 'manquant ou à zéro gonfle la mesure.\n';
+            }
+            dbg += 'la commission n’entre PAS ici : elle est déjà un poste du PL.\n';
+            // ---- D'OU SORT LE CA PROJETE.
+            //
+            // La suite divise par le CA projete et en tire la proportion des
+            // jours restants, sans jamais dire d'ou il vient: le chiffre
+            // tombait du ciel au milieu d'un bloc qui explique tout le reste.
+            // Ses seuls termes sont deux rythmes journaliers et le nombre de
+            // jours d'ouverture qui restent a les multiplier.
+            // Le CA encaisse, comme REPERE et rien d'autre. Separe du
+            // tableau des marges a la demande: colonne a colonne avec
+            // MARGE, on lui pretait un role qu'il n'a pas.
+            dbg += 'CA RÉEL ENCAISSÉ sur la période — repère seulement, n’entre pas\n';
+            dbg += 'dans la marge ci-dessus.\n';
+            dbg += '─'.repeat(38) + '\n';
+            dbg += caLignes.join('\n') + '\n';
+            dbg += '─'.repeat(38) + '\n';
+            dbg += padD('TOTAL (chiffrable ' + fmt(sCa) + ' + exclu)', 24) + padG(fmt(sCaTotal), 14) + '\n';
+            dbg += '\n=== DU CA REALISE AU CA PROJETE ===\n\n';
+            dbg += 'Deux rythmes journaliers, un par type de jour.\n';
+            dbg += 'P1 = jours 1-10 et 25-fin (autour des paies), P2 = jours 11-24.\n\n';
+            var ryth = ca.rythmes || {};
+            var rReel = ryth.reel || {};
+            var rHist = ryth.histo || {};
+            var joursObs = rReel.jours || {};
+            dbg += padD('TYPE', 6) + padG('RYTHME/JOUR', 14) + '  '
+                + padD('SOURCE', 32) + padG('RÉEL', 12) + padG('ACTIFS', 8)
+                + padG('OUVERTS', 9) + padG('HISTORIQUE', 13) + '\n';
+            dbg += '─'.repeat(88) + '\n';
+            ['P1', 'P2'].forEach(function (t) {
+                dbg += padD(t, 6) + padG(fmt(ryth[t]), 14) + '  '
+                    + esc(padD(String((ryth.sources || {})[t] || '—').slice(0, 31), 32))
+                    + padG(fmt(rReel[t]), 12) + padG(nb(joursObs[t]), 8)
+                    + padG(nb((rReel.joursOuverts || {})[t]), 9)
+                    + padG(fmt(rHist[t]), 13) + '\n';
+            });
+            // LES JOURNEES ECARTEES, nommees.
+            //
+            // Depuis le 19/08/2026 une journee ouvree sans aucune vente sort du
+            // denominateur du rythme (erreur sur le niveau du CA projete: 43,4 %
+            // -> 17,5 % sur 16 projections et deux sites). Le dire, avec les
+            // dates: fermeture reelle ou saisie manquante, ce n'est pas la meme
+            // conversation avec l'exploitant.
+            var excMois = (rReel.joursExclus || []);
+            var excHist = (rHist.joursExclus || []);
+            if (excMois.length || excHist.length) {
+                dbg += 'journées ÉCARTÉES (ouvertes, aucune vente enregistrée) : '
+                    + excMois.length + ' ce mois-ci';
+                if (excMois.length) {
+                    dbg += ' (' + esc(excMois.slice(0, 8).join(', '))
+                        + (excMois.length > 8 ? ', …' : '') + ')';
+                }
+                dbg += ', ' + excHist.length + ' dans l\u2019historique.\n';
+                dbg += 'Fermeture réelle, ou saisie manquante ? Dans le second cas, la saisir\n';
+                dbg += 'relève le rythme et donc le CA projeté.\n';
+            } else {
+                dbg += 'aucune journée écartée : toutes les journées ouvertes ont vendu.\n';
+            }
+            dbg += '\n';
+            var caRealProj = nb(ca.caRealise);
+            var aj = ca.ajouts || {};
+            // esc APRES le padding: escaper avant gonflerait la chaine des
+            // entites HTML et decalerait la colonne.
+            dbg += esc(padD('  CA RÉALISÉ du ' + debut + ' au ' + fin, 54))
+                + padG(fmt(caRealProj), 14) + '\n';
+            ['P1', 'P2'].forEach(function (t) {
+                dbg += padD('  + ' + nb((ca.restants || {})[t]) + ' jours ' + t
+                        + ' restants × ' + fmt(ryth[t]) + ' F/j', 54)
+                    + padG(fmt(nb(aj[t])), 14) + '\n';
+            });
+            dbg += padD('', 54) + padG('──────────────', 14) + '\n';
+            dbg += esc(padD('  = CA PROJETÉ au ' + (ca.finMois || '—'), 54))
+                + padG(fmt(ca.caProjete), 14) + '\n\n';
+            var caRecalc = caRealProj + nb(aj.P1) + nb(aj.P2);
+            var dCa = (ca.caProjete === null || ca.caProjete === undefined)
+                ? null : caRecalc - nb(ca.caProjete);
+            dbg += 'contrôle : recalcul − CA projeté rendu par le module = '
+                + (dCa === null ? '—' : fmt(dCa))
+                + (dCa !== null && Math.abs(dCa) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
+            dbg += 'jours d\u2019ouverture restants comptés jusqu\u2019au '
+                + esc(ca.finMois || '—') + ', dimanches '
+                + (sansDim ? 'exclus' : 'comptés') + '\n';
+            dbg += 'coefficient P1/P2 = ' + (coeff ? nb(coeff).toFixed(3) : '—')
+                + ' (' + esc(origineCoeff || '—') + '), pondération '
+                + Math.round(nb(etat.proj.poidsReel) * 100) + ' % réel / '
+                + Math.round((1 - nb(etat.proj.poidsReel)) * 100) + ' % historique'
+                + ' au-delà de ' + nb(etat.proj.minJours) + ' jours observés\n';
+            // LA METHODE CHOISIE, appliquee sous les yeux du lecteur.
+            //
+            // En methode « volumes x derniers prix », le CA des rythmes n'est
+            // qu'une etape: il se lit comme une proportion de VOLUME (il est
+            // aux prix de la periode, comme les quantites), puis cette
+            // proportion se revalorise au dernier prix de vente. Le controle
+            // qui ferme le bloc est l'identite demandee par le proprietaire
+            // du produit: Sigma(qte restante x dernier PV) = CAproj - CAreel.
+            if (methodeCA === 'derniers' && caPlein > 0 && ca.caProjete !== null) {
+                dbg += '\nLe CA des rythmes est aux prix de la PÉRIODE. On le lit en volume,\n';
+                dbg += 'puis on revalorise ce volume au dernier prix de vente :\n\n';
+                dbg += padD('  proportion de volume = (' + fmt(ca.caProjete) + ' − '
+                        + fmt(nb(b.ventes)) + ') ÷ ' + fmt(nb(b.ventes)), 62)
+                    + ' = ' + padG(propVol.toFixed(4), 10) + '\n';
+                dbg += padD('  CA plein aux derniers prix = Σ(QTÉ × VENTE)', 62)
+                    + ' = ' + padG(fmt(caPlein), 10) + '\n';
+                dbg += padD('  CA de la SUITE = ' + propVol.toFixed(4) + ' × ' + fmt(caPlein), 62)
+                    + ' = ' + padG(fmt(propVol * caPlein), 10) + '\n';
+                dbg += padD('  CA PROJETÉ RETENU = ' + fmt(nb(b.ventes)) + ' + '
+                        + fmt(propVol * caPlein), 62)
+                    + ' = ' + padG(fmt(caRetenu), 10) + '\n\n';
+                var dIdent = propVol * caPlein - (nb(caRetenu) - nb(b.ventes));
+                dbg += 'contrôle : Σ(qté restante × dernier PV) − (CA projeté − CA réalisé) = '
+                    + fmt(dIdent) + (Math.abs(dIdent) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
+            } else if (methodeCA === 'rythmes' && caPlein > 0 && ca.caProjete !== null) {
+                var caAlt = nb(b.ventes) + propVol * caPlein;
+                dbg += '\nMéthode rythmes retenue : le CA projeté reste aux prix de la période.\n';
+                dbg += 'En volumes × derniers prix il vaudrait ' + fmt(caAlt) + ' ('
+                    + fmt(caAlt - nb(ca.caProjete)) + ' d\u2019écart, la hausse de prix).\n';
+            }
+            // Le CA realise du module de projection est la somme des journees,
+            // celui du PL est le total des ventes. Les deux doivent coincider:
+            // quand ils divergent, c'est une journee absente de ca_par_jour, et
+            // la proportion porte l'ecart en silence. Le dire ici.
+            var dRe = caRealProj - nb(b.ventes);
+            if (Math.abs(dRe) >= 1) {
+                dbg += 'ATTENTION : CA réalisé du module (' + fmt(caRealProj)
+                    + ') ≠ ventes du PL (' + fmt(nb(b.ventes)) + '), écart '
+                    + fmt(dRe) + '\n';
+            }
+
+            // LES JOURS RESTANTS, ESTIMES DIRECTEMENT.
+            //
+            // Le bloc partait du taux du tableau ci-dessus et le presentait
+            // comme s'il revalorisait le passe, ce que le modele ne fait pas
+            // et ce qu'on ne veut pas qu'il fasse. L'estimation se lit dans
+            // l'autre sens: on connait les quantites qui restent a vendre, le
+            // dernier cout d'achat, le dernier prix de vente et le parage
+            // mesure du 1er a hier. La marge de la suite s'en deduit produit
+            // par produit, sans jamais retoucher une vente deja faite.
+            //
+            // C'est le MEME nombre que prop x sMarge, puisque volumesProjetes
+            // pose reste = quantite x proportion: le controle en bas le prouve
+            // au lieu de le supposer.
+            dbg += '\n=== DES JOURS RESTANTS AU PL PROJETE ===\n\n';
             var caReal = nb(b.ventes);
-            var caProj = nb(ca.caProjete);
+            // LE SCENARIO CENTRAL, pas les rythmes: en methode « derniers
+            // prix », ca.caProjete n'est qu'une etape intermediaire et la
+            // proportion du module est en VOLUME. Redecouper ici sur les
+            // rythmes aurait fait sortir les controles en ECART permanent.
+            var caProj = scen.central ? nb(scen.central.ca) : nb(ca.caProjete);
             // LE TAUX EXACT du module, pas celui arrondi pour l'affichage.
             // `taux_marge` du payload est arrondi au centieme: recalculer
             // dessus faisait sortir le controle a -42 F systematiquement,
@@ -2468,33 +2908,86 @@
                 && scen.central.tauxMargeConstate !== undefined)
                 ? nb(scen.central.tauxMargeConstate)
                 : nb(tauxConstateAff) / 100;
-            var prop = caReal > 0 ? Math.max(0, (caProj - caReal) / caReal) : 0;
+            var prop = (scen.central && scen.central.proportion !== null
+                && scen.central.proportion !== undefined)
+                ? nb(scen.central.proportion)
+                : (caReal > 0 ? Math.max(0, (caProj - caReal) / caReal) : 0);
             var mReal = caReal * tConst;
-            var mRest = prop * sMarge;
-            dbg += 'Le taux ci-dessus (' + (sCa > 0 ? ((sMarge / sCa) * 100).toFixed(2) : '—')
-                + ' %) ne porte QUE les jours restants.\n';
-            dbg += 'Le realise garde sa marge reelle, il n\u2019est jamais reevalue.\n\n';
-            dbg += padD('  marge du REALISE', 34) + '= ' + padG(fmt(caReal), 12) + ' x '
-                + padG(pct2(nb(tauxConstateAff)) + ' %', 8) + ' = ' + padG(fmt(mReal), 12) + '\n';
-            dbg += padD('  marge des JOURS RESTANTS', 34) + '= ' + padG(fmt(sMarge), 12) + ' x '
-                + padG(prop.toFixed(4), 8) + ' = ' + padG(fmt(mRest), 12) + '\n';
-            dbg += padD('', 34) + '  ' + padG('', 12) + '   ' + padG('', 8) + '   '
-                + padG('────────────', 12) + '\n';
-            dbg += padD('  = marge du MOIS', 34) + '  ' + padG('', 12) + '   '
-                + padG('', 8) + '   ' + padG(fmt(mReal + mRest), 12) + '\n\n';
-            dbg += 'taux effectif = marge du mois ÷ CA projete = ' + fmt(mReal + mRest)
+            dbg += 'Ce qui reste à vendre est estimé au dernier prix de vente et au dernier\n';
+            dbg += 'coût d\u2019achat, parage mesuré du 1er du mois à hier (le tableau ci-dessus).\n';
+            dbg += 'Aucune vente déjà faite n\u2019est retouchée.\n\n';
+            var assiette = (methodeCA === 'derniers' && scen.central
+                && scen.central.caPleinDerniersPrix) ? nb(scen.central.caPleinDerniersPrix) : caReal;
+            dbg += padD('  proportion restante = (CA projeté − CA réalisé) ÷ '
+                + (assiette === caReal ? 'CA réalisé' : 'CA plein aux derniers prix'), 62) + '\n';
+            dbg += padD('    = (' + fmt(caProj) + ' − ' + fmt(caReal) + ') ÷ ' + fmt(assiette), 62)
+                + ' = ' + padG(prop.toFixed(4), 10) + '\n\n';
+            dbg += padD('PRODUIT', 24) + padG('MARGE/u', 11) + padG('QTÉ PÉRIODE', 14)
+                + padG('QTÉ RESTANTE', 14) + padG('MARGE RESTANTE', 17) + '  SOURCE\n';
+            dbg += '─'.repeat(90) + '\n';
+            // LES RESTES VIENNENT DE LA REPARTITION, jamais d'un q x proportion
+            // refait ici: des qu'une quantite est saisie a la main, les deux
+            // divergent et c'est la repartition qui a raison. Premiere
+            // ecriture: le tableau recalculait le mix et le controle du bas
+            // sortait a -48 986 F, un vrai ecart correctement signale.
+            var restesParCle = {};
+            if (repart) repart.lignes.forEach(function (l) { restesParCle[l.cle] = l; });
+            var mRest = 0, mRestMix = 0;
+            univSens.forEach(function (pr) {
+                var m = margeBase(pr);
+                if (m === null || m === undefined) return;
+                var q3 = nb(pr.quantite);
+                var rl = restesParCle[cleSurcharge(pr.nom)];
+                var reste = rl ? rl.reste : q3 * prop;
+                mRest += m * reste;
+                mRestMix += m * (rl ? rl.reste_mix : q3 * prop);
+                dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
+                    + padG(fmt(m), 11) + padG(fmtDec(q3), 14)
+                    + padG(fmtDec(reste), 14) + padG(fmt(m * reste), 17)
+                    + '  ' + (rl && rl.source === 'saisie' ? 'SAISIE' : 'mix') + '\n';
+            });
+            dbg += '─'.repeat(90) + '\n';
+            dbg += padD('  marge de la SUITE', 63) + padG(fmt(mRest), 17) + '\n\n';
+            dbg += padD('  marge du PASSÉ = CA réalisé × taux réellement constaté', 63) + '\n';
+            dbg += padD('    = ' + fmt(caReal) + ' × ' + pct2(nb(tauxConstateAff)) + ' %', 63)
+                + padG(fmt(mReal), 17) + '\n';
+            dbg += padD('', 63) + padG('─────────────────', 17) + '\n';
+            dbg += padD('  = marge du MOIS', 63) + padG(fmt(mReal + mRest), 17) + '\n\n';
+            dbg += 'taux effectif = marge du mois ÷ CA projeté = ' + fmt(mReal + mRest)
                 + ' ÷ ' + fmt(caProj) + ' = '
                 + (caProj > 0 ? ((mReal + mRest) / caProj * 100).toFixed(2) : '—')
-                + ' %   <- celui affiche en tete\n';
+                + ' %   <- celui affiché en tête\n';
             var mModule = scen.central && scen.central.marge !== null
                 ? scen.central.marge : null;
             var dM = mModule === null ? null : (mReal + mRest) - mModule;
             dbg += 'contrôle : recalcul − marge rendue par le module = '
                 + (dM === null ? '—' : fmt(dM))
-                + (dM !== null && Math.abs(dM) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
-            dbg += 'proportion = (CA projete − CA realise) ÷ CA realise = ('
-                + fmt(caProj) + ' − ' + fmt(caReal) + ') ÷ ' + fmt(caReal) + ' = '
-                + prop.toFixed(4) + '\n';
+                + (dM !== null && Math.abs(dM) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
+            // SANS saisie, la voie longue (produit par produit) et la voie
+            // courte (proportion x marge du mix) doivent tomber au meme franc:
+            // c'est la preuve qu'aucune regression n'a ete introduite.
+            // AVEC saisie, elles DOIVENT differer - c'est tout l'objet de la
+            // saisie - donc on n'affiche plus un controle mais l'ecart, qui
+            // chiffre ce que l'exploitant a change en connaissance de cause.
+            if (repart && repart.actif) {
+                dbg += 'saisie manuelle ACTIVE sur ' + repart.totaux.nb_saisies + ' produit'
+                    + (repart.totaux.nb_saisies > 1 ? 's' : '') + ', mode '
+                    + (repart.mode === 'ajout' ? '« s\u2019ajoute au CA »' : '« redistribue »')
+                    + (repart.facteur !== null
+                        ? ', les lignes libres × ' + nb(repart.facteur).toFixed(4) : '')
+                    + '\n';
+                dbg += 'effet de la saisie sur la marge : ' + fmt(mRest) + ' − ' + fmt(mRestMix)
+                    + ' = ' + fmt(mRest - mRestMix) + '\n';
+                if (repart.sature) {
+                    dbg += 'ATTENTION : les saisies dépassent le CA projeté, les lignes libres '
+                        + 'sont à zéro.\n';
+                }
+                dbg += '\n';
+            } else {
+                var dEq = mRest - prop * sMarge;
+                dbg += 'contrôle : somme produit par produit − (proportion × marge du mix) = '
+                    + fmt(dEq) + (Math.abs(dEq) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n\n';
+            }
             dbg += 'taux retenu pour la projection : '
                 + (origineTaux === 'courant' ? 'CELUI-CI' : 'le taux constaté ('
                     + esc(pct2(nb(tauxConstateAff))) + ' %), faute de couverture suffisante')
@@ -2509,7 +3002,7 @@
 
         // Le RESUME que l'entete porte, lisible section repliee: on vient ici
         // pour ces deux nombres, ils ne doivent pas exiger un depliage.
-        etat.projResume = '· CA ' + fmt(ca.caProjete) + ' F · PL '
+        etat.projResume = '· CA ' + fmt(caRetenu) + ' F · PL '
             + fmt(d0.pl) + ' F · confiance ' + conf.niveau;
 
         // ---- QUATRE SENSIBILITES DE COUT, sur les jours qui restent.
@@ -2669,7 +3162,7 @@
         var eq = PJ.planEquilibre({
             plCentral: d0.pl, produits: universEq,
             margeDe: margeApresCommission,
-            caRealise: b.ventes, caProjete: ca.caProjete,
+            caRealise: b.ventes, caProjete: caRetenu,
             joursRestants: ca.restants.P1 + ca.restants.P2,
             jours: jours, facteurMax: etat.proj.facteurMax,
             principal: 'Boeuf en détail', nbProduits: 5,
@@ -3064,6 +3557,10 @@
             dbg += '   rythme P2 retenu          ' + fmt(ca.rythmes.P2) + ' F/j  (' + ((ca.rythmes.sources || {}).P2 || '—') + ')\n';
             dbg += '   CA estimé = ' + fmt(ca.caRealise) + ' + ' + ca.restants.P1 + ' j × ' + fmt(ca.rythmes.P1)
                 + ' + ' + ca.restants.P2 + ' j × ' + fmt(ca.rythmes.P2) + ' = ' + fmt(ca.caProjete) + '\n';
+            if (methodeCA === 'derniers' && caRetenu !== ca.caProjete) {
+                dbg += '   CA retenu (volumes × derniers prix) = ' + fmt(nb(b.ventes)) + ' + '
+                    + propVol.toFixed(4) + ' × ' + fmt(caPlein) + ' = ' + fmt(caRetenu) + '\n';
+            }
             dbg += '   contrôle : somme du CA journalier − total ventes du PL = '
                 + fmt(sommeJours - b.ventes) + ' F'
                 + (Math.abs(sommeJours - b.ventes) < 1 ? '  ✓' : '  (ventes à date illisible exclues)') + '\n';
@@ -3202,7 +3699,11 @@
                     + '70 % du reel + 30 % de l’historique quand au moins 5 jours sont '
                     + 'observes, sinon historique seul, sinon conversion depuis l’autre '
                     + 'periode via le coefficient.',
-                ca_projete: 'CA realise + jours P1 restants x rythme P1 + jours P2 restants x rythme P2.',
+                ca_projete: 'Methode « derniers » (defaut): CA realise + proportion de volume x '
+                    + 'Sigma(quantite x dernier prix de vente), ou la proportion vient de '
+                    + 'l\u2019extrapolation P1/P2 lue en volume. Methode « rythmes »: CA realise '
+                    + '+ jours P1 restants x rythme P1 + jours P2 restants x rythme P2, aux prix '
+                    + 'de la periode. Le champ hypotheses.ca_methode dit laquelle a servi.',
                 volumes: 'Quantites vendues projetees a prix de vente INCHANGE. La carcasse a '
                     + 'commander est plus lourde du parage: 1 kg vendu consomme 1/(1-parage) kg.',
                 delta_equilibre: 'Kilos a vendre en plus (ou en moins) pour amener le PL projete '
@@ -3213,6 +3714,12 @@
                     + 'MaaS induite deduite.'
             },
             hypotheses: {
+                ca_methode: etat.proj.caMethode === 'rythmes' ? 'rythmes' : 'derniers',
+                // Les deux TERMES, pas seulement la phrase qui les decrit: sans
+                // eux, un lecteur de l'export ne peut pas refaire l'identite
+                // Somme(qte restante x dernier PV) = CA projete - CA realise.
+                ca_plein_derniers_prix: projCalculee.ca_plein_derniers_prix,
+                ca_projete_retenu: projCalculee.ca_projete_retenu,
                 ponderation_reel: etat.proj.poidsReel,
                 min_jours_mesures: etat.proj.minJours,
                 exclure_dimanches: etat.proj.exclureDimanche,
@@ -3310,6 +3817,29 @@
         // qui remplace le champ en cours de saisie. Sur un nombre tape chiffre
         // par chiffre - 1, puis 12 - le focus etait perdu des le premier. Un
         // select emet 'change' des la selection, rien n'y est retarde.
+        // La saisie des quantites restantes. 'change' et non 'input': chaque
+        // validation redessine tout le bloc, et un rendu par chiffre tape
+        // ferait perdre le focus des le premier caractere.
+        document.querySelectorAll('.sim2-surcharge').forEach(function (el) {
+            el.addEventListener('change', function () {
+                var cle = el.dataset.cle;
+                if (!cle) return;
+                etat.proj.surchargesVolume = etat.proj.surchargesVolume || {};
+                // Champ VIDE = retour a l'hypothese de mix. Un ZERO saisi est
+                // une information differente et legitime - « on ne vendra plus
+                // de gros ce mois-ci » - donc on ne les confond pas.
+                if (el.value === '') delete etat.proj.surchargesVolume[cle];
+                else etat.proj.surchargesVolume[cle] = { reste: Math.max(0, nb(el.value)) };
+                rendre();
+            });
+        });
+        var razSurcharge = document.getElementById('sim2-surcharge-reset');
+        if (razSurcharge) {
+            razSurcharge.addEventListener('click', function () {
+                etat.proj.surchargesVolume = {};
+                rendre();
+            });
+        }
         document.querySelectorAll('.sim2-proj-ctl').forEach(function (el) {
             el.addEventListener('change', function () {
                 var k = el.dataset.k;
@@ -3346,6 +3876,8 @@
                         ? null
                         : Math.min(99, Math.max(0, nb(el.value)));
                 }
+                else if (k === 'caMethode') etat.proj.caMethode = el.value;
+                else if (k === 'surchargeMode') etat.proj.surchargeMode = el.value;
                 else if (k === 'exclureDimanche') etat.proj.exclureDimanche = el.checked;
                 else if (k === 'poidsReel') etat.proj.poidsReel = nb(el.value);
                 else if (k === 'coeff') etat.proj.coeff = el.value === '' ? null : nb(el.value);

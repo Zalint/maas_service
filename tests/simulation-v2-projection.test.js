@@ -49,19 +49,17 @@ describe('jours d ouverture: les dimanches se retirent des deux cotes', () => {
     });
 
     test('le rythme se calcule par jour OUVRE, pas par jour calendaire', () => {
-        // 6 jours a 1 000 F, dont un dimanche ferme a 0. Compter le dimanche
-        // divise par 6 au lieu de 5 et sous-estime le rythme de 17 %.
+        // 7 journees VENDUES, dont le dimanche 2 aout. Il faut lui donner une
+        // vente: depuis que les journees sans vente sortent du denominateur,
+        // un dimanche a zero en sortait de toute facon et les deux branches
+        // rendaient le meme compte - le test ne testait plus son intention.
         const ca = {};
-        P.joursEntre('2026-08-03', '2026-08-08').forEach((j) => { ca[j] = 1000; });
+        P.joursEntre('2026-08-02', '2026-08-08').forEach((j) => { ca[j] = 1000; });
         const avec = P.rythmeParType(ca, '2026-08-02', '2026-08-08', false);
         const sans = P.rythmeParType(ca, '2026-08-02', '2026-08-08', true);
         expect(P.estDimanche('2026-08-02')).toBe(true);
-        expect(avec.P1 !== null || avec.P2 !== null).toBe(true);
-        // 6 jours vendus sur 7 calendaires contre 6 sur 6 ouvres.
-        const joursAvec = avec.jours.P1 + avec.jours.P2;
-        const joursSans = sans.jours.P1 + sans.jours.P2;
-        expect(joursAvec).toBe(7);
-        expect(joursSans).toBe(6);
+        expect(avec.jours.P1 + avec.jours.P2).toBe(7);
+        expect(sans.jours.P1 + sans.jours.P2).toBe(6);
     });
 
     test('les jours restants ne comptent que les jours ouvres', () => {
@@ -93,14 +91,43 @@ describe('jours d ouverture: les dimanches se retirent des deux cotes', () => {
 });
 
 describe('rythmes journaliers', () => {
-    test('les jours sans vente comptent ZERO, ils ne sont pas ignores', () => {
-        // 2 jours P1 vendus sur 10 ecoules: le rythme est dilue d'autant.
+    test('les jours SANS vente sont EXCLUS du denominateur', () => {
+        // Regle inversee le 19/08/2026, sur backtest de 16 projections a
+        // cheval sur deux sites (juin et juillet 2026): en les comptant,
+        // l'erreur sur le niveau du CA projete valait 43,4 % pour un biais de
+        // -41,4 %; en les excluant, 17,5 % pour -10,8 %. Gain confirme
+        // separement sur chaque site. Une boucherie ouverte qui ne vend rien
+        // de la journee n'existe pas: ces jours sont des fermetures ou des
+        // saisies manquantes, et chacun divisait le rythme sans rien apporter
+        // au numerateur.
         const ca = { '2026-08-01': 1000, '2026-08-02': 1000 };
         const r = P.rythmeParType(ca, '2026-08-01', '2026-08-10');
-        expect(r.P1).toBeCloseTo(2000 / 10, 10);
+        // 2 journees ACTIVES, pas 10 ecoulees.
+        expect(r.P1).toBeCloseTo(1000, 10);
+        expect(r.jours.P1).toBe(2);
     });
-    test('aout 2026: 17 jours P1, 14 jours P2', () => {
-        const r = P.rythmeParType({}, '2026-08-01', '2026-08-31');
+
+    test('les journees ecartees sont NOMMEES, pas escamotees', () => {
+        // L'ecran doit pouvoir dire lesquelles: fermeture reelle ou saisie
+        // manquante, ce n'est pas la meme conversation avec l'exploitant.
+        const ca = { '2026-08-01': 1000, '2026-08-02': 1000 };
+        const r = P.rythmeParType(ca, '2026-08-01', '2026-08-05');
+        expect(r.joursExclus).toEqual(['2026-08-03', '2026-08-04', '2026-08-05']);
+    });
+
+    test('aucune vente du tout: rythme null, jamais zero', () => {
+        const r = P.rythmeParType({}, '2026-08-01', '2026-08-10');
+        expect(r.P1).toBeNull();
+        expect(r.jours.P1).toBe(0);
+        expect(r.joursExclus).toHaveLength(10);
+    });
+    test('aout 2026: 17 jours P1, 14 jours P2 quand tous sont actifs', () => {
+        // Le decoupage calendaire: jours 1-10 et 25-31 en P1 (17), 11-24 en
+        // P2 (14). Toutes les journees portent une vente, sinon elles
+        // sortiraient du denominateur et ce n'est pas ce qu'on teste ici.
+        const ca = {};
+        P.joursEntre('2026-08-01', '2026-08-31').forEach((j) => { ca[j] = 1; });
+        const r = P.rythmeParType(ca, '2026-08-01', '2026-08-31');
         expect(r.jours.P1).toBe(17);
         expect(r.jours.P2).toBe(14);
     });
@@ -1159,14 +1186,29 @@ describe('tauxMargeCourant: projeter aux prix du jour, pas a la moyenne du mois'
         { nom: 'Boeuf en gros', quantite: 50, ca: 255000, prix_moyen: 5100 }
     ];
 
-    test('le taux vaut la marge rapportee au CA chiffrable', () => {
-        // Marges unitaires posees a la main: 1 000 et 800.
+    test('le taux vaut la marge rapportee au CA des memes volumes aux memes prix', () => {
+        // Marges unitaires posees a la main: 1 000 et 800. Ici ca = prix x
+        // quantite, donc l'assiette aux derniers prix egale le CA constate.
         const margeDe = (p) => (p.nom === 'Boeuf en détail' ? 1000 : 800);
         const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
         const attendu = (100 * 1000 + 50 * 800) / (540000 + 255000);
         expect(r.taux).toBeCloseTo(attendu, 10);
         expect(r.couverture).toBeCloseTo(1, 10);
         expect(r.utilisable).toBe(true);
+    });
+
+    test('quand les prix ont monte, le denominateur suit: pas de taux hybride', () => {
+        // Vendu a 5 000 sur la periode (ca = 500 000), dernier prix 5 400.
+        // L'hybride divisait la marge aux prix de demain par le CA d'hier et
+        // rendait 1000/5000 = 20 %; le vrai taux des jours restants est
+        // 1000/5400 = 18,52 %.
+        const produits = [{ nom: 'Boeuf', quantite: 100, ca: 500000, prix_moyen: 5400 }];
+        const r = P.tauxMargeCourant({ produits, margeDe: () => 1000 });
+        expect(r.taux).toBeCloseTo(1000 / 5400, 10);
+        expect(r.ca_derniers).toBeCloseTo(540000, 2);
+        // La couverture, elle, reste sur le CA constate.
+        expect(r.ca_chiffre).toBeCloseTo(500000, 2);
+        expect(r.couverture).toBeCloseTo(1, 10);
     });
 
     test('un cout qui MONTE fait BAISSER le taux', () => {
@@ -1324,6 +1366,549 @@ describe('le mois se coupe en deux: realise au prix passe, restant au prix coura
     });
 });
 
+describe('revue 2: une saisie ILLISIBLE ne vaut pas une saisie a zero', () => {
+    // Le defaut: nb() rend 0 sur toute entree illisible, donc isFinite(nb(x))
+    // etait TOUJOURS vrai et le garde ne gardait rien. 'abc', NaN, [] et {}
+    // devenaient une surcharge a ZERO - qui dans ce modele est une instruction
+    // VALIDE (« plus rien de ce produit ce mois-ci »). Une saisie corrompue se
+    // lisait donc comme une decision de l'exploitant.
+    const PRODUITS = [{ nom: 'Boeuf en gros', quantite: 100, prix_moyen: 5100 }];
+    const cleDe = (n) => String(n).trim().toLowerCase();
+    const avec = (reste) => P.repartirRestes({
+        produits: PRODUITS, proportion: 0.5, mode: 'ajout',
+        surcharges: { 'boeuf en gros': { reste: reste } }, cleDe
+    });
+
+    ['abc', NaN, Infinity, -Infinity, [], {}, '', '   ', 'NaN'].forEach((v) => {
+        test('entree illisible ' + JSON.stringify(String(v)) + ' : la ligne garde le mix', () => {
+            const r = avec(v);
+            expect(r.lignes[0].source).toBe('mix');
+            expect(r.lignes[0].reste).toBeCloseTo(50, 10);
+            expect(r.actif).toBe(false);
+        });
+    });
+
+    test('un ZERO reel reste une saisie, il n est pas confondu avec du bruit', () => {
+        const r = avec(0);
+        expect(r.lignes[0].source).toBe('saisie');
+        expect(r.lignes[0].reste).toBe(0);
+        expect(r.actif).toBe(true);
+    });
+
+    test('une chaine numerique reste acceptee', () => {
+        // L'ecran envoie el.value, donc une CHAINE. La refuser casserait tout.
+        const r = avec('42.5');
+        expect(r.lignes[0].source).toBe('saisie');
+        expect(r.lignes[0].reste).toBe(42.5);
+    });
+
+    test('volumesProjetes: un reste illisible retombe sur le mix', () => {
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 'abc' }, cleDe,
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        expect(vp.lignes[0].reste).toBeCloseTo(50, 10);
+    });
+
+    test('volumesProjetes: un reste a ZERO fourni est respecte', () => {
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 0 }, cleDe,
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        expect(vp.lignes[0].reste).toBe(0);
+    });
+});
+
+describe('revue: la saisie manuelle doit traverser TOUT le calcul', () => {
+    // Cinq defauts trouves en revue le 19/08/2026, tous de la meme famille:
+    // la saisie etait branchee sur l'affichage des lignes mais pas sur ce qui
+    // en derive. Ces tests les epinglent un par un.
+
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 400, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 100, prix_moyen: 5100 }
+    ];
+
+    test('volumesProjetes accepte des restes fournis du dehors', () => {
+        // Sans cette entree, le tableau affichait 200 en « reste a vendre »
+        // mais calculait son delta d equilibre et son prix conseille sur les
+        // 50 du mix - deux volumes sur la meme ligne.
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 200 },
+            cleDe: (n) => String(n).trim().toLowerCase(),
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        const gros = vp.lignes.find((l) => l.nom === 'Boeuf en gros');
+        const detail = vp.lignes.find((l) => l.nom === 'Boeuf en détail');
+        expect(gros.reste).toBe(200);
+        expect(gros.mois).toBe(300);
+        // La ligne non fournie garde le mix.
+        expect(detail.reste).toBeCloseTo(200, 10);
+    });
+
+    test('le TOTAL somme bien la colonne affichee', () => {
+        // Le defaut: la ligne « Total boeuf » lisait vp.totaux calcule sur le
+        // mix pendant que les lignes affichaient les restes saisis.
+        const vp = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 200 },
+            cleDe: (n) => String(n).trim().toLowerCase(),
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        const sommeLignes = vp.lignes.reduce((a, l) => a + l.reste, 0);
+        expect(vp.totaux.reste).toBeCloseTo(sommeLignes, 10);
+        expect(vp.totaux.mois).toBeCloseTo(vp.lignes.reduce((a, l) => a + l.mois, 0), 10);
+    });
+
+    test('le prix requis se calcule sur le reste REEL, pas sur celui du mix', () => {
+        // prixPourCombler divise le manque par les kilos restants: se tromper
+        // de volume dimensionne le prix conseille sur un mois different.
+        const avec = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            restes: { 'boeuf en gros': 200 },
+            cleDe: (n) => String(n).trim().toLowerCase(),
+            margeDe: () => 500, plCentral: -100000, cible: 0
+        });
+        const sans = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5,
+            margeDe: () => 500, plCentral: -100000, cible: 0
+        });
+        const g1 = avec.lignes.find((l) => l.nom === 'Boeuf en gros');
+        const g2 = sans.lignes.find((l) => l.nom === 'Boeuf en gros');
+        // Meme manque a combler, 4 fois plus de kilos pour le porter: le prix
+        // requis doit etre PLUS BAS.
+        expect(g1.prixRequis).toBeLessThan(g2.prixRequis);
+    });
+
+    test('sans restes fournis, volumesProjetes est INCHANGE', () => {
+        const a = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, margeDe: () => 500,
+            plCentral: 0, cible: 0
+        });
+        const b = P.volumesProjetes({
+            produits: PRODUITS, proportion: 0.5, restes: {}, cleDe: (n) => n,
+            margeDe: () => 500, plCentral: 0, cible: 0
+        });
+        expect(b.lignes.map((l) => l.reste)).toEqual(a.lignes.map((l) => l.reste));
+        expect(b.totaux.reste).toBeCloseTo(a.totaux.reste, 10);
+    });
+
+    const postes = {
+        total_avances: 0, commission_maas: 0, marge_cdc: 0,
+        depenses_periode: 0, paiements_fournisseur: 0,
+        stock_variation_nette: 0, taux_marge: 10
+    };
+
+    test('la saisie s applique MEME si le taux courant est inutilisable', () => {
+        // Le defaut: margeRestanteDirecte etait lue a l'interieur du test sur
+        // tc.utilisable. Sur un site dont plus de 20 % du CA n'a pas de prix
+        // d'achat, la saisie n'avait AUCUN effet sur le PL, en silence.
+        const base = {
+            postes, caRealise: 1000000, caCible: 2000000, chargesMensuel: 0,
+            stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: { utilisable: false, taux: 0.20, marge_totale: 200000 }
+        };
+        const sans = P.projeterPL(base);
+        expect(sans.margeOrigine).toBe('proportion');
+        expect(sans.marge).toBeCloseTo(2000000 * 0.10, 2);
+
+        const avec = P.projeterPL(Object.assign({}, base, { margeRestanteDirecte: 150000 }));
+        expect(avec.margeOrigine).toBe('produits');
+        expect(avec.marge).toBeCloseTo(1000000 * 0.10 + 150000, 2);
+    });
+
+    test('sans tauxCourant du tout, la saisie s applique encore', () => {
+        const r = P.projeterPL({
+            postes, caRealise: 1000000, caCible: 2000000, chargesMensuel: 0,
+            stockOption: 'zero', depensesOption: 'realise',
+            margeRestanteDirecte: 150000
+        });
+        expect(r.margeOrigine).toBe('produits');
+        expect(r.marge).toBeCloseTo(100000 + 150000, 2);
+    });
+
+    test('taux_marge absent: le repli reconstitue la marge depuis les postes', () => {
+        // Le realise n'a pas de marge connue: la decomposition n'a pas de
+        // premier terme, on ne l'invente pas.
+        const r = P.projeterPL({
+            postes: Object.assign({}, postes, {
+                taux_marge: null, total_avances: 900000, paiements_fournisseur: 0,
+                stock_variation_nette: 0
+            }),
+            caRealise: 1000000, caCible: 2000000, chargesMensuel: 0,
+            stockOption: 'zero', depensesOption: 'realise',
+            margeRestanteDirecte: 150000
+        });
+        // taux_marge null -> repli reconstitue depuis les postes, donc non nul.
+        expect(r.margeOrigine).toBe('produits');
+        expect(r.marge).not.toBeNull();
+    });
+
+    test('rythmeParType distingue journees ACTIVES et journees OUVERTES', () => {
+        // Le seuil des 5 journees observees compte les actives, deliberement.
+        // Mais l'ecran doit pouvoir dire « 2 actives sur 10 ouvertes ».
+        const ca = { '2026-08-01': 1000, '2026-08-02': 1000 };
+        const r = P.rythmeParType(ca, '2026-08-01', '2026-08-10');
+        expect(r.jours.P1).toBe(2);
+        expect(r.joursOuverts.P1).toBe(10);
+        expect(r.joursExclus).toHaveLength(8);
+        // Les deux comptes coincident quand toutes les journees sont actives.
+        const plein = {};
+        P.joursEntre('2026-08-01', '2026-08-10').forEach((j) => { plein[j] = 1; });
+        const r2 = P.rythmeParType(plein, '2026-08-01', '2026-08-10');
+        expect(r2.jours.P1).toBe(r2.joursOuverts.P1);
+    });
+});
+
+describe('repartirRestes: la saisie manuelle des quantites restantes', () => {
+    // Le backtest a montre qu'un estimateur par produit degrade le PL. Ce qui
+    // manque au modele n'est pas de la statistique, c'est l'information que
+    // l'exploitant a et que les donnees n'ont pas: une grosse commande de gros
+    // annoncee. D'ou une surcharge, dont la propriete cardinale est de ne RIEN
+    // changer tant qu'on ne s'en sert pas.
+    const PRODUITS = [
+        { nom: 'Boeuf en détail', quantite: 400, prix_moyen: 5400 },
+        { nom: 'Boeuf en gros', quantite: 100, prix_moyen: 5100 }
+    ];
+    // caPlein = 400 x 5400 + 100 x 5100 = 2 160 000 + 510 000 = 2 670 000
+    // proportion 0,5 -> cible CA de la suite = 1 335 000
+
+    test('SANS surcharge, le resultat est l hypothese de mix, au flottant pres', () => {
+        const r = P.repartirRestes({ produits: PRODUITS, proportion: 0.5 });
+        expect(r.actif).toBe(false);
+        expect(r.lignes[0].reste).toBeCloseTo(200, 10);
+        expect(r.lignes[1].reste).toBeCloseTo(50, 10);
+        expect(r.lignes.every((l) => l.source === 'mix')).toBe(true);
+        // Et c'est exactement ce que volumesProjetes pose: q x proportion.
+        r.lignes.forEach((l) => expect(l.reste).toBeCloseTo(l.quantite * 0.5, 10));
+    });
+
+    test('mode atelier: une saisie REDISTRIBUE, le CA de la suite ne bouge pas', () => {
+        // On annonce 200 u de gros au lieu des 50 du mix: +150 u a 5 100 =
+        // 765 000 F pris aux autres lignes.
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 200 } }
+        });
+        expect(r.actif).toBe(true);
+        expect(r.lignes[1].reste).toBe(200);
+        expect(r.lignes[1].source).toBe('saisie');
+        // CA total de la suite inchange: c'est la definition du mode atelier.
+        expect(r.ca_suite).toBeCloseTo(r.ca_suite_mix, 6);
+        expect(r.ca_suite).toBeCloseTo(1335000, 6);
+        // Le detail absorbe: (1 335 000 - 1 020 000) / 5 400 = 58,33 u
+        expect(r.lignes[0].reste).toBeCloseTo((1335000 - 200 * 5100) / 5400, 6);
+        expect(r.facteur).toBeLessThan(1);
+    });
+
+    test('mode ajout: la saisie s ajoute, le CA de la suite grossit', () => {
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5, mode: 'ajout',
+            surcharges: { 'boeuf en gros': { reste: 200 } }
+        });
+        expect(r.lignes[0].reste).toBeCloseTo(200, 10);   // le detail ne bouge pas
+        expect(r.lignes[1].reste).toBe(200);
+        expect(r.ca_suite).toBeGreaterThan(r.ca_suite_mix);
+        expect(r.ca_suite - r.ca_suite_mix).toBeCloseTo(150 * 5100, 6);
+        expect(r.facteur).toBeNull();
+    });
+
+    test('une saisie EGALE au mix ne deplace rien', () => {
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 50 } }
+        });
+        expect(r.facteur).toBeCloseTo(1, 10);
+        expect(r.lignes[0].reste).toBeCloseTo(200, 6);
+        expect(r.sature).toBe(false);
+    });
+
+    test('une saisie qui depasse le CA projete sature, sans rendre de negatif', () => {
+        // 300 u de gros = 1 530 000 > 1 335 000 de cible.
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 300 } }
+        });
+        expect(r.sature).toBe(true);
+        expect(r.notes).toContain('saisies_au_dela_du_ca');
+        expect(r.lignes[0].reste).toBe(0);          // plancher, jamais negatif
+        expect(r.lignes[1].reste).toBe(300);        // la saisie n est pas rognee
+        expect(r.ca_suite).toBeGreaterThan(r.ca_suite_mix);
+    });
+
+    test('une saisie negative est ramenee a zero', () => {
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en détail': { reste: -50 } },
+            cleDe: (n) => String(n).trim().toLowerCase()
+        });
+        const detail = r.lignes.find((l) => l.cle === 'boeuf en détail');
+        expect(detail.reste).toBe(0);
+        expect(detail.source).toBe('saisie');
+    });
+
+    test('zero est une saisie LEGITIME, pas une absence de saisie', () => {
+        // « on ne vendra plus de gros ce mois-ci » doit s ecrire.
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 0 } }
+        });
+        expect(r.lignes[1].reste).toBe(0);
+        expect(r.lignes[1].source).toBe('saisie');
+        expect(r.actif).toBe(true);
+        // Tout le CA revient au detail, le total tient toujours.
+        expect(r.ca_suite).toBeCloseTo(1335000, 6);
+    });
+
+    test('la normalisation des cles est celle qu on lui passe', () => {
+        // L application fusionne « Boeuf En Gros » et « Boeuf en gros » via
+        // normaliserNom (accents retires, minuscules). La surcharge doit
+        // suivre la MEME cle, sinon elle rate sa cible.
+        const sansAccent = (n) => String(n || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+        const r = P.repartirRestes({
+            produits: [{ nom: 'Boeuf En Détail', quantite: 400, prix_moyen: 5400 }],
+            proportion: 0.5, mode: 'ajout',
+            surcharges: { 'boeuf en detail': { reste: 123 } },
+            cleDe: sansAccent
+        });
+        expect(r.lignes[0].reste).toBe(123);
+    });
+
+    test('un produit sans prix ne casse pas la redistribution', () => {
+        const r = P.repartirRestes({
+            produits: [
+                { nom: 'Boeuf en gros', quantite: 100, prix_moyen: 5100 },
+                { nom: 'Poivre', quantite: 10, prix_moyen: null }
+            ],
+            proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 60 } }
+        });
+        expect(Number.isFinite(r.lignes[1].reste)).toBe(true);
+        expect(Number.isFinite(r.ca_suite)).toBe(true);
+    });
+
+    test('proportion nulle: rien a repartir, mais une saisie reste possible', () => {
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0,
+            surcharges: { 'boeuf en gros': { reste: 30 } }
+        });
+        expect(r.lignes[1].reste).toBe(30);
+        expect(r.sature).toBe(true);   // la cible vaut 0, la saisie la depasse
+    });
+
+    test('margeDesRestes somme les marges unitaires sur les restes', () => {
+        const r = P.repartirRestes({
+            produits: PRODUITS, proportion: 0.5,
+            surcharges: { 'boeuf en gros': { reste: 200 } }
+        });
+        const margeDe = (p) => (p.cle === 'boeuf en gros' ? 400 : 700);
+        const m = P.margeDesRestes(r.lignes, margeDe);
+        expect(m.marge).toBeCloseTo(r.lignes[0].reste * 700 + 200 * 400, 6);
+        expect(m.sans_marge).toEqual([]);
+    });
+
+    test('margeDesRestes nomme les produits sans marge au lieu de les compter zero', () => {
+        const r = P.repartirRestes({ produits: PRODUITS, proportion: 0.5 });
+        const margeDe = (p) => (p.cle === 'boeuf en gros' ? null : 700);
+        const m = P.margeDesRestes(r.lignes, margeDe);
+        expect(m.sans_marge).toEqual(['Boeuf en gros']);
+        expect(m.marge).toBeCloseTo(200 * 700, 6);
+    });
+
+    test('SANS saisie, margeDesRestes egale proportion x marge du mix', () => {
+        // L invariant qui garantit l absence de regression: c est exactement
+        // ce que projeterPL calcule aujourd hui.
+        const r = P.repartirRestes({ produits: PRODUITS, proportion: 0.5 });
+        const margeDe = () => 700;
+        const m = P.margeDesRestes(r.lignes, margeDe);
+        const margeMix = PRODUITS.reduce((acc, p) => acc + 700 * p.quantite, 0);
+        expect(m.marge).toBeCloseTo(0.5 * margeMix, 6);
+    });
+
+    test('projeterPL: margeRestanteDirecte prime et se declare', () => {
+        const postes = {
+            total_avances: 0, commission_maas: 0, marge_cdc: 0,
+            depenses_periode: 0, paiements_fournisseur: 0,
+            stock_variation_nette: 0, taux_marge: 10
+        };
+        const base = {
+            postes, caRealise: 1000000, caCible: 2000000, chargesMensuel: 0,
+            stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        };
+        const sans = P.projeterPL(base);
+        expect(sans.marge).toBeCloseTo(100000 + 200000, 2);
+        expect(sans.margeOrigine).toBe('proportion');
+
+        const avec = P.projeterPL(Object.assign({}, base, { margeRestanteDirecte: 150000 }));
+        expect(avec.marge).toBeCloseTo(100000 + 150000, 2);
+        expect(avec.margeOrigine).toBe('produits');
+        expect(avec.pl).toBeLessThan(sans.pl);
+    });
+
+    test('la saisie vaut dans les TROIS scenarios, et ils restent monotones', () => {
+        // Une commande annoncee ne retrecit pas parce qu on regarde le
+        // scenario prudent. Le callback est evalue a la cible de chaque
+        // scenario: la saisie reste ferme, les lignes libres absorbent.
+        const postes = {
+            total_avances: 0, commission_maas: 0, marge_cdc: 0,
+            depenses_periode: 0, paiements_fournisseur: 0,
+            stock_variation_nette: 0, taux_marge: 10
+        };
+        const vus = [];
+        const scen = P.scenarios({
+            postes, caRealise: 1000000, caProjete: 2000000,
+            chargesMensuel: 0, stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 },
+            // Marge de la suite qui suit la cible, comme le fera l ecran en
+            // recalculant la repartition a la proportion du scenario.
+            margeRestanteDe: (cible) => { vus.push(cible); return (cible - 1000000) * 0.15; }
+        });
+        // Les trois scenarios ont bien interroge le callback.
+        expect(vus.map(Math.round)).toEqual([1800000, 2000000, 2200000]);
+        expect(scen.central.margeOrigine).toBe('produits');
+        expect(scen.prudent.margeOrigine).toBe('produits');
+        expect(scen.haut.margeOrigine).toBe('produits');
+        // Monotonie retablie: c est le point que la premiere ecriture cassait.
+        expect(scen.prudent.pl).toBeLessThan(scen.central.pl);
+        expect(scen.haut.pl).toBeGreaterThan(scen.central.pl);
+    });
+
+    test('sans callback, les trois scenarios gardent la proportion', () => {
+        const postes = {
+            total_avances: 0, commission_maas: 0, marge_cdc: 0,
+            depenses_periode: 0, paiements_fournisseur: 0,
+            stock_variation_nette: 0, taux_marge: 10
+        };
+        const scen = P.scenarios({
+            postes, caRealise: 1000000, caProjete: 2000000,
+            chargesMensuel: 0, stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+        });
+        ['prudent', 'central', 'haut'].forEach((k) => {
+            expect(scen[k].margeOrigine).toBe('proportion');
+        });
+        expect(scen.prudent.pl).toBeLessThan(scen.central.pl);
+        expect(scen.haut.pl).toBeGreaterThan(scen.central.pl);
+    });
+});
+
+describe('CA aux derniers prix: la methode volumes x derniers prix', () => {
+    // La regle demandee par le proprietaire du produit: le CA restant se
+    // calcule en quantites estimees a vendre x dernier prix de vente. Le
+    // parage n'y entre pas - il ne touche que le cout, via le diviseur de la
+    // marge unitaire. L'identite qui doit en decouler, exactement:
+    //   Sigma(qte restante x dernier PV) = CA projete - CA realise.
+
+    test('caAuxDerniersPrix: Sigma(quantite x prix_moyen), sans besoin de cout', () => {
+        const total = P.caAuxDerniersPrix([
+            { nom: 'Boeuf', prix_moyen: 5400, quantite: 100 },
+            { nom: 'Poulet', prix_moyen: 3500, quantite: 20 },
+            // Sans prix de vente: ne compte pas - un CA sans prix n'existe pas.
+            { nom: 'Mystere', prix_moyen: null, quantite: 50 },
+            // Prix nul ou negatif: pareil.
+            { nom: 'Gratuit', prix_moyen: 0, quantite: 10 }
+        ]);
+        expect(total).toBeCloseTo(5400 * 100 + 3500 * 20, 6);
+    });
+
+    test('caAuxDerniersPrix: vide ou absent rend zero', () => {
+        expect(P.caAuxDerniersPrix([])).toBe(0);
+        expect(P.caAuxDerniersPrix(null)).toBe(0);
+    });
+
+    const postes = {
+        total_avances: 500000, commission_maas: 30000, marge_cdc: 0,
+        depenses_periode: 0, paiements_fournisseur: 0,
+        stock_variation_nette: 0, taux_marge: 10
+    };
+    const base = {
+        postes, caRealise: 1000000, chargesMensuel: 0,
+        stockOption: 'zero', depensesOption: 'realise',
+        tauxCourant: { utilisable: true, taux: 0.20, marge_totale: 200000 }
+    };
+
+    test('avec caPleinDerniersPrix, la proportion est en VOLUME', () => {
+        // Les prix ont monte: le mois-equivalent aux derniers prix vaut
+        // 1 100 000 la ou le CA realise vaut 1 000 000. Un CA cible de
+        // 1 550 000 contient donc 550 000 de suite aux prix nouveaux, soit
+        // 550 000 / 1 100 000 = 0,5 de volume - pas 0,55.
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 1550000, caPleinDerniersPrix: 1100000
+        }));
+        expect(r.proportion).toBeCloseTo(0.5, 10);
+        // Et la marge suit le volume: realise + 0,5 x marge_totale.
+        expect(r.marge).toBeCloseTo(1000000 * 0.10 + 0.5 * 200000, 2);
+    });
+
+    test('l identite du proprietaire: caCible - caRealise = proportion x caPlein', () => {
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 1550000, caPleinDerniersPrix: 1100000
+        }));
+        expect(r.proportion * r.caPleinDerniersPrix)
+            .toBeCloseTo(1550000 - 1000000, 6);
+    });
+
+    test('les postes volumetriques suivent le volume, pas le CA repricie', () => {
+        // La commission se calcule sur le prix CATALOGUE des livraisons: une
+        // hausse du prix de VENTE ne l'augmente pas. Facteur 1 + proportion
+        // (1,5), pas r = caCible/caRealise (1,55).
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 1550000, caPleinDerniersPrix: 1100000
+        }));
+        expect(r.commission).toBeCloseTo(30000 * 1.5, 6);
+        expect(r.avances).toBeCloseTo(500000 * 1.5, 6);
+    });
+
+    test('sans caPleinDerniersPrix, RIEN ne change: methode rythmes intacte', () => {
+        const avec = P.projeterPL(Object.assign({}, base, { caCible: 1550000 }));
+        // proportion legacy = (1 550 000 - 1 000 000) / 1 000 000 = 0,55
+        expect(avec.proportion).toBeCloseTo(0.55, 10);
+        expect(avec.caPleinDerniersPrix).toBeNull();
+        expect(avec.commission).toBeCloseTo(30000 * 1.55, 6);
+        expect(avec.marge).toBeCloseTo(1000000 * 0.10 + 0.55 * 200000, 2);
+    });
+
+    test('quand les prix n ont pas bouge, les deux methodes coincident', () => {
+        // caPlein = caRealise: derniers prix = prix de la periode. La methode
+        // volumes doit alors rendre exactement la methode rythmes.
+        const rythmes = P.projeterPL(Object.assign({}, base, { caCible: 1550000 }));
+        const volumes = P.projeterPL(Object.assign({}, base, {
+            caCible: 1550000, caPleinDerniersPrix: 1000000
+        }));
+        expect(volumes.marge).toBeCloseTo(rythmes.marge, 6);
+        expect(volumes.commission).toBeCloseTo(rythmes.commission, 6);
+        expect(volumes.proportion).toBeCloseTo(rythmes.proportion, 10);
+    });
+
+    test('scenario sous le realise: plancher volume a zero, commission au realise', () => {
+        const r = P.projeterPL(Object.assign({}, base, {
+            caCible: 800000, caPleinDerniersPrix: 1100000
+        }));
+        expect(r.proportion).toBe(0);
+        expect(r.marge).toBeCloseTo(100000, 2);       // le realise seul
+        expect(r.commission).toBeCloseTo(30000, 6);    // rien de plus a livrer
+    });
+
+    test('scenarios() propage l assiette aux trois scenarios', () => {
+        const scen = P.scenarios({
+            postes, caRealise: 1000000, caProjete: 1550000,
+            chargesMensuel: 0, stockOption: 'zero', depensesOption: 'realise',
+            tauxCourant: base.tauxCourant, caPleinDerniersPrix: 1100000
+        });
+        expect(scen.central.caPleinDerniersPrix).toBe(1100000);
+        expect(scen.prudent.caPleinDerniersPrix).toBe(1100000);
+        expect(scen.haut.caPleinDerniersPrix).toBe(1100000);
+        // Le prudent vise 0,9 x 1 550 000 = 1 395 000: proportion en volume
+        // (1 395 000 - 1 000 000) / 1 100 000.
+        expect(scen.prudent.proportion).toBeCloseTo(395000 / 1100000, 10);
+    });
+});
+
 describe('tauxMargeCourant: la marge absolue, et non plus seulement le taux', () => {
     // marge_totale est desormais ce qui pilote la projection: le taux ne sert
     // plus qu'a l'affichage. Il doit donc etre rendu, et juste.
@@ -1348,7 +1933,7 @@ describe('tauxMargeCourant: la marge absolue, et non plus seulement le taux', ()
     test('marge_totale et taux restent coherents entre eux', () => {
         const margeDe = () => 900;
         const r = P.tauxMargeCourant({ produits: PRODUITS, margeDe });
-        // taux = marge_totale / CA chiffrable, par construction.
-        expect(r.taux).toBeCloseTo(r.marge_totale / r.ca_chiffre, 10);
+        // taux = marge_totale / CA aux derniers prix, par construction.
+        expect(r.taux).toBeCloseTo(r.marge_totale / r.ca_derniers, 10);
     });
 });

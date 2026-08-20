@@ -3518,12 +3518,19 @@
         // Le calcul EN CLAIR, avec ses montants. Un taux de -176% se verifie
         // alors a l'oeil au lieu d'etre a prendre pour argent comptant, et on
         // voit immediatement quel terme le tire vers le bas.
+        // 'paiements' aussi: le serveur le soustrait du cout des ventes
+        // (coutDesVentes = avances + paiements - variation nette), mais la
+        // ligne affichee le taisait. Avec 143 000 F de paiements, le lecteur
+        // qui refaisait la formule a l'oeil tombait sur 540 727 au lieu des
+        // 397 727 affiches. A zero on ne l'affiche pas: un « - 0 » n'aide
+        // personne et la plupart des sites n'ont aucun fournisseur externe.
         const termesMarge = postes
-            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle))
+            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle)
+                || (p.cle === 'paiements' && nb(p.montant) !== 0))
             .map((p) => {
                 const off = !actif(p);
                 const valeur = p.signe * p.montant;
-                const libelle = { ventes: 'Ventes', avances: 'Avances', stock: 'Variation stock' }[p.cle]
+                const libelle = { ventes: 'Ventes', avances: 'Avances', paiements: 'Paiements fournisseur', stock: 'Variation stock' }[p.cle]
                     + (p.cle === 'stock' && stock.soir_estime === true ? ' (estimée)' : '');
                 const texte = `${valeur >= 0 ? '+' : '−'} ${fmtMoney(Math.abs(valeur))}`;
                 return off
@@ -3782,9 +3789,10 @@
                                         : ''}
                                 </div>
                                 <div class="mt-1 fst-italic">
-                                    Marge sur les achats réellement consommés : les achats corrigés
-                                    de ce qui est resté en stock. Les charges, la commission et les
-                                    dépenses n'en font pas partie — elles viennent après.
+                                    Marge sur les achats réellement consommés : avances et paiements
+                                    fournisseur, corrigés de ce qui est resté en stock. Les charges,
+                                    la commission et les dépenses n'en font pas partie — elles
+                                    viennent après.
                                 </div>
                             </div>
                         </div>
