@@ -2848,18 +2848,48 @@
             // qui ferme le bloc est l'identite demandee par le proprietaire
             // du produit: Sigma(qte restante x dernier PV) = CAproj - CAreel.
             if (methodeCA === 'derniers' && caPlein > 0 && ca.caProjete !== null) {
-                dbg += '\nLe CA des rythmes est aux prix de la PÉRIODE. On le lit en volume,\n';
-                dbg += 'puis on revalorise ce volume au dernier prix de vente :\n\n';
+                // LA FORME DIRECTE, PAS LA FORME FACTORISEE.
+                //
+                // Le bloc affichait « proportion x Sigma(QTE x VENTE) ». C'est
+                // exact - la proportion se distribue dans la somme - mais ca se
+                // LIT comme une revalorisation du passe: des quantites d'hier
+                // multipliees par des prix de demain. Le modele ne fait pas ca.
+                // On montre donc ce qu'il fait vraiment: chaque produit, sa
+                // quantite restante, son dernier prix, et le CA qui en sort.
+                // La forme abregee reste en bas, comme verification.
+                dbg += '\nCe qui reste à vendre, produit par produit, au dernier prix\n';
+                dbg += 'de vente. AUCUNE vente déjà faite n\u2019est recalculée ici.\n\n';
                 dbg += padD('  proportion de volume = (' + fmt(ca.caProjete) + ' − '
                         + fmt(nb(b.ventes)) + ') ÷ ' + fmt(nb(b.ventes)), 62)
-                    + ' = ' + padG(propVol.toFixed(4), 10) + '\n';
-                dbg += padD('  CA plein aux derniers prix = Σ(QTÉ × VENTE)', 62)
-                    + ' = ' + padG(fmt(caPlein), 10) + '\n';
-                dbg += padD('  CA de la SUITE = ' + propVol.toFixed(4) + ' × ' + fmt(caPlein), 62)
-                    + ' = ' + padG(fmt(propVol * caPlein), 10) + '\n';
-                dbg += padD('  CA PROJETÉ RETENU = ' + fmt(nb(b.ventes)) + ' + '
-                        + fmt(propVol * caPlein), 62)
-                    + ' = ' + padG(fmt(caRetenu), 10) + '\n\n';
+                    + ' = ' + padG(propVol.toFixed(4), 10) + '\n\n';
+                dbg += padD('PRODUIT', 24) + padG('QTÉ PÉRIODE', 14)
+                    + padG('QTÉ RESTANTE', 14) + padG('DERNIER PV', 12)
+                    + padG('CA DE LA SUITE', 17) + '\n';
+                dbg += '─'.repeat(81) + '\n';
+                var sCaLignes = 0;
+                univSens.forEach(function (pr) {
+                    var pvL = nb(pr.prix_moyen);
+                    if (!(pvL > 0)) return;
+                    var qL = nb(pr.quantite);
+                    var resteL = qL * propVol;
+                    sCaLignes += resteL * pvL;
+                    dbg += esc(padD(String(pr.nom).slice(0, 23), 24))
+                        + padG(fmtDec(qL), 14) + padG(fmtDec(resteL), 14)
+                        + padG(fmt(pvL), 12) + padG(fmt(resteL * pvL), 17) + '\n';
+                });
+                dbg += '─'.repeat(81) + '\n';
+                dbg += padD('  CA DE LA SUITE', 64) + padG(fmt(sCaLignes), 17) + '\n';
+                dbg += padD('  + CA RÉALISÉ', 64) + padG(fmt(nb(b.ventes)), 17) + '\n';
+                dbg += padD('', 64) + padG('─────────────────', 17) + '\n';
+                dbg += padD('  = CA PROJETÉ RETENU', 64) + padG(fmt(caRetenu), 17) + '\n\n';
+                // La forme abregee, en verification: elle doit rendre le meme
+                // franc, sinon la somme ligne a ligne et le module divergent.
+                dbg += 'forme abrégée équivalente : ' + propVol.toFixed(4) + ' × Σ(QTÉ × VENTE) = '
+                    + propVol.toFixed(4) + ' × ' + fmt(caPlein) + ' = '
+                    + fmt(propVol * caPlein) + '\n';
+                var dForme = sCaLignes - propVol * caPlein;
+                dbg += 'contrôle : somme ligne à ligne − forme abrégée = ' + fmt(dForme)
+                    + (Math.abs(dForme) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
                 var dIdent = propVol * caPlein - (nb(caRetenu) - nb(b.ventes));
                 dbg += 'contrôle : Σ(qté restante × dernier PV) − (CA projeté − CA réalisé) = '
                     + fmt(dIdent) + (Math.abs(dIdent) < 1 ? '  ✓' : '  ✗ ÉCART') + '\n';
