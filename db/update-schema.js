@@ -381,11 +381,26 @@ async function updateSchema() {
 
         // HORS MATA sur les transferts: la marchandise qui n'est pas venue
         // de MATA ne doit pas porter la commission 3%.
-        await sequelize.query(`
-            ALTER TABLE transferts
-            ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE
-        `);
-        console.log('Colonne transferts.hors_mata verifiee');
+        //
+        // A distinguer de fournisseur_prix.hors_mata, qui porte le meme nom
+        // mais dit autre chose: la-bas c'est le PRODUIT qui est hors circuit
+        // Mata, toujours; ici c'est CETTE livraison-la. Un meme produit peut
+        // venir de MATA un jour et d'un achat local le lendemain, ce que le
+        // drapeau au catalogue ne sait pas exprimer. Les deux s'ajoutent:
+        // l'un ou l'autre suffit a retirer la commission.
+        //
+        // Garde checkTableExists comme les autres ALTER de ce fichier: sur un
+        // tenant vierge, transferts n'existe pas encore (sequelize.sync ne
+        // tourne qu'apres) et l'ALTER ferait echouer TOUTES les migrations
+        // suivantes, pas seulement celle-ci.
+        const transfertsTableExistsHm = await checkTableExists('transferts');
+        if (transfertsTableExistsHm) {
+            await sequelize.query(`
+                ALTER TABLE transferts
+                ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonne transferts.hors_mata verifiee');
+        }
 
         console.log('Table depenses verifiee');
 

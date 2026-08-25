@@ -4287,16 +4287,38 @@ router.get('/cash-stock', async (req, res) => {
             // precedent - il arrive qu'il n'ait pas ete saisi - mais on dit
             // toujours de quelle date vient le chiffre, plutot que de compter
             // zero en silence.
+            // is_latest EST OBLIGATOIRE. clotures_caisse conserve chaque
+            // REVISION d'une cloture: le 31/07 de Mbao porte deux lignes du
+            // meme montant, une seule marquee is_latest. Sommer sans ce filtre
+            // comptait la caisse deux fois - mesure: 1 142 200 au lieu de
+            // 571 100, soit tout le point de depart fausse. Le reste de cet
+            // ecran filtre deja is_latest (cf le cash par point de vente).
             const departRows = await sequelize.query(
                 'SELECT date, SUM(montant_total_caisse) AS total '
                 + 'FROM clotures_caisse '
-                + 'WHERE date < :premier AND montant_total_caisse IS NOT NULL '
+                + 'WHERE date < :premier AND is_latest = TRUE '
+                + '  AND montant_total_caisse IS NOT NULL '
                 + 'GROUP BY date ORDER BY date DESC LIMIT 1',
                 { type: sequelize.QueryTypes.SELECT, replacements: { premier: premierDuMois } }
             );
             const depart = departRows[0] || null;
             const cashDepart = depart ? parseFloat(depart.total) || 0 : 0;
             const cashDepartDate = depart ? String(depart.date).slice(0, 10) : null;
+            // COMBIEN DE POINTS DE VENTE ont reellement cloture ce jour-la.
+            //
+            // On prend la derniere date ou QUELQU'UN a cloture, pas la derniere
+            // date de CHACUN: si un point de vente a saisi le 31/07 et un autre
+            // s'est arrete au 30, le point de depart ne porte que le premier.
+            // Sur un tenant a un seul point de vente la question ne se pose pas,
+            // mais la taire ailleurs ferait passer un depart ampute pour un
+            // depart complet. L'ecran le dit, comme il annonce deja
+            // « N/M PV renseignes » pour la caisse du jour.
+            const departPvRows = depart ? await sequelize.query(
+                'SELECT COUNT(DISTINCT point_de_vente)::int AS n FROM clotures_caisse '
+                + 'WHERE date = :d AND is_latest = TRUE AND montant_total_caisse IS NOT NULL',
+                { type: sequelize.QueryTypes.SELECT, replacements: { d: depart.date } }
+            ) : [];
+            const departNbPv = departPvRows.length ? departPvRows[0].n : 0;
 
             // LES VENTES DU MOIS, creances exclues. Une vente a credit ne fait
             // entrer aucun billet: la compter gonflerait une caisse theorique
@@ -4325,9 +4347,18 @@ router.get('/cash-stock', async (req, res) => {
                     where: { date: { [Op.between]: [premierDuMois, dateD] } },
                     attributes: ['montant'], raw: true
                 }),
+                // Meme table, meme piege que ci-dessus: sans is_latest, un
+                // depot corrige serait compte une fois par revision.
                 sequelize.query(
                     'SELECT date, SUM(depot_mata) AS total FROM clotures_caisse '
-                    + 'WHERE date BETWEEN :debut AND :fin AND depot_mata IS NOT NULL '
+                    + 'WHERE date BETWEEN :debut AND :fin AND is_latest = TRUE '
+                    // depot_mata > 0, pas seulement NOT NULL: un depot de
+                    // ZERO est une saisie qui dit « aucun versement ce
+                    // jour », pas un versement de 0 F. Le rapprocher
+                    // fabriquait une ligne « non retrouve » a 0 F sous la
+                    // phrase affirmant que tous les depots ont ete
+                    // retrouves. Le total, lui, ne bougeait pas.
+                    + '  AND depot_mata > 0 '
                     + 'GROUP BY date ORDER BY date',
                     { type: sequelize.QueryTypes.SELECT,
                         replacements: { debut: premierDuMois, fin: dateD } }
@@ -4362,6 +4393,8 @@ router.get('/cash-stock', async (req, res) => {
             });
             cashTheorique.periode = { debut: premierDuMois, fin: dateD };
             cashTheorique.depart_manquant = !depart;
+            cashTheorique.depart_nb_pv = departNbPv;
+            cashTheorique.depart_nb_pv_attendus = cashParPv.length;
             // La source du partenaire a-t-elle repondu ? Sans elle, les
             // remboursements valent zero et le total serait faux de plusieurs
             // millions - l'ecran doit le dire, pas l'afficher tel quel.

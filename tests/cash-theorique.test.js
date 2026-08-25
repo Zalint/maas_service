@@ -211,3 +211,45 @@ describe('le total', () => {
         expect(r.lignes.every((l) => Number.isFinite(l.montant))).toBe(true);
     });
 });
+
+/**
+ * LE SENS ET LA COULEUR de chaque ligne viennent du champ `signe`, que rien
+ * n'assertait: une inversion aurait affiche les ventes en rouge et les
+ * depenses en vert sans faire tomber un seul test.
+ */
+describe('le sens des lignes', () => {
+    const BASE2 = {
+        cashDepart: 1, cashDepartDate: '2026-07-31', ventes: 1,
+        depenses: 1, paiementsFournisseur: 1, remboursements: 1,
+        depots: [], operationsRemboursement: []
+    };
+
+    test('depart et ventes entrent, le reste sort', () => {
+        const parCle = Object.fromEntries(
+            construireCashTheorique(BASE2).lignes.map((l) => [l.cle, l.signe])
+        );
+        expect(parCle).toEqual({
+            depart: 1, ventes: 1,
+            depenses: -1, paiements: -1, remboursements: -1, depots: -1
+        });
+    });
+
+    test('les six lignes sont toujours presentes, meme a zero', () => {
+        // L'ecran boucle sur ct.lignes: une ligne absente disparaitrait du
+        // tableau sans que le total ne bouge, et le lecteur ne pourrait plus
+        // refaire l'addition.
+        expect(construireCashTheorique({}).lignes.map((l) => l.cle)).toEqual(
+            ['depart', 'ventes', 'depenses', 'paiements', 'remboursements', 'depots']
+        );
+    });
+
+    test('le total est exactement la somme signee des lignes', () => {
+        const r = construireCashTheorique(Object.assign({}, BASE2, {
+            cashDepart: 300000, ventes: 1000000, depenses: 50000,
+            paiementsFournisseur: 100000, remboursements: 400000,
+            depots: [d('2026-08-10', 7000)], operationsRemboursement: []
+        }));
+        const somme = r.lignes.reduce((t, l) => t + l.signe * l.montant, 0);
+        expect(r.total).toBeCloseTo(somme, 6);
+    });
+});

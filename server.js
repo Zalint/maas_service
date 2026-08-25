@@ -3619,6 +3619,13 @@ app.get('/api/transferts', checkAuth, checkReadAccess, async (req, res) => {
                 total: parseFloat(r.total),
                 impact: typeof r.impact === 'string' ? parseInt(r.impact, 10) : r.impact,
                 commentaire: r.commentaire || '',
+                // horsMata DOIT figurer ici. Ce mapping est explicite, donc
+                // toute colonne oubliee disparait en silence: l'ecran
+                // rechargeait la case DECOCHEE, et le prochain enregistrement
+                // - qui reecrit toute la journee - remettait hors_mata a false
+                // sur chaque ligne. Une perte de donnee invisible, sur le
+                // chemin justement emprunte apres un redeploiement Render.
+                horsMata: !!r.horsMata,
                 extension: r.extension || null
             }));
         };

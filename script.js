@@ -773,7 +773,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 quantite: transfert.quantite,
                 prixUnitaire: transfert.prixUnitaire,
                 total: transfert.total,
-                commentaire: transfert.commentaire || ''
+                commentaire: transfert.commentaire || '',
+                // Passe-plat: les fichiers importes ne portent pas encore la
+                // colonne, mais l'enregistrement remplace TOUTE la journee.
+                // Sans cette ligne, importer une date effacerait le drapeau
+                // des transferts hors Mata deja saisis ce jour-la.
+                horsMata: !!(transfert.horsMata || transfert.hors_mata)
             }));
 
             console.log('Données à envoyer:', donneesAEnvoyer);

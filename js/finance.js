@@ -460,12 +460,20 @@
         // la meme avance. La sommer par ligne la compterait autant de fois
         // qu'il y a de produits - d'ou le total calcule sur les dates.
         const parDateExp = (_lastRapprochement || {}).par_date || {};
+        // SOURCE MUETTE: sans reponse du partenaire, toutes les dates sont
+        // 'sans_avance'. Ecrire « aucune avance » dans le fichier ferait lire
+        // une absence de LIVRAISON la ou il n'y a qu'une absence de REPONSE.
+        // L'ecran le dit deja; l'export doit le dire aussi, sinon le fichier
+        // survit a l'ecran et devient la version qui fait foi.
+        const sourceMuette = (_lastRapprochement || {}).source_partenaire === 'indisponible';
         const avanceExport = (date) => {
+            if (sourceMuette) return '';
             const e = parDateExp[String(date || '').slice(0, 10)];
             if (!e || e.avance == null) return '';
             return e.avance;
         };
         const ecartExport = (date) => {
+            if (sourceMuette) return 'source partenaire indisponible';
             const e = parDateExp[String(date || '').slice(0, 10)];
             if (!e) return '';
             if (e.statut === 'sans_avance') return 'aucune avance';
@@ -649,28 +657,68 @@
                 const elAv = document.getElementById('fin-cre-dd-total-avance');
                 if (elAv) {
                     const datesVues = new Set(detailDate.map((d) => String(d.date || '').slice(0, 10)));
-                    let totAvance = 0, nbEcart = 0, nbSansAvance = 0;
+                    let totAvance = 0, nbEcart = 0, nbSansAvance = 0, nbIncomplet = 0;
+                    let ecartTotal = 0;
                     datesVues.forEach((dt) => {
                         const e = rapproParDate[dt];
                         if (!e) return;
                         if (e.avance != null) totAvance += e.avance;
-                        if (e.statut === 'ecart') nbEcart += 1;
+                        // MEME SIGNE QUE LES CELLULES. Le module rend
+                        // ecart = detail - avance, et la cellule du 19/08
+                        // affiche donc « -3 000 ». Un pied calcule en
+                        // avance - detail affichait « +3 000 » pour le meme
+                        // fait, dans la meme colonne.
+                        if (e.statut === 'ecart') { nbEcart += 1; ecartTotal += nb(e.ecart); }
                         if (e.statut === 'sans_avance') nbSansAvance += 1;
+                        // INCOMPLET NE COMPTE PAS dans l'ecart: sa journee a un
+                        // produit sans prix d'achat, donc un total partiel.
+                        // L'opposer a l'avance fabriquerait un ecart rouge que
+                        // le module refuse d'affirmer et qu'aucune ligne du
+                        // tableau ne designe.
+                        if (e.statut === 'incomplet') nbIncomplet += 1;
                     });
-                    const ecartTotal = totAvance - totAchat;
+                    const reserve = (nbIncomplet
+                        ? ` <span class="d-block small text-muted">${esc(String(nbIncomplet))} date(s) indéterminée(s), hors écart</span>`
+                        : '')
+                        + (nbSansAvance
+                            ? ` <span class="d-block small text-warning-emphasis">${esc(String(nbSansAvance))} date(s) sans avance</span>`
+                            : '');
                     elAv.innerHTML = rappro.source_partenaire === 'indisponible'
                         ? '<span class="text-muted">source indisponible</span>'
                         : esc(fmtMoney(totAvance))
                           + (Math.abs(ecartTotal) > (rappro.tolerance || 5)
                               ? `<span class="d-block small text-danger">${ecartTotal > 0 ? '+' : '−'}${esc(fmtMoney(Math.abs(ecartTotal)))}`
                                 + (nbEcart ? ` sur ${esc(String(nbEcart))} date(s)` : '')
-                                + (nbSansAvance ? `, ${esc(String(nbSansAvance))} sans avance` : '')
                                 + '</span>'
-                              : '<span class="d-block small text-success">concorde</span>');
+                              : '<span class="d-block small text-success">concorde</span>')
+                          + reserve;
+
+                    // LES AVANCES SANS AUCUNE LIGNE DE DETAIL. Le module les
+                    // calcule depuis le debut, rien ne les affichait, et le
+                    // pied concluait « concorde » sans les avoir vues. Une
+                    // livraison partie de chez MATA et jamais recue cote Maas
+                    // est pourtant exactement ce que ce rapprochement cherche.
+                    const orphelines = ((rappro.resume || {}).avances_sans_detail) || [];
+                    const elOrph = document.getElementById('fin-cre-dd-orphelines');
+                    if (elOrph) {
+                        elOrph.innerHTML = (orphelines.length && rappro.source_partenaire !== 'indisponible')
+                            ? `<div class="alert alert-warning py-2 px-2 small mb-0 mt-2">
+                                ${esc(String(orphelines.length))} avance(s) du partenaire n'ont
+                                <strong>aucune livraison en face</strong> sur la période, pour
+                                ${esc(fmtMoney(orphelines.reduce((t, o) => t + nb(o.montant), 0)))} :
+                                ${esc(orphelines.slice(0, 6).map((o) => fmtDateFr(o.date)
+                                    + ' (' + fmtMoney(o.montant) + ')').join(', '))}${
+                                  orphelines.length > 6 ? '…' : ''}.
+                                Marchandise partie de chez MATA sans être reçue côté Maas, ou reçue
+                                sous une autre date.</div>`
+                            : '';
+                    }
                 }
                 foot.style.display = '';
             } else {
                 foot.style.display = 'none';
+                const elOrph = document.getElementById('fin-cre-dd-orphelines');
+                if (elOrph) elOrph.innerHTML = '';
             }
         }
     }
@@ -5070,6 +5118,12 @@
                           que comme variation depuis le début du mois.</div>`
                       : ''}
                     <table class="table table-sm mb-2"><tbody>
+                    ${nb(ct.depart_nb_pv_attendus) > 0 && nb(ct.depart_nb_pv) < nb(ct.depart_nb_pv_attendus)
+                      ? `<div class="alert alert-warning py-2 px-2 small">Seuls ${esc(String(ct.depart_nb_pv))}
+                          des ${esc(String(ct.depart_nb_pv_attendus))} points de vente avaient clôturé le
+                          ${esc(String(ct.lignes && ct.lignes[0] ? String(ct.lignes[0].libelle).replace('Caisse au ', '') : '?'))} :
+                          le point de départ ne porte que leur caisse, et le total est d'autant trop bas.</div>`
+                      : ''}
                         ${(ct.lignes || []).map((l) => `<tr>
                           <td>${l.signe > 0 ? '' : '− '}${esc(l.libelle)}</td>
                           <td class="text-end ${l.signe > 0 ? 'text-success' : 'text-danger'}">${
