@@ -58,12 +58,13 @@ const NON_SECRETS = /^(TENANT_BRAND_KEY|BRAND_KEY|[A-Z0-9_]*_PUBLIC_KEY)$/;
 //
 // Regle: cette liste ne doit que RETRECIR. Y ajouter une entree demande de
 // justifier pourquoi un secret a une valeur par defaut - ce qui n'arrive pas.
+// Corrigees le 2026-08-25: payments-generated (EXTERNAL_API_KEY),
+// dump-prod-to-local (LOCAL_DB_PASSWORD) et l'appel sortant de server.js
+// portaient des valeurs REELLES. Retirees de la liste - elle retrecit.
 const CONNUS = new Set([
     'server.js (process.env.DB_PASSWORD',
     'server.js (process.env.EXTERNAL_API_KEY',
     'server.js (process.env.SESSION_SECRET',
-    'routes/payments-generated.js (process.env.EXTERNAL_API_KEY',
-    'scripts/dump-prod-to-local.js (process.env.LOCAL_DB_PASSWORD',
     'scripts/init-tenant-db.js (process.env.DEFAULT_ADMIN_PASSWORD',
     'scripts/migrate-sqlite-to-postgres.js (process.env.DB_PASSWORD',
 ]);

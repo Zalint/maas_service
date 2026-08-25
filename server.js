@@ -8521,7 +8521,15 @@ function parseEstimationDate(dateStr) {
 // Helper function to fetch theoretical sales from external API
 async function fetchVentesTheoriquesFromAPI(estimation) {
     try {
-        const externalApiKey = process.env.EXTERNAL_API_KEY || 'b9463219d81f727b8c1c9dc52f622cf054eb155e49b37aad98da68ee09677be4';
+        // Sans cle, on ne tente pas l appel: il rendrait 401 et la fonction
+        // rend deja null en cas d echec. Le repli litteral qui etait ici
+        // portait d ailleurs une valeur DIFFERENTE de celle du middleware
+        // qui valide la meme variable - l un des deux etait donc perime.
+        const externalApiKey = process.env.EXTERNAL_API_KEY;
+        if (!externalApiKey) {
+            console.warn('EXTERNAL_API_KEY absente: ventes theoriques non recuperees');
+            return null;
+        }
         // Use the correct base URL for the environment
         const baseUrl = process.env.NODE_ENV === 'production' 
             ? (process.env.BASE_URL || 'https://keur-bali.onrender.com')

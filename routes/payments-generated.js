@@ -13,7 +13,20 @@ const router = express.Router();
 // Middleware pour valider l'API key (pour services externes)
 const validateApiKey = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
-    const validApiKey = process.env.EXTERNAL_API_KEY || 'b326e72b67a9b508c88270b9954c5ca1';
+    // SANS CLE CONFIGUREE, ON REFUSE TOUT.
+    //
+    // Ce middleware compare l en-tete x-api-key a EXTERNAL_API_KEY. Le
+    // repli litteral qui etait ici faisait pire que rien: la valeur
+    // etant dans le depot, quiconque l avait lue pouvait s authentifier
+    // sur ces routes dans tout environnement ou la variable manquait.
+    // Une porte fermee vaut mieux qu une porte dont la cle est publiee.
+    const validApiKey = process.env.EXTERNAL_API_KEY;
+    if (!validApiKey) {
+        return res.status(503).json({
+            success: false,
+            message: 'EXTERNAL_API_KEY absente : acces externe non configure.'
+        });
+    }
     
     if (!apiKey || apiKey !== validApiKey) {
         return res.status(401).json({ 
