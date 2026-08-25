@@ -5,6 +5,7 @@ package-lock.json
 # Fichiers de configuration locale
 .env
 .env.local
+.env.backup
 .env.example
 config.json
 
