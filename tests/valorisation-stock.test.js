@@ -65,9 +65,14 @@ describe('valorisation du stock', () => {
                 prixAchat
             });
             // Boeuf agrege: 15 kg x 3835 = 57 525, base achat, prix = 3835.
+            // `boucherie` dit si la ligne subira le coefficient de pertes de
+            // decoupe en aval. Sans estBoucherie fourni, tout est boucherie -
+            // c'est le repli, le PL et Cash et Stock en passent toujours un.
             expect(r.detail_lignes).toEqual([
-                { produit: 'Boeuf', base: 'achat', quantite: 15, prix_utilise: 3835, valeur: 57525 },
-                { produit: 'Poulet', base: 'vente', quantite: 4, prix_utilise: 3500, valeur: 14000 }
+                { produit: 'Boeuf', base: 'achat', quantite: 15, prix_utilise: 3835,
+                    valeur: 57525, boucherie: true },
+                { produit: 'Poulet', base: 'vente', quantite: 4, prix_utilise: 3500,
+                    valeur: 14000, boucherie: true }
             ]);
         });
 
@@ -102,8 +107,31 @@ describe('valorisation du stock', () => {
                 prixAchat
             });
             expect(r.detail_lignes).toEqual([
-                { produit: 'Beurre', base: 'vente', quantite: 0, prix_utilise: null, valeur: 3300 }
+                { produit: 'Beurre', base: 'vente', quantite: 0, prix_utilise: null,
+                    valeur: 3300, boucherie: true }
             ]);
+        });
+
+        // Le drapeau doit SUIVRE estBoucherie, sinon l'ecran qui detaille le
+        // stock ne peut pas expliquer pourquoi la somme des lignes ne fait pas
+        // le net: le coefficient de decoupe ne porte que sur la viande.
+        test('boucherie suit estBoucherie, produit par produit', () => {
+            const r = valoriserLignes({
+                lignes: [
+                    { produit: 'Boeuf', quantite: 10, total: 48000, prix_unitaire: 4800 },
+                    { produit: 'Laxass', quantite: 5, total: 1000, prix_unitaire: 200 }
+                ],
+                prixAchat,
+                estBoucherie: (p) => p === 'Boeuf'
+            });
+            const par = Object.fromEntries(r.detail_lignes.map((l) => [l.produit, l.boucherie]));
+            expect(par.Boeuf).toBe(true);
+            expect(par.Laxass).toBe(false);
+            // Et le drapeau doit s'accorder avec la ventilation deja rendue:
+            // deux chiffres qui se contrediraient seraient pires qu'un seul.
+            const sommeBoucherie = r.detail_lignes
+                .filter((l) => l.boucherie).reduce((s, l) => s + l.valeur, 0);
+            expect(sommeBoucherie).toBeCloseTo(r.valeur_boucherie, 6);
         });
     });
 

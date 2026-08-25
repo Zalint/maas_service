@@ -72,6 +72,7 @@ const audit = require('../lib/finance-audit');
 const { ecartJour, resoudreMode, fenetreEntrees, TOLERANCE_BOUCLAGE }
     = require('../lib/pl-ecart-jour');
 const { agregerCommandes } = require('../lib/commandes-marge');
+const { construireCashTheorique } = require('../lib/cash-theorique');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
 const ALIAS_PRODUIT_MAX_LENGTH = 150;
@@ -4266,6 +4267,109 @@ router.get('/cash-stock', async (req, res) => {
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - depotMataTotal - soldeDuFournisseur;
 
+        // 6) LE CASH THEORIQUE DU MOIS, independant de la Valeur ci-dessus.
+        //
+        // La Valeur est un NIVEAU a une date, stock compris. Celui-ci suit un
+        // FLUX: en partant de la caisse a la fin du mois dernier, tout ce qui
+        // est entre et sorti depuis. Les deux ne se comparent pas, et c'est
+        // voulu - une caisse qui derive se voit ici, pas dans un niveau qui
+        // melange le stock.
+        //
+        // Le calcul lui-meme est pur et teste (lib/cash-theorique.js): ici on
+        // ne fait que charger.
+        let cashTheorique = null;
+        try {
+            const moisIso = dateD.slice(0, 7);
+            const premierDuMois = moisIso + '-01';
+
+            // LE POINT DE DEPART: la derniere cloture RENSEIGNEE avant le
+            // premier du mois. On ne se limite pas au dernier jour du mois
+            // precedent - il arrive qu'il n'ait pas ete saisi - mais on dit
+            // toujours de quelle date vient le chiffre, plutot que de compter
+            // zero en silence.
+            const departRows = await sequelize.query(
+                'SELECT date, SUM(montant_total_caisse) AS total '
+                + 'FROM clotures_caisse '
+                + 'WHERE date < :premier AND montant_total_caisse IS NOT NULL '
+                + 'GROUP BY date ORDER BY date DESC LIMIT 1',
+                { type: sequelize.QueryTypes.SELECT, replacements: { premier: premierDuMois } }
+            );
+            const depart = departRows[0] || null;
+            const cashDepart = depart ? parseFloat(depart.total) || 0 : 0;
+            const cashDepartDate = depart ? String(depart.date).slice(0, 10) : null;
+
+            // LES VENTES DU MOIS, creances exclues. Une vente a credit ne fait
+            // entrer aucun billet: la compter gonflerait une caisse theorique
+            // qui se veut de tresorerie. Elles sont rendues a part, pour que
+            // l'ecran les signale plutot que de les taire.
+            const formesMois = graphiesDeDatesPourPeriode(premierDuMois, dateD);
+            const ventesRows = await Vente.findAll({
+                where: { date: { [Op.in]: formesMois } },
+                attributes: ['montant', 'creance'],
+                raw: true
+            });
+            let ventesHorsCreance = 0, ventesCreance = 0, nbVentesCreance = 0;
+            for (const v of ventesRows) {
+                const m = parseFloat(v.montant) || 0;
+                if (v.creance) { ventesCreance += m; nbVentesCreance += 1; }
+                else ventesHorsCreance += m;
+            }
+
+            // Depenses et paiements: colonnes DATE natives, pas du texte.
+            const [depRows, paieRows, depotRows] = await Promise.all([
+                Depense.findAll({
+                    where: { date: { [Op.between]: [premierDuMois, dateD] } },
+                    attributes: ['montant'], raw: true
+                }),
+                FournisseurPaiement.findAll({
+                    where: { date: { [Op.between]: [premierDuMois, dateD] } },
+                    attributes: ['montant'], raw: true
+                }),
+                sequelize.query(
+                    'SELECT date, SUM(depot_mata) AS total FROM clotures_caisse '
+                    + 'WHERE date BETWEEN :debut AND :fin AND depot_mata IS NOT NULL '
+                    + 'GROUP BY date ORDER BY date',
+                    { type: sequelize.QueryTypes.SELECT,
+                        replacements: { debut: premierDuMois, fin: dateD } }
+                )
+            ]);
+            const somme = (rows) => rows.reduce((t, x) => t + (parseFloat(x.montant) || 0), 0);
+
+            // LES REMBOURSEMENTS viennent du partenaire (MataBanq), pas d'une
+            // table locale. Indisponibles, on ne rend PAS un total ampute qui
+            // passerait pour juste: le bloc entier se tait.
+            const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+            const cdb = await fetchCreanceCdb({ dateDebut: premierDuMois, dateFin: dateD });
+            const operations = (((cdb || {}).details || [])[0] || {}).operations || [];
+            const remboursements = operations
+                .filter((o) => o && o.type === 'remboursement')
+                .map((o) => ({ date: String(o.date_operation || '').slice(0, 10),
+                    montant: parseFloat(o.montant) || 0 }))
+                .filter((o) => o.date >= premierDuMois && o.date <= dateD);
+
+            cashTheorique = construireCashTheorique({
+                cashDepart: cashDepart,
+                cashDepartDate: cashDepartDate,
+                ventes: ventesHorsCreance,
+                ventesCreance: ventesCreance,
+                nbVentesCreance: nbVentesCreance,
+                depenses: somme(depRows),
+                paiementsFournisseur: somme(paieRows),
+                remboursements: remboursements.reduce((t, o) => t + o.montant, 0),
+                depots: depotRows.map((r) => ({ date: String(r.date).slice(0, 10),
+                    montant: parseFloat(r.total) || 0 })),
+                operationsRemboursement: remboursements
+            });
+            cashTheorique.periode = { debut: premierDuMois, fin: dateD };
+            cashTheorique.depart_manquant = !depart;
+            // La source du partenaire a-t-elle repondu ? Sans elle, les
+            // remboursements valent zero et le total serait faux de plusieurs
+            // millions - l'ecran doit le dire, pas l'afficher tel quel.
+            cashTheorique.source_partenaire = cdb ? 'ok' : 'indisponible';
+        } catch (e) {
+            console.warn('[cash-stock] cash theorique indisponible:', e.message);
+        }
+
         // La tolerance d'un jour existe pour les fuseaux a l'est de Greenwich,
         // pas pour valoriser une journee qui n'a pas eu lieu. Au-dela de la
         // date du serveur ET sans aucune cloture, ce qui sort n'est pas une
@@ -4291,8 +4395,25 @@ router.get('/cash-stock', async (req, res) => {
                     soir_hors_boucherie: round2(stockSoirVal.valeur_hors_boucherie || 0),
                     negatifs_ignores: round2(stockSoirVal.valeur_negative_ignoree || 0),
                     nb_lignes_negatives: (stockSoirVal.lignes_negatives || []).length,
-                    produits_ecartes: produitsNonFiables.pourAffichage || []
+                    produits_ecartes: produitsNonFiables.pourAffichage || [],
+                    // LE DETAIL LIGNE A LIGNE, pour que l'ecran puisse montrer
+                    // d'ou sort le total au lieu de l'affirmer. Deja calcule
+                    // par valoriserLignes, il n'etait simplement pas rendu.
+                    detail_lignes: (stockSoirVal.detail_lignes || []).map((l) => ({
+                        produit: l.produit,
+                        base: l.base,
+                        quantite: round2(l.quantite),
+                        prix_utilise: l.prix_utilise == null ? null : round2(l.prix_utilise),
+                        valeur: round2(l.valeur),
+                        boucherie: !!l.boucherie
+                    })),
+                    lignes_negatives: (stockSoirVal.lignes_negatives || []).map((l) => ({
+                        produit: l.produit,
+                        quantite: round2(l.quantite),
+                        total: round2(l.total)
+                    }))
                 },
+                cash_theorique: cashTheorique,
                 depot_mata: round2(depotMataTotal),
                 cash: {
                     total: round2(cashCaisseTotal),
@@ -4748,6 +4869,44 @@ router.get('/creances', async (req, res) => {
                 ? (cdbResult.reason && cdbResult.reason.message) || 'Erreur appel API depenses'
                 : null
         };
+
+        // LE DETAIL PAR DATE CONFRONTE AUX AVANCES DU PARTENAIRE.
+        //
+        // Les deux decrivent la meme livraison par deux bouts: Maas la
+        // valorise a la reception, MataBanq enregistre une avance au depart.
+        // Verifie sur aout 2026 a Mbao, l'accord est exact au franc sur les
+        // journees completes - un ecart signale donc une vraie divergence de
+        // saisie, pas du bruit.
+        //
+        // Le rapprochement est PAR DATE: une journee porte plusieurs produits
+        // et une seule avance. Le calcul vit dans un module pur et teste.
+        try {
+            const { rapprocherAvances } = require('../lib/rapprochement-avances');
+            const operations = (((data.cdb || {}).details || [])[0] || {}).operations || [];
+            // BORNER A LA PERIODE DEMANDEE. L'endpoint /external/api/creance
+            // ignore dateDebut/dateFin pour la liste des operations (cf le
+            // meme constat cote interface, qui refiltre pour renderCdb): sans
+            // ce filtre, des avances de mai se comparaient a un detail d'aout
+            // et remplissaient « avances sans detail » de cinquante lignes
+            // qui ne decrivaient qu'une plage non respectee.
+            const bornes = (data.local || {}).periode || {};
+            const debutIso = String(bornes.dateDebut || req.query.dateDebut || '').slice(0, 10);
+            const finIso = String(bornes.dateFin || req.query.dateFin || '').slice(0, 10);
+            data.rapprochement_avances = rapprocherAvances({
+                detailParDate: (data.local || {}).detail_par_date || [],
+                avances: operations
+                    .filter((o) => o && o.type === 'avance')
+                    .map((o) => ({ date: String(o.date_operation || '').slice(0, 10), montant: o.montant }))
+                    .filter((o) => (!debutIso || o.date >= debutIso) && (!finIso || o.date <= finIso))
+            });
+            // Sans la source du partenaire, TOUTES les dates paraitraient sans
+            // avance: un tableau entierement orange se lirait comme une
+            // anomalie generale alors que c'est la source qui manque.
+            data.rapprochement_avances.source_partenaire = data.cdb ? 'ok' : 'indisponible';
+        } catch (e) {
+            console.warn('[creances] rapprochement des avances indisponible:', e.message);
+            data.rapprochement_avances = null;
+        }
         res.json({ success: true, data });
     } catch (e) {
         console.error('GET /api/finance/creances:', e);

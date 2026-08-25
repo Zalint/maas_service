@@ -379,6 +379,14 @@ async function updateSchema() {
         `);
         console.log('Table finance_notes_mois verifiee');
 
+        // HORS MATA sur les transferts: la marchandise qui n'est pas venue
+        // de MATA ne doit pas porter la commission 3%.
+        await sequelize.query(`
+            ALTER TABLE transferts
+            ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE
+        `);
+        console.log('Colonne transferts.hors_mata verifiee');
+
         console.log('Table depenses verifiee');
 
         await sequelize.query(`

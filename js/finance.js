@@ -289,6 +289,11 @@
             // (l'endpoint /external/api/creance ignore actuellement
             // dateDebut/dateFin pour la liste operations + summary.date_selected).
             renderCdb(json.data.cdb, json.data.cdb_error, { dateDebut, dateFin });
+            // Le rapprochement des avances vit sur le payload RACINE, pas sur
+            // `local`: il croise les deux sources. renderDetailParDate ne
+            // recevant que `local`, il faut le garder a part - sinon la
+            // colonne « Avance partenaire » resterait vide en permanence.
+            _lastRapprochement = json.data.rapprochement_avances || null;
             renderLocal(json.data.local);
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur creances: ' + e.message, 'danger');
@@ -433,6 +438,7 @@
     // Dernier payload local (Calcul Maas) rendu — sert a l'export Excel du
     // tableau "Detail par date" sans refaire d'appel reseau.
     let _lastLocalData = null;
+    let _lastRapprochement = null;
 
     // Export Excel (.xlsx) du tableau "Detail par date (commission 3%)".
     // Exporte exactement les lignes affichees (dette > 0) + une ligne TOTAL.
@@ -450,12 +456,32 @@
             return;
         }
         const fmtDateFr = (iso) => window.datesFr.enFrancais(iso);
+        // Le verdict est PAR DATE: chaque ligne d'une meme journee porte donc
+        // la meme avance. La sommer par ligne la compterait autant de fois
+        // qu'il y a de produits - d'ou le total calcule sur les dates.
+        const parDateExp = (_lastRapprochement || {}).par_date || {};
+        const avanceExport = (date) => {
+            const e = parDateExp[String(date || '').slice(0, 10)];
+            if (!e || e.avance == null) return '';
+            return e.avance;
+        };
+        const ecartExport = (date) => {
+            const e = parDateExp[String(date || '').slice(0, 10)];
+            if (!e) return '';
+            if (e.statut === 'sans_avance') return 'aucune avance';
+            if (e.statut === 'incomplet') return 'indéterminé';
+            return e.statut === 'correspond' ? 'concorde' : e.ecart;
+        };
         const rows = src.map((d) => ({
             'Date': fmtDateFr(d.date),
             'Produit': d.produit,
             'Quantité éligible': d.quantite,
             'Prix achat fournisseur (FCFA)': d.prix_achat == null ? '' : d.prix_achat,
             'Qté × Prix achat': d.montant_achat == null ? '' : d.montant_achat,
+            // MEME colonne qu'a l'ecran: un export qui en dit moins que le
+            // tableau oblige a refaire le rapprochement a la main.
+            'Avance partenaire': avanceExport(d.date),
+            'Écart vs avance': ecartExport(d.date),
             'Je dois (3%)': d.dette
         }));
         // Ligne TOTAL (memes sommes que le pied de tableau a l'ecran).
@@ -467,6 +493,9 @@
             'Quantité éligible': '',
             'Prix achat fournisseur (FCFA)': '',
             'Qté × Prix achat': totAchat,
+            'Avance partenaire': Array.from(new Set(src.map((d) => String(d.date || '').slice(0, 10))))
+                .reduce((t, dt) => t + ((parDateExp[dt] || {}).avance || 0), 0),
+            'Écart vs avance': '',
             'Je dois (3%)': totDette
         });
         const ws = XLSX.utils.json_to_sheet(rows);
@@ -494,6 +523,46 @@
         const detailDate = (data.detail_par_date || []).filter((d) => d.dette > 0);
         const grouped = !!(document.getElementById('fin-detail-date-group') || {}).checked;
 
+        // LA COLONNE « AVANCE PARTENAIRE ».
+        //
+        // « Detail par date » dit ce que Maas a RECU, valorise au prix d'achat
+        // fournisseur; MataBanq enregistre une AVANCE le jour ou la
+        // marchandise part. Les deux decrivent la meme livraison par deux
+        // bouts et doivent tomber sur le meme montant - verifie au franc sur
+        // aout 2026 (le 17/08: 688 500 + 8 000 = 696 500 = l'avance).
+        //
+        // LA COMPARAISON EST PAR DATE, jamais par ligne: une journee porte
+        // plusieurs produits et une seule avance. En mode deplie, chaque ligne
+        // porte donc le verdict de SA JOURNEE, et le dit.
+        const rappro = _lastRapprochement || {};
+        const rapproParDate = rappro.par_date || {};
+        const celluleAvance = (date) => {
+            const e = rapproParDate[String(date || '').slice(0, 10)];
+            if (rappro.source_partenaire === 'indisponible') {
+                return `<td class="text-end text-muted" title="La source du partenaire n'a pas répondu : aucune avance n'a pu être lue.">?</td>`;
+            }
+            if (!e) return `<td class="text-end">${tiret}</td>`;
+            if (e.statut === 'correspond') {
+                return `<td class="text-end text-success"
+                    title="Le total de la journée (${esc(fmtMoney(e.montant_achat))}) correspond à l'avance du partenaire, à ${esc(String(rappro.tolerance))} F près.">
+                    ✓ ${esc(fmtMoney(e.avance))}</td>`;
+            }
+            if (e.statut === 'sans_avance') {
+                return `<td class="text-end text-warning-emphasis"
+                    title="Aucune avance enregistrée chez le partenaire ce jour-là. La marchandise a pu être livrée sous une autre date.">
+                    aucune avance</td>`;
+            }
+            if (e.statut === 'incomplet') {
+                return `<td class="text-end text-muted"
+                    title="${esc(String(e.nb_sans_prix))} produit(s) sans prix d'achat connu ce jour-là : le total de la journée est incomplet, ni l'accord ni l'écart ne peuvent être affirmés.">
+                    indéterminé</td>`;
+            }
+            return `<td class="text-end text-danger fw-medium"
+                title="Total de la journée ${esc(fmtMoney(e.montant_achat))} contre une avance de ${esc(fmtMoney(e.avance))} : ${esc(fmtMoney(Math.abs(e.ecart)))} d'écart sur ${esc(String(e.nb_produits))} produit(s).">
+                ${esc(fmtMoney(e.avance))}
+                <span class="d-block small">${e.ecart > 0 ? '+' : '−'}${esc(fmtMoney(Math.abs(e.ecart)))}</span></td>`;
+        };
+
         const productRow = (d, cls) => `
             <tr${cls ? ` class="${cls}" style="display:none"` : ''}>
                 <td>${grouped ? '' : esc(fmtDateFr(d.date))}</td>
@@ -501,11 +570,22 @@
                 <td class="text-end">${esc(d.quantite)}</td>
                 <td class="text-end">${d.prix_achat == null ? tiret : esc(fmtMoney(d.prix_achat))}</td>
                 <td class="text-end">${d.montant_achat == null ? tiret : esc(fmtMoney(d.montant_achat))}</td>
+                ${cls
+                    // LIGNE PRODUIT D'UNE DATE DEPLIEE: la cellule reste vide.
+                    // Le verdict est celui de la JOURNEE, et la ligne de date
+                    // juste au-dessus le porte deja. Le repeter sur chaque
+                    // produit donnait quatre fois « 496 969 +1 756 » sous le
+                    // 14/08 - une repetition qui se lit comme quatre constats
+                    // alors qu'il n'y en a qu'un.
+                    ? '<td></td>'
+                    // MODE A PLAT: aucune ligne de date n'existe, chaque ligne
+                    // doit donc porter le verdict de la sienne.
+                    : celluleAvance(d.date)}
                 <td class="text-end">${esc(fmtMoney(d.dette))}</td>
             </tr>`;
 
         if (!detailDate.length) {
-            tbodyDate.innerHTML = '<tr><td colspan="6" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
+            tbodyDate.innerHTML = '<tr><td colspan="7" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
         } else if (!grouped) {
             tbodyDate.innerHTML = detailDate.map((d) => productRow(d)).join('');
         } else {
@@ -530,6 +610,7 @@
                         <td class="text-end">${esc(qte)}</td>
                         <td class="text-end">${tiret}</td>
                         <td class="text-end">${esc(fmtMoney(achat))}</td>
+                        ${celluleAvance(date)}
                         <td class="text-end">${esc(fmtMoney(dette))}</td>
                     </tr>`;
                 html += items.map((d) => productRow(d, 'dd-child ' + gid)).join('');
@@ -561,6 +642,32 @@
                 const elD = document.getElementById('fin-cre-dd-total-dette');
                 if (elA) elA.textContent = fmtMoney(totAchat);
                 if (elD) elD.textContent = fmtMoney(totDette);
+                // LE TOTAL DES AVANCES ne se somme QUE sur les dates affichees,
+                // et une avance ne doit etre comptee qu'une fois meme quand sa
+                // journee porte cinq produits - d'ou le passage par un Set de
+                // dates plutot que par les lignes.
+                const elAv = document.getElementById('fin-cre-dd-total-avance');
+                if (elAv) {
+                    const datesVues = new Set(detailDate.map((d) => String(d.date || '').slice(0, 10)));
+                    let totAvance = 0, nbEcart = 0, nbSansAvance = 0;
+                    datesVues.forEach((dt) => {
+                        const e = rapproParDate[dt];
+                        if (!e) return;
+                        if (e.avance != null) totAvance += e.avance;
+                        if (e.statut === 'ecart') nbEcart += 1;
+                        if (e.statut === 'sans_avance') nbSansAvance += 1;
+                    });
+                    const ecartTotal = totAvance - totAchat;
+                    elAv.innerHTML = rappro.source_partenaire === 'indisponible'
+                        ? '<span class="text-muted">source indisponible</span>'
+                        : esc(fmtMoney(totAvance))
+                          + (Math.abs(ecartTotal) > (rappro.tolerance || 5)
+                              ? `<span class="d-block small text-danger">${ecartTotal > 0 ? '+' : '−'}${esc(fmtMoney(Math.abs(ecartTotal)))}`
+                                + (nbEcart ? ` sur ${esc(String(nbEcart))} date(s)` : '')
+                                + (nbSansAvance ? `, ${esc(String(nbSansAvance))} sans avance` : '')
+                                + '</span>'
+                              : '<span class="d-block small text-success">concorde</span>');
+                }
                 foot.style.display = '';
             } else {
                 foot.style.display = 'none';
@@ -4872,6 +4979,154 @@
                <strong>${esc(cash.pv_sans_saisie.join(', '))}</strong>. Ces lignes comptent 0 dans le total.</div>`
             : '';
 
+        // LE STOCK, LIGNE A LIGNE. Replie par defaut: la question « d'ou
+        // sortent ces 443 126 ? » ne se pose pas a chaque consultation, mais
+        // quand elle se pose il faut pouvoir repondre sans ouvrir la base.
+        //
+        // Le total du tableau est le stock BRUT; le net s'en deduit par le
+        // coefficient, applique aux seules lignes de boucherie. Les lignes
+        // ecartees (stock negatif) sont montrees a part: elles ne sont dans
+        // aucun des deux totaux, et les taire ferait croire a un oubli.
+        // Formateur LOCAL: fmtQte est defini dans d'autres fonctions de ce
+        // fichier, pas dans celle-ci.
+        const fmtQteCS = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+        const detail = (stock.detail_lignes || []);
+        const negatives = (stock.lignes_negatives || []);
+        const blocStockDetaille = detail.length ? `<details class="mt-2">
+            <summary class="text-primary small" style="cursor:pointer">
+              D'où sortent ces ${esc(fmtMoney(stock.soir_net))} ?
+              (${esc(String(detail.length))} produit${detail.length > 1 ? 's' : ''} en stock${
+                negatives.length ? `, ${esc(String(negatives.length))} écarté${negatives.length > 1 ? 's' : ''}` : ''})</summary>
+            <div class="table-responsive mt-2">
+             <table class="table table-sm mb-1"><thead><tr>
+               <th>Produit</th>
+               <th class="text-end">Quantité</th>
+               <th class="text-end">Prix utilisé</th>
+               <th>Base</th>
+               <th class="text-end">Valeur</th></tr></thead><tbody>
+               ${detail.map((l) => `<tr>
+                 <td>${esc(l.produit)}
+                   ${l.boucherie ? '' : '<span class="badge bg-light text-secondary ms-1">hors boucherie</span>'}</td>
+                 <td class="text-end">${esc(fmtQteCS(l.quantite))}</td>
+                 <td class="text-end">${l.prix_utilise === null || l.prix_utilise === undefined
+                    ? '<span class="text-muted">—</span>' : esc(fmtMoney(l.prix_utilise))}</td>
+                 <td class="small ${l.base === 'achat' ? 'text-muted' : 'text-warning-emphasis'}">${
+                    l.base === 'achat' ? "prix d'achat" : 'prix de vente *'}</td>
+                 <td class="text-end">${esc(fmtMoney(l.valeur))}</td></tr>`).join('')}
+               <tr class="table-light fw-bold">
+                 <td>Stock soir brut</td><td></td><td></td><td></td>
+                 <td class="text-end">${esc(fmtMoney(stock.soir_brut))}</td></tr>
+             </tbody></table></div>
+            ${negatives.length ? `<div class="table-responsive">
+             <table class="table table-sm mb-1"><thead><tr>
+               <th>Écarté du calcul</th><th class="text-end">Quantité</th>
+               <th class="text-end">Valeur saisie</th></tr></thead><tbody>
+               ${negatives.map((l) => `<tr class="text-muted">
+                 <td>${esc(l.produit)}</td>
+                 <td class="text-end">${esc(fmtQteCS(l.quantite))}</td>
+                 <td class="text-end">${esc(fmtMoney(l.total))}</td></tr>`).join('')}
+             </tbody></table></div>
+             <div class="text-muted small mb-2">Un stock négatif ne vaut pas moins que rien : il
+               n'existe pas. Il apparaît quand les entrées d'un produit ne sont pas saisies et que
+               le stock du soir se calcule en matin + transferts − ventes. Ces lignes ne sont
+               dans aucun des deux totaux.</div>` : ''}
+            <div class="text-muted small">
+              ${esc(fmtMoney(stock.soir_boucherie))} de boucherie × ${esc(stock.coeff)}
+              + ${esc(fmtMoney(stock.soir_hors_boucherie))} hors boucherie
+              = <strong>${esc(fmtMoney(stock.soir_net))}</strong>.
+              Le coefficient de pertes de découpe ne porte que sur la viande ; l'épicerie entre à
+              sa valeur pleine.
+            </div>
+           </details>` : '';
+
+        // LE CASH THEORIQUE DU MOIS, independant de la Valeur ci-dessus.
+        //
+        // La Valeur est un NIVEAU a une date, stock compris. Celui-ci suit un
+        // FLUX: partir de la caisse a la fin du mois dernier et suivre tout ce
+        // qui est entre et sorti. Les deux ne se comparent pas, et c'est
+        // voulu - une caisse qui derive se voit ici, pas dans un niveau ou le
+        // stock peut compenser.
+        //
+        // Tout le calcul vient du serveur (lib/cash-theorique.js, module pur
+        // et teste): on ne fait ici que mettre en forme.
+        const ct = d.cash_theorique || null;
+        const rap = ct ? (ct.rapprochement || {}) : {};
+        const blocCashTheorique = !ct ? '' : `
+            <div class="card mt-3">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                    <strong>Cash théorique du mois</strong>
+                    <span class="small text-muted">${esc(String((ct.periode || {}).debut || ''))}
+                        → ${esc(String((ct.periode || {}).fin || ''))}</span>
+                </div>
+                <div class="card-body">
+                    ${ct.source_partenaire === 'indisponible'
+                      ? `<div class="alert alert-danger py-2 px-2 small">La source du partenaire n'a pas
+                          répondu : les remboursements comptent pour 0 et ce total est faux de tout ce
+                          qui a été remboursé sur le mois. Ne pas s'y fier.</div>`
+                      : ''}
+                    ${ct.depart_manquant
+                      ? `<div class="alert alert-warning py-2 px-2 small">Aucune clôture de caisse avant
+                          le 1er du mois : le point de départ compte pour 0, et ce total ne vaut donc
+                          que comme variation depuis le début du mois.</div>`
+                      : ''}
+                    <table class="table table-sm mb-2"><tbody>
+                        ${(ct.lignes || []).map((l) => `<tr>
+                          <td>${l.signe > 0 ? '' : '− '}${esc(l.libelle)}</td>
+                          <td class="text-end ${l.signe > 0 ? 'text-success' : 'text-danger'}">${
+                            l.signe > 0 ? '+ ' : '− '}${esc(fmtMoney(Math.abs(nb(l.montant))))}</td>
+                        </tr>`).join('')}
+                        <tr style="background:#e7f5ff;border-top:2px solid #339af0">
+                          <th>= Cash théorique</th>
+                          <th class="text-end text-${nb(ct.total) >= 0 ? 'success' : 'danger'}">${
+                            esc(fmtMoney(ct.total))}</th></tr>
+                    </tbody></table>
+                    <div class="text-muted small">${esc(ct.commentaire || '')}</div>
+                    ${nb((ct.creances || {}).montant) > 0
+                      ? `<div class="alert alert-warning py-2 px-2 small mt-2 mb-0">
+                          ${esc(String((ct.creances || {}).nb))} vente(s) à crédit sur le mois, pour
+                          ${esc(fmtMoney((ct.creances || {}).montant))} : elles ne sont PAS dans les
+                          ventes ci-dessus, puisqu'aucun billet n'est entré en caisse. Elles
+                          entreront le jour où elles seront encaissées.</div>`
+                      : '<div class="text-muted small mt-1">Aucune vente à crédit sur le mois.</div>'}
+                    ${(rap.appariements || []).length ? `<details class="mt-2">
+                      <summary class="text-primary small" style="cursor:pointer">
+                        Le rapprochement dépôt Mata / remboursement
+                        (${esc(String(rap.nb_apparies))} sur
+                         ${esc(String((rap.appariements || []).length))} retrouvés)</summary>
+                      <div class="table-responsive mt-2">
+                       <table class="table table-sm mb-1"><thead><tr>
+                         <th>Dépôt</th><th class="text-end">Montant</th>
+                         <th>Remboursement</th></tr></thead><tbody>
+                         ${(rap.appariements || []).map((x) => `<tr>
+                           <td>${esc(x.date)}</td>
+                           <td class="text-end">${esc(fmtMoney(x.montant))}</td>
+                           <td class="${x.apparie ? 'text-success' : 'text-danger'}">${
+                             x.apparie
+                               ? esc(x.date_remboursement) + (x.decalage === 0 ? ' (le jour même)'
+                                   : x.decalage > 0 ? ' (J+' + esc(String(x.decalage)) + ')'
+                                   : ' (J' + esc(String(x.decalage)) + ')')
+                                 + (x.ambigu ? ' <span class="text-warning-emphasis">· plusieurs candidats</span>' : '')
+                               : (x.dispute
+                                   ? 'non retrouvé <span class="text-warning-emphasis">· un versement du même montant a été pris par un autre dépôt</span>'
+                                   : 'non retrouvé')}</td></tr>`).join('')}
+                       </tbody></table></div>
+                      <div class="text-muted small">Règle : même montant exact, à ±${
+                        esc(String(rap.tolerance_jours))} jour. Mesuré sur août 2026 à Mbao,
+                        les dépôts retrouvés le sont tous au lendemain, jamais le jour même.
+                        ${nb(rap.nb_remboursements_sans_depot) > 0
+                          ? esc(String(rap.nb_remboursements_sans_depot)) + ' remboursement(s) n\u2019ont'
+                            + ' aucun dépôt en face : tout ne passe pas par la caisse (virement,'
+                            + ' versement direct).'
+                          : ''}
+                        ${nb(rap.nb_ambigus) + nb(rap.nb_disputes) > 0
+                          ? ' Les montants ronds se répètent : quand plusieurs versements du même'
+                            + ' montant tombent dans la fenêtre, le rapprochement ligne à ligne est'
+                            + ' indicatif, pas certain.'
+                          : ''}</div>
+                     </details>` : ''}
+                </div>
+            </div>`;
+
         resultEl.innerHTML = `
             <div class="card border-${valColor} mb-3">
                 <div class="card-body text-center">
@@ -4890,8 +5145,14 @@
                                 <td class="text-end">${esc(fmtMoney(stock.soir_brut))}</td>
                             </tr>
                             <tr>
-                                <td>× coefficient <span class="text-muted">(1 − ${esc(stock.pertes_decoupe_pct)}% pertes découpe, <strong>boucherie seule</strong>)</span></td>
-                                <td class="text-end">× ${esc(stock.coeff)}</td>
+                                <td class="ps-4 text-muted small">dont boucherie ${esc(fmtMoney(stock.soir_boucherie))}
+                                    × ${esc(stock.coeff)} <span class="text-muted">(1 − ${esc(stock.pertes_decoupe_pct)}% pertes découpe)</span></td>
+                                <td class="text-end text-muted small">${esc(fmtMoney(nb(stock.soir_boucherie) * nb(stock.coeff)))}</td>
+                            </tr>
+                            <tr>
+                                <td class="ps-4 text-muted small">dont hors boucherie ${esc(fmtMoney(stock.soir_hors_boucherie))}
+                                    <span class="text-muted">à valeur pleine</span></td>
+                                <td class="text-end text-muted small">${esc(fmtMoney(stock.soir_hors_boucherie))}</td>
                             </tr>
                             <tr style="background:#f8fafc">
                                 <td><strong>= Stock soir net</strong></td>
@@ -4915,6 +5176,7 @@
                             </tr>
                         </tbody>
                     </table>
+                    ${blocStockDetaille}
                     ${legendePrix}
                     ${noteStockCS}
                     ${stockSnapshotInfo ? `<div class="mt-2">${stockSnapshotInfo}</div>` : ''}
@@ -4927,6 +5189,7 @@
                 <div class="card-header bg-light"><strong>Détail cash par point de vente</strong></div>
                 <div class="card-body">${pvTable}</div>
             </div>
+            ${blocCashTheorique}
             ${blocNoteMois('cash_stock', String(d.date || '').slice(0, 7))}
         `;
         cablerNoteMois('cash_stock', String(d.date || '').slice(0, 7));

@@ -1985,6 +1985,7 @@
                                                 <th>Produit</th>
                                                 <th>Impact (+/-)</th>
                                                 <th class="text-center" title="Sortie sans recette : pesée du déchet jeté. Compte dans le bilan déchet, jamais comme un transfert de marchandise.">Jeté</th>
+                                                <th class="text-center" title="Marchandise qui ne vient pas de MATA : achat local, dépannage entre points de vente, autre fournisseur. Cochée, la ligne n'entre pas dans le calcul de la commission 3%.">Hors Mata</th>
                                                 <th>Quantité</th>
                                                 <th>Détails (calibres)</th>
                                                 <th>Prix Unitaire</th>
@@ -2799,7 +2800,7 @@
                                                 <h6 class="mb-0">Détail par date (commission 3%)</h6>
                                                 <div class="d-flex gap-3 align-items-center">
                                                     <div class="form-check form-switch mb-0">
-                                                        <input class="form-check-input" type="checkbox" id="fin-detail-date-group">
+                                                        <input class="form-check-input" type="checkbox" id="fin-detail-date-group" checked>
                                                         <label class="form-check-label small" for="fin-detail-date-group" title="Regrouper les lignes par date (repliable) pour la réconciliation par date">Grouper par date</label>
                                                     </div>
                                                     <button type="button" class="btn btn-sm btn-outline-success" id="fin-detail-date-export" title="Exporter ce tableau au format Excel (.xlsx)"><i class="bi bi-file-earmark-excel me-1"></i>Exporter Excel</button>
@@ -2808,13 +2809,14 @@
                                             <div class="table-responsive mb-0">
                                                 <table class="table table-sm table-striped mb-0" id="fin-creances-detail-date">
                                                     <thead>
-                                                        <tr><th>Date</th><th>Produit</th><th class="text-end">Quantité éligible</th><th class="text-end">Prix achat fournisseur (FCFA)</th><th class="text-end">Qté × Prix achat</th><th class="text-end">Je dois (3%)</th></tr>
+                                                        <tr><th>Date</th><th>Produit</th><th class="text-end">Quantité éligible</th><th class="text-end">Prix achat fournisseur (FCFA)</th><th class="text-end">Qté × Prix achat</th><th class="text-end">Avance partenaire</th><th class="text-end">Je dois (3%)</th></tr>
                                                     </thead>
                                                     <tbody></tbody>
                                                     <tfoot id="fin-creances-detail-date-foot" style="display:none;">
                                                         <tr class="fw-bold border-top">
                                                             <td colspan="4" class="text-end">TOTAL (dates choisies)</td>
                                                             <td class="text-end" id="fin-cre-dd-total-achat"></td>
+                                                            <td class="text-end" id="fin-cre-dd-total-avance"></td>
                                                             <td class="text-end" id="fin-cre-dd-total-dette"></td>
                                                         </tr>
                                                     </tfoot>
@@ -4034,11 +4036,11 @@
     <!-- Gestionnaire de configuration client -->
     <script src="js/client-config-handler.js"></script>
     <script src="js/change-password.js?v=20260501a"></script>
-    <script src="script.js?v=20260815-ordre2"></script>
+    <script src="script.js?v=20260825-hors-mata"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260821-boucherie2"></script>
+    <script src="js/finance.js?v=20260825-cash-theorique"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>

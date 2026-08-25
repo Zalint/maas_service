@@ -222,6 +222,11 @@ async function saveTransferts(transferts) {
         total: parseFloat(t.total) || 0,
         impact: t.impact || '',
         commentaire: t.commentaire || '',
+        // Accepte les deux graphies: l'ecran envoie horsMata, un appel API
+        // direct peut envoyer hors_mata. Les chaines 'true'/'on'/'1' viennent
+        // des formulaires, ou une case cochee n'arrive pas en booleen.
+        horsMata: [true, 'true', 'on', '1', 1].indexOf(
+            t.horsMata !== undefined ? t.horsMata : t.hors_mata) >= 0,
         extension: t.extension || null
       }));
 
