@@ -22,8 +22,38 @@
         const num = (Math.round(parseFloat(n) || 0)).toLocaleString('fr-FR');
         return `${num}<span class="fin-kpi-currency">FCFA</span>`;
     };
+    // Une QUANTITE, a la francaise et au dixieme au moins. Le pendant de
+    // fmtMoney pour ce qui se compte en kilos et non en francs.
+    //
+    // js/simulation-v2.js porte un helper du meme nom (ligne 44) et la meme
+    // implementation; ce fichier-ci n'en avait pas, et l'emprunter sans le
+    // definir levait « fmtDec is not defined » a l'ouverture du panneau. Les
+    // deux fichiers sont des scripts independants: rien ne circule de l'un a
+    // l'autre.
+    const fmtDec = (v) => {
+        if (v === null || v === undefined || isNaN(v)) return '—';
+        const s = Math.abs(v).toLocaleString('fr-FR', {
+            minimumFractionDigits: 1, maximumFractionDigits: 2
+        });
+        return (v < 0 ? '−' : '') + s;
+    };
+    // Lecture numerique tolerante: une absence vaut zero, jamais NaN.
+    //
+    // AU NIVEAU DU MODULE, et non dans renderPl ou il vivait: rendreEcartJour
+    // s'en sert aussi, et un helper enferme dans une autre fonction s'emprunte
+    // sans erreur a l'ecriture pour lever « nb is not defined » a l'execution -
+    // que les tests ne voient pas, puisqu'ils n'exercent pas le rendu.
+    const nb = (v) => {
+        const x = parseFloat(v);
+        return Number.isFinite(x) ? x : 0;
+    };
+    // Les GUILLEMETS aussi: sans eux, une valeur placee dans un attribut
+    // pourrait en sortir. Aucun gabarit n'en met aujourd'hui, mais les
+    // libelles rendus viennent de la base - categorie de depense, commentaire
+    // de versement - et il suffirait d'un `title="${...}"` ajoute plus tard.
     const esc = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
     // Construit le markup d'une carte KPI Finance.
     // tone: 'warning' | 'success' | 'danger' | 'info' | 'neutral'
@@ -109,6 +139,8 @@
         // Export Excel + snapshots du PL.
         const plExport = document.getElementById('fin-pl-export');
         if (plExport) plExport.addEventListener('click', exporterPlExcel);
+        const plExportJson = document.getElementById('fin-pl-export-json');
+        if (plExportJson) plExportJson.addEventListener('click', () => exporterPlJson(plExportJson));
         const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
         if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
         const plHistorique = document.getElementById('fin-pl-historique');
@@ -2342,6 +2374,138 @@
         }
     }
 
+    /**
+     * EXPORT JSON du PL et de l'explication de son ecart.
+     *
+     * Destine a etre LU PAR UN LLM, pas par un tableur: on rend la structure
+     * telle que le serveur l'a calculee, avec les drapeaux et les controles de
+     * bouclage, plutot qu'un aplatissement en lignes.
+     *
+     * Si le panneau « D'ou vient cet ecart ? » n'a jamais ete ouvert, l'appel
+     * est DECLENCHE ici en mode auto - exporter un fichier sans l'explication
+     * alors que le bouton la promet serait pire qu'une attente d'une seconde.
+     */
+    async function exporterPlJson(bouton) {
+        const d = plDernieresDonnees;
+        if (!d) {
+            if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
+            return;
+        }
+        const libelleInitial = bouton ? bouton.innerHTML : null;
+        try {
+            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Préparation…'; }
+            const p = d.periode || {};
+            const fin = isoDeSnapshot(p.dateFin);
+            const debut = isoDeSnapshot(p.dateDebut);
+            // LA VEILLE REELLE, la meme que le panneau: le panneau explique
+            // J-1, pas le dernier PL fige. Deux definitions donneraient deux
+            // ecarts differents entre l'ecran et le fichier.
+            const veille = fin
+                ? new Date(new Date(fin + 'T00:00:00Z').getTime() - 86400000)
+                    .toISOString().slice(0, 10)
+                : null;
+
+            let ecart = null;
+            if (fin && veille) {
+                // La cle porte AUSSI le debut de periode: il part dans la
+                // requete, donc deux periodes de meme fin mais de debut
+                // different rendent des ecarts differents. Sans lui, la
+                // seconde aurait resservi le cache de la premiere.
+                const cle = fin + '|' + veille + '|auto|' + (debut || '');
+                if (plDernierEcart && plDernierEcart.cle === cle) {
+                    // Deja calcule par le panneau: on ne refait pas l'appel.
+                    ecart = plDernierEcart.data;
+                } else {
+                    const url = '/api/finance/pl/ecart-jour?date=' + encodeURIComponent(fin)
+                        + '&reference=' + encodeURIComponent(veille)
+                        + '&mode=auto'
+                        + (debut ? '&debut=' + encodeURIComponent(debut) : '');
+                    // Un ecart indisponible ne doit pas faire echouer l'export
+                    // du PL: on exporte ce qu'on a, en DISANT ce qui manque.
+                    //
+                    // Le try est INTERNE. Sans lui, une coupure reseau ou une
+                    // reponse non-JSON remontait au catch general et l'export
+                    // entier etait abandonne - alors que le PL, lui, etait deja
+                    // en memoire et parfaitement exportable.
+                    try {
+                        const res = await fetch(url, { credentials: 'include' });
+                        const j = await res.json();
+                        ecart = (j && j.success && j.data)
+                            ? j.data
+                            : { ok: false, raison: 'appel_echoue',
+                                message: (j && j.error) || 'écart non calculable' };
+                    } catch (eEcart) {
+                        ecart = { ok: false, raison: 'appel_echoue',
+                            message: eEcart.message || 'écart non calculable' };
+                    }
+                }
+            }
+
+            const sortie = {
+                genere_le: new Date().toISOString(),
+                // Ce que le fichier CONTIENT, en clair: un LLM qui le lit doit
+                // savoir de quoi il parle sans deviner d'apres les cles.
+                a_propos: {
+                    source: 'Maas App — onglet Finance > PL',
+                    pl: 'Cumul du 1er du mois a la date de fin. Formule: ventes '
+                        + '− avances − commission MaaS + marge CDC − charges proratisees '
+                        + '− depenses − paiements fournisseur + variation de stock nette.',
+                    ecart_du_jour: 'Difference poste par poste entre le PL de la date de fin '
+                        + 'et celui de la veille. Les deux partent du meme 1er du mois, '
+                        + 'donc leur difference est la contribution de la journee.',
+                    variation_stock: 'variation nette = variation boucherie × coefficient '
+                        + 'de pertes de decoupe + variation hors boucherie. Le coefficient '
+                        + 'ne porte QUE sur la boucherie.'
+                },
+                periode: p,
+                pl: d.pl,
+                postes: {
+                    total_ventes: d.total_ventes,
+                    ventes_boucherie: d.ventes_boucherie,
+                    ventes_hors_boucherie: d.ventes_hors_boucherie,
+                    total_avances: d.total_avances,
+                    commission_maas: d.commission_maas,
+                    marge_cdc: d.marge_cdc,
+                    charges_proratisees: (d.charges || {}).total_prorata,
+                    depenses_periode: d.depenses_periode,
+                    paiements_fournisseur: d.paiements_fournisseur,
+                    variation_stock_nette: (d.stock || {}).variation_nette
+                },
+                cout_des_ventes: d.cout_des_ventes,
+                marge_des_ventes: d.marge_des_ventes,
+                taux_marge: d.taux_marge,
+                charges: d.charges,
+                stock: d.stock,
+                volumes: d.volumes,
+                sources: d.sources,
+                ecart_du_jour: ecart
+            };
+
+            telechargerJson(sortie, 'pl-' + (p.dateDebut || 'periode') + '-au-'
+                + (p.dateFin || '') + '.json');
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur export JSON: ' + e.message, 'danger');
+        } finally {
+            if (bouton) { bouton.disabled = false; bouton.innerHTML = libelleInitial; }
+        }
+    }
+
+    /** Telechargement d'un objet en fichier .json. Une seule ecriture pour
+     *  les deux exports (PL et projection). */
+    function telechargerJson(objet, nomFichier) {
+        const blob = new Blob([JSON.stringify(objet, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nomFichier;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Liberer l'URL: sans revoke, le blob reste en memoire tant que
+        // l'onglet vit.
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+
     // ===== Snapshots: figer le PL du jour + historique =====
 
     // Postes neutralises par l'utilisateur, pour repondre a "et si cette ligne
@@ -2354,6 +2518,22 @@
     // optimiste, un test qui importe le fichier - aurait leve
     // « Cannot access before initialization » et emporte tout l'ecran PL.
     const plPostesNeutralises = new Set();
+    // SIMULATION DU STOCK ESTIME. Rien n'est enregistre - decision du
+    // proprietaire du produit: on modifie pour VOIR l'effet sur le PL, et un
+    // rechargement repart de l'estimation calculee.
+    //   plStockEdite  : produit -> quantite corrigee
+    //   plStockAjoute : lignes ajoutees a la main
+    // L'etat d'ouverture vit dans une variable et non dans le DOM: <details>
+    // bascule de facon asynchrone, et le relire au rendu suivant rendrait un
+    // panneau qui se referme tout seul.
+    const plStockEdite = new Map();
+    let plStockAjoute = [];
+    let plDetailEstimationOuvert = false;
+    // La periode deja rendue, pour detecter qu'on en change. Les corrections
+    // portent sur les lignes d'UNE journee estimee; les laisser vivre d'une
+    // periode a l'autre appliquerait a aujourd'hui une quantite saisie pour
+    // hier. null = rien n'a encore ete rendu.
+    let plPeriodeChargee = null;
 
     // PL DU JOUR: la difference entre deux cumuls voisins.
     //
@@ -2513,10 +2693,418 @@
                 <strong class="text-${couleur}">${delta >= 0 ? '+' : ''}${esc(fmtMoney(delta))}</strong>
                 <div class="text-muted">écart avec le PL figé du ${esc(fmtDateFr(datePrec))}
                     (${esc(fmtMoney(prec.pl))})</div>
-                ${noteEstime}`;
+                ${noteEstime}
+                <details class="mt-1" id="pl-ecart-details">
+                    <summary class="text-primary" style="cursor:pointer">D'où vient cet écart ?</summary>
+                    <div id="pl-ecart-corps" class="mt-2 text-start"></div>
+                </details>`;
+            // CHARGE A LA DEMANDE, et une seule fois. C'est une requete de
+            // plus (deux snapshots relus): la faire a chaque rendu du PL la
+            // paierait sur toutes les consultations, alors que la question
+            // « d'ou vient l'ecart » ne se pose pas a chaque fois.
+            const det = document.getElementById('pl-ecart-details');
+            if (det) {
+                det.addEventListener('toggle', () => {
+                    if (!det.open || det.dataset.charge === '1') return;
+                    det.dataset.charge = '1';
+                    // LA VEILLE REELLE, pas le snapshot precedent disponible.
+                    //
+                    // Le chiffre au-dessus se compare au dernier PL fige, qui
+                    // peut dater de trois jours quand le cron a saute. Le
+                    // panneau, lui, explique UNE journee: le serveur recalcule
+                    // la veille si elle n'a pas ete figee. Les deux periodes
+                    // peuvent donc differer, et le panneau annonce la sienne.
+                    const veilleReelle = new Date(
+                        new Date(fin + 'T00:00:00Z').getTime() - 86400000)
+                        .toISOString().slice(0, 10);
+                    rendreEcartJour(fin, veilleReelle, 'auto', debut);
+                }, { once: false });
+            }
         } catch (e) {
             // Un complement d'information ne doit pas abimer le PL lui-meme.
             cible.innerHTML = '';
+        }
+    }
+
+    /**
+     * D'OU VIENT L'ECART, rendu depuis /pl/ecart-jour.
+     *
+     * Tout le calcul vient du serveur (lib/pl-ecart-jour.js, module pur et
+     * teste): cette fonction n'additionne rien, elle met en forme. Poser ici
+     * une seconde arithmetique la ferait diverger de celle qui est testee.
+     */
+    async function rendreEcartJour(dateJour, dateReference, mode, debutPeriode) {
+        const corps = document.getElementById('pl-ecart-corps');
+        if (!corps) return;
+        // `auto` par defaut: la journee en cours n'est jamais figee avant
+        // 23h35, et sans recalcul le panneau serait muet quand on s'en sert.
+        const modeUi = ['auto', 'force', 'fige'].includes(mode) ? mode : 'auto';
+        corps.innerHTML = '<span class="text-muted">Chargement…</span>';
+        try {
+            const url = '/api/finance/pl/ecart-jour?date=' + encodeURIComponent(dateJour)
+                + '&reference=' + encodeURIComponent(dateReference)
+                + '&mode=' + encodeURIComponent(modeUi)
+                // LA PERIODE AFFICHEE, sinon le serveur repart du 1er du mois
+                // et les colonnes montreraient des cumuls etrangers a l'ecran.
+                + (debutPeriode ? '&debut=' + encodeURIComponent(debutPeriode) : '');
+            const res = await fetch(url, { credentials: 'include' });
+            const j = await res.json();
+            const d = j && j.data;
+            if (!j.success || !d) throw new Error((j && j.error) || 'réponse invalide');
+            plDernierEcart = {
+                cle: dateJour + '|' + dateReference + '|' + modeUi + '|' + (debutPeriode || ''),
+                data: d
+            };
+
+            // REFUS ASSUME. Le module dit pourquoi il ne calcule pas; on le
+            // repete tel quel plutot que d'afficher un tableau vide qui se
+            // lirait comme « aucun mouvement ».
+            // L'INTERRUPTEUR est rendu dans TOUS les cas, refus compris: c'est
+            // souvent lui qui debloque la situation, et l'enfermer dans la
+            // branche du succes le rendrait inatteignable quand il sert.
+            const OPTIONS = [
+                ['auto', 'PL figés, recalculés s\'ils manquent'],
+                ['force', 'Tout recalculer maintenant'],
+                ['fige', 'PL figés seulement']
+            ];
+            const bascule = `<div class="d-flex align-items-center gap-2 small mb-2 flex-wrap">
+                <label class="text-muted" for="pl-ecart-mode">Source des chiffres</label>
+                <select class="form-select form-select-sm" id="pl-ecart-mode" style="width:auto"
+                    title="Un PL figé peut être périmé : une vente saisie en retard, un stock corrigé. « Tout recalculer » montre l'état courant et signale l'écart avec ce qui avait été figé.">
+                    ${OPTIONS.map(([v, t]) => `<option value="${v}"${v === modeUi ? ' selected' : ''}>${esc(t)}</option>`).join('')}
+                </select></div>`;
+            const cablerBascule = () => {
+                const b = document.getElementById('pl-ecart-mode');
+                if (b) b.addEventListener('change', () => rendreEcartJour(dateJour, dateReference, b.value, debutPeriode));
+            };
+
+            if (d.ok === false) {
+                corps.innerHTML = bascule + `<div class="alert alert-secondary py-2 small mb-0">
+                    ${esc(d.message || 'Écart non calculable.')}</div>`;
+                cablerBascule();
+                return;
+            }
+
+            const drapeaux = (d.drapeaux || []).map((f) => `
+                <div class="alert ${f.niveau === 'fort' ? 'alert-warning' : 'alert-light border'} py-2 small mb-1">
+                    <i class="bi bi-exclamation-triangle"></i> ${esc(f.texte)}</div>`).join('');
+
+            const lignes = (d.postes || []).filter((p) => Math.abs(nb(p.contribution)) >= 1)
+                .map((p) => {
+                    const c = nb(p.contribution);
+                    return `<tr>
+                        <td>${esc(p.libelle)}</td>
+                        <td class="text-end text-muted">${esc(fmtMoney(p.veille))}</td>
+                        <td class="text-end text-muted">${esc(fmtMoney(p.jour))}</td>
+                        <td class="text-end fw-bold text-${c >= 0 ? 'success' : 'danger'}">
+                            ${c >= 0 ? '+' : ''}${esc(fmtMoney(c))}</td></tr>`;
+                }).join('');
+
+            const st = d.stock || {};
+            const b = st.bornes || {};
+            // LES BORNES d'abord: la ligne « Variation de stock » du tableau
+            // n'affiche que deux nets, et un net ne se verifie pas. Avec le
+            // depart et les deux fins, le lecteur refait le calcul a la main.
+            const blocBornes = b.fin_jour !== undefined
+                ? `<div class="small mb-2">
+                    <div class="fw-medium">Le stock, ligne par ligne :</div>
+                    <div>· Stock de <strong>départ</strong>
+                        ${b.depart_date ? '<span class="text-muted">(' + esc(b.depart_date) + ')</span>' : ''} :
+                        <strong>${esc(fmtMoney(b.depart))}</strong>
+                        <span class="text-muted">— commun aux deux journées</span></div>
+                    <div>· Stock de <strong>fin</strong> au ${esc(fmtDateFr(d.date_veille))} :
+                        ${esc(fmtMoney(b.fin_veille))}
+                        <span class="text-muted">→ variation ${esc(fmtMoney(b.variation_veille))}</span></div>
+                    <div>· Stock de <strong>fin</strong> au ${esc(fmtDateFr(d.date_jour))} :
+                        ${esc(fmtMoney(b.fin_jour))}
+                        <span class="text-muted">→ variation ${esc(fmtMoney(b.variation_jour))}</span></div>
+                    <div class="text-muted">variation = boucherie
+                        (${esc(fmtMoney(b.boucherie_jour))}) × coefficient
+                        ${esc(String(b.coeff_jour))} + hors boucherie
+                        (${esc(fmtMoney(b.hors_boucherie_jour))}). Le coefficient de pertes
+                        de découpe ne porte que sur la boucherie — l'épicerie ne se pare pas.</div>
+                   </div>`
+                : '';
+            // Le partage n'a de sens que si le stock a bouge. Sur une journee
+            // sans mouvement, ces deux lignes a zero seraient du bruit.
+            const blocStock = blocBornes + ((Math.abs(nb(st.volume)) >= 1 || Math.abs(nb(st.revalorisation)) >= 1)
+                ? `<div class="small mb-2">
+                    <div class="fw-medium">Dont, sur le stock du soir :</div>
+                    <div>· <strong>${esc(fmtMoney(st.volume))}</strong> de mouvement de
+                        marchandise, valorisé aux prix de la veille</div>
+                    <div>· <strong>${esc(fmtMoney(st.revalorisation))}</strong> de changement
+                        de PRIX à quantité inchangée
+                        <span class="text-muted">(${Math.round(nb(st.part_revalorisation) * 100)} %
+                        du mouvement)</span></div>
+                   </div>`
+                : '');
+
+            // LE STOCK PRODUIT PAR PRODUIT, avant et apres.
+            //
+            // Replie: c'est un second niveau de detail, et l'ouvrir d'office
+            // enterrerait le tableau des postes sous une liste. Les produits
+            // IMMOBILES ne sont pas listes - une ligne a zero n'apprend rien -
+            // mais leur nombre est annonce, sinon la liste se lirait comme
+            // exhaustive.
+            const q = (v) => (v === null || v === undefined) ? '—' : esc(fmtDec(v));
+            const px = (v) => (v === null || v === undefined)
+                ? '<span class="text-muted">—</span>' : esc(fmtMoney(v));
+            const MOUVEMENT = { apparu: 'apparu', disparu: 'disparu', hausse: '↑', baisse: '↓' };
+            // UNE VALEUR ADOSSEE AU PRIX DE VENTE est soulignee: faute de prix
+            // d'achat connu, elle ne dit pas ce que la marchandise a COUTE, et
+            // c'est pourtant ce chiffre-la qu'on rapproche de l'argent sorti.
+            const val = (montant, base) => (base === 'vente')
+                ? `<span class="text-warning-emphasis" style="text-decoration:underline dotted"
+                     title="Valorisé au prix de VENTE : le prix d'achat de ce produit n'est pas connu.">${esc(fmtMoney(montant))}</span>`
+                : esc(fmtMoney(montant));
+            const lignesProduits = (st.lignes || []).map((l) => `
+                <tr>
+                    <td>${esc(l.produit)}
+                        <span class="text-muted small">${esc(MOUVEMENT[l.mouvement] || '')}</span></td>
+                    <td class="text-end">${q(l.quantite_veille)} → <strong>${q(l.quantite_jour)}</strong></td>
+                    <td class="text-end">${px(l.prix_veille)} → ${px(l.prix_jour)}</td>
+                    <td class="text-end">${val(l.valeur_veille, l.base_veille)}</td>
+                    <td class="text-end fw-bold">${val(l.valeur_jour, l.base_jour)}</td>
+                    <td class="text-end ${nb(l.effet_volume) >= 0 ? 'text-success' : 'text-danger'}">
+                        ${esc(fmtMoney(l.effet_volume))}</td>
+                    <td class="text-end ${nb(l.effet_prix) >= 0 ? 'text-success' : 'text-danger'}">
+                        ${esc(fmtMoney(l.effet_prix))}</td>
+                </tr>`).join('');
+            const blocProduits = (st.lignes || []).length
+                ? `<details class="mb-2">
+                    <summary class="text-primary small" style="cursor:pointer">
+                        Le stock produit par produit, avant et après
+                        (${(st.lignes || []).length} en mouvement${nb(st.nb_inchanges) > 0
+                            ? ', ' + nb(st.nb_inchanges) + ' inchangé'
+                              + (nb(st.nb_inchanges) > 1 ? 's' : '') : ''})</summary>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm mb-1">
+                            <thead><tr>
+                                <th>Produit</th>
+                                <th class="text-end">Quantité</th>
+                                <th class="text-end">Coût unitaire</th>
+                                <th class="text-end">Qté × coût<br>début</th>
+                                <th class="text-end">Qté × coût<br>fin</th>
+                                <th class="text-end"
+                                    title="Ce que les kilos entrés ou sortis valent, comptés au coût de la veille. C'est le mouvement réel de marchandise.">Effet volume</th>
+                                <th class="text-end"
+                                    title="Ce que la MÊME marchandise vaut en plus ou en moins parce que son coût unitaire a changé. Ni un achat, ni une vente.">Effet prix</th>
+                            </tr></thead>
+                            <tbody>${lignesProduits}</tbody>
+                            <tfoot><tr class="table-light fw-bold">
+                                <td colspan="3">Total du stock</td>
+                                <td class="text-end">${esc(fmtMoney(st.valeur_veille))}</td>
+                                <td class="text-end">${esc(fmtMoney(st.valeur_jour))}</td>
+                                <td class="text-end">${esc(fmtMoney(st.volume))}</td>
+                                <td class="text-end">${esc(fmtMoney(st.revalorisation))}</td>
+                            </tr></tfoot>
+                        </table>
+                    </div>
+                    <div class="small mb-1">
+                        <div><strong>Effet volume</strong> — ce que les kilos entrés ou sortis
+                            valent, comptés au coût de la veille. C'est le mouvement réel de
+                            marchandise.</div>
+                        <div><strong>Effet prix</strong> — ce que la <em>même</em> marchandise
+                            vaut en plus ou en moins parce que son coût unitaire a changé.
+                            <strong>Ni un achat, ni une vente</strong> : le stock est revalorisé
+                            sans qu'un gramme n'ait bougé. Un bœuf passé de 4 520 à 4 500 F le
+                            kilo fait perdre 2 166 F sur 108,3 kg, sans qu'il ne se soit rien
+                            passé.</div>
+                    </div>
+                    <div class="text-muted small">Les deux se somment exactement à l'écart de
+                        valeur, sans reste. Un prix « — » signale un produit absent de cette
+                        photo ; une valeur <span style="text-decoration:underline dotted">soulignée</span>
+                        est adossée au prix de VENTE, faute de prix d'achat connu — elle ne dit
+                        pas ce que la marchandise a coûté.</div>
+                    ${(b.pont && Math.abs(nb(b.pont.ecart_soir) - nb(b.pont.ecart_poste)) >= 1)
+                        // LE PONT vers le poste. Ce tableau mesure le stock DU
+                        // SOIR, le poste mesure la variation DEPUIS LE DEPART:
+                        // comparer les deux totaux sans cette explication fait
+                        // conclure que l'un est faux.
+                        ? `<div class="alert alert-light border py-2 small mb-0 mt-2">
+                            <div class="fw-medium">Pourquoi ce total diffère du poste
+                                « Variation de stock »</div>
+                            <div>· Ce tableau mesure le <strong>stock du soir</strong> :
+                                ${esc(fmtMoney(b.pont.ecart_soir))}</div>
+                            <div>· Le stock de <strong>départ</strong> a bougé lui aussi :
+                                ${esc(fmtMoney(b.pont.ecart_depart))}</div>
+                            <div>· Le <strong>coefficient</strong> ${esc(String(b.coeff_jour))}
+                                ne s'applique qu'à la boucherie</div>
+                            <div>· = poste <strong>${esc(fmtMoney(b.pont.ecart_poste))}</strong></div>
+                           </div>`
+                        : ''}
+                   </details>`
+                : '';
+
+            // LE RAPPROCHEMENT ARGENT / MARCHANDISE. C'est la lecture que
+            // l'utilisateur a demandee: l'argent sorti est-il devenu du stock,
+            // ou a-t-il remplace ce qui s'est vendu ?
+            const rc = d.reconciliation || {};
+            const blocRec = (Math.abs(nb(rc.sorties)) >= 1 || Math.abs(nb(rc.entree_stock)) >= 1)
+                ? `<div class="border rounded p-2 mb-2 small">
+                    <div class="fw-medium mb-1">L'argent sorti et la marchandise</div>
+                    <div>${Math.abs(nb(rc.paiements)) >= 1
+                        ? 'Avances : <strong>' + esc(fmtMoney(rc.avances)) + '</strong>'
+                          + ' + versements fournisseur : <strong>' + esc(fmtMoney(rc.paiements))
+                          + '</strong> → <strong>' + esc(fmtMoney(rc.sorties)) + '</strong> sortis'
+                        // Sans versement, la somme EST l'avance: repeter le
+                        // meme nombre des deux cotes d'une fleche se lit comme
+                        // une erreur de calcul.
+                        : 'Avances sorties : <strong>' + esc(fmtMoney(rc.sorties)) + '</strong>'}</div>
+                    <div>Stock valorisé : ${esc(fmtMoney(rc.stock_veille))}
+                        → <strong>${esc(fmtMoney(rc.stock_jour))}</strong>
+                        <span class="text-muted">soit ${esc(fmtMoney(rc.entree_stock))}
+                        entrés en marchandise</span></div>
+                    <div class="mt-1">= <strong>${esc(fmtMoney(rc.consomme))}</strong>
+                        consommés par la journée, à leur coût</div>
+                    ${rc.exact === false
+                        ? `<div class="text-muted mt-1" style="text-decoration:underline dotted">
+                            Dont ${esc(fmtMoney(rc.dont_prix_vente_jour))} valorisés au prix de
+                            VENTE faute de prix d'achat : le rapprochement est approximatif
+                            d'autant.</div>`
+                        : ''}
+                    ${Math.abs(nb(rc.depenses_hors_marchandise)) >= 1
+                        ? `<div class="text-muted mt-1">Les dépenses de la journée
+                            (${esc(fmtMoney(rc.depenses_hors_marchandise))}) sont hors de ce
+                            rapprochement : elles n'achètent pas de marchandise.</div>`
+                        : ''}
+                   </div>`
+                : '';
+
+            // CE QU'IL Y A DERRIERE CHAQUE POSTE, quand la source le permet.
+            //
+            // Replies: le tableau des postes repond a « quel poste », ces
+            // blocs a « quoi exactement ». Les ouvrir d'office noierait le
+            // premier niveau sous quatre listes.
+            const det = d.detail || {};
+            const bloc = (titre, items, rendu, note) => (items && items.length)
+                ? `<details class="mb-1">
+                    <summary class="text-primary small" style="cursor:pointer">${titre}</summary>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-sm mb-1"><tbody>${items.map(rendu).join('')}</tbody></table>
+                    </div>${note || ''}</details>`
+                : '';
+
+            // NON VENTILABLE: on dit pourquoi. Un bloc absent se cherche, une
+            // raison affichee se comprend - et celle-ci se resout d'elle-meme
+            // a mesure que les journees se figent avec le detail.
+            const indisponible = (titre, o) => (o && o.ventilable === false && o.raison)
+                ? `<div class="text-muted small mb-1"><em>${titre} :</em> ${esc(o.raison)}</div>`
+                : '';
+
+            const dv = det.ventes || {};
+            const blocVentes = indisponible('Détail des ventes', dv) + bloc(
+                `Ce qui s'est vendu (${(dv.lignes || []).length} produits, ${esc(fmtMoney(dv.total_ca))})`,
+                dv.lignes,
+                (l) => `<tr><td>${esc(l.produit)}</td>
+                    <td class="text-end"><strong>${esc(fmtDec(l.quantite))}</strong></td>
+                    <td class="text-end text-muted">${l.prix_moyen === null ? '—' : esc(fmtMoney(l.prix_moyen)) + '/u'}</td>
+                    <td class="text-end">${esc(fmtMoney(l.ca))}</td></tr>`,
+                dv.complet === false
+                    ? `<div class="text-danger small">Ces produits totalisent
+                        ${esc(fmtMoney(dv.total_ca))} alors que le poste Ventes a bougé de
+                        ${esc(fmtMoney(dv.attendu))} : la ventilation est incomplète.</div>`
+                    : '');
+
+            const dd = det.depenses || {};
+            const blocDepenses = bloc(
+                `Les dépenses de la journée (${(dd.lignes || []).length}, ${esc(fmtMoney(dd.total))})`,
+                dd.lignes,
+                (l) => `<tr><td>${esc(l.libelle)}
+                    <span class="text-muted small">${esc(l.date || '')}</span></td>
+                    <td class="text-end">${esc(fmtMoney(l.montant))}</td></tr>`,
+                dd.complet === false
+                    ? `<div class="text-danger small">Ces lignes totalisent
+                        ${esc(fmtMoney(dd.total))} alors que le poste a bougé de
+                        ${esc(fmtMoney(dd.attendu))} : la liste est incomplète.</div>`
+                    : '');
+
+            const dpf = det.paiements || {};
+            const blocPaiements = bloc(
+                `Les versements au fournisseur (${(dpf.lignes || []).length}, ${esc(fmtMoney(dpf.total))})`,
+                dpf.lignes,
+                (l) => `<tr><td>${esc(l.libelle)}
+                    <span class="text-muted small">${esc(l.date || '')}</span></td>
+                    <td class="text-end">${esc(fmtMoney(l.montant))}</td></tr>`,
+                dpf.complet === false
+                    ? `<div class="text-danger small">Ces lignes totalisent
+                        ${esc(fmtMoney(dpf.total))} alors que le poste a bougé de
+                        ${esc(fmtMoney(dpf.attendu))} : la liste est incomplète.</div>`
+                    : '');
+
+            const dc = det.charges || {};
+            const blocCharges = indisponible('Détail des charges', dc) + bloc(
+                `Les charges proratisées (${(dc.lignes || []).length}, ${esc(fmtMoney(dc.total))})`,
+                dc.lignes,
+                (l) => `<tr><td>${esc(l.libelle)}</td>
+                    <td class="text-end">${esc(fmtMoney(l.montant))}</td></tr>`,
+                `<div class="text-muted small">Ce ne sont pas des décaissements du jour :
+                    une charge mensuelle gagne un jour de prorata à chaque journée écoulée.</div>`);
+
+            // LES AVANCES ne se ventilent pas, et le dire vaut mieux que de
+            // laisser chercher un bloc qui n'existera jamais.
+            const blocAvances = (det.avances && det.avances.ventilable === false
+                && (d.postes || []).some((p) => p.cle === 'avances' && Math.abs(nb(p.contribution)) >= 1))
+                ? `<div class="text-muted small mb-1"><em>Avances :</em> ${esc(det.avances.raison)}</div>`
+                : '';
+
+            // LE BOUCLAGE. Quand la somme ne retombe pas sur l'ecart de PL, le
+            // tableau est INCOMPLET: un poste manque a la table du module. On
+            // l'affiche quand meme, en disant ce qui n'est pas expliqué.
+            const bou = d.bouclage || {};
+            const alerteBouclage = bou.coherent === false
+                ? `<div class="alert alert-danger py-2 small mb-1">
+                    Les postes ci-dessus n'expliquent que
+                    ${esc(fmtMoney(bou.somme_contributions))} des
+                    ${esc(fmtMoney(bou.ecart_pl))} d'écart :
+                    <strong>${esc(fmtMoney(bou.residu))}</strong> restent non attribués.
+                    Un poste manque à la décomposition — le chiffre affiché n'est pas faux,
+                    il est incomplet.</div>`
+                : '';
+
+            // LA PERIODE QUE CE PANNEAU COUVRE, annoncee. Elle peut differer
+            // du chiffre affiche au-dessus, qui se compare au dernier PL fige:
+            // sans cette ligne, deux ecarts differents se liraient comme le
+            // meme, et l'un des deux passerait pour faux.
+            const enTete = `<div class="small mb-2">
+                <strong>La journée du ${esc(fmtDateFr(d.date_jour))}</strong>
+                <span class="text-muted">— écart avec le ${esc(fmtDateFr(d.date_veille))}${
+                    d.veille_recalculee ? ' (recalculé)' : ''} :</span>
+                <strong class="text-${nb((d.pl || {}).ecart) >= 0 ? 'success' : 'danger'}">
+                    ${nb((d.pl || {}).ecart) >= 0 ? '+' : ''}${esc(fmtMoney((d.pl || {}).ecart))}</strong>
+                </div>`;
+
+            corps.innerHTML = `
+                ${bascule}
+                ${enTete}
+                ${alerteBouclage}
+                ${drapeaux}
+                <div class="table-responsive">
+                    <table class="table table-sm mb-1">
+                        <thead><tr>
+                            <th>Poste</th>
+                            <th class="text-end">${esc(fmtDateFr(d.date_veille))}</th>
+                            <th class="text-end">${esc(fmtDateFr(d.date_jour))}</th>
+                            <th class="text-end">Effet sur le PL</th>
+                        </tr></thead>
+                        <tbody>${lignes || '<tr><td colspan="4" class="text-muted">Aucun poste n\'a bougé de plus d\'un franc.</td></tr>'}</tbody>
+                    </table>
+                </div>
+                ${blocRec}
+                ${blocVentes}
+                ${blocDepenses}
+                ${blocPaiements}
+                ${blocCharges}
+                ${blocAvances}
+                ${blocStock}
+                ${blocProduits}
+                <div class="text-muted small">Chaque poste est lu sur les deux PL figés, qui
+                    partent du même 1ᵉʳ du mois. La colonne <em>Effet sur le PL</em> porte le
+                    signe de la formule : une dépense qui monte y apparaît en négatif.</div>`;
+            // Apres l'ecriture du HTML: l'element n'existe pas avant.
+            cablerBascule();
+        } catch (e) {
+            corps.innerHTML = `<div class="text-danger small">Écart non chargé : ${esc(e.message)}</div>`;
         }
     }
 
@@ -2659,10 +3247,32 @@
     }
 
     let plDernieresDonnees = null;
+    // LE DERNIER ECART CALCULE, memorise pour l'export.
+    //
+    // Le panneau « D'ou vient cet ecart ? » charge a la demande: sans ce
+    // cache, l'export aurait soit exporte du vide quand le panneau n'a jamais
+    // ete ouvert, soit refait un appel deja fait. On garde la reponse ET la
+    // paire de dates qu'elle couvre, pour ne pas resservir l'ecart d'une
+    // autre journee apres un changement de periode.
+    let plDernierEcart = null;
 
     function renderPl(d) {
         const resultEl = document.getElementById('fin-pl-result');
         if (!resultEl) return;
+        // LA SIMULATION DU STOCK NE TRAVERSE PAS UN CHANGEMENT DE PERIODE.
+        //
+        // plStockEdite et plStockAjoute vivent au niveau du module: ils
+        // survivaient a un changement de dates, et les quantites saisies pour
+        // une journee s'appliquaient a une autre. On les remet a zero des que
+        // la periode bouge, jamais quand elle est identique - sinon un simple
+        // re-rendu (bascule d'un poste neutralise) effacerait la saisie.
+        const periodeCourante = d && d.periode
+            ? String(d.periode.dateDebut) + '|' + String(d.periode.dateFin) : '';
+        if (plPeriodeChargee !== null && plPeriodeChargee !== periodeCourante) {
+            plStockEdite.clear();
+            plStockAjoute = [];
+        }
+        plPeriodeChargee = periodeCourante;
         // Memorise pour pouvoir re-rendre a chaque bascule sans rappeler l'API.
         plDernieresDonnees = d;
         majBoutonFigerPl(d);
@@ -2680,7 +3290,6 @@
         const doubleCompte = (d.depenses_double_compte && d.depenses_double_compte.montant > 0)
             ? `<span class="badge bg-warning text-dark ms-2" title="Ces dépenses sont dans des catégories déjà couvertes par les charges fixes proratisées ci-dessus. Si elles correspondent au paiement de l'abonnement mensuel, elles sont comptées deux fois. Si ce sont des surcoûts ponctuels, tout est correct.">⚠ ${esc(fmtMoney(d.depenses_double_compte.montant))} en ${esc(d.depenses_double_compte.categories.join(', '))}</span>`
             : '';
-        const stockCouleur = stock.variation_nette >= 0 ? 'success' : 'danger';
 
         // Le meme chiffre est rejoue ici, dans la Decomposition et dans les
         // termes de la marge brute: sans la mention "estime" aux trois
@@ -2688,6 +3297,153 @@
         // du bandeau qui l'annonce.
         const mentionEstime = stock.soir_estime === true ? ' [estimé]' : '';
         const stockTooltip = `Stock matin (${stock.matin_date || 'n/a'}): ${fmtMoney(stock.matin_debut)} | Stock soir${mentionEstime} (${stock.soir_date || 'n/a'}): ${fmtMoney(stock.soir_fin)} | Coefficient: ${stock.coeff} (pertes ${stock.pertes_decoupe_pct}%)`;
+
+        // Remontees ici: le panneau de detail et le calcul du delta les
+        // consomment, et ils precedent desormais `postes`.
+        const estimation = stock.estimation || null;
+        const soirEstime = stock.soir_estime === true && !!estimation;
+
+        // ON NE MONTRE QUE LES LIGNES QUI DISENT QUELQUE CHOSE.
+        //
+        // L'ancre porte tout le catalogue, epicerie comprise: 97 lignes dont
+        // « Ail », « ALWAYS », « ARICOTS BLANC PM », toutes a zero et sans
+        // mouvement. Les afficher noierait les huit lignes qui portent le
+        // stock, et un tableau qu'on ne peut pas parcourir ne se verifie pas.
+        //
+        // Une ligne compte des qu'elle a une quantite, un mouvement ou une
+        // vente - ou qu'elle a ete corrigee a la main.
+        const lignesToutes = (estimation && estimation.lignes) || [];
+        const lignesEst = lignesToutes.filter((l) => {
+            if (plStockEdite.has(l.produit)) return true;
+            const c = l.calcul || {};
+            return nb(l.quantite) !== 0 || nb(c.ancre) !== 0
+                || nb(c.transferts) !== 0 || nb(c.vendus) !== 0;
+        });
+        const lignesMasquees = lignesToutes.length - lignesEst.length;
+        // Le prix REELLEMENT employe par la valorisation, pas celui de l'ancre:
+        // valoriserLignes retient le prix d'achat quand il existe et retombe
+        // sur le prix de vente sinon. Afficher l'autre ferait un total qui ne
+        // se recompose pas.
+        const prixValorises = new Map();
+        for (const dl of (stock.soir_detail || [])) {
+            if (dl && dl.produit && dl.prix_utilise != null) prixValorises.set(dl.produit, nb(dl.prix_utilise));
+        }
+        const prixDe = (l) => {
+            const px = prixValorises.get(l.produit);
+            return Number.isFinite(px) && px > 0 ? px : nb(l.prix_unitaire);
+        };
+        const qteDe = (l) => (plStockEdite.has(l.produit) ? plStockEdite.get(l.produit) : nb(l.quantite));
+        const fmtQ = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+
+        const lignesHtml = lignesEst.map((l, i) => {
+            const c = l.calcul || {};
+            const q = qteDe(l), px = prixDe(l);
+            const modifiee = plStockEdite.has(l.produit);
+            return '<tr' + (modifiee ? ' class="table-warning"' : '') + '>'
+                + '<td>' + esc(l.produit)
+                  + (l.boucherie ? '' : ' <span class="badge bg-light text-muted border">hors boucherie</span>')
+                  + '</td>'
+                + '<td class="text-end text-muted">' + esc(fmtQ(c.ancre)) + '</td>'
+                + '<td class="text-end text-muted">' + (c.transferts ? esc(fmtQ(c.transferts)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">' + (c.vendus ? esc(fmtQ(c.vendus)) : '\u2014') + '</td>'
+                + '<td class="text-end text-muted">'
+                  + (c.taux_parage == null ? '\u2014' : esc(String(c.taux_parage).replace('.', ',')) + ' %') + '</td>'
+                + '<td class="text-end text-muted">' + (c.sortis ? esc(fmtQ(c.sortis)) : '\u2014') + '</td>'
+                + '<td class="text-end"><input type="number" step="0.01" min="0"'
+                  + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+                  + ' data-pl-est="' + i + '" value="' + esc(String(q)) + '"></td>'
+                + '<td class="text-end text-muted">' + esc(fmtMoney(px)) + '</td>'
+                + '<td class="text-end">' + esc(fmtMoney(q * px)) + '</td>'
+                + '</tr>';
+        }).join('');
+
+        const ajoutsHtml = plStockAjoute.map((a, i) =>
+            '<tr class="table-info">'
+            + '<td>' + esc(a.produit) + ' <span class="badge bg-info-subtle text-info">ajout\u00e9</span></td>'
+            + '<td class="text-end text-muted" colspan="5">ligne ajout\u00e9e \u00e0 la main</td>'
+            + '<td class="text-end"><input type="number" step="0.01" min="0"'
+              + ' class="form-control form-control-sm text-end" style="width:7rem;margin-left:auto"'
+              + ' data-pl-add="' + i + '" value="' + esc(String(a.quantite)) + '"></td>'
+            + '<td class="text-end text-muted">' + esc(fmtMoney(a.prix)) + '</td>'
+            + '<td class="text-end">' + esc(fmtMoney(a.quantite * a.prix)) + '</td>'
+            + '</tr>').join('');
+
+        // Le catalogue vit dans `stock`, pas a la racine: il est rendu a cote
+        // des autres donnees de stock. Le lire sur `d` donnait un menu vide -
+        // et un menu vide ne dit pas qu'on cherche au mauvais endroit.
+        const optionsAjout = ((stock.produits_catalogue) || []).map((pc) =>
+            '<option value="' + esc(pc.produit) + '" data-prix="' + esc(String(pc.prix || 0))
+            + '" data-bouch="' + (pc.boucherie ? '1' : '0') + '">' + esc(pc.produit) + '</option>').join('');
+
+        const plDetailEstimation = (soirEstime && lignesEst.length)
+            ? '<details class="mb-3" id="pl-detail-estimation"' + (plDetailEstimationOuvert ? ' open' : '') + '>'
+              + '<summary class="small text-muted" style="cursor:pointer">'
+              + 'D\u00e9tail du calcul, produit par produit \u2014 <strong>modifiable</strong> '
+              + '<span class="text-muted">(' + lignesEst.length + ' lignes'
+                + (lignesMasquees ? ', ' + lignesMasquees + ' à zéro masquées' : '')
+                + ')</span></summary>'
+              + '<div class="alert alert-light border small mt-2 mb-2">'
+              + '<code>estim\u00e9 = dernier comptage + transferts \u2212 ventes \u00f7 (1 \u2212 parage)</code>. '
+              + 'Les ventes sont celles qui <strong>consomment cette ligne</strong> : '
+              + '\u00ab Boeuf \u00bb perd ses ventes en gros, en d\u00e9tail, et la moiti\u00e9 de chaque Jarret, '
+              + 'selon la colonne <b>Mapp\u00e9 vers</b> du Mapping produits.'
+              + '<br>Vous pouvez corriger une quantit\u00e9 ou ajouter un produit : '
+              + '<strong>rien n\u2019est enregistr\u00e9</strong>, le PL passe simplement en simulation.</div>'
+              + '<div class="table-responsive"><table class="table table-sm align-middle mb-2">'
+              + '<thead><tr><th>Produit</th><th class="text-end">Dernier comptage</th>'
+              + '<th class="text-end">Transferts</th><th class="text-end">Ventes</th>'
+              + '<th class="text-end">Parage</th><th class="text-end">Sortis du stock</th>'
+              + '<th class="text-end">Estim\u00e9</th><th class="text-end">Prix</th>'
+              + '<th class="text-end">Valeur</th></tr></thead>'
+              + '<tbody>' + lignesHtml + ajoutsHtml + '</tbody></table></div>'
+              + '<div class="d-flex gap-2 align-items-center flex-wrap">'
+              + '<select class="form-select form-select-sm" id="pl-est-produit" style="max-width:16rem">'
+              + '<option value="">\u2014 ajouter un produit \u2014</option>' + optionsAjout + '</select>'
+              + '<input type="number" step="0.01" min="0" class="form-control form-control-sm"'
+              + ' id="pl-est-qte" placeholder="quantit\u00e9" style="max-width:9rem">'
+              + '<button class="btn btn-sm btn-outline-primary" id="pl-est-ajouter">Ajouter</button>'
+              + ((plStockEdite.size || plStockAjoute.length)
+                 ? '<button class="btn btn-sm btn-outline-secondary" id="pl-est-reset">R\u00e9initialiser</button>'
+                 : '')
+              + '</div></details>'
+            : '';
+
+        // L'ECART DE STOCK PRODUIT PAR LES CORRECTIONS.
+        //
+        // On travaille en DELTA, jamais en recomposant la valorisation
+        // entiere: valoriserLignes applique ses propres regles - prix d'achat
+        // quand il existe, prix de vente sinon, quantites negatives ecartees -
+        // et les rejouer ici en ferait une seconde definition, libre de
+        // diverger. Un delta se greffe sur le chiffre du serveur sans le
+        // recalculer.
+        //
+        // Boucherie et hors boucherie sont SEPARES: le coefficient de pertes
+        // de decoupe ne porte que sur la premiere. Les melanger ferait diverger
+        // le PL simule du PL reel des la premiere modification.
+        let deltaBoucherie = 0, deltaHors = 0;
+        for (const l of lignesEst) {
+            if (!plStockEdite.has(l.produit)) continue;
+            const dv = (plStockEdite.get(l.produit) - nb(l.quantite)) * prixDe(l);
+            if (l.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        // SANS ESTIMATION, aucune correction ne s'applique. La boucle des
+        // lignes editees est inerte d'elle-meme - lignesEst est vide - mais
+        // celle des lignes AJOUTEES ne l'etait pas: elle deplacait le PL d'une
+        // periode qui n'a pas d'estimation, donc pas de panneau pour le dire.
+        for (const a of (soirEstime ? plStockAjoute : [])) {
+            const dv = nb(a.quantite) * nb(a.prix);
+            if (a.boucherie) deltaBoucherie += dv; else deltaHors += dv;
+        }
+        const stockModifie = soirEstime && (plStockEdite.size > 0 || plStockAjoute.length > 0);
+        const coeffStockUi = nb(stock.coeff) || 1;
+        const variationSimulee = stockModifie
+            ? nb(stock.variation_nette) + coeffStockUi * deltaBoucherie + deltaHors
+            : nb(stock.variation_nette);
+        // La COULEUR suit le montant affiche, donc le simule. Elle se lisait
+        // sur stock.variation_nette pendant que le poste montrait deja
+        // variationSimulee: une correction qui fait passer la variation sous
+        // zero affichait un nombre negatif en vert, avec l'icone verte.
+        const stockCouleur = variationSimulee >= 0 ? 'success' : 'danger';
 
         const postes = [
             { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
@@ -2710,7 +3466,7 @@
               libelle: `<i class="bi bi-cart-dash text-danger"></i> Dépenses (période)${doubleCompte}` },
             { cle: 'paiements', signe: -1, montant: d.paiements_fournisseur || 0, couleur: 'danger', neutralisable: true,
               libelle: '<i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur' },
-            { cle: 'stock', signe: 1, montant: stock.variation_nette || 0, couleur: stockCouleur, neutralisable: true,
+            { cle: 'stock', signe: 1, montant: variationSimulee, couleur: stockCouleur, neutralisable: true,
               libelle: `<i class="bi bi-box-seam text-${stockCouleur}"></i> Variation stock ×
                         <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
                         <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`
@@ -2728,7 +3484,9 @@
         // serveur arrondit le total: les deux peuvent differer de quelques
         // centimes, et l'ecran afficherait alors un chiffre qui n'est celui de
         // personne. Le recalcul ne sert qu'a la simulation.
-        const simulation = plPostesNeutralises.size > 0;
+        // Une correction de stock est une simulation au meme titre qu'un poste
+        // neutralise: le PL affiche cesse d'etre celui du serveur.
+        const simulation = plPostesNeutralises.size > 0 || stockModifie;
         const pl = simulation
             ? postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0)
             : (d.pl || 0);
@@ -2760,12 +3518,19 @@
         // Le calcul EN CLAIR, avec ses montants. Un taux de -176% se verifie
         // alors a l'oeil au lieu d'etre a prendre pour argent comptant, et on
         // voit immediatement quel terme le tire vers le bas.
+        // 'paiements' aussi: le serveur le soustrait du cout des ventes
+        // (coutDesVentes = avances + paiements - variation nette), mais la
+        // ligne affichee le taisait. Avec 143 000 F de paiements, le lecteur
+        // qui refaisait la formule a l'oeil tombait sur 540 727 au lieu des
+        // 397 727 affiches. A zero on ne l'affiche pas: un « - 0 » n'aide
+        // personne et la plupart des sites n'ont aucun fournisseur externe.
         const termesMarge = postes
-            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle))
+            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle)
+                || (p.cle === 'paiements' && nb(p.montant) !== 0))
             .map((p) => {
                 const off = !actif(p);
                 const valeur = p.signe * p.montant;
-                const libelle = { ventes: 'Ventes', avances: 'Avances', stock: 'Variation stock' }[p.cle]
+                const libelle = { ventes: 'Ventes', avances: 'Avances', paiements: 'Paiements fournisseur', stock: 'Variation stock' }[p.cle]
                     + (p.cle === 'stock' && stock.soir_estime === true ? ' (estimée)' : '');
                 const texte = `${valeur >= 0 ? '+' : '−'} ${fmtMoney(Math.abs(valeur))}`;
                 return off
@@ -2862,8 +3627,6 @@
         // d'avertissement (deja pris par les produits ecartes) ne sont
         // reutilises ici: un badge en toutes lettres, sinon trois signaux
         // differents finissent par dire la meme chose et plus rien.
-        const estimation = stock.estimation || null;
-        const soirEstime = stock.soir_estime === true && !!estimation;
         const fmtQte = (v) => Number(v || 0).toLocaleString('fr-FR', { maximumFractionDigits: 2 });
         const badgeEstime = soirEstime
             ? ' <span class="badge bg-warning text-dark" title="Le stock du soir de cette date n\'a pas encore été compté : il est estimé à partir du dernier inventaire.">estimé</span>'
@@ -2906,6 +3669,16 @@
                </div>`
             : '';
 
+        // DETAIL DU CALCUL, REPLIE PAR DEFAUT ET MODIFIABLE.
+        //
+        // Un chiffre estime qu'on ne peut pas decomposer ne se verifie pas: on
+        // le croit ou on ne le croit pas. Les quatre termes - ancre,
+        // transferts, ventes, parage - permettent de le refaire a la main, et
+        // la colonne de quantite permet de le corriger quand on SAIT.
+        //
+        // Rien n'est enregistre. Le PL passe alors en simulation, comme
+        // lorsqu'un poste est neutralise: un chiffre simule ne doit jamais
+        // pouvoir se lire comme le PL reel.
         // DERNIERE JOURNEE SANS VENTE. Une date de fin posee au-dela de la
         // derniere saisie donne un PL qui a l'air complet: meme nombre de
         // jours, memes charges proratisees, un total simplement plus bas. Le
@@ -2974,6 +3747,7 @@
         resultEl.innerHTML = `
             ${plBandeauSansVente}
             ${plBandeauEstimation}
+            ${plDetailEstimation}
             <!-- Cartes PL et marge brute -->
             <div class="row g-2 mb-3">
                 <div class="col-md-6">
@@ -3015,9 +3789,10 @@
                                         : ''}
                                 </div>
                                 <div class="mt-1 fst-italic">
-                                    Marge sur les achats réellement consommés : les achats corrigés
-                                    de ce qui est resté en stock. Les charges, la commission et les
-                                    dépenses n'en font pas partie — elles viennent après.
+                                    Marge sur les achats réellement consommés : avances et paiements
+                                    fournisseur, corrigés de ce qui est resté en stock. Les charges,
+                                    la commission et les dépenses n'en font pas partie — elles
+                                    viennent après.
                                 </div>
                             </div>
                         </div>
@@ -3066,10 +3841,26 @@
                             <td>× Coefficient (1 − ${esc(stock.pertes_decoupe_pct)}%)</td>
                             <td class="text-end">× ${esc(stock.coeff)}</td>
                         </tr>
-                        <tr class="table-light fw-bold">
+                        <tr class="${stockModifie ? '' : 'table-light fw-bold'}">
                             <td>= Variation stock nette</td>
                             <td class="text-end text-${stockColorNet}">${stockSignNet} ${esc(fmtMoney(Math.abs(stock.variation_nette)))}</td>
                         </tr>
+                        ${stockModifie ? `
+                        <!-- La derivation ci-dessus reste celle du SERVEUR:
+                             brute x coefficient = nette est une identite, et y
+                             substituer le simule rendrait faux le calcul
+                             affiche juste au-dessus. La correction se pose
+                             donc en terme supplementaire, et le total repris
+                             est celui que le poste PL utilise. -->
+                        <tr>
+                            <td>+ Correction simulée
+                                <span class="badge bg-secondary">simulé</span></td>
+                            <td class="text-end">${variationSimulee - nb(stock.variation_nette) >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee - nb(stock.variation_nette))))}</td>
+                        </tr>
+                        <tr class="table-light fw-bold">
+                            <td>= Variation retenue au PL</td>
+                            <td class="text-end text-${stockCouleur}">${variationSimulee >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee)))}</td>
+                        </tr>` : ''}
                     </tbody>
                 </table>
                 ${plLegendePrix}
@@ -3119,10 +3910,102 @@
                 renderPl(plDernieresDonnees);
             });
         }
+        // PANNEAU DE DETAIL DE L'ESTIMATION. Meme motif que ci-dessus: les
+        // ecouteurs sont reposes a chaque rendu, innerHTML ayant detruit les
+        // precedents.
+        const det = document.getElementById('pl-detail-estimation');
+        if (det) {
+            // L'etat d'ouverture vit dans la variable, pas dans le DOM:
+            // <details> bascule de facon asynchrone, et le relire au rendu
+            // suivant refermerait le panneau tout seul.
+            det.addEventListener('toggle', () => { plDetailEstimationOuvert = det.open; });
+
+            // On rerend sur 'change', pas sur 'input': un rendu a chaque frappe
+            // ferait perdre le focus au champ qu'on est en train de remplir.
+            det.addEventListener('change', (ev) => {
+                const cible = ev.target;
+                const iEst = cible.getAttribute && cible.getAttribute('data-pl-est');
+                const iAdd = cible.getAttribute && cible.getAttribute('data-pl-add');
+                if (iEst !== null && iEst !== undefined && lignesEst[iEst]) {
+                    const l = lignesEst[iEst];
+                    const v = parseFloat(cible.value);
+                    // Revenir a la valeur calculee EFFACE la correction: sans
+                    // ca, le PL resterait marque « simulation » alors que plus
+                    // rien ne differe.
+                    if (!Number.isFinite(v) || v === nb(l.quantite)) plStockEdite.delete(l.produit);
+                    else plStockEdite.set(l.produit, v);
+                    renderPl(plDernieresDonnees);
+                } else if (iAdd !== null && iAdd !== undefined && plStockAjoute[iAdd]) {
+                    const v = parseFloat(cible.value);
+                    if (!Number.isFinite(v) || v <= 0) plStockAjoute.splice(iAdd, 1);
+                    else plStockAjoute[iAdd].quantite = v;
+                    renderPl(plDernieresDonnees);
+                }
+            });
+
+            const btnAjout = document.getElementById('pl-est-ajouter');
+            if (btnAjout) {
+                btnAjout.addEventListener('click', () => {
+                    const sel = document.getElementById('pl-est-produit');
+                    const qte = document.getElementById('pl-est-qte');
+                    const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+                    const nom = sel ? sel.value : '';
+                    const v = qte ? parseFloat(qte.value) : NaN;
+                    if (!nom || !Number.isFinite(v) || v <= 0) {
+                        if (typeof showToast === 'function') showToast('Choisir un produit et une quantité', 'warning');
+                        return;
+                    }
+                    // UN PRODUIT DEJA ESTIME NE S'AJOUTE PAS.
+                    //
+                    // Sa ligne existe et se modifie directement dans le
+                    // tableau. L'ajouter une seconde fois ne remplacait pas la
+                    // premiere: les deux quantites s'additionnaient dans le
+                    // delta, et le stock comptait le produit deux fois sans
+                    // que rien ne le signale.
+                    const dejaEstime = lignesEst.some((l) => l.produit === nom);
+                    if (dejaEstime) {
+                        if (typeof showToast === 'function') {
+                            showToast('« ' + nom + ' » a déjà une ligne estimée : '
+                                + 'modifiez sa quantité dans le tableau plutôt que de l\'ajouter.', 'warning');
+                        }
+                        return;
+                    }
+                    const prix = opt ? parseFloat(opt.getAttribute('data-prix')) : NaN;
+                    // Un produit SANS prix ne compte pas: le valoriser a zero
+                    // gonflerait le stock d'une ligne qui ne vaut rien, en
+                    // silence. On le dit et on refuse.
+                    if (!Number.isFinite(prix) || prix <= 0) {
+                        if (typeof showToast === 'function') {
+                            showToast('« ' + nom + ' » n\'a pas de prix d\'achat au catalogue : '
+                                + 'renseignez-le dans Prix fournisseur avant de l\'ajouter ici.', 'warning');
+                        }
+                        return;
+                    }
+                    plDetailEstimationOuvert = true;
+                    plStockAjoute.push({
+                        produit: nom, quantite: v, prix,
+                        boucherie: opt ? opt.getAttribute('data-bouch') === '1' : false
+                    });
+                    renderPl(plDernieresDonnees);
+                });
+            }
+            const btnReset = document.getElementById('pl-est-reset');
+            if (btnReset) {
+                btnReset.addEventListener('click', () => {
+                    plStockEdite.clear();
+                    plStockAjoute = [];
+                    plDetailEstimationOuvert = true;
+                    renderPl(plDernieresDonnees);
+                });
+            }
+        }
+
         const reset = document.getElementById('fin-pl-reset');
         if (reset) {
             reset.addEventListener('click', () => {
                 plPostesNeutralises.clear();
+                plStockEdite.clear();
+                plStockAjoute = [];
                 renderPl(plDernieresDonnees);
             });
         }

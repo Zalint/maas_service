@@ -69,6 +69,7 @@ const {
 const { resolveProduit, buildResolverMaps, cibleDe } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
+const { ecartJour, resoudreMode, fenetreEntrees } = require('../lib/pl-ecart-jour');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
 const ALIAS_PRODUIT_MAX_LENGTH = 150;
@@ -406,12 +407,23 @@ async function estimerBorneSoir(args) {
         ovin: tauxMois && tauxMois.ovin ? tauxMois.ovin.ratio : null
     };
 
+    // La cible d'une vente vient du MEME mapping que le cout: « Boeuf en
+    // gros » consomme du « Boeuf », un Jarret en consomme 0,5 kg. Sans elle,
+    // l'estimation retomberait sur un pool a repartir au prorata.
+    const pourCible = resolveurPrix && typeof resolveurPrix.pourDate === 'function'
+        ? resolveurPrix.pourDate(dateFin)
+        : null;
+    const cibleDe = pourCible && typeof pourCible.cibleDuCout === 'function'
+        ? (produit) => pourCible.cibleDuCout(produit)
+        : undefined;
+
     const estimation = estimerStockSoir({
         lignesAncre,
         transferts,
         ventes: ventesFenetre,
         ratios,
         ratioRepli,
+        cibleDe,
         categorieDe: contexte.categorieDe,
         estBoucherie,
         exclusions: contexte.exclusions,
@@ -430,7 +442,10 @@ async function estimerBorneSoir(args) {
     // silencieusement des qu'une estimation remplace le comptage.
     const valorisation = valoriserLignes({
         lignes: retenues,
-        prixAchat: resolveurPrix.pourDate(dateFin).prixAchat,
+        // Le resolveur de la date de fin est deja construit plus haut pour
+        // `cibleDe`: le rebatir ici refaisait tout l'index des prix a la meme
+        // date. On garde le repli au cas ou pourCible n'ait pas pu l'etre.
+        prixAchat: (pourCible || resolveurPrix.pourDate(dateFin)).prixAchat,
         estBoucherie,
         categorieDe: contexte.categorieDe
     });
@@ -452,6 +467,23 @@ async function estimerBorneSoir(args) {
             nb_lignes_sans_parage: estimation.nb_lignes_sans_parage,
             valeur_ancre: round2(ancre.valeur),
             valeur_estimee: round2(valorisation.valeur),
+            // LE CALCUL LIGNE PAR LIGNE, pour que l'ecran puisse le montrer et
+            // laisser l'utilisateur le corriger. `boucherie` est indispensable
+            // au recalcul cote client: le coefficient de pertes de decoupe ne
+            // s'applique qu'a elle, et l'ignorer ferait diverger le PL simule
+            // du PL reel des la premiere modification.
+            // `retenues`, PAS estimation.lignes: valoriserLignes n'a compte
+            // que celles-la. Exposer les produits non fiables donnait au
+            // panneau des lignes absentes de valeur_estimee, et corriger l'une
+            // d'elles greffait un delta sur une base qui ne l'avait jamais
+            // incluse - le PL simule divergeait du reel sans rien dire.
+            lignes: (retenues || []).map((l) => ({
+                produit: l.produit,
+                quantite: l.quantite,
+                prix_unitaire: l.prix_unitaire,
+                boucherie: !!estBoucherie(l.produit),
+                calcul: l.calcul || null
+            })),
             avertissements: estimation.avertissements
         }
     };
@@ -1960,6 +1992,14 @@ router.get('/simulation', async (req, res) => {
 
         let resolveurPrix;
         let prixAchatDe;
+        // Le resolveur de la DATE DE FIN, resolu une seule fois.
+        //
+        // `prixAchatDe` rend la moyenne ponderee du mois; celui-ci rend le
+        // prix a la date de fin, dont produits_vendus a besoin pour
+        // `prix_achat_fin`. pourDate() fait un travail reel a chaque appel
+        // (historique, derniere reception, lot MATA): l'appeler dans le map
+        // des produits le refaisait une fois par ligne.
+        let prixAchatFinDe = null;
         let origineDe = () => null;
         // Prix de VENTE catalogue des carcasses, expose en v2 seulement.
         // C'est l'assiette reelle de la commission MaaS (commissionPct x prix
@@ -2326,6 +2366,7 @@ router.get('/simulation', async (req, res) => {
             };
 
             const finDePeriode = resolveurPrix.pourDate(dateFin);
+            prixAchatFinDe = finDePeriode.prixAchat;
             prixAchatDe = (nom) => {
                 const d = cumulDe(nom);
                 if (d && d.c.qte > 0) return (d.c.pondere / d.c.qte) * d.coef;
@@ -2503,6 +2544,20 @@ router.get('/simulation', async (req, res) => {
                     )[0] || a.cle;
                     const pa = prixAchatDe ? parseFloat(prixAchatDe(nom)) : NaN;
                     const prixAchat = Number.isFinite(pa) && pa > 0 ? round2(pa) : null;
+                    // LE COUT D'ACHAT POUR LA SUITE, a cote de la moyenne du
+                    // mois.
+                    //
+                    // `prix_achat` est une moyenne PONDEREE des journees
+                    // ecoulees: elle explique le passe, et melange les lots
+                    // anciens aux recents. Les jours qui RESTENT se paieront au
+                    // dernier prix connu - celui du dernier transfert recu pour
+                    // le boeuf. Projeter sur la moyenne sous-estime le cout des
+                    // que la carcasse a rencheri (mesure: 4 157 contre 4 480).
+                    //
+                    // Meme raisonnement que `prix_retenu` cote VENTE, qui
+                    // existe deja pour la meme raison. La symetrie manquait.
+                    const paFin = prixAchatFinDe ? parseFloat(prixAchatFinDe(nom)) : NaN;
+                    const prixAchatFin = Number.isFinite(paFin) && paFin > 0 ? round2(paFin) : null;
                     return {
                         nom,
                         quantite: round2(a.quantite),
@@ -2510,6 +2565,7 @@ router.get('/simulation', async (req, res) => {
                         prix_moyen: a.prix_moyen === null ? null : round2(a.prix_moyen),
                         prix_retenu: prixRetenuDe(nom),
                         prix_achat: prixAchat,
+                        prix_achat_fin: prixAchatFin,
                         nb_lignes: a.nb_lignes,
                         sans_vente: false,
                         prix_achat_origine: origineDe(nom)
@@ -3037,6 +3093,7 @@ async function computePl(dateDebut, dateFin) {
         const { chargerContexteParage } = require('../lib/parage-contexte');
         const ctxFamille = await chargerContexteParage(sequelize);
         const estBoucherie = ctxFamille.estBoucherie;
+
         // Ventilation des ventes par famille, pour information: savoir quelle
         // part du chiffre d'affaires ne vient pas de la viande. Meme resolveur
         // que le stock, donc les deux se lisent avec la meme definition.
@@ -3112,6 +3169,27 @@ async function computePl(dateDebut, dateFin) {
             stockSoirEffectif = estimation.valorisation;
             stockSoirDate = estimation.date_demandee_jjmmaaaa;
         }
+
+        // LE CATALOGUE, pour le panneau de simulation du stock estime.
+        //
+        // Seuls les produits qui portent un PRIX D'ACHAT y figurent: on ne
+        // peut pas ajouter a la main une ligne dont la valeur serait zero, ce
+        // qui gonflerait le stock d'une quantite sans montant, en silence.
+        // `boucherie` decide si le coefficient de pertes de decoupe s'applique.
+        //
+        // Construit APRES l'estimation et seulement si elle existe: il ne sert
+        // qu'a ce panneau, et la requete partait jusqu'ici sur chaque calcul de
+        // PL - y compris l'immense majorite qui a un comptage du soir reel.
+        const catalogueProduits = estimation
+            ? (await FournisseurPrix.findAll({ raw: true }))
+                .map((r) => ({
+                    produit: r.produit,
+                    prix: r.prix_achat == null ? null : parseFloat(r.prix_achat),
+                    boucherie: !!estBoucherie(r.produit)
+                }))
+                .filter((p) => Number.isFinite(p.prix) && p.prix > 0)
+                .sort((a, b) => a.produit.localeCompare(b.produit, 'fr'))
+            : [];
 
         const stockSoirFin = stockSoirEffectif.valeur;
         const stockSoirAuPrixDeVente = stockSoirEffectif.produits_au_prix_de_vente;
@@ -3252,6 +3330,12 @@ async function computePl(dateDebut, dateFin) {
                     // utilise, base achat/vente): l'ecran l'affiche a la
                     // demande, l'export Excel l'emporte, et les snapshots le
                     // portent d'office puisqu'ils stockent cette reponse.
+                    // LE CATALOGUE, pour le panneau de simulation du stock
+                    // estime: on ne peut ajouter qu'un produit qui porte un
+                    // prix d'achat, sinon la ligne vaudrait zero en silence.
+                    // `boucherie` decide si le coefficient de pertes de
+                    // decoupe s'applique a la ligne ajoutee.
+                    produits_catalogue: catalogueProduits,
                     matin_detail: stockMatinVal.detail_lignes || [],
                     soir_detail: stockSoirEffectif.detail_lignes || [],
                     // Borne du soir ESTIMEE faute de comptage a la date de fin.
@@ -3534,6 +3618,166 @@ router.get('/pl/snapshots/:date', async (req, res) => {
         res.json({ success: true, data: snap });
     } catch (e) {
         console.error('GET /api/finance/pl/snapshots/:date:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * D'OU VIENT L'ECART DE PL entre une journee et la veille.
+ *
+ * Les deux PL figes sont des CUMULS depuis le 1er: leur difference poste par
+ * poste est la contribution de la journee. Tout le calcul vit dans
+ * lib/pl-ecart-jour.js, module pur et teste; cette route ne fait que charger
+ * les deux lignes et le brancher.
+ *
+ * PARAMETRES
+ *   date       la journee expliquee (obligatoire)
+ *   reference  la photo a laquelle on la compare. Defaut: J-1. Le client
+ *              envoie J-1, mais le parametre reste explicite: l'ecran, lui,
+ *              se compare au dernier PL FIGE, qui peut dater de trois jours.
+ *              Les deux lectures sont legitimes, et chacune annonce la sienne.
+ *   debut      le 1er jour du cumul. Defaut: le 1er du mois de `date`. Sans
+ *              lui, un PL affiche du 05 au 14 serait explique par des cumuls
+ *              partant du 1er, et aucune colonne ne correspondrait a l'ecran.
+ *   mode       auto (defaut) | force | fige — voir plus bas.
+ */
+router.get('/pl/ecart-jour', async (req, res) => {
+    try {
+        const dateISO = parseDateVersISO(String(req.query.date || ''));
+        if (!dateISO) {
+            return res.status(400).json({ success: false, error: 'date invalide' });
+        }
+        const veilleISO = parseDateVersISO(String(req.query.reference || ''))
+            || new Date(new Date(dateISO + 'T00:00:00Z').getTime() - 86400000)
+                .toISOString().slice(0, 10);
+        if (veilleISO >= dateISO) {
+            return res.status(400).json({ success: false,
+                error: 'la référence doit précéder la date' });
+        }
+        const [snapJour, snapVeille] = await Promise.all([
+            PlSnapshot.findByPk(dateISO, { raw: true }),
+            PlSnapshot.findByPk(veilleISO, { raw: true })
+        ]);
+        // TROIS MODES, parce que « figé » et « à jour » ne sont pas la meme
+        // question. Le recalcul passe par computePl, qui valorise le stock AUX
+        // PRIX DE LA DATE demandee - il n'invente donc pas de revalorisation -
+        // mais lit les donnees TELLES QU'ELLES SONT MAINTENANT: une vente
+        // saisie en retard y figure, alors qu'un snapshot pris ce soir-la ne
+        // l'aurait pas contenue. Le module le signale.
+        //   auto  (defaut) - les photos figees, completees par un recalcul
+        //                    quand elles manquent. La journee en cours n'est
+        //                    jamais figee avant 23h35.
+        //   force          - tout recalculer MAINTENANT, meme si un PL a ete
+        //                    fige. Un snapshot peut etre perime: une vente
+        //                    saisie en retard, un stock corrige depuis. Ce
+        //                    mode montre l'etat courant, et signale l'ecart
+        //                    avec ce qui avait ete fige.
+        //   fige           - ne comparer que des photos figees, sans rien
+        //                    recalculer.
+        // `recalculer=0/1` reste accepte: c'est l'ancien parametre.
+        const mode = resoudreMode(req.query);
+        // LE DEBUT DU CUMUL vient du client, qui sait quelle periode il
+        // affiche. Sans lui, un PL du 05 au 14 aurait ete explique par des
+        // cumuls partant du 1er: l'ecart de la journee serait reste juste -
+        // les deux cumuls partagent leur base - mais les colonnes « veille »
+        // et « jour » auraient montre des totaux etrangers a l'ecran.
+        const debutPeriode = parseDateVersISO(String(req.query.debut || ''))
+            || ((snapJour && snapJour.payload && snapJour.payload.periode) || {}).dateDebut
+            || dateISO.slice(0, 8) + '01';
+        let payloadJour = snapJour ? snapJour.payload : null;
+        let payloadVeille = snapVeille ? snapVeille.payload : null;
+        let veilleRecalculee = false, jourRecalcule = false;
+        // Ce que le PL FIGE disait, garde pour le comparer au recalcul.
+        const plFige = {
+            jour: snapJour ? parseFloat(snapJour.pl) : null,
+            veille: snapVeille ? parseFloat(snapVeille.pl) : null
+        };
+        if (mode !== 'fige') {
+            for (const cote of [
+                { a: 'jour', iso: dateISO, present: !!payloadJour },
+                { a: 'veille', iso: veilleISO, present: !!payloadVeille }
+            ]) {
+                if (cote.present && mode !== 'force') continue;
+                try {
+                    const calcule = await computePlMemoise(debutPeriode, cote.iso);
+                    if (cote.a === 'jour') { payloadJour = calcule; jourRecalcule = true; }
+                    else { payloadVeille = calcule; veilleRecalculee = true; }
+                } catch (e) {
+                    // Un recalcul qui echoue ne doit pas emporter la route: le
+                    // module rendra son refus habituel, qui dit quoi faire.
+                    console.warn('[PL] recalcul ' + cote.a + ' echoue:', e.message);
+                }
+            }
+        }
+        // LES LIGNES ENTREES DANS LE CUMUL entre les deux photos, lues APRES
+        // avoir su qu'il y a deux photos a comparer.
+        //
+        // Depenses et paiements vivent dans des tables locales datees: la
+        // journee est l'intervalle ]veille, jour]. On les lit ici plutot que
+        // de les figer dans le payload, ce qui rend le detail disponible sur
+        // TOUT l'historique deja fige, pas seulement sur les jours a venir.
+        //
+        // `Op` vient de l'import de tete (ligne 47). computePl en declare un
+        // local sous le nom SeqOp, ce qui pouvait laisser croire qu'aucun
+        // n'etait disponible ici - il l'etait.
+        let depensesRows = [], paiementsRows = [];
+        if (payloadJour && payloadVeille) {
+            const f = fenetreEntrees(veilleISO, dateISO);
+            [depensesRows, paiementsRows] = await Promise.all([
+                Depense.findAll({
+                    where: { date: { [Op.between]: [f.debut, f.fin] } },
+                    attributes: ['date', 'montant', 'categorie'],
+                    raw: true
+                }),
+                // Pas de colonne « fournisseur »: la table ne porte qu'UN
+                // fournisseur, et decrit chaque versement par son mode, sa
+                // reference et son commentaire. Le libelle se compose donc.
+                FournisseurPaiement.findAll({
+                    where: { date: { [Op.between]: [f.debut, f.fin] } },
+                    attributes: ['date', 'montant', 'mode', 'reference', 'commentaire'],
+                    raw: true
+                })
+            ]);
+        }
+        const r = ecartJour({
+            jour: payloadJour,
+            veille: payloadVeille,
+            veilleRecalculee: veilleRecalculee,
+            jourRecalcule: jourRecalcule,
+            plFige: plFige,
+            depenses: depensesRows.map((d) => ({
+                date: d.date, montant: d.montant, libelle: d.categorie
+            })),
+            paiements: paiementsRows.map((p) => ({
+                date: p.date, montant: p.montant,
+                libelle: [p.mode, p.reference ? 'réf. ' + p.reference : null, p.commentaire]
+                    .filter(Boolean).join(' · ') || 'versement fournisseur'
+            }))
+        });
+        res.json({
+            success: true,
+            data: Object.assign({
+                date_jour: dateISO,
+                date_veille: veilleISO,
+                // La SOURCE de chaque photo: un snapshot manuel fige a 14 h ne
+                // couvre pas la meme journee que celui du cron de 23h35, et
+                // comparer les deux ferait apparaitre une demi-journee comme
+                // un ecart. L'ecran le dit plutot que de le taire.
+                mode: mode,
+                // LE RECALCUL PRIME sur le snapshot. En mode force, un PL fige
+                // existe mais n'a PAS servi: annoncer sa source et sa date de
+                // figeage decrirait une photo que le calcul a ecartee. La date
+                // de figeage tombe alors a null - il n'y a pas de figeage
+                // derriere le chiffre rendu.
+                source_jour: jourRecalcule ? 'recalcul' : (snapJour ? snapJour.source : null),
+                source_veille: veilleRecalculee ? 'recalcul'
+                    : (snapVeille ? snapVeille.source : null),
+                fige_jour: jourRecalcule ? null : (snapJour ? snapJour.updated_at : null),
+                fige_veille: veilleRecalculee ? null : (snapVeille ? snapVeille.updated_at : null)
+            }, r)
+        });
+    } catch (e) {
+        console.error('GET /api/finance/pl/ecart-jour:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
