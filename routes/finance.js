@@ -4378,6 +4378,24 @@ router.get('/cash-stock', async (req, res) => {
                     montant: parseFloat(o.montant) || 0 }))
                 .filter((o) => o.date >= premierDuMois && o.date <= dateD);
 
+            // SANS REPONSE DU PARTENAIRE, PAS DE TOTAL.
+            //
+            // cdb null rend une liste de remboursements VIDE, donc un total
+            // calcule comme si rien n'avait ete rembourse - faux de plusieurs
+            // millions. Un bandeau rouge au-dessus ne suffit pas: un nombre
+            // affiche se lit, et celui-la se recopie. On rend le bloc avec sa
+            // raison et SANS total, l'ecran n'affiche alors que l'alerte.
+            if (!cdb) {
+                cashTheorique = {
+                    total: null,
+                    lignes: [],
+                    commentaire: '',
+                    periode: { debut: premierDuMois, fin: dateD },
+                    source_partenaire: 'indisponible'
+                };
+                throw new Error('__source_partenaire_muette__');
+            }
+
             cashTheorique = construireCashTheorique({
                 cashDepart: cashDepart,
                 cashDepartDate: cashDepartDate,
@@ -4400,7 +4418,14 @@ router.get('/cash-stock', async (req, res) => {
             // millions - l'ecran doit le dire, pas l'afficher tel quel.
             cashTheorique.source_partenaire = cdb ? 'ok' : 'indisponible';
         } catch (e) {
-            console.warn('[cash-stock] cash theorique indisponible:', e.message);
+            // Sortie volontaire du bloc ci-dessus quand le partenaire est
+            // muet: cashTheorique porte deja sa raison, on le garde.
+            if (e && e.message === '__source_partenaire_muette__') {
+                console.warn('[cash-stock] source partenaire muette: total non calcule');
+            } else {
+                console.warn('[cash-stock] cash theorique indisponible:', e.message);
+                cashTheorique = null;
+            }
         }
 
         // La tolerance d'un jour existe pour les fuseaux a l'est de Greenwich,

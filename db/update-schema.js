@@ -393,8 +393,9 @@ async function updateSchema() {
         // tenant vierge, transferts n'existe pas encore (sequelize.sync ne
         // tourne qu'apres) et l'ALTER ferait echouer TOUTES les migrations
         // suivantes, pas seulement celle-ci.
-        const transfertsTableExistsHm = await checkTableExists('transferts');
-        if (transfertsTableExistsHm) {
+        // Reutilise le check fait plus haut pour la colonne extension:
+        // rien ne cree la table entre les deux.
+        if (transfertsTableExists) {
             await sequelize.query(`
                 ALTER TABLE transferts
                 ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE

@@ -686,7 +686,7 @@
                     elAv.innerHTML = rappro.source_partenaire === 'indisponible'
                         ? '<span class="text-muted">source indisponible</span>'
                         : esc(fmtMoney(totAvance))
-                          + (Math.abs(ecartTotal) > (rappro.tolerance || 5)
+                          + (nbEcart > 0
                               ? `<span class="d-block small text-danger">${ecartTotal > 0 ? '+' : '−'}${esc(fmtMoney(Math.abs(ecartTotal)))}`
                                 + (nbEcart ? ` sur ${esc(String(nbEcart))} date(s)` : '')
                                 + '</span>'
@@ -4320,11 +4320,11 @@
                         <tr>
                             <td>+ Correction simulée
                                 <span class="badge bg-secondary">simulé</span></td>
-                            <td class="text-end">${variationSimulee - nb(stock.variation_nette) >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee - nb(stock.variation_nette))))}</td>
+                            <td class="text-end">${variationRetenue - nb(stock.variation_nette) >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationRetenue - nb(stock.variation_nette))))}</td>
                         </tr>
                         <tr class="table-light fw-bold">
                             <td>= Variation retenue au PL</td>
-                            <td class="text-end text-${stockCouleur}">${variationSimulee >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationSimulee)))}</td>
+                            <td class="text-end text-${stockCouleur}">${variationRetenue >= 0 ? '+' : '−'} ${esc(fmtMoney(Math.abs(variationRetenue)))}</td>
                         </tr>` : ''}
                     </tbody>
                 </table>
@@ -5117,13 +5117,14 @@
                           le 1er du mois : le point de départ compte pour 0, et ce total ne vaut donc
                           que comme variation depuis le début du mois.</div>`
                       : ''}
-                    <table class="table table-sm mb-2"><tbody>
                     ${nb(ct.depart_nb_pv_attendus) > 0 && nb(ct.depart_nb_pv) < nb(ct.depart_nb_pv_attendus)
                       ? `<div class="alert alert-warning py-2 px-2 small">Seuls ${esc(String(ct.depart_nb_pv))}
                           des ${esc(String(ct.depart_nb_pv_attendus))} points de vente avaient clôturé le
                           ${esc(String(ct.lignes && ct.lignes[0] ? String(ct.lignes[0].libelle).replace('Caisse au ', '') : '?'))} :
                           le point de départ ne porte que leur caisse, et le total est d'autant trop bas.</div>`
                       : ''}
+                    ${ct.total === null || ct.total === undefined ? '' : `
+                    <table class="table table-sm mb-2"><tbody>
                         ${(ct.lignes || []).map((l) => `<tr>
                           <td>${l.signe > 0 ? '' : '− '}${esc(l.libelle)}</td>
                           <td class="text-end ${l.signe > 0 ? 'text-success' : 'text-danger'}">${
@@ -5133,7 +5134,7 @@
                           <th>= Cash théorique</th>
                           <th class="text-end text-${nb(ct.total) >= 0 ? 'success' : 'danger'}">${
                             esc(fmtMoney(ct.total))}</th></tr>
-                    </tbody></table>
+                    </tbody></table>`}
                     <div class="text-muted small">${esc(ct.commentaire || '')}</div>
                     ${nb((ct.creances || {}).montant) > 0
                       ? `<div class="alert alert-warning py-2 px-2 small mt-2 mb-0">
