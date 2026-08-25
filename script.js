@@ -773,7 +773,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 quantite: transfert.quantite,
                 prixUnitaire: transfert.prixUnitaire,
                 total: transfert.total,
-                commentaire: transfert.commentaire || ''
+                commentaire: transfert.commentaire || '',
+                // Passe-plat: les fichiers importes ne portent pas encore la
+                // colonne, mais l'enregistrement remplace TOUTE la journee.
+                // Sans cette ligne, importer une date effacerait le drapeau
+                // des transferts hors Mata deja saisis ce jour-la.
+                horsMata: !!(transfert.horsMata || transfert.hors_mata)
             }));
 
             console.log('Données à envoyer:', donneesAEnvoyer);
@@ -4835,6 +4840,39 @@ async function chargerTransferts(date) {
                     });
                     tdJete.appendChild(checkJete);
 
+                    // HORS MATA: cette ligne n'apporte pas de marchandise MATA.
+                    //
+                    // Un transfert entrant vaut commission 3% pour MaaS parce
+                    // que la marchandise vient de MATA. Un achat local, un
+                    // depannage entre points de vente ou un autre fournisseur
+                    // entrent par le MEME ecran et se faisaient facturer une
+                    // commission qui n'a pas lieu d'etre. La case le declare,
+                    // et routes/finance-creances.js ecarte la ligne a la
+                    // source - donc de la dette ET du detail par date.
+                    //
+                    // L'avertissement est VISIBLE quand la case est cochee, pas
+                    // seulement au survol: une ligne qui sort du calcul de
+                    // commission doit se voir dans le tableau, sinon une case
+                    // cochee par erreur passe inapercue jusqu'a la facture.
+                    const tdHorsMata = document.createElement('td');
+                    tdHorsMata.className = 'text-center';
+                    const checkHorsMata = document.createElement('input');
+                    checkHorsMata.type = 'checkbox';
+                    checkHorsMata.className = 'form-check-input hors-mata-check';
+                    checkHorsMata.title = "Marchandise qui ne vient pas de MATA. Cochee, cette ligne n'entre pas dans le calcul de la commission 3%.";
+                    const badgeHorsMata = document.createElement('small');
+                    badgeHorsMata.className = 'd-block text-warning-emphasis fw-medium';
+                    badgeHorsMata.style.display = 'none';
+                    badgeHorsMata.textContent = 'sans commission';
+                    const majHorsMata = () => {
+                        badgeHorsMata.style.display = checkHorsMata.checked ? '' : 'none';
+                        tdHorsMata.parentElement && tdHorsMata.parentElement.classList.toggle('table-warning', checkHorsMata.checked);
+                    };
+                    checkHorsMata.addEventListener('change', majHorsMata);
+                    tdHorsMata.appendChild(checkHorsMata);
+                    tdHorsMata.appendChild(badgeHorsMata);
+                    checkHorsMata.checked = !!(transfert.horsMata || transfert.hors_mata);
+
                     // Quantité (+ affichage kg si ventilation)
                     const tdQuantite = document.createElement('td');
                     const inputQuantite = document.createElement('input');
@@ -4915,7 +4953,10 @@ async function chargerTransferts(date) {
                     tdActions.appendChild(btnSupprimer);
                     
                     // Ajouter les cellules à la ligne (PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
-                    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+                    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdHorsMata, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+                    // APRES l'append seulement: majHorsMata remonte a la ligne
+                    // par parentElement, qui n'existe pas avant.
+                    majHorsMata();
 
                     // Ajouter les écouteurs d'événements pour le calcul automatique du total
                     const calculateTotal = () => {
@@ -5306,6 +5347,38 @@ function ajouterLigneTransfert() {
     });
     tdJete.appendChild(checkJete);
 
+    // HORS MATA: cette ligne n'apporte pas de marchandise MATA.
+    //
+    // Un transfert entrant vaut commission 3% pour MaaS parce
+    // que la marchandise vient de MATA. Un achat local, un
+    // depannage entre points de vente ou un autre fournisseur
+    // entrent par le MEME ecran et se faisaient facturer une
+    // commission qui n'a pas lieu d'etre. La case le declare,
+    // et routes/finance-creances.js ecarte la ligne a la
+    // source - donc de la dette ET du detail par date.
+    //
+    // L'avertissement est VISIBLE quand la case est cochee, pas
+    // seulement au survol: une ligne qui sort du calcul de
+    // commission doit se voir dans le tableau, sinon une case
+    // cochee par erreur passe inapercue jusqu'a la facture.
+    const tdHorsMata = document.createElement('td');
+    tdHorsMata.className = 'text-center';
+    const checkHorsMata = document.createElement('input');
+    checkHorsMata.type = 'checkbox';
+    checkHorsMata.className = 'form-check-input hors-mata-check';
+    checkHorsMata.title = "Marchandise qui ne vient pas de MATA. Cochee, cette ligne n'entre pas dans le calcul de la commission 3%.";
+    const badgeHorsMata = document.createElement('small');
+    badgeHorsMata.className = 'd-block text-warning-emphasis fw-medium';
+    badgeHorsMata.style.display = 'none';
+    badgeHorsMata.textContent = 'sans commission';
+    const majHorsMata = () => {
+        badgeHorsMata.style.display = checkHorsMata.checked ? '' : 'none';
+        tdHorsMata.parentElement && tdHorsMata.parentElement.classList.toggle('table-warning', checkHorsMata.checked);
+    };
+    checkHorsMata.addEventListener('change', majHorsMata);
+    tdHorsMata.appendChild(checkHorsMata);
+    tdHorsMata.appendChild(badgeHorsMata);
+
     // Quantité (avec affichage kg pour les produits ventilés)
     const tdQuantite = document.createElement('td');
     const inputQuantite = document.createElement('input');
@@ -5362,7 +5435,7 @@ function ajouterLigneTransfert() {
     tdActions.appendChild(btnSupprimer);
 
     // Ajouter les cellules à la ligne (ordre: PV, Produit, Impact, Jeté, Quantité, Détails, Prix, Total, Commentaire, Actions)
-    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
+    row.append(tdPointVente, tdProduit, tdImpact, tdJete, tdHorsMata, tdQuantite, tdDetails, tdPrixUnitaire, tdTotal, tdCommentaire, tdActions);
 
     // Ajouter les écouteurs d'événements pour le calcul automatique du total
     const calculateTotal = () => {
@@ -5477,6 +5550,13 @@ async function sauvegarderTransfert() {
                 extension.dechet_jete = true;
             }
 
+            // HORS MATA: colonne dediee, pas un drapeau dans extension.
+            // C'est une propriete du transfert lui-meme - d'ou vient la
+            // marchandise - et le calcul de commission doit pouvoir la
+            // filtrer en SQL sans lire un JSONB.
+            const checkHorsMata = row.querySelector('.hors-mata-check');
+            const horsMata = !!(checkHorsMata && checkHorsMata.checked);
+
             // Vérifier que les données sont valides
             if (pointVente && produit && !isNaN(quantite) && !isNaN(prixUnitaire) && quantite > 0) {
                 const payload = {
@@ -5487,7 +5567,8 @@ async function sauvegarderTransfert() {
                     quantite,
                     prixUnitaire,
                     total,
-                    commentaire
+                    commentaire,
+                    horsMata
                 };
                 if (extension) payload.extension = extension;
                 transferts.push(payload);

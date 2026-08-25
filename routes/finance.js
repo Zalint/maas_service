@@ -69,7 +69,10 @@ const {
 const { resolveProduit, buildResolverMaps, cibleDe } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
-const { ecartJour, resoudreMode, fenetreEntrees } = require('../lib/pl-ecart-jour');
+const { ecartJour, resoudreMode, fenetreEntrees, TOLERANCE_BOUCLAGE }
+    = require('../lib/pl-ecart-jour');
+const { agregerCommandes } = require('../lib/commandes-marge');
+const { construireCashTheorique } = require('../lib/cash-theorique');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
 const ALIAS_PRODUIT_MAX_LENGTH = 150;
@@ -88,7 +91,7 @@ const BOUCHERIE_INCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_INCLUDE_REGEX
 const BOUCHERIE_EXCLUDE_REGEX = process.env.FINANCE_BOUCHERIE_EXCLUDE_REGEX
     || '(en gros|en détail|en detail|en dEtail|corne)';
 const { parseCentres } = require('./decoupe-helpers');
-const { checkAdvancedAccess } = require('../middlewares/auth');
+const { checkAdvancedAccess, checkWriteAccess } = require('../middlewares/auth');
 
 // Expression SQL Postgres qui convertit stocks.date (texte DD-MM-YYYY)
 // vers la forme ISO YYYY-MM-DD pour comparaison lex chronologique.
@@ -513,6 +516,10 @@ const ADVANCED_FINANCE_PREFIXES = [
     '/paiements',
     '/pl',
     '/cash-stock',
+    // Le commentaire mensuel appartient au PL et a Cash et Stock: il porte
+    // les memes constats (livraison non saisie, ecart de caisse) et merite
+    // la meme garde. Il recoit AUSSI checkPlAccess plus bas, comme /pl.
+    '/notes',
     // La simulation expose les memes chiffres que le PL, sous un autre angle:
     // elle merite la meme garde.
     '/simulation'
@@ -535,6 +542,10 @@ function checkPlAccess(req, res, next) {
     next();
 }
 router.use('/pl', checkPlAccess);
+// Le commentaire mensuel decrit ce que le PL et Cash et Stock montrent: sans
+// cette ligne il n'etait garde que par checkAuth, et un role 'user' - qui ne
+// voit ni l'un ni l'autre - pouvait lire et ecraser ces notes.
+router.use('/notes', checkPlAccess);
 
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
 // MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
@@ -2791,6 +2802,82 @@ async function computePlMemoise(dateDebut, dateFin) {
     return data;
 }
 
+// LES COMMANDES DE LA JOURNEE, avec leur marge unitaire.
+//
+// Groupees par commande_id quand il existe, sinon par client, sinon en
+// « ventes au comptoir ». La marge se calcule ligne a ligne:
+//   (prix de vente - prix d'achat / (1 - parage)) x quantite
+// avec le MEME resolveur de prix d'achat que le PL, arrete a la date du
+// jour: en prendre un autre ferait diverger deux chiffres censes decrire
+// la meme journee.
+//
+// Memoise comme le PL, et pour la meme raison: quatre acces base par appel
+// (resolveur de prix, contexte de parage, config, ventes), dont le
+// resolveur qui rejoue l'historique des receptions. Ouvrir le panneau,
+// le fermer et le rouvrir les refaisait tous a l'identique. Meme TTL court
+// que _plMemo, et meme invalidation sur mutation - une vente saisie en
+// retard doit apparaitre sans attendre.
+const _commandesMemo = new Map();
+const COMMANDES_MEMO_TTL_MS = 60 * 1000;
+const COMMANDES_MEMO_MAX_ENTRIES = 200;
+async function commandesDuJourMemoise(dateISO) {
+    const maintenant = Date.now();
+    const present = _commandesMemo.get(dateISO);
+    if (present && (maintenant - present.at) < COMMANDES_MEMO_TTL_MS) return present.data;
+    for (const [k, v] of _commandesMemo) {
+        if ((maintenant - v.at) >= COMMANDES_MEMO_TTL_MS) _commandesMemo.delete(k);
+    }
+    const data = await calculerCommandesDuJour(dateISO);
+    _commandesMemo.set(dateISO, { data, at: Date.now() });
+    while (_commandesMemo.size > COMMANDES_MEMO_MAX_ENTRIES) {
+        const plusAncienne = _commandesMemo.keys().next().value;
+        if (plusAncienne === undefined) break;
+        _commandesMemo.delete(plusAncienne);
+    }
+    return data;
+}
+
+async function calculerCommandesDuJour(dateISO) {
+    const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+    const { chargerContexteParage } = require('../lib/parage-contexte');
+    const [resPrix, ctxPar, cfgRowsPar] = await Promise.all([
+        creerResolveurPrixAchat(dateISO),
+        chargerContexteParage(sequelize),
+        FinanceConfig.findAll()
+    ]);
+    const prixAchatDe = resPrix.pourDate(dateISO).prixAchat;
+    // Le parage du PARAMETRE, pas le mesure: cette ventilation est indicative
+    // et doit rester lisible meme quand la mesure du mois n'est pas
+    // disponible. L'ecran le dit.
+    //
+    // Mais le parametre du MOIS de la journee, pas l'ancrage brut. PUT /config
+    // ecrit dans finance_config_mois des qu'un mois est fourni - et l'ecran en
+    // fournit toujours un - sans toucher finance_config: apres la premiere
+    // saisie, l'ancrage reste fige pour toujours. Lire finance_config ici
+    // faisait donc diviser les couts par un taux que plus rien d'autre
+    // n'utilisait, et le pied du bloc annoncait ce taux perime a cote du champ
+    // « Pertes decoupe » du meme ecran, qui montre celui du mois. Le PL
+    // (computePl) et Cash et Stock resolvent tous deux par mois.
+    const cfgParMap = Object.fromEntries(cfgRowsPar.map((x) => [x.key, x.value]));
+    const paragePct = await resolveConfigPourMois(
+        dateISO.slice(0, 7), 'stock_pertes_decoupe_pct', cfgParMap.stock_pertes_decoupe_pct
+    );
+    const lignes = await Vente.findAll({
+        where: { date: { [Op.in]: graphiesDeDatesPourPeriode(dateISO, dateISO) } },
+        attributes: ['produit', 'nombre', 'montant', 'prix_unit',
+            'commande_id', 'nom_client', 'categorie'],
+        raw: true
+    });
+    // L'agregation elle-meme est pure et testee (lib/commandes-marge.js): ici
+    // on ne fait que charger et brancher.
+    return agregerCommandes({
+        lignes: lignes,
+        prixAchatDe: prixAchatDe,
+        estBoucherie: (produit) => ctxPar.estBoucherie(produit),
+        paragePct: parseFloat(paragePct)
+    });
+}
+
 /**
  * LE calcul du PL, sans HTTP. La route GET /pl, le bouton "Figer le PL du
  * jour" et le cron du soir (scripts/pl-snapshot-cron.js) passent tous par
@@ -2999,7 +3086,7 @@ async function computePl(dateDebut, dateFin) {
         // 4. Paiements faits au fournisseur sur la periode (table locale).
         const paiements = await FournisseurPaiement.findAll({
             where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
-            attributes: ['montant']
+            attributes: ['montant', 'hors_boucherie']
         });
         const totalPaiementsFournisseur = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
 
@@ -3011,7 +3098,10 @@ async function computePl(dateDebut, dateFin) {
         // DATEONLY (YYYY-MM-DD), le BETWEEN sur les bornes ISO est correct.
         const depensesRows = await Depense.findAll({
             where: { date: { [SeqOp.between]: [dateDebut, dateFin] } },
-            attributes: ['montant', 'categorie']
+            // hors_boucherie: sans lui dans la projection, Sequelize ne
+            // ramene pas la colonne, la somme filtree vaut toujours zero et le
+            // PL annonce « aucune depense marquee » alors qu'il y en a.
+            attributes: ['montant', 'categorie', 'hors_boucherie']
         });
         const totalDepenses = depensesRows.reduce((s, d) => s + (parseFloat(d.montant) || 0), 0);
 
@@ -3296,10 +3386,19 @@ async function computePl(dateDebut, dateFin) {
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
                 depenses_periode: round2(totalDepenses),
+                // La part HORS BOUCHERIE des deux postes d'achat, pour que
+                // l'ecran puisse rendre un PL de boucherie pure. Elle est
+                // MARQUEE A LA SAISIE: rien d'autre ne permet de la deduire,
+                // un achat de legumes et un achat de viande hachee partageant
+                // la meme categorie `achat_marchandise`.
+                depenses_hors_boucherie: round2(depensesRows.reduce(
+                    (s, x) => s + (x.hors_boucherie ? (parseFloat(x.montant) || 0) : 0), 0)),
                 // Montant des depenses dont la categorie recouvre une charge
                 // fixe deja proratisee (risque de double compte, non exclu).
                 depenses_double_compte: alerteDoubleCompte,
                 paiements_fournisseur: round2(totalPaiementsFournisseur),
+                paiements_hors_boucherie: round2(paiements.reduce(
+                    (s, x) => s + (x.hors_boucherie ? (parseFloat(x.montant) || 0) : 0), 0)),
                 charges: {
                     total_mensuel: round2(chargesTotalMensuel),
                     // Rapport global periode/mois. N'est plus un simple
@@ -3372,6 +3471,22 @@ async function computePl(dateDebut, dateFin) {
                     nb_lignes_negatives:
                         (stockMatinVal.lignes_negatives || []).length
                         + (stockSoirEffectif.lignes_negatives || []).length,
+                    // Les produits NOMMES, avec leur borne et leur montant.
+                    //
+                    // Un compte et une somme ne permettent pas d'agir: « 1 ligne
+                    // negative, -26 000 F » n'apprend pas QUOI corriger. Le nom
+                    // dit ou saisir l'entree manquante. Borne par borne, parce
+                    // qu'un produit negatif le SOIR mais pas le MATIN n'a pas la
+                    // meme histoire qu'un produit negatif des le matin.
+                    lignes_negatives: []
+                        .concat((stockMatinVal.lignes_negatives || []).map((l) => ({
+                            produit: l.produit, borne: 'matin',
+                            quantite: round2(l.quantite), valeur: round2(l.total)
+                        })))
+                        .concat((stockSoirEffectif.lignes_negatives || []).map((l) => ({
+                            produit: l.produit, borne: 'soir',
+                            quantite: round2(l.quantite), valeur: round2(l.total)
+                        }))),
                     // Produits ecartes des DEUX bornes faute de stock fiable.
                     produits_ecartes: produitsNonFiables.pourAffichage || [],
                     // Pourquoi tel prix a ete retenu: DATA injoignable, aucun
@@ -3739,6 +3854,28 @@ router.get('/pl/ecart-jour', async (req, res) => {
                 })
             ]);
         }
+        // LES COMMANDES DE LA JOURNEE (cf calculerCommandesDuJour, plus haut).
+        //
+        // Lues en DIRECT, alors que les postes peuvent venir de deux photos
+        // figees. Une vente saisie en retard avec la date du jour compare
+        // apparait donc ici sans etre dans le poste Ventes fige. On ne cache
+        // pas l'ecart: il est mesure plus bas contre la contribution du poste
+        // et l'ecran le dit, plutot que de laisser deux totaux diverger sans
+        // explication.
+        let commandesJour = null;
+        if (payloadJour && payloadVeille) {
+            try {
+                // COPIE de l'objet memoise: le controle de coherence plus
+                // bas lui ajoute attendu/ecart/complet, qui dependent du MODE
+                // de la requete. Muter l'entree du cache ferait porter a la
+                // requete suivante le verdict de la precedente - et le
+                // laisserait en place meme quand ecartJour refuse de conclure.
+                commandesJour = Object.assign({}, await commandesDuJourMemoise(dateISO));
+            } catch (e) {
+                console.warn('[PL] commandes du jour indisponibles:', e.message);
+            }
+        }
+
         const r = ecartJour({
             jour: payloadJour,
             veille: payloadVeille,
@@ -3754,9 +3891,23 @@ router.get('/pl/ecart-jour', async (req, res) => {
                     .filter(Boolean).join(' · ') || 'versement fournisseur'
             }))
         });
+        // LE CA DES COMMANDES DOIT SOMMER A LA CONTRIBUTION DU POSTE VENTES.
+        //
+        // Meme controle que detail.ventes, et pour la meme raison: les deux
+        // decrivent la meme journee. Quand ils divergent, c'est que les
+        // commandes sont lues en direct pendant que le poste vient d'une
+        // photo figee - typiquement une vente saisie apres le figeage.
+        if (commandesJour && r && r.ok) {
+            const attendu = parseFloat((r.marge_jour || {}).ventes) || 0;
+            commandesJour.attendu = round2(attendu);
+            commandesJour.ecart = round2(commandesJour.total_ca - attendu);
+            commandesJour.complet =
+                Math.abs(commandesJour.total_ca - attendu) <= TOLERANCE_BOUCLAGE;
+        }
         res.json({
             success: true,
             data: Object.assign({
+                commandes_jour: commandesJour,
                 date_jour: dateISO,
                 date_veille: veilleISO,
                 // La SOURCE de chaque photo: un snapshot manuel fige a 14 h ne
@@ -3902,6 +4053,10 @@ function invalidateFinanceDerivedCaches() {
     // Le PL depend des prix, charges, depenses, paiements et config: toute
     // mutation finance jette aussi sa memoisation (le TTL couvre le reste).
     _plMemo.clear();
+    // Les commandes du jour dependent des memes prix et du meme parage, et
+    // en plus des ventes elles-memes: une vente saisie en retard sur un jour
+    // passe doit apparaitre tout de suite, pas au bout du TTL.
+    _commandesMemo.clear();
 }
 router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // Le cron du soir (scripts/pl-snapshot-cron.js) et le snapshot manuel
@@ -3912,6 +4067,57 @@ router.periodePlParDefaut = periodePlParDefaut;
 // Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
 router.resoudreCibleSnapshot = resoudreCibleSnapshot;
 router.validerCoefficient = validerCoefficient;
+
+// =====================================================
+// COMMENTAIRE MENSUEL — PL et Cash et Stock
+// =====================================================
+// Un chiffre surprenant se relit des mois plus tard sans que personne ne se
+// souvienne de ce qui l'expliquait. La note le fixe, par mois et par ecran.
+const ECRANS_NOTE = ['pl', 'cash_stock'];
+
+router.get('/notes', async (req, res) => {
+    try {
+        const mois = String(req.query.mois || '').slice(0, 7);
+        const ecran = String(req.query.ecran || '');
+        if (!/^\d{4}-\d{2}$/.test(mois) || ECRANS_NOTE.indexOf(ecran) < 0) {
+            return res.status(400).json({ success: false, error: 'mois (AAAA-MM) et ecran requis' });
+        }
+        const rows = await sequelize.query(
+            'SELECT mois, ecran, texte, updated_by, updated_at FROM finance_notes_mois '
+            + 'WHERE mois = :mois AND ecran = :ecran',
+            { type: sequelize.QueryTypes.SELECT, replacements: { mois, ecran } }
+        );
+        res.json({ success: true, data: rows[0] || { mois, ecran, texte: '', updated_by: null, updated_at: null } });
+    } catch (e) {
+        console.error('GET /api/finance/notes:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.put('/notes', async (req, res) => {
+    try {
+        const mois = String((req.body || {}).mois || '').slice(0, 7);
+        const ecran = String((req.body || {}).ecran || '');
+        if (!/^\d{4}-\d{2}$/.test(mois) || ECRANS_NOTE.indexOf(ecran) < 0) {
+            return res.status(400).json({ success: false, error: 'mois (AAAA-MM) et ecran requis' });
+        }
+        // 20 000 caracteres: large pour une note de gestion, borne pour qu'un
+        // collage accidentel ne remplisse pas la table.
+        const texte = String((req.body || {}).texte == null ? '' : (req.body || {}).texte).slice(0, 20000);
+        const par = (req.session && req.session.user && req.session.user.username) || null;
+        await sequelize.query(
+            'INSERT INTO finance_notes_mois (mois, ecran, texte, updated_by, updated_at) '
+            + 'VALUES (:mois, :ecran, :texte, :par, NOW()) '
+            + 'ON CONFLICT (mois, ecran) DO UPDATE SET texte = EXCLUDED.texte, '
+            + 'updated_by = EXCLUDED.updated_by, updated_at = NOW()',
+            { replacements: { mois, ecran, texte, par } }
+        );
+        res.json({ success: true, data: { mois, ecran, texte, updated_by: par } });
+    } catch (e) {
+        console.error('PUT /api/finance/notes:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 
 router.get('/cash-stock', async (req, res) => {
     try {
@@ -4061,6 +4267,167 @@ router.get('/cash-stock', async (req, res) => {
         // 5) Valeur finale
         const valeur = stockSoirNet + cashCaisseTotal - depotMataTotal - soldeDuFournisseur;
 
+        // 6) LE CASH THEORIQUE DU MOIS, independant de la Valeur ci-dessus.
+        //
+        // La Valeur est un NIVEAU a une date, stock compris. Celui-ci suit un
+        // FLUX: en partant de la caisse a la fin du mois dernier, tout ce qui
+        // est entre et sorti depuis. Les deux ne se comparent pas, et c'est
+        // voulu - une caisse qui derive se voit ici, pas dans un niveau qui
+        // melange le stock.
+        //
+        // Le calcul lui-meme est pur et teste (lib/cash-theorique.js): ici on
+        // ne fait que charger.
+        let cashTheorique = null;
+        try {
+            const moisIso = dateD.slice(0, 7);
+            const premierDuMois = moisIso + '-01';
+
+            // LE POINT DE DEPART: la derniere cloture RENSEIGNEE avant le
+            // premier du mois. On ne se limite pas au dernier jour du mois
+            // precedent - il arrive qu'il n'ait pas ete saisi - mais on dit
+            // toujours de quelle date vient le chiffre, plutot que de compter
+            // zero en silence.
+            // is_latest EST OBLIGATOIRE. clotures_caisse conserve chaque
+            // REVISION d'une cloture: le 31/07 de Mbao porte deux lignes du
+            // meme montant, une seule marquee is_latest. Sommer sans ce filtre
+            // comptait la caisse deux fois - mesure: 1 142 200 au lieu de
+            // 571 100, soit tout le point de depart fausse. Le reste de cet
+            // ecran filtre deja is_latest (cf le cash par point de vente).
+            const departRows = await sequelize.query(
+                'SELECT date, SUM(montant_total_caisse) AS total '
+                + 'FROM clotures_caisse '
+                + 'WHERE date < :premier AND is_latest = TRUE '
+                + '  AND montant_total_caisse IS NOT NULL '
+                + 'GROUP BY date ORDER BY date DESC LIMIT 1',
+                { type: sequelize.QueryTypes.SELECT, replacements: { premier: premierDuMois } }
+            );
+            const depart = departRows[0] || null;
+            const cashDepart = depart ? parseFloat(depart.total) || 0 : 0;
+            const cashDepartDate = depart ? String(depart.date).slice(0, 10) : null;
+            // COMBIEN DE POINTS DE VENTE ont reellement cloture ce jour-la.
+            //
+            // On prend la derniere date ou QUELQU'UN a cloture, pas la derniere
+            // date de CHACUN: si un point de vente a saisi le 31/07 et un autre
+            // s'est arrete au 30, le point de depart ne porte que le premier.
+            // Sur un tenant a un seul point de vente la question ne se pose pas,
+            // mais la taire ailleurs ferait passer un depart ampute pour un
+            // depart complet. L'ecran le dit, comme il annonce deja
+            // « N/M PV renseignes » pour la caisse du jour.
+            const departPvRows = depart ? await sequelize.query(
+                'SELECT COUNT(DISTINCT point_de_vente)::int AS n FROM clotures_caisse '
+                + 'WHERE date = :d AND is_latest = TRUE AND montant_total_caisse IS NOT NULL',
+                { type: sequelize.QueryTypes.SELECT, replacements: { d: depart.date } }
+            ) : [];
+            const departNbPv = departPvRows.length ? departPvRows[0].n : 0;
+
+            // LES VENTES DU MOIS, creances exclues. Une vente a credit ne fait
+            // entrer aucun billet: la compter gonflerait une caisse theorique
+            // qui se veut de tresorerie. Elles sont rendues a part, pour que
+            // l'ecran les signale plutot que de les taire.
+            const formesMois = graphiesDeDatesPourPeriode(premierDuMois, dateD);
+            const ventesRows = await Vente.findAll({
+                where: { date: { [Op.in]: formesMois } },
+                attributes: ['montant', 'creance'],
+                raw: true
+            });
+            let ventesHorsCreance = 0, ventesCreance = 0, nbVentesCreance = 0;
+            for (const v of ventesRows) {
+                const m = parseFloat(v.montant) || 0;
+                if (v.creance) { ventesCreance += m; nbVentesCreance += 1; }
+                else ventesHorsCreance += m;
+            }
+
+            // Depenses et paiements: colonnes DATE natives, pas du texte.
+            const [depRows, paieRows, depotRows] = await Promise.all([
+                Depense.findAll({
+                    where: { date: { [Op.between]: [premierDuMois, dateD] } },
+                    attributes: ['montant'], raw: true
+                }),
+                FournisseurPaiement.findAll({
+                    where: { date: { [Op.between]: [premierDuMois, dateD] } },
+                    attributes: ['montant'], raw: true
+                }),
+                // Meme table, meme piege que ci-dessus: sans is_latest, un
+                // depot corrige serait compte une fois par revision.
+                sequelize.query(
+                    'SELECT date, SUM(depot_mata) AS total FROM clotures_caisse '
+                    + 'WHERE date BETWEEN :debut AND :fin AND is_latest = TRUE '
+                    // depot_mata > 0, pas seulement NOT NULL: un depot de
+                    // ZERO est une saisie qui dit « aucun versement ce
+                    // jour », pas un versement de 0 F. Le rapprocher
+                    // fabriquait une ligne « non retrouve » a 0 F sous la
+                    // phrase affirmant que tous les depots ont ete
+                    // retrouves. Le total, lui, ne bougeait pas.
+                    + '  AND depot_mata > 0 '
+                    + 'GROUP BY date ORDER BY date',
+                    { type: sequelize.QueryTypes.SELECT,
+                        replacements: { debut: premierDuMois, fin: dateD } }
+                )
+            ]);
+            const somme = (rows) => rows.reduce((t, x) => t + (parseFloat(x.montant) || 0), 0);
+
+            // LES REMBOURSEMENTS viennent du partenaire (MataBanq), pas d'une
+            // table locale. Indisponibles, on ne rend PAS un total ampute qui
+            // passerait pour juste: le bloc entier se tait.
+            const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+            const cdb = await fetchCreanceCdb({ dateDebut: premierDuMois, dateFin: dateD });
+            const operations = (((cdb || {}).details || [])[0] || {}).operations || [];
+            const remboursements = operations
+                .filter((o) => o && o.type === 'remboursement')
+                .map((o) => ({ date: String(o.date_operation || '').slice(0, 10),
+                    montant: parseFloat(o.montant) || 0 }))
+                .filter((o) => o.date >= premierDuMois && o.date <= dateD);
+
+            // SANS REPONSE DU PARTENAIRE, PAS DE TOTAL.
+            //
+            // cdb null rend une liste de remboursements VIDE, donc un total
+            // calcule comme si rien n'avait ete rembourse - faux de plusieurs
+            // millions. Un bandeau rouge au-dessus ne suffit pas: un nombre
+            // affiche se lit, et celui-la se recopie. On rend le bloc avec sa
+            // raison et SANS total, l'ecran n'affiche alors que l'alerte.
+            if (!cdb) {
+                cashTheorique = {
+                    total: null,
+                    lignes: [],
+                    commentaire: '',
+                    periode: { debut: premierDuMois, fin: dateD },
+                    source_partenaire: 'indisponible'
+                };
+                throw new Error('__source_partenaire_muette__');
+            }
+
+            cashTheorique = construireCashTheorique({
+                cashDepart: cashDepart,
+                cashDepartDate: cashDepartDate,
+                ventes: ventesHorsCreance,
+                ventesCreance: ventesCreance,
+                nbVentesCreance: nbVentesCreance,
+                depenses: somme(depRows),
+                paiementsFournisseur: somme(paieRows),
+                remboursements: remboursements.reduce((t, o) => t + o.montant, 0),
+                depots: depotRows.map((r) => ({ date: String(r.date).slice(0, 10),
+                    montant: parseFloat(r.total) || 0 })),
+                operationsRemboursement: remboursements
+            });
+            cashTheorique.periode = { debut: premierDuMois, fin: dateD };
+            cashTheorique.depart_manquant = !depart;
+            cashTheorique.depart_nb_pv = departNbPv;
+            cashTheorique.depart_nb_pv_attendus = cashParPv.length;
+            // La source du partenaire a-t-elle repondu ? Sans elle, les
+            // remboursements valent zero et le total serait faux de plusieurs
+            // millions - l'ecran doit le dire, pas l'afficher tel quel.
+            cashTheorique.source_partenaire = cdb ? 'ok' : 'indisponible';
+        } catch (e) {
+            // Sortie volontaire du bloc ci-dessus quand le partenaire est
+            // muet: cashTheorique porte deja sa raison, on le garde.
+            if (e && e.message === '__source_partenaire_muette__') {
+                console.warn('[cash-stock] source partenaire muette: total non calcule');
+            } else {
+                console.warn('[cash-stock] cash theorique indisponible:', e.message);
+                cashTheorique = null;
+            }
+        }
+
         // La tolerance d'un jour existe pour les fuseaux a l'est de Greenwich,
         // pas pour valoriser une journee qui n'a pas eu lieu. Au-dela de la
         // date du serveur ET sans aucune cloture, ce qui sort n'est pas une
@@ -4086,8 +4453,25 @@ router.get('/cash-stock', async (req, res) => {
                     soir_hors_boucherie: round2(stockSoirVal.valeur_hors_boucherie || 0),
                     negatifs_ignores: round2(stockSoirVal.valeur_negative_ignoree || 0),
                     nb_lignes_negatives: (stockSoirVal.lignes_negatives || []).length,
-                    produits_ecartes: produitsNonFiables.pourAffichage || []
+                    produits_ecartes: produitsNonFiables.pourAffichage || [],
+                    // LE DETAIL LIGNE A LIGNE, pour que l'ecran puisse montrer
+                    // d'ou sort le total au lieu de l'affirmer. Deja calcule
+                    // par valoriserLignes, il n'etait simplement pas rendu.
+                    detail_lignes: (stockSoirVal.detail_lignes || []).map((l) => ({
+                        produit: l.produit,
+                        base: l.base,
+                        quantite: round2(l.quantite),
+                        prix_utilise: l.prix_utilise == null ? null : round2(l.prix_utilise),
+                        valeur: round2(l.valeur),
+                        boucherie: !!l.boucherie
+                    })),
+                    lignes_negatives: (stockSoirVal.lignes_negatives || []).map((l) => ({
+                        produit: l.produit,
+                        quantite: round2(l.quantite),
+                        total: round2(l.total)
+                    }))
                 },
+                cash_theorique: cashTheorique,
                 depot_mata: round2(depotMataTotal),
                 cash: {
                     total: round2(cashCaisseTotal),
@@ -4298,9 +4682,15 @@ router.get('/depenses', async (req, res) => {
 });
 
 // POST multipart: champs { date, montant, categorie?, description? } + file 'justificatif'
-router.post('/depenses', upload.single('justificatif'), async (req, res) => {
+// checkWriteAccess: le role 'lecteur' a canRead mais PAS canWrite, et cette
+// route etait la seule ecriture de ce fichier sans garde de role - toutes les
+// autres passent par ADVANCED_FINANCE_PREFIXES, adminStrictFinance ou
+// checkPlAccess. Un lecteur pouvait donc creer une depense (et televerser un
+// justificatif) qui pesait sur le PL, sans pouvoir la retirer: DELETE
+// /depenses/:id demande checkAdvancedAccess et aucun PUT n'existe.
+router.post('/depenses', checkWriteAccess, upload.single('justificatif'), async (req, res) => {
     try {
-        const { date, montant, categorie, description } = req.body;
+        const { date, montant, categorie, description, hors_boucherie } = req.body;
         if (!date || !montant) {
             return res.status(400).json({ success: false, error: 'date et montant requis' });
         }
@@ -4313,6 +4703,12 @@ router.post('/depenses', upload.single('justificatif'), async (req, res) => {
             montant: mt,
             categorie: categorie || null,
             description: description || null,
+            // Un formulaire multipart rend 'true'/'on', un appel JSON rend un
+            // booleen. On accepte les deux, et RIEN d'autre: un champ absent
+            // vaut boucherie, donc l'historique et les appels existants ne
+            // changent pas de sens.
+            hors_boucherie: hors_boucherie === true || hors_boucherie === 'true'
+                || hors_boucherie === 'on' || hors_boucherie === '1',
             created_by: req.session?.user?.username || null
         };
         if (req.file) {
@@ -4398,7 +4794,7 @@ router.get('/paiements', async (req, res) => {
 
 router.post('/paiements', async (req, res) => {
     try {
-        const { date, montant, mode, reference, commentaire } = req.body;
+        const { date, montant, mode, reference, commentaire, hors_boucherie } = req.body;
         if (!date || !montant) {
             return res.status(400).json({ success: false, error: 'date et montant requis' });
         }
@@ -4412,6 +4808,8 @@ router.post('/paiements', async (req, res) => {
             mode: mode || null,
             reference: reference || null,
             commentaire: commentaire || null,
+            hors_boucherie: hors_boucherie === true || hors_boucherie === 'true'
+                || hors_boucherie === 'on' || hors_boucherie === '1',
             created_by: req.session?.user?.username || null
         });
         res.json({ success: true, data: created });
@@ -4529,6 +4927,44 @@ router.get('/creances', async (req, res) => {
                 ? (cdbResult.reason && cdbResult.reason.message) || 'Erreur appel API depenses'
                 : null
         };
+
+        // LE DETAIL PAR DATE CONFRONTE AUX AVANCES DU PARTENAIRE.
+        //
+        // Les deux decrivent la meme livraison par deux bouts: Maas la
+        // valorise a la reception, MataBanq enregistre une avance au depart.
+        // Verifie sur aout 2026 a Mbao, l'accord est exact au franc sur les
+        // journees completes - un ecart signale donc une vraie divergence de
+        // saisie, pas du bruit.
+        //
+        // Le rapprochement est PAR DATE: une journee porte plusieurs produits
+        // et une seule avance. Le calcul vit dans un module pur et teste.
+        try {
+            const { rapprocherAvances } = require('../lib/rapprochement-avances');
+            const operations = (((data.cdb || {}).details || [])[0] || {}).operations || [];
+            // BORNER A LA PERIODE DEMANDEE. L'endpoint /external/api/creance
+            // ignore dateDebut/dateFin pour la liste des operations (cf le
+            // meme constat cote interface, qui refiltre pour renderCdb): sans
+            // ce filtre, des avances de mai se comparaient a un detail d'aout
+            // et remplissaient « avances sans detail » de cinquante lignes
+            // qui ne decrivaient qu'une plage non respectee.
+            const bornes = (data.local || {}).periode || {};
+            const debutIso = String(bornes.dateDebut || req.query.dateDebut || '').slice(0, 10);
+            const finIso = String(bornes.dateFin || req.query.dateFin || '').slice(0, 10);
+            data.rapprochement_avances = rapprocherAvances({
+                detailParDate: (data.local || {}).detail_par_date || [],
+                avances: operations
+                    .filter((o) => o && o.type === 'avance')
+                    .map((o) => ({ date: String(o.date_operation || '').slice(0, 10), montant: o.montant }))
+                    .filter((o) => (!debutIso || o.date >= debutIso) && (!finIso || o.date <= finIso))
+            });
+            // Sans la source du partenaire, TOUTES les dates paraitraient sans
+            // avance: un tableau entierement orange se lirait comme une
+            // anomalie generale alors que c'est la source qui manque.
+            data.rapprochement_avances.source_partenaire = data.cdb ? 'ok' : 'indisponible';
+        } catch (e) {
+            console.warn('[creances] rapprochement des avances indisponible:', e.message);
+            data.rapprochement_avances = null;
+        }
         res.json({ success: true, data });
     } catch (e) {
         console.error('GET /api/finance/creances:', e);

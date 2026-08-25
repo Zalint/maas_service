@@ -344,6 +344,65 @@ async function updateSchema() {
                 END IF;
             END $$;
         `);
+        // HORS BOUCHERIE, sur les deux tables qui portent des achats.
+        //
+        // Mesure sur aout 2026: Sacre Coeur achete 203 100 F de legumes et
+        // 81 800 F de viande hachee, tous deux ranges en `achat_marchandise`.
+        // Rien ne les separe que la description en texte libre. Cote PL, le
+        // produit des legumes entre dans les Ventes pendant que leur cout
+        // entre dans les Depenses: la marge des ventes parait gonflee de
+        // 202 152 F et le taux passe de 10,9 % a 13,8 %, ce qui rend deux
+        // sites incomparables.
+        //
+        // La marque est posee A LA SAISIE, seul moment ou l'information
+        // existe. DEFAULT false: tout l'historique reste boucherie, donc le
+        // comportement ne change pour personne tant que rien n'est coche.
+        await sequelize.query(`
+            ALTER TABLE depenses
+                ADD COLUMN IF NOT EXISTS hors_boucherie BOOLEAN NOT NULL DEFAULT FALSE
+        `);
+        await sequelize.query(
+            `CREATE INDEX IF NOT EXISTS idx_depenses_hors_boucherie
+             ON depenses(hors_boucherie) WHERE hors_boucherie = TRUE`
+        );
+        // COMMENTAIRE MENSUEL par ecran. Cle composite (mois, ecran): un PL
+        // et un Cash et Stock du meme mois portent deux notes distinctes.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_notes_mois (
+                mois VARCHAR(7) NOT NULL,
+                ecran VARCHAR(20) NOT NULL,
+                texte TEXT,
+                updated_by VARCHAR(100),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, ecran)
+            )
+        `);
+        console.log('Table finance_notes_mois verifiee');
+
+        // HORS MATA sur les transferts: la marchandise qui n'est pas venue
+        // de MATA ne doit pas porter la commission 3%.
+        //
+        // A distinguer de fournisseur_prix.hors_mata, qui porte le meme nom
+        // mais dit autre chose: la-bas c'est le PRODUIT qui est hors circuit
+        // Mata, toujours; ici c'est CETTE livraison-la. Un meme produit peut
+        // venir de MATA un jour et d'un achat local le lendemain, ce que le
+        // drapeau au catalogue ne sait pas exprimer. Les deux s'ajoutent:
+        // l'un ou l'autre suffit a retirer la commission.
+        //
+        // Garde checkTableExists comme les autres ALTER de ce fichier: sur un
+        // tenant vierge, transferts n'existe pas encore (sequelize.sync ne
+        // tourne qu'apres) et l'ALTER ferait echouer TOUTES les migrations
+        // suivantes, pas seulement celle-ci.
+        // Reutilise le check fait plus haut pour la colonne extension:
+        // rien ne cree la table entre les deux.
+        if (transfertsTableExists) {
+            await sequelize.query(`
+                ALTER TABLE transferts
+                ADD COLUMN IF NOT EXISTS hors_mata BOOLEAN NOT NULL DEFAULT FALSE
+            `);
+            console.log('Colonne transferts.hors_mata verifiee');
+        }
+
         console.log('Table depenses verifiee');
 
         await sequelize.query(`
@@ -589,6 +648,10 @@ async function updateSchema() {
                     ALTER TABLE fournisseur_paiements ADD CONSTRAINT fournisseur_paiements_montant_nonneg CHECK (montant >= 0);
                 END IF;
             END $$;
+        `);
+        await sequelize.query(`
+            ALTER TABLE fournisseur_paiements
+                ADD COLUMN IF NOT EXISTS hors_boucherie BOOLEAN NOT NULL DEFAULT FALSE
         `);
         console.log('Table fournisseur_paiements verifiee');
 

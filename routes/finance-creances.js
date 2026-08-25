@@ -277,9 +277,16 @@ async function computeCreances(opts = {}) {
         const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
     });
+    //     HORS MATA: un transfert entrant dont la marchandise ne vient pas
+    //     de MATA (achat local, depannage entre points de vente, autre
+    //     fournisseur) entre par le meme ecran mais ne doit porter AUCUNE
+    //     commission - MaaS ne l'a pas livre. La case de l'ecran des
+    //     transferts le declare, et l'exclusion se fait ici, a la source,
+    //     pour que la dette ET le detail par date la respectent ensemble.
     const transfertsEntrants = await Transfert.findAll({
         where: {
             impact: '1',
+            horsMata: false,
             [Op.or]: [
                 { date: { [Op.in]: dateList } },
                 { date: { [Op.in]: dateListDDMM } }

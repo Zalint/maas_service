@@ -13,7 +13,20 @@ const router = express.Router();
 // Middleware pour valider l'API key (pour services externes)
 const validateApiKey = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
-    const validApiKey = process.env.EXTERNAL_API_KEY || 'b326e72b67a9b508c88270b9954c5ca1';
+    // SANS CLE CONFIGUREE, ON REFUSE TOUT.
+    //
+    // Ce middleware compare l en-tete x-api-key a EXTERNAL_API_KEY. Le
+    // repli litteral qui etait ici faisait pire que rien: la valeur
+    // etant dans le depot, quiconque l avait lue pouvait s authentifier
+    // sur ces routes dans tout environnement ou la variable manquait.
+    // Une porte fermee vaut mieux qu une porte dont la cle est publiee.
+    const validApiKey = process.env.EXTERNAL_API_KEY;
+    if (!validApiKey) {
+        return res.status(503).json({
+            success: false,
+            message: 'EXTERNAL_API_KEY absente : acces externe non configure.'
+        });
+    }
     
     if (!apiKey || apiKey !== validApiKey) {
         return res.status(401).json({ 
@@ -294,7 +307,20 @@ router.get('/bictorys/source', checkAuthOrApiKey, async (req, res) => {
         console.log(`📌 Références à filtrer: ${references.join(', ')}`);
 
         // 5. Appeler l'API Bictorys
-        const bictorysApiKey = process.env.BICTORYS_TRANSACTIONS_API_KEY || 'secret-65ee2442-d88f-458f-9f1d-af596e7c7de5.OMhl3SfA22eMFVmHrDVoKwQoClT72Asn4E7gxTl1Fm5GiZ97Z62kbq2eNmuEGoKy';
+        // AUCUNE CLE EN DUR. Ce repli mettait la cle de production dans le
+        // depot, donc dans chaque clone et chaque commit. Un repli est de
+        // toute facon un mauvais service ici: il fait croire que l'appel est
+        // configure alors qu'il tourne sur une cle que personne n'a choisie,
+        // et le jour ou elle est revoquee l'erreur remonte de Bictorys, pas
+        // d'ici. Sans variable d'environnement, on refuse franchement.
+        const bictorysApiKey = process.env.BICTORYS_TRANSACTIONS_API_KEY;
+        if (!bictorysApiKey) {
+            return res.status(503).json({
+                success: false,
+                error: 'BICTORYS_TRANSACTIONS_API_KEY absente : la source des '
+                    + 'transactions Bictorys n\'est pas configuree sur ce service.'
+            });
+        }
         
         const bictorysResponse = await axios.get('https://api.bictorys.com/pay/v1/transactions', {
             headers: {

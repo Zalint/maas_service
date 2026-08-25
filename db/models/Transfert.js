@@ -44,6 +44,19 @@ const Transfert = sequelize.define('Transfert', {
     type: DataTypes.TEXT,
     allowNull: true
   },
+  horsMata: {
+    // Ce transfert n'apporte PAS de marchandise MATA: achat local, depannage
+    // entre points de vente, autre fournisseur. Il entre par le meme ecran
+    // mais ne doit pas porter la commission 3% (cf routes/finance-creances.js,
+    // etape 3a, qui l'ecarte de transfertsEntrants).
+    //
+    // NOT NULL DEFAULT FALSE: l'immense majorite des transferts vient bien de
+    // MATA, et un null se lirait comme « on ne sait pas » alors qu'on sait.
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+    field: 'hors_mata'
+  },
   extension: {
     type: DataTypes.JSONB,
     allowNull: true,

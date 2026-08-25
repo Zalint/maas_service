@@ -48,6 +48,12 @@ const Depense = sequelize.define('Depense', {
         allowNull: true,
         field: 'justificatif_size'
     },
+    hors_boucherie: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'hors_boucherie'
+    },
     created_by: {
         type: DataTypes.STRING(100),
         allowNull: true,
