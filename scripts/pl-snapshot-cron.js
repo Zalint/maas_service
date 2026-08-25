@@ -40,15 +40,43 @@ const DRY_RUN = process.argv.includes('--dry-run');
         const { dateDebut, dateFin } = periodePlParDefaut();
         console.log(`[pl-snapshot] calcul du PL ${dateDebut} -> ${dateFin}${DRY_RUN ? ' (dry-run)' : ''}`);
 
+        // METTRE LE SCHEMA A JOUR AVANT DE CALCULER.
+        //
+        // Ce script tourne dans SON PROPRE processus (server.js le lance par
+        // spawn, cf le cron a 23h35): il n'herite pas du updateSchema() joue
+        // au demarrage du serveur. En exploitation la question ne se pose
+        // guere - c'est ce meme serveur, deja migre, qui programme le cron -
+        // mais un lancement A LA MAIN sur une base jamais demarree, ou un
+        // schema de tenant dont la migration a echoue, faisait echouer le
+        // calcul entier sur une colonne inconnue.
+        //
+        // BEST EFFORT, volontairement. Un echec ici n'arrete pas le script:
+        // le schema est le plus souvent deja bon, et une DDL concurrente (un
+        // deploiement qui redemarre l'application a la meme minute) peut faire
+        // echouer la migration sans que rien ne manque reellement. C'est le
+        // calcul lui-meme qui tranche, juste en dessous.
+        //
+        // Saute en dry-run: --dry-run promet que rien n'est ecrit, et
+        // updateSchema() ecrit - DDL et donnees de reference.
+        if (DRY_RUN) {
+            console.log('[pl-snapshot] dry-run: migration du schema sautee');
+        } else {
+            try {
+                const { updateSchema } = require('../db/update-schema');
+                await updateSchema();
+            } catch (e) {
+                console.warn('[pl-snapshot] migration du schema echouee, on continue:', e.message);
+                console.warn('[pl-snapshot] si une colonne manque vraiment, le calcul le dira.');
+            }
+        }
+
         // UNE COLONNE MANQUANTE N'EST PAS UNE PANNE DE CALCUL.
         //
-        // Ce script tourne dans SON PROPRE processus et ne joue pas
-        // updateSchema(): seul le demarrage du serveur (server.js) le fait.
-        // Deployer une colonne sans redemarrer l'application faisait donc
-        // echouer le cron sur une erreur Postgres brute, a 23h35, dans un
-        // journal que personne ne lit sur le moment. On la nomme, avec le
-        // geste qui la repare - un schema en retard se rattrape, contrairement
-        // a un PL faux.
+        // Deuxieme filet, apres la migration ci-dessus: si elle a echoue ET
+        // qu'une colonne manque pour de bon, l'erreur Postgres brute tombait a
+        // 23h35 dans un journal que personne ne lit sur le moment. On la
+        // nomme, avec le geste qui la repare - un schema en retard se
+        // rattrape, contrairement a un PL faux.
         let data;
         try {
             data = await computePl(dateDebut, dateFin);
@@ -56,7 +84,15 @@ const DRY_RUN = process.argv.includes('--dry-run');
             const pg = (e && (e.parent || e.original)) || e;
             if (pg && pg.code === '42703') {
                 console.error(`[pl-snapshot] REFUS: le schema de la base est en retard sur le code (${pg.message}).`);
-                console.error(`[pl-snapshot] demarrer l'application une fois (elle joue updateSchema) ou lancer \`node db/update-schema.js\`, puis rejouer ce cron. Rien n'est fige.`);
+                // Le conseil depend de ce qui s'est reellement passe: en
+                // dry-run la migration a ete SAUTEE, et lui reprocher de
+                // n'avoir pas suffi enverrait chercher une panne inexistante.
+                console.error(DRY_RUN
+                    ? `[pl-snapshot] la migration est sautee en dry-run: relancer sans --dry-run, `
+                      + `ou lancer \`node db/update-schema.js\`. Rien n'est fige.`
+                    : `[pl-snapshot] la migration jouee juste avant n'a pas suffi: lancer `
+                      + `\`node db/update-schema.js\` a la main pour voir son erreur, puis rejouer `
+                      + `ce cron. Rien n'est fige.`);
                 process.exitCode = 1;
                 return;
             }
