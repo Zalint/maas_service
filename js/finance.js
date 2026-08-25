@@ -1258,7 +1258,9 @@
         tbody.innerHTML = rows.map((d) => `
             <tr>
                 <td>${esc(d.date)}</td>
-                <td>${esc(d.categorie || '')}</td>
+                <td>${esc(d.categorie || '')}${d.hors_boucherie
+                    ? ' <span class="badge bg-secondary-subtle text-secondary" title="Exclue du PL quand la case Boucherie seulement est cochée">hors boucherie</span>'
+                    : ''}</td>
                 <td>${esc(d.description || '')}</td>
                 <td class="text-end">${esc(fmtMoney(d.montant))}</td>
                 <td>${d.justificatif_filename
@@ -2517,7 +2519,78 @@
     // l'evaluation du module, mais le premier appel plus precoce - un rendu
     // optimiste, un test qui importe le fichier - aurait leve
     // « Cannot access before initialization » et emporte tout l'ecran PL.
+    // COMMENTAIRE MENSUEL, partage par le PL et Cash et Stock.
+    //
+    // Un chiffre surprenant se relit des mois plus tard sans que personne ne
+    // se souvienne de ce qui l'expliquait. Le 24/08/2026 a Keur Massar,
+    // -79 127 F venaient de 40 kg de poisson non saisis au stock: une
+    // information qui n'existait que dans la tete de celui qui l'avait
+    // trouvee. La note la fixe, par mois et par ecran.
+    //
+    // Enregistrement a la SORTIE du champ, pas a chaque frappe: une requete
+    // par caractere saturerait la route pour rien.
+    function blocNoteMois(ecran, mois) {
+        if (!/^\d{4}-\d{2}$/.test(String(mois || ''))) return '';
+        const id = 'fin-note-' + ecran;
+        return `<div class="card mt-3">
+            <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                <strong>Commentaire du mois (${esc(mois)})</strong>
+                <span class="small text-muted" id="${id}-etat"></span>
+            </div>
+            <div class="card-body">
+                <textarea class="form-control form-control-sm" id="${id}" rows="3"
+                    placeholder="Ce qui explique les chiffres de ce mois : livraison non saisie, inventaire partiel, commande exceptionnelle…"></textarea>
+            </div>
+        </div>`;
+    }
+
+    async function cablerNoteMois(ecran, mois) {
+        const ta = document.getElementById('fin-note-' + ecran);
+        const etat = document.getElementById('fin-note-' + ecran + '-etat');
+        if (!ta) return;
+        const dire = (t) => { if (etat) etat.textContent = t; };
+        try {
+            const r = await fetch('/api/finance/notes?mois=' + encodeURIComponent(mois)
+                + '&ecran=' + encodeURIComponent(ecran), { credentials: 'same-origin' });
+            const j = await r.json();
+            if (j && j.success) {
+                ta.value = (j.data && j.data.texte) || '';
+                if (j.data && j.data.updated_at) {
+                    dire('modifié le ' + fmtDateFr(String(j.data.updated_at).slice(0, 10))
+                        + (j.data.updated_by ? ' par ' + j.data.updated_by : ''));
+                }
+            }
+        } catch (e) { dire('lecture impossible'); }
+        // `dernier` evite d'enregistrer quand rien n'a change: ouvrir puis
+        // quitter le champ ne doit pas ecraser l'auteur et la date.
+        let dernier = ta.value;
+        ta.addEventListener('blur', async () => {
+            if (ta.value === dernier) return;
+            dire('enregistrement…');
+            try {
+                const r = await fetch('/api/finance/notes', {
+                    method: 'PUT', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mois: mois, ecran: ecran, texte: ta.value })
+                });
+                const j = await r.json();
+                if (j && j.success) { dernier = ta.value; dire('enregistré'); }
+                else dire('échec : ' + ((j && j.error) || 'inconnu'));
+            } catch (e) { dire('échec : ' + e.message); }
+        });
+    }
+
     const plPostesNeutralises = new Set();
+    // PL BOUCHERIE SEULE. Retire le hors boucherie des postes ou l'information
+    // existe: ventes (champ `categorie` fiable) et variation de stock (le
+    // serveur isole deja variation_boucherie et variation_hors_boucherie).
+    // Les DEPENSES et les PAIEMENTS FOURNISSEUR ne portent aucune marque
+    // boucherie / hors boucherie: sur Sacre Coeur, 203 100 F de legumes et
+    // 81 800 F de viande hachee dorment dans le meme seau
+    // `achat_marchandise`, et seule la description en texte libre les separe.
+    // On ne les filtre donc pas, et l'ecran le DIT plutot que de laisser
+    // croire a un perimetre pur.
+    let plBoucherieSeule = false;
     // SIMULATION DU STOCK ESTIME. Rien n'est enregistre - decision du
     // proprietaire du produit: on modifie pour VOIR l'effet sur le PL, et un
     // rechargement repart de l'estimation calculee.
@@ -2939,7 +3012,120 @@
             // LE RAPPROCHEMENT ARGENT / MARCHANDISE. C'est la lecture que
             // l'utilisateur a demandee: l'argent sorti est-il devenu du stock,
             // ou a-t-il remplace ce qui s'est vendu ?
+            // LA MARGE DE LA JOURNEE, isolee de la structure.
+            //
+            // MATA facture au prix d'ACHAT: une journee normale verifie donc
+            // ventes + variation de stock > avances + paiements. Quand
+            // l'inegalite s'inverse, il est sorti du frigo plus de valeur que
+            // la caisse n'en a encaisse, et le module leve un drapeau 'fort'.
+            // Le calcul vient du serveur (lib/pl-ecart-jour.js, module pur et
+            // teste): on ne fait ici que le mettre en forme.
+            const mj = d.marge_jour || null;
+            const blocMarge = mj ? `<div class="border rounded p-2 mb-2 small
+                ${nb(mj.marge) < 0 ? 'border-danger' : ''}">
+                <div class="fw-medium mb-1">La marge de la journée</div>
+                <div>Ventes <strong>${esc(fmtMoney(mj.ventes))}</strong>
+                    ${nb(mj.stock) >= 0 ? '+' : '−'} variation de stock
+                    <strong>${esc(fmtMoney(Math.abs(nb(mj.stock))))}</strong>
+                    − avances <strong>${esc(fmtMoney(Math.abs(nb(mj.avances))))}</strong>
+                    ${nb(mj.paiements) !== 0
+                        ? '− paiements fournisseur <strong>'
+                          + esc(fmtMoney(Math.abs(nb(mj.paiements)))) + '</strong>'
+                        : ''}</div>
+                <div class="mt-1">= <strong class="text-${nb(mj.marge) >= 0 ? 'success' : 'danger'}">
+                    ${nb(mj.marge) >= 0 ? '+' : ''}${esc(fmtMoney(mj.marge))}</strong>
+                    ${mj.taux_pct !== null && mj.taux_pct !== undefined
+                        ? ' <span class="text-muted">soit ' + esc(nb(mj.taux_pct).toFixed(2))
+                          + ' % des ventes du jour</span>'
+                        : ''}</div>
+                <div class="text-muted mt-1">Marge sur la MARCHANDISE seule. La commission,
+                    les charges et les dépenses n'y sont pas : elles expliquent l'écart entre
+                    cette marge et l'effet total de la journée sur le PL.</div>
+               </div>` : '';
+
+            // LES COMMANDES DE LA JOURNEE, classees par marge.
+            //
+            // Le panneau disait quels POSTES ont bouge et quels PRODUITS se
+            // sont vendus, jamais QUI a achete. Une journee qui surprend se
+            // lit pourtant la: quelle commande a porte la marge, laquelle l'a
+            // mangee. Un Jarret vendu 500 F pour 2 250 F de cout disparait
+            // dans un total de ventes, il saute aux yeux dans une ligne de
+            // commande a marge negative.
+            const cj = d.commandes_jour || null;
+            const cjLignes = cj ? (cj.commandes || []) : [];
+            const blocCommandes = cjLignes.length
+                ? `<details class="mb-2">
+                    <summary class="text-primary small" style="cursor:pointer">
+                      Les commandes du jour, par marge
+                      (${esc(String(cjLignes.length))}, marge totale
+                       ${nb(cj.total_ca_chiffre) > 0
+                          ? esc(fmtMoney(cj.total_marge))
+                          : 'inconnue, aucun coût d’achat renseigné'})</summary>
+                    <div class="table-responsive mt-2">
+                     <table class="table table-sm mb-1"><thead><tr>
+                       <th>Commande / client</th>
+                       <th class="text-end">Lignes</th>
+                       <th class="text-end">CA</th>
+                       <th class="text-end">Marge</th>
+                       <th class="text-end">Taux</th></tr></thead><tbody>
+                       ${cjLignes.map((x) => `<tr>
+                         <td>${esc(x.client || x.commande_id || 'Ventes au comptoir')}
+                           ${x.client && x.commande_id
+                              ? '<span class="text-muted small d-block">' + esc(x.commande_id) + '</span>'
+                              : ''}
+                           ${(x.sans_cout || []).length
+                              ? '<span class="text-muted small d-block">marge partielle : '
+                                + esc((x.sans_cout || []).join(', ')) + ' sans coût connu</span>'
+                              : ''}</td>
+                         <td class="text-end text-muted">${esc(String(x.lignes))}</td>
+                         <td class="text-end">${esc(fmtMoney(x.ca))}</td>
+                         <td class="text-end fw-bold text-${x.ca_chiffre > 0
+                            ? (nb(x.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
+                           ${x.ca_chiffre > 0
+                            ? (nb(x.marge) >= 0 ? '+' : '') + esc(fmtMoney(x.marge))
+                            : '—'}</td>
+                         <td class="text-end text-muted">${x.taux_pct === null || x.taux_pct === undefined
+                            ? '—' : esc(nb(x.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
+                       <tr class="table-light fw-bold">
+                         <td>Total</td><td></td>
+                         <td class="text-end">${esc(fmtMoney(cj.total_ca))}</td>
+                         <td class="text-end">${nb(cj.total_ca_chiffre) > 0
+                            ? esc(fmtMoney(cj.total_marge)) : '—'}</td>
+                         <td class="text-end">${nb(cj.total_ca_chiffre) > 0
+                            ? esc((nb(cj.total_marge) / nb(cj.total_ca_chiffre) * 100).toFixed(1)) + ' %'
+                            : '—'}</td></tr>
+                     </tbody></table></div>
+                    ${cj.complet === false
+                      ? '<div class="alert alert-warning py-2 px-2 small mb-1">Ces commandes sont lues en direct, alors que les postes ci-dessus viennent d’une photo figée :'
+                        + ' leur total de ventes diffère de ' + esc(fmtMoney(Math.abs(nb(cj.ecart))))
+                        + ' (' + esc(fmtMoney(cj.total_ca)) + ' ici contre ' + esc(fmtMoney(cj.attendu))
+                        + ' au poste Ventes). Une vente a probablement été saisie après le figeage.</div>'
+                      : ''}
+                    <div class="text-muted small">Marge indicative : prix de vente moins prix
+                      d'achat divisé par (1 − ${esc(String(cj.parage_pct))} % de parage), au
+                      paramètre et non au parage mesuré. La commission MaaS n'y entre pas.
+                      Le taux rapporte la marge au CA <em>chiffré</em>, pas au CA total :
+                      un produit sans prix d'achat connu ne compte ni au numérateur ni au
+                      dénominateur, et une commande dont aucun coût n'est connu affiche
+                      un tiret plutôt qu'un trompeur 0,0 %.
+                      ${nb(cj.ca_sans_cout) > 0
+                        ? esc(fmtMoney(cj.ca_sans_cout)) + ' de CA n\u2019a pas de prix d\u2019achat connu et'
+                          + ' ne porte donc aucune marge ici.'
+                        : ''}</div>
+                   </details>`
+                : '';
+
             const rc = d.reconciliation || {};
+            // LES LIGNES QUI COMPOSENT LES DEUX BORNES.
+            //
+            // Le bloc donnait « 699 067 -> 680 282 » sans jamais dire comment
+            // chaque total se construit. La donnee existait pourtant deja dans
+            // d.stock.lignes, avec quantite, prix et base par produit et par
+            // borne: c'est ce que la ventilation Laspeyres du poste utilise.
+            // On la reprend telle quelle plutot que de la recalculer.
+            const lignesValo = ((d.stock || {}).lignes || []).filter(
+                (l) => nb(l.valeur_veille) !== 0 || nb(l.valeur_jour) !== 0
+            );
             const blocRec = (Math.abs(nb(rc.sorties)) >= 1 || Math.abs(nb(rc.entree_stock)) >= 1)
                 ? `<div class="border rounded p-2 mb-2 small">
                     <div class="fw-medium mb-1">L'argent sorti et la marchandise</div>
@@ -2955,7 +3141,47 @@
                         → <strong>${esc(fmtMoney(rc.stock_jour))}</strong>
                         <span class="text-muted">soit ${esc(fmtMoney(rc.entree_stock))}
                         entrés en marchandise</span></div>
-                    <div class="mt-1">= <strong>${esc(fmtMoney(rc.consomme))}</strong>
+                    ${lignesValo.length
+                        ? `<details class="mt-1">
+                            <summary class="text-primary" style="cursor:pointer">Comment ces
+                              deux montants sont valorisés (${esc(String(lignesValo.length))} produits)</summary>
+                            <div class="table-responsive mt-2">
+                             <table class="table table-sm mb-1"><thead><tr>
+                               <th>Produit</th>
+                               <th class="text-end">Qté veille</th><th class="text-end">× prix</th>
+                               <th class="text-end">= valeur</th>
+                               <th class="text-end">Qté jour</th><th class="text-end">× prix</th>
+                               <th class="text-end">= valeur</th>
+                               <th>Base</th></tr></thead><tbody>
+                               ${lignesValo.map((l) => `<tr>
+                                 <td>${esc(l.produit)}</td>
+                                 <td class="text-end text-muted">${esc(fmtDec(l.quantite_veille))}</td>
+                                 <td class="text-end text-muted">${esc(fmtMoney(l.prix_veille))}</td>
+                                 <td class="text-end">${esc(fmtMoney(l.valeur_veille))}</td>
+                                 <td class="text-end text-muted">${esc(fmtDec(l.quantite_jour))}</td>
+                                 <td class="text-end text-muted">${esc(fmtMoney(l.prix_jour))}</td>
+                                 <td class="text-end fw-medium">${esc(fmtMoney(l.valeur_jour))}</td>
+                                 <td class="small text-muted">${esc(l.base_jour || l.base_veille || '—')}</td>
+                               </tr>`).join('')}
+                               <tr class="table-light fw-bold">
+                                 <td>Total</td><td></td><td></td>
+                                 <td class="text-end">${esc(fmtMoney(rc.stock_veille))}</td>
+                                 <td></td><td></td>
+                                 <td class="text-end">${esc(fmtMoney(rc.stock_jour))}</td><td></td></tr>
+                             </tbody></table></div>
+                            <div class="text-muted">Base « achat » : le produit est valorisé à son
+                              prix d'achat. Base « vente » : aucun prix d'achat n'est connu, le prix
+                              de vente sert de substitut et le rapprochement devient approximatif
+                              d'autant.</div>
+                           </details>`
+                        : ''}
+                    <div class="mt-1">= ${esc(fmtMoney(rc.sorties))} sortis
+                        ${nb(rc.entree_stock) < 0
+                            ? '<strong>+</strong> ' + esc(fmtMoney(Math.abs(nb(rc.entree_stock))))
+                              + ' prélevés sur le stock'
+                            : '<strong>−</strong> ' + esc(fmtMoney(nb(rc.entree_stock)))
+                              + ' mis en stock'}
+                        = <strong>${esc(fmtMoney(rc.consomme))}</strong>
                         consommés par la journée, à leur coût</div>
                     ${rc.exact === false
                         ? `<div class="text-muted mt-1" style="text-decoration:underline dotted">
@@ -3090,6 +3316,8 @@
                         <tbody>${lignes || '<tr><td colspan="4" class="text-muted">Aucun poste n\'a bougé de plus d\'un franc.</td></tr>'}</tbody>
                     </table>
                 </div>
+                ${blocMarge}
+                ${blocCommandes}
                 ${blocRec}
                 ${blocVentes}
                 ${blocDepenses}
@@ -3443,10 +3671,34 @@
         // sur stock.variation_nette pendant que le poste montrait deja
         // variationSimulee: une correction qui fait passer la variation sous
         // zero affichait un nombre negatif en vert, avec l'icone verte.
-        const stockCouleur = variationSimulee >= 0 ? 'success' : 'danger';
+        // LES DEUX MONTANTS QUE LA CASE FILTRE.
+        //
+        // Ventes: le serveur rend deja ventes_boucherie, calcule sur le champ
+        // `categorie` des lignes de vente. Stock: il rend variation_boucherie
+        // et variation_hors_boucherie separement, parce que le coefficient de
+        // pertes de decoupe ne porte que sur la premiere. En boucherie seule,
+        // on garde donc variation_boucherie x coeff et on laisse tomber le
+        // terme hors boucherie, qui entrait a sa valeur pleine.
+        const ventesRetenues = plBoucherieSeule
+            ? nb(d.ventes_boucherie)
+            : nb(d.total_ventes);
+        // Depenses et paiements: on retire la part MARQUEE hors boucherie a la
+        // saisie. Une ligne non marquee reste boucherie, ce qui vaut pour tout
+        // l'historique anterieur a cette fonctionnalite - d'ou l'avertissement
+        // plus bas tant qu'aucune ligne n'est marquee sur la periode.
+        const depensesRetenues = plBoucherieSeule
+            ? nb(d.depenses_periode) - nb(d.depenses_hors_boucherie)
+            : nb(d.depenses_periode);
+        const paiementsRetenus = plBoucherieSeule
+            ? nb(d.paiements_fournisseur) - nb(d.paiements_hors_boucherie)
+            : nb(d.paiements_fournisseur);
+        const variationRetenue = plBoucherieSeule
+            ? coeffStockUi * (nb(stock.variation_boucherie) + (stockModifie ? deltaBoucherie : 0))
+            : variationSimulee;
+        const stockCouleur = variationRetenue >= 0 ? 'success' : 'danger';
 
         const postes = [
-            { cle: 'ventes', signe: 1, montant: d.total_ventes || 0, couleur: 'primary', neutralisable: false,
+            { cle: 'ventes', signe: 1, montant: ventesRetenues, couleur: 'primary', neutralisable: false,
               libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes'
                 + (d.ventes_hors_boucherie_pct !== null && d.ventes_hors_boucherie_pct !== undefined
                     ? ` <span class="badge bg-light text-dark border ms-2"
@@ -3462,11 +3714,11 @@
               libelle: '<i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)' },
             { cle: 'charges', signe: -1, montant: ch.total_prorata || 0, couleur: 'danger', neutralisable: true,
               libelle: `<i class="bi bi-receipt text-info"></i> Charges proratisées ${esc(libelleProrataCharges(ch))}` },
-            { cle: 'depenses', signe: -1, montant: d.depenses_periode || 0, couleur: 'danger', neutralisable: true,
+            { cle: 'depenses', signe: -1, montant: depensesRetenues, couleur: 'danger', neutralisable: true,
               libelle: `<i class="bi bi-cart-dash text-danger"></i> Dépenses (période)${doubleCompte}` },
-            { cle: 'paiements', signe: -1, montant: d.paiements_fournisseur || 0, couleur: 'danger', neutralisable: true,
+            { cle: 'paiements', signe: -1, montant: paiementsRetenus, couleur: 'danger', neutralisable: true,
               libelle: '<i class="bi bi-wallet2 text-secondary"></i> Paiements faits au fournisseur' },
-            { cle: 'stock', signe: 1, montant: variationSimulee, couleur: stockCouleur, neutralisable: true,
+            { cle: 'stock', signe: 1, montant: variationRetenue, couleur: stockCouleur, neutralisable: true,
               libelle: `<i class="bi bi-box-seam text-${stockCouleur}"></i> Variation stock ×
                         <span class="badge bg-light text-dark border">${esc(stock.coeff)}</span>
                         <small class="text-muted">(pertes découpe ${esc(stock.pertes_decoupe_pct)}%)</small>`
@@ -3486,7 +3738,7 @@
         // personne. Le recalcul ne sert qu'a la simulation.
         // Une correction de stock est une simulation au meme titre qu'un poste
         // neutralise: le PL affiche cesse d'etre celui du serveur.
-        const simulation = plPostesNeutralises.size > 0 || stockModifie;
+        const simulation = plPostesNeutralises.size > 0 || stockModifie || plBoucherieSeule;
         const pl = simulation
             ? postes.filter(actif).reduce((s, p) => s + p.signe * p.montant, 0)
             : (d.pl || 0);
@@ -3509,7 +3761,7 @@
         // les ventes aujourd'hui, mais reordonner le tableau ferait alors
         // diviser par le mauvais montant, en silence.
         const posteVentes = postes.find((p) => p.cle === 'ventes');
-        const ventesActives = (posteVentes && actif(posteVentes)) ? (d.total_ventes || 0) : 0;
+        const ventesActives = (posteVentes && actif(posteVentes)) ? ventesRetenues : 0;
         // Pourcentage du CHIFFRE D'AFFAIRES. Sans ventes, il n'y a pas de taux
         // a calculer: on affiche un tiret plutot qu'un 0% trompeur.
         const margeBrutePct = ventesActives > 0 ? (margeBrute / ventesActives) * 100 : null;
@@ -3650,6 +3902,40 @@
                     + `, ${sortie} → <strong>${esc(fmtQte(v.kg_estime))} kg</strong> estimés</li>`;
             }).join('')
             : '';
+        // STOCKS NEGATIFS: deja ECARTES du calcul, mais jamais dits.
+        //
+        // lib/valorisation-stock.js:119 les sort de la somme et des DEUX bornes
+        // de la variation - un produit passant de 10 a -15 verrait sinon sa
+        // variation ramenee a -10, soit le stock du matin entierement consomme.
+        // La regle est bonne. Ce qui manquait, c'est de le DIRE: le payload
+        // portait un compte et un montant, l'export les imprimait, l'ecran
+        // jamais. Sur o_foire, 26 000 F de Superette sortaient du PL en silence.
+        //
+        // On NOMME les produits: « 1 ligne negative, -26 000 F » n'apprend pas
+        // quoi corriger, « Superette au soir » si.
+        const negLignes = (stock.lignes_negatives || []);
+        const negNb = nb(stock.nb_lignes_negatives);
+        const negVal = nb(stock.negatifs_ignores);
+        const plBandeauNegatifs = (negNb > 0 || negVal !== 0)
+            ? `<div class="alert alert-warning py-2 small mb-3">
+                 <div><i class="bi bi-exclamation-triangle"></i>
+                   <strong>${esc(String(negNb))} ligne(s) de stock négatif écartée(s) du PL</strong>
+                   ${negVal !== 0 ? `, soit ${esc(fmtMoney(negVal))}` : ''}.
+                 </div>
+                 ${negLignes.length
+                    ? `<ul class="mb-1 mt-2">${negLignes.map((l) => `<li>${esc(l.produit)}
+                         <span class="text-muted">au ${esc(l.borne)}</span> :
+                         ${esc(fmtQte(l.quantite))} → ${esc(fmtMoney(l.valeur))}</li>`).join('')}</ul>`
+                    : ''}
+                 <div>Un stock négatif est la signature d'<strong>entrées non saisies</strong> :
+                   la marchandise a été achetée, et passée en charge dans l'onglet Dépenses,
+                   mais jamais enregistrée en stock. La ligne est donc écartée des
+                   <strong>deux</strong> bornes de la variation — la compter telle quelle
+                   ajouterait au PL un coût déjà porté par les Dépenses.
+                   Saisir l'entrée manquante la fera rentrer dans le calcul.</div>
+               </div>`
+            : '';
+
         const plBandeauEstimation = soirEstime
             ? `<div class="alert alert-warning py-2 small mb-3">
                  <div><i class="bi bi-hourglass-split"></i>
@@ -3746,6 +4032,7 @@
 
         resultEl.innerHTML = `
             ${plBandeauSansVente}
+            ${plBandeauNegatifs}
             ${plBandeauEstimation}
             ${plDetailEstimation}
             <!-- Cartes PL et marge brute -->
@@ -3800,10 +4087,33 @@
                 </div>
             </div>
 
+            ${plBoucherieSeule ? `<div class="alert alert-info py-2 small mb-2">
+                <strong>Boucherie seulement.</strong>
+                Ventes et variation de stock sont filtrées au franc :
+                ${esc(fmtMoney(nb(d.ventes_hors_boucherie)))} de ventes hors boucherie et
+                ${esc(fmtMoney(nb(stock.variation_hors_boucherie)))} de variation de stock
+                hors boucherie sont retirés. Les avances et la commission MaaS ne portent
+                que de la boucherie, elles sont déjà pures.
+                ${(nb(d.depenses_hors_boucherie) || nb(d.paiements_hors_boucherie))
+                    ? `<div class="mt-1">Dépenses hors boucherie retirées :
+                        <strong>${esc(fmtMoney(nb(d.depenses_hors_boucherie)))}</strong> ·
+                        paiements fournisseur hors boucherie :
+                        <strong>${esc(fmtMoney(nb(d.paiements_hors_boucherie)))}</strong>.</div>`
+                    : `<div class="mt-1"><strong>Aucune dépense ni aucun paiement n'est marqué
+                        « hors boucherie » sur la période.</strong> Le coût des marchandises hors
+                        boucherie reste donc dans ce PL. Cochez la case à la saisie, dans les
+                        onglets Dépenses et Créances fournisseur, pour qu'il en sorte.</div>`}
+            </div>` : ''}
+
             <!-- Décomposition -->
             <h6 class="fin-subheading">
                 Décomposition
                 <small class="text-muted fw-normal ms-2">— cliquez une ligne pour la retirer et voir son effet</small>
+                <span class="form-check form-check-inline ms-3 fw-normal">
+                    <input class="form-check-input" type="checkbox" id="fin-pl-boucherie"
+                           ${plBoucherieSeule ? 'checked' : ''}>
+                    <label class="form-check-label small" for="fin-pl-boucherie">Boucherie seulement</label>
+                </span>
                 ${simulation ? `<button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="fin-pl-reset">
                     <i class="bi bi-arrow-counterclockwise"></i> Tout réactiver (${plPostesNeutralises.size})
                 </button>` : ''}
@@ -3890,7 +4200,9 @@
                     </tfoot>
                 </table>
             </div>
+            ${blocNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7))}
         `;
+        cablerNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7));
 
         // L'ecart avec le dernier PL fige, en asynchrone: il demande
         // l'historique, et renderPl doit rester synchrone.
@@ -4000,12 +4312,25 @@
             }
         }
 
+        // La case « Boucherie seulement ». Elle ne touche a AUCUN calcul
+        // serveur: elle change les montants retenus pour les postes ventes et
+        // stock, et le PL se recalcule sur les postes actifs comme il le fait
+        // deja pour une ligne neutralisee.
+        const cbBoucherie = document.getElementById('fin-pl-boucherie');
+        if (cbBoucherie) {
+            cbBoucherie.addEventListener('change', () => {
+                plBoucherieSeule = cbBoucherie.checked;
+                renderPl(plDernieresDonnees);
+            });
+        }
+
         const reset = document.getElementById('fin-pl-reset');
         if (reset) {
             reset.addEventListener('click', () => {
                 plPostesNeutralises.clear();
                 plStockEdite.clear();
                 plStockAjoute = [];
+                plBoucherieSeule = false;
                 renderPl(plDernieresDonnees);
             });
         }
@@ -4602,7 +4927,9 @@
                 <div class="card-header bg-light"><strong>Détail cash par point de vente</strong></div>
                 <div class="card-body">${pvTable}</div>
             </div>
+            ${blocNoteMois('cash_stock', String(d.date || '').slice(0, 7))}
         `;
+        cablerNoteMois('cash_stock', String(d.date || '').slice(0, 7));
     }
 
 })();

@@ -40,7 +40,28 @@ const DRY_RUN = process.argv.includes('--dry-run');
         const { dateDebut, dateFin } = periodePlParDefaut();
         console.log(`[pl-snapshot] calcul du PL ${dateDebut} -> ${dateFin}${DRY_RUN ? ' (dry-run)' : ''}`);
 
-        const data = await computePl(dateDebut, dateFin);
+        // UNE COLONNE MANQUANTE N'EST PAS UNE PANNE DE CALCUL.
+        //
+        // Ce script tourne dans SON PROPRE processus et ne joue pas
+        // updateSchema(): seul le demarrage du serveur (server.js) le fait.
+        // Deployer une colonne sans redemarrer l'application faisait donc
+        // echouer le cron sur une erreur Postgres brute, a 23h35, dans un
+        // journal que personne ne lit sur le moment. On la nomme, avec le
+        // geste qui la repare - un schema en retard se rattrape, contrairement
+        // a un PL faux.
+        let data;
+        try {
+            data = await computePl(dateDebut, dateFin);
+        } catch (e) {
+            const pg = (e && (e.parent || e.original)) || e;
+            if (pg && pg.code === '42703') {
+                console.error(`[pl-snapshot] REFUS: le schema de la base est en retard sur le code (${pg.message}).`);
+                console.error(`[pl-snapshot] demarrer l'application une fois (elle joue updateSchema) ou lancer \`node db/update-schema.js\`, puis rejouer ce cron. Rien n'est fige.`);
+                process.exitCode = 1;
+                return;
+            }
+            throw e;
+        }
         console.log(`[pl-snapshot] PL ${data.pl} FCFA (ventes ${data.total_ventes}, ${data.periode.nb_jours} jour(s))`);
 
         // MEME refus que POST /api/finance/pl/snapshot: on ne grave pas un PL

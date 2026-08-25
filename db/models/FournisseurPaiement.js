@@ -32,6 +32,12 @@ const FournisseurPaiement = sequelize.define('FournisseurPaiement', {
         type: DataTypes.TEXT,
         allowNull: true
     },
+    hors_boucherie: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'hors_boucherie'
+    },
     created_by: {
         type: DataTypes.STRING(100),
         allowNull: true,

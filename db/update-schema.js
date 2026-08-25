@@ -344,6 +344,41 @@ async function updateSchema() {
                 END IF;
             END $$;
         `);
+        // HORS BOUCHERIE, sur les deux tables qui portent des achats.
+        //
+        // Mesure sur aout 2026: Sacre Coeur achete 203 100 F de legumes et
+        // 81 800 F de viande hachee, tous deux ranges en `achat_marchandise`.
+        // Rien ne les separe que la description en texte libre. Cote PL, le
+        // produit des legumes entre dans les Ventes pendant que leur cout
+        // entre dans les Depenses: la marge des ventes parait gonflee de
+        // 202 152 F et le taux passe de 10,9 % a 13,8 %, ce qui rend deux
+        // sites incomparables.
+        //
+        // La marque est posee A LA SAISIE, seul moment ou l'information
+        // existe. DEFAULT false: tout l'historique reste boucherie, donc le
+        // comportement ne change pour personne tant que rien n'est coche.
+        await sequelize.query(`
+            ALTER TABLE depenses
+                ADD COLUMN IF NOT EXISTS hors_boucherie BOOLEAN NOT NULL DEFAULT FALSE
+        `);
+        await sequelize.query(
+            `CREATE INDEX IF NOT EXISTS idx_depenses_hors_boucherie
+             ON depenses(hors_boucherie) WHERE hors_boucherie = TRUE`
+        );
+        // COMMENTAIRE MENSUEL par ecran. Cle composite (mois, ecran): un PL
+        // et un Cash et Stock du meme mois portent deux notes distinctes.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS finance_notes_mois (
+                mois VARCHAR(7) NOT NULL,
+                ecran VARCHAR(20) NOT NULL,
+                texte TEXT,
+                updated_by VARCHAR(100),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (mois, ecran)
+            )
+        `);
+        console.log('Table finance_notes_mois verifiee');
+
         console.log('Table depenses verifiee');
 
         await sequelize.query(`
@@ -589,6 +624,10 @@ async function updateSchema() {
                     ALTER TABLE fournisseur_paiements ADD CONSTRAINT fournisseur_paiements_montant_nonneg CHECK (montant >= 0);
                 END IF;
             END $$;
+        `);
+        await sequelize.query(`
+            ALTER TABLE fournisseur_paiements
+                ADD COLUMN IF NOT EXISTS hors_boucherie BOOLEAN NOT NULL DEFAULT FALSE
         `);
         console.log('Table fournisseur_paiements verifiee');
 

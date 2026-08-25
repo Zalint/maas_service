@@ -2868,9 +2868,20 @@
                                                     <label class="form-label">Référence</label>
                                                     <input type="text" name="reference" class="form-control form-control-sm" maxlength="100">
                                                 </div>
-                                                <div class="col-md-3">
+                                                <div class="col-md-2">
                                                     <label class="form-label">Commentaire</label>
                                                     <input type="text" name="commentaire" class="form-control form-control-sm" maxlength="200">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label d-block">Hors boucherie</label>
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox"
+                                                               name="hors_boucherie" id="fin-paie-hb" value="true">
+                                                        <label class="form-check-label small" for="fin-paie-hb"
+                                                               title="Cochez si ce paiement achète de la marchandise qui n'est PAS de la boucherie. Le PL pourra alors l'exclure.">
+                                                            légumes, épicerie…
+                                                        </label>
+                                                    </div>
                                                 </div>
                                                 <div class="col-md-1">
                                                     <button class="btn btn-sm btn-success w-100">Ajouter</button>
@@ -2950,9 +2961,20 @@
                                         <option value="autre">Autre</option>
                                     </select>
                                 </div>
-                                <div class="col-md-3">
+                                <div class="col-md-2">
                                     <label class="form-label">Description</label>
                                     <input type="text" name="description" class="form-control form-control-sm" maxlength="500">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label d-block">Hors boucherie</label>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox"
+                                               name="hors_boucherie" id="fin-dep-hb" value="true">
+                                        <label class="form-check-label small" for="fin-dep-hb"
+                                               title="Cochez si cette dépense achète de la marchandise qui n'est PAS de la boucherie (légumes, épicerie). Le PL pourra alors l'exclure.">
+                                            légumes, épicerie…
+                                        </label>
+                                    </div>
                                 </div>
                                 <div class="col-md-2">
                                     <label class="form-label">Justificatif</label>
@@ -4016,12 +4038,12 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260819-debug-projection"></script>
+    <script src="js/finance.js?v=20260821-boucherie2"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>
-    <script src="js/simulation-v2-projection.js?v=20260819-debug-projection"></script>
-    <script src="js/simulation-v2.js?v=20260819-debug-projection"></script>
+    <script src="js/simulation-v2-projection.js?v=20260821-boucherie2"></script>
+    <script src="js/simulation-v2.js?v=20260821-boucherie2"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

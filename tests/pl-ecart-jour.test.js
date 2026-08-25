@@ -663,6 +663,98 @@ describe('la couche route, extraite pour etre testable', () => {
     });
 });
 
+describe('marge de la journee: MATA facture au COUT, donc elle doit etre positive', () => {
+    // Regle posee par le proprietaire du produit. MATA facture au prix
+    // d'ACHAT, donc une journee normale verifie
+    //     ventes + variation de stock > avances + paiements
+    // Sinon il est sorti du frigo plus de valeur que la caisse n'en a
+    // encaisse. Constate le 24/08/2026 a Keur Massar: -52 369 de marge,
+    // cause par 40 kg de poisson livres et factures 96 000 F mais absents du
+    // stock du soir. Une fois saisis, la marge est repassee a +43 631.
+    const jour = (v) => ({
+        pl: v.pl === undefined ? 0 : v.pl,
+        total_ventes: v.ventes, total_avances: v.avances,
+        paiements_fournisseur: v.paiements === undefined ? 0 : v.paiements,
+        commission_maas: 0, marge_cdc: 0, charges_proratisees: 0,
+        depenses_periode: 0,
+        stock: { variation_nette: v.stock, matin_debut: 0, soir_fin: 0, coeff: 0.95 }
+    });
+
+    test('une journee saine ne leve AUCUN drapeau de marge', () => {
+        const r = ecartJour({
+            veille: jour({ ventes: 3203350, avances: 2913247, stock: 42045 }),
+            jour: jour({ ventes: 3545800, avances: 3378013, stock: 207992 })
+        });
+        expect(r.marge_jour.marge).toBeCloseTo(342450 + 165947 - 464766, 2);
+        expect(r.marge_jour.marge).toBeGreaterThan(0);
+        expect((r.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(false);
+    });
+
+    test('la journee du 24/08 AVANT correction leve le drapeau', () => {
+        // Le stock du soir ne portait pas les 96 000 F de poisson.
+        const r = ecartJour({
+            veille: jour({ ventes: 3203350, avances: 2913247, stock: 42045 }),
+            jour: jour({ ventes: 3545800, avances: 3378013, stock: 111992 })
+        });
+        expect(r.marge_jour.marge).toBeCloseTo(342450 + 69947 - 464766, 2);
+        expect(r.marge_jour.marge).toBeLessThan(0);
+        const d = (r.drapeaux || []).find((x) => x.cle === 'marge_negative');
+        expect(d).toBeDefined();
+        expect(d.niveau).toBe('fort');
+        expect(d.texte).toMatch(/MARGE NÉGATIVE/);
+    });
+
+    test('les paiements fournisseur entrent dans la regle', () => {
+        // Une journee juste a l'equilibre sur les avances bascule des qu'un
+        // versement fournisseur s'y ajoute.
+        const sans = ecartJour({
+            veille: jour({ ventes: 0, avances: 0, stock: 0 }),
+            jour: jour({ ventes: 100000, avances: 90000, stock: 0 })
+        });
+        expect(sans.marge_jour.marge).toBeCloseTo(10000, 2);
+        expect((sans.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(false);
+
+        const avec = ecartJour({
+            veille: jour({ ventes: 0, avances: 0, stock: 0, paiements: 0 }),
+            jour: jour({ ventes: 100000, avances: 90000, stock: 0, paiements: 25000 })
+        });
+        expect(avec.marge_jour.marge).toBeCloseTo(-15000, 2);
+        expect((avec.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(true);
+    });
+
+    test('le taux n est pas calcule sans vente, il vaut null', () => {
+        const r = ecartJour({
+            veille: jour({ ventes: 0, avances: 0, stock: 0 }),
+            jour: jour({ ventes: 0, avances: 50000, stock: 0 })
+        });
+        expect(r.marge_jour.taux_pct).toBeNull();
+        // Mais la marge, elle, existe et le drapeau se leve.
+        expect(r.marge_jour.marge).toBeCloseTo(-50000, 2);
+        expect((r.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(true);
+    });
+
+    test('la marge se lit sur la JOURNEE, pas sur le cumul', () => {
+        // Les deux journees partent du meme 1er du mois: seule leur difference
+        // est l'activite du jour. Un cumul deja negatif ne doit pas lever le
+        // drapeau si la journee, elle, est saine.
+        const r = ecartJour({
+            veille: jour({ ventes: 1000000, avances: 1200000, stock: 0 }),
+            jour: jour({ ventes: 1100000, avances: 1250000, stock: 0 })
+        });
+        expect(r.marge_jour.marge).toBeCloseTo(100000 - 50000, 2);
+        expect((r.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(false);
+    });
+
+    test('marge nulle exactement: pas de drapeau, ce n est pas une anomalie', () => {
+        const r = ecartJour({
+            veille: jour({ ventes: 0, avances: 0, stock: 0 }),
+            jour: jour({ ventes: 100000, avances: 100000, stock: 0 })
+        });
+        expect(r.marge_jour.marge).toBeCloseTo(0, 6);
+        expect((r.drapeaux || []).some((d) => d.cle === 'marge_negative')).toBe(false);
+    });
+});
+
 describe('la variation nette n est PAS (fin - depart) x coeff', () => {
     // Ma premiere ecriture appliquait le coefficient a TOUT. Le coefficient de
     // pertes de decoupe ne porte que sur la boucherie: l epicerie ne se pare
