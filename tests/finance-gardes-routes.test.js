@@ -19,7 +19,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', 'routes', 'finance.js'), 'utf8');
+// Fins de ligne NORMALISEES. Sous Windows, git rend le fichier en CRLF, et
+// les decoupages qui cherchent une accolade en fin de ligne ne trouvaient
+// plus rien: la reconstruction de checkPlAccess levait « f is not defined ».
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'routes', 'finance.js'), 'utf8')
+    .replace(new RegExp('\\r\\n', 'g'), '\n');
 
 describe('garde du commentaire mensuel', () => {
     test('/notes est declare dans ADVANCED_FINANCE_PREFIXES', () => {
