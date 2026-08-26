@@ -308,3 +308,76 @@ describe('clients de la periode', () => {
         expect(r.total_commandes).toBe(0);
     });
 });
+
+/**
+ * LE PARAGE PAR ESPECE, branche sur les deux agregations.
+ *
+ * Il etait un taux UNIQUE applique au boeuf, au veau et a l'agneau. Il vient
+ * desormais de la mesure quand elle tient debout - aout 2026 a Mbao: bovin
+ * 3,96 % sur 23 jours, ovin au parametre faute de jours. Effet mesure sur le
+ * mois: +39 129 F de marge, clients et comptoir confondus.
+ */
+describe('parage par espece', () => {
+    const LIGNES = [
+        { date: '2026-08-03', nom_client: 'A', commande_id: 'C1',
+            produit: 'Boeuf', nombre: 1, montant: 5000 },
+        { date: '2026-08-03', nom_client: 'A', commande_id: 'C1',
+            produit: 'Poivre', nombre: 1, montant: 500 }
+    ];
+    const COMMUN = {
+        prixAchatDe: (p) => ({ Boeuf: 4500, Poivre: 400 }[p] ?? NaN),
+        estBoucherie: (p) => p !== 'Poivre'
+    };
+
+    test('paragePour prime sur paragePct', () => {
+        const auParametre = agregerClients(Object.assign({}, COMMUN,
+            { lignes: LIGNES, paragePct: 5 }));
+        const aLaMesure = agregerClients(Object.assign({}, COMMUN,
+            { lignes: LIGNES, paragePct: 5, paragePour: () => 3.96 }));
+        // Moins de parage = cout plus bas = marge plus haute.
+        expect(aLaMesure.clients[0].marge).toBeGreaterThan(auParametre.clients[0].marge);
+        expect(aLaMesure.clients[0].marge).toBeCloseTo(
+            (5000 - 4500 / (1 - 0.0396)) + (500 - 400), 1);
+    });
+
+    test('deux especes, deux taux, dans la MEME commande', () => {
+        const lignes = [
+            { date: '2026-08-03', nom_client: 'A', commande_id: 'C1',
+                produit: 'Boeuf', nombre: 1, montant: 5000 },
+            { date: '2026-08-03', nom_client: 'A', commande_id: 'C1',
+                produit: 'Agneau', nombre: 1, montant: 6000 }
+        ];
+        const r = agregerClients({
+            lignes,
+            prixAchatDe: (p) => ({ Boeuf: 4500, Agneau: 5000 }[p] ?? NaN),
+            estBoucherie: () => true,
+            paragePour: (p) => (p === 'Boeuf' ? 3.96 : 1.4)
+        });
+        expect(r.clients[0].marge).toBeCloseTo(
+            (5000 - 4500 / (1 - 0.0396)) + (6000 - 5000 / (1 - 0.014)), 1);
+    });
+
+    test('hors boucherie: aucun parage, quel que soit le taux', () => {
+        const r = agregerClients(Object.assign({}, COMMUN, {
+            lignes: [LIGNES[1]], paragePour: () => 40
+        }));
+        // 500 - 400, pas 500 - 400/0,6.
+        expect(r.clients[0].marge).toBeCloseTo(100, 6);
+    });
+
+    test('un taux aberrant retombe sur 5, jamais sur un diviseur nul', () => {
+        for (const mauvais of [100, 150, -3, NaN]) {
+            const r = agregerClients(Object.assign({}, COMMUN, {
+                lignes: [LIGNES[0]], paragePour: () => mauvais
+            }));
+            expect(r.clients[0].marge).toBeCloseTo(5000 - 4500 / 0.95, 1);
+        }
+    });
+
+    test('agregerCommandes suit la meme regle', () => {
+        const a = agregerCommandes(Object.assign({}, COMMUN, { lignes: LIGNES, paragePct: 5 }));
+        const b = agregerCommandes(Object.assign({}, COMMUN,
+            { lignes: LIGNES, paragePour: () => 3.96 }));
+        expect(b.commandes[0].marge).toBeGreaterThan(a.commandes[0].marge);
+    });
+});

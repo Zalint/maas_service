@@ -2735,6 +2735,27 @@
         });
     }
 
+    // LE DETAIL DES TAUX DE PARAGE RETENUS, pour les blocs de marge.
+    //
+    // Ils affirmaient « 5 % au parametre » alors que le taux vient desormais
+    // de la MESURE quand elle tient debout - bovin 3,96 % sur 23 jours en
+    // aout 2026 - et du parametre sinon. Un lecteur qui refait le calcul a la
+    // main doit trouver le meme chiffre que l'ecran.
+    function texteParage(detail) {
+        if (!detail) return '';
+        const nom = { bovin: 'bovin', ovin: 'ovin', autre: 'autres viandes' };
+        const parts = ['bovin', 'ovin', 'autre']
+            .filter((k) => detail[k])
+            .map((k) => {
+                const b = detail[k];
+                return esc(nom[k]) + ' ' + esc(String(b.pct)) + ' %'
+                    + (b.source === 'mesure'
+                        ? ' <span class="text-success">(mesuré sur ' + esc(String(b.jours)) + ' j)</span>'
+                        : ' <span class="text-muted">(paramètre — ' + esc(String(b.raison || '')) + ')</span>');
+            });
+        return parts.join(' · ');
+    }
+
     const plPostesNeutralises = new Set();
 
     // MEMES REGLES QUE LE PL pour le cash theorique: cliquer une ligne la
@@ -3267,8 +3288,11 @@
                         + ' au poste Ventes). Une vente a probablement été saisie après le figeage.</div>'
                       : ''}
                     <div class="text-muted small">Marge indicative : prix de vente moins prix
-                      d'achat divisé par (1 − ${esc(String(cj.parage_pct))} % de parage), au
-                      paramètre et non au parage mesuré. La commission MaaS n'y entre pas.
+                      d'achat divisé par (1 − le parage de son espèce). La commission MaaS
+                      n'y entre pas.
+                      ${cj.parage_detail
+                        ? '<span class="d-block">Taux retenus : ' + texteParage(cj.parage_detail) + '</span>'
+                        : ''}
                       Le taux rapporte la marge au CA <em>chiffré</em>, pas au CA total :
                       un produit sans prix d'achat connu ne compte ni au numérateur ni au
                       dénominateur, et une commande dont aucun coût n'est connu affiche
@@ -4302,9 +4326,11 @@
                     ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
              </tbody></table></div>` : ''}
             <div class="text-muted small">Marge indicative : prix de vente moins prix d'achat
-              divisé par (1 − ${esc(String(cp.parage_pct))} % de parage), au paramètre et non au
-              parage mesuré. Le prix d'achat est celui de la DATE de chaque vente, pas le dernier
-              connu. La commission MaaS n'y entre pas. Le taux rapporte la marge au CA
+              divisé par (1 − le parage de son espèce). Le prix d'achat est celui de la DATE de
+              chaque vente, pas le dernier connu.
+              ${cp.parage_detail
+                ? '<span class="d-block">Taux retenus : ' + texteParage(cp.parage_detail) + '</span>'
+                : ''} La commission MaaS n'y entre pas. Le taux rapporte la marge au CA
               <em>chiffré</em> : un produit sans prix d'achat ne compte ni au numérateur ni au
               dénominateur.
               ${nb(cp.ca_sans_cout) > 0
