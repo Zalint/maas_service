@@ -3426,21 +3426,37 @@ async function computePl(dateDebut, dateFin) {
         // qu'une donnee absente.
         let avancesProvisoires = 0;
         let avancesProvisoiresDetail = [];
-        try {
-            const { rapprocherAvances } = require('../lib/rapprochement-avances');
-            const rap = rapprocherAvances({
-                detailParDate: creances.detail_par_date || [],
-                avances: avancesParDate
-            });
-            avancesProvisoiresDetail = Object.values(rap.par_date || {})
-                .filter((e) => e.statut === 'sans_avance' && e.montant_achat > 0)
-                .map((e) => ({ date: e.date, montant: round2(e.montant_achat),
-                    nb_produits: e.nb_produits }))
-                .sort((x, y) => y.date.localeCompare(x.date));
-            avancesProvisoires = round2(
-                avancesProvisoiresDetail.reduce((t, e) => t + e.montant, 0));
-        } catch (e) {
-            console.warn('[PL] avances provisoires indisponibles:', e.message);
+        // LA SOURCE DOIT AVOIR REPONDU.
+        //
+        // Sans reponse de MataBanq, avancesParDate est VIDE: toutes les
+        // journees ayant recu de la marchandise passent alors « sans avance »
+        // et leur valorisation entiere entre dans le cout des ventes. Mesure
+        // sur aout 2026 a Mbao: 3 921 940 F ajoutes, le PL affichant
+        // -3 877 920 au lieu de +44 019 - un chiffre qui ne decrit qu'une
+        // panne reseau, presente comme un poste ordinaire du tableau.
+        //
+        // On ne calcule donc RIEN quand la source est muette. Le PL rend deja
+        // sources.avances.etat pour que l'ecran le dise.
+        if (avancesEtat !== 'ok') {
+            console.warn('[PL] avances provisoires non calculees: source '
+                + avancesEtat + ' (' + (avancesRaison || 'sans raison') + ')');
+        } else {
+            try {
+                const { rapprocherAvances } = require('../lib/rapprochement-avances');
+                const rap = rapprocherAvances({
+                    detailParDate: creances.detail_par_date || [],
+                    avances: avancesParDate
+                });
+                avancesProvisoiresDetail = Object.values(rap.par_date || {})
+                    .filter((e) => e.statut === 'sans_avance' && e.montant_achat > 0)
+                    .map((e) => ({ date: e.date, montant: round2(e.montant_achat),
+                        nb_produits: e.nb_produits }))
+                    .sort((x, y) => y.date.localeCompare(x.date));
+                avancesProvisoires = round2(
+                    avancesProvisoiresDetail.reduce((t, e) => t + e.montant, 0));
+            } catch (e) {
+                console.warn('[PL] avances provisoires indisponibles:', e.message);
+            }
         }
 
         const coutDesVentes = totalAvances + avancesProvisoires
