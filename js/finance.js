@@ -2735,6 +2735,27 @@
         });
     }
 
+    // L'INFOBULLE DES PRODUITS D'UNE COMMANDE, au survol de sa colonne
+    // Lignes. « 7 lignes » ne dit pas quoi: le detail par produit est dans
+    // la reponse, il manquait a l'ecran. Une infobulle native (title)
+    // suffit - pas de JS, pas de dependance - et le saut de ligne s'ecrit
+    // &#10; dans l'attribut. L'unite vient du serveur: kg pour la
+    // boucherie, piece pour le reste, la base ne sachant pas faire mieux
+    // (unite_stock vaut 'unite' pour les 293 produits).
+    //
+    // Au niveau du module: les commandes du jour se rendent dans
+    // rendreEcartJour et les clients de la periode dans renderPl.
+    const titreProduits = (produits) => {
+        if (!produits || !produits.length) return '';
+        const txt = produits.map((p) => {
+            const u = p.unite === 'kg' ? 'kg'
+                : (nb(p.quantite) > 1 ? 'pi\u00e8ces' : 'pi\u00e8ce');
+            return p.produit + ' : ' + fmtDec(p.quantite) + ' ' + u;
+        }).join('\n');
+        return ' title="' + esc(txt).replace(new RegExp('\n', 'g'), '&#10;')
+            + '" style="cursor:help;text-decoration:underline dotted"';
+    };
+
     const plPostesNeutralises = new Set();
 
     // MEMES REGLES QUE LE PL pour le cash theorique: cliquer une ligne la
@@ -3242,7 +3263,7 @@
                               ? '<span class="text-muted small d-block">marge partielle : '
                                 + esc((x.sans_cout || []).join(', ')) + ' sans coût connu</span>'
                               : ''}</td>
-                         <td class="text-end text-muted">${esc(String(x.lignes))}</td>
+                         <td class="text-end text-muted"><span${titreProduits(x.produits)}>${esc(String(x.lignes))}</span></td>
                          <td class="text-end">${esc(fmtMoney(x.ca))}</td>
                          <td class="text-end fw-bold text-${x.ca_chiffre > 0
                             ? (nb(x.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
@@ -4249,7 +4270,7 @@
                         + esc((c.sans_cout || []).slice(0, 4).join(', ')) + ' sans coût connu</span>'
                       : ''}</td>
                  <td class="text-end">${esc(String(c.nb_commandes))}</td>
-                 <td class="text-end text-muted">${esc(String(c.lignes))}</td>
+                 <td class="text-end text-muted"><span${titreProduits(c.produits)}>${esc(String(c.lignes))}</span></td>
                  <td class="text-end">${esc(fmtMoney(c.ca))}</td>
                  <td class="text-end fw-bold text-${c.ca_chiffre > 0
                     ? (nb(c.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
@@ -4291,7 +4312,7 @@
                ${(cp.comptoir.commandes || []).map((c) => `<tr>
                  <td>${esc(fmtDateFr(c.date))}</td>
                  <td class="small text-muted">${esc(c.commande_id || 'sans identifiant')}</td>
-                 <td class="text-end text-muted">${esc(String(c.lignes))}</td>
+                 <td class="text-end text-muted"><span${titreProduits(c.produits)}>${esc(String(c.lignes))}</span></td>
                  <td class="text-end">${esc(fmtMoney(c.ca))}</td>
                  <td class="text-end fw-bold text-${c.ca_chiffre > 0
                     ? (nb(c.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
@@ -5625,7 +5646,8 @@
             b.addEventListener('click', async () => {
                 b.disabled = true;
                 try {
-                    const r = await fetch('/api/finance/cash-autres/' + encodeURIComponent(b.dataset.id),
+                    const r = await fetch('/api/finance/cash-autres/' + encodeURIComponent(b.dataset.id)
+                        + '?mois=' + encodeURIComponent(ct.mois || ''),
                         { method: 'DELETE', credentials: 'same-origin' });
                     const j = await r.json();
                     if (j && j.success) recalculer();

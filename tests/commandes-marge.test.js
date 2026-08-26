@@ -308,3 +308,58 @@ describe('clients de la periode', () => {
         expect(r.total_commandes).toBe(0);
     });
 });
+
+describe('detail par produit, pour le survol', () => {
+    test('les quantites se cumulent par produit, triees decroissantes', () => {
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 2, montant: 10000, commande_id: 'C1' },
+            { produit: 'Boeuf', nombre: 3, montant: 15000, commande_id: 'C1' },
+            { produit: 'Poivre', nombre: 1, montant: 100, commande_id: 'C1' }
+        ]);
+        expect(r.commandes[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 5, unite: 'kg' },
+            { produit: 'Poivre', quantite: 1, unite: 'piece' }
+        ]);
+    });
+
+    test('l unite suit la frontiere boucherie: kg dedans, piece dehors', () => {
+        // La base ne connait pas l'unite (unite_stock vaut 'unite' partout):
+        // c'est estBoucherie qui tranche, comme pour le parage.
+        const r = agreger([
+            { produit: 'Mystere', nombre: 4, montant: 5000, commande_id: 'C1' }
+        ]);
+        // Meme sans cout connu, la quantite se lit: le detail ne depend pas
+        // de la marge.
+        expect(r.commandes[0].produits).toEqual([
+            { produit: 'Mystere', quantite: 4, unite: 'piece' }
+        ]);
+    });
+
+    test('les clients de la periode portent le meme detail, cumule', () => {
+        const PRIX = () => 4480;
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', 'Mme Ndiaye', 'C1', 'Boeuf', 2, 10000),
+                L('2026-08-20', 'Mme Ndiaye', 'C2', 'Boeuf', 3, 15000)
+            ],
+            prixAchatDe: PRIX, estBoucherie: () => true, paragePct: 5
+        });
+        expect(r.clients[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 5, unite: 'kg' }
+        ]);
+    });
+
+    test('le comptoir aussi, commande par commande', () => {
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', '', 'X1', 'Boeuf', 2, 10000),
+                L('2026-08-03', '', 'X1', 'Yell', 1, 2500)
+            ],
+            prixAchatDe: () => 4480, estBoucherie: (p) => p === 'Boeuf', paragePct: 5
+        });
+        expect(r.comptoir.commandes[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 2, unite: 'kg' },
+            { produit: 'Yell', quantite: 1, unite: 'piece' }
+        ]);
+    });
+});
