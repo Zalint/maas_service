@@ -2750,7 +2750,13 @@
         const txt = produits.map((p) => {
             const u = p.unite === 'kg' ? 'kg'
                 : (nb(p.quantite) > 1 ? 'pi\u00e8ces' : 'pi\u00e8ce');
-            return p.produit + ' : ' + fmtDec(p.quantite) + ' ' + u;
+            // Le cout REEL de ce produit (prix d'achat resolu a sa date,
+            // divise par le parage) - pas une soustraction CA - marge au
+            // niveau de la commande, qui ne dirait pas LEQUEL des produits a
+            // cout\u00e9 cher.
+            const cout = p.cout === null || p.cout === undefined
+                ? ', co\u00fbt inconnu' : ', co\u00fbt ' + fmtMoney(p.cout);
+            return p.produit + ' : ' + fmtDec(p.quantite) + ' ' + u + cout;
         }).join('\n');
         return ' title="' + esc(txt).replace(new RegExp('\n', 'g'), '&#10;')
             + '" style="cursor:help;text-decoration:underline dotted"';
