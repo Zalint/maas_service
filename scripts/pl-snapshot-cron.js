@@ -26,6 +26,12 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env.local'), overr
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
+// Pas de dependance pour un seul cast: ce script tourne seul.
+function nb(v) {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+}
+
 (async () => {
     const t0 = Date.now();
     // Hisse hors du try: si le require lui-meme echoue, sequelize reste
@@ -115,6 +121,26 @@ const DRY_RUN = process.argv.includes('--dry-run');
             const raison = (data.sources.avances && data.sources.avances.raison) || 'source indisponible';
             console.warn(`[pl-snapshot] REFUS de figer le ${dateFin}: ${raison}.`);
             console.warn('[pl-snapshot] les avances comptent pour 0, le PL serait faux. Rien ecrit.');
+            process.exitCode = 1;
+        } else if (nb(data.avances_provisoires) > 0) {
+            // UNE AVANCE EN RETARD N'EST PAS UNE AVANCE ABSENTE.
+            //
+            // Le refus ci-dessus couvre la source MUETTE. Ici la source
+            // repond, mais une journee a recu de la marchandise sans que
+            // MataBanq ait encore enregistre son avance: le cout des ventes
+            // la compte PROVISOIREMENT, et le PL du jour en depend.
+            //
+            // Figer un tel PL grave un chiffre que la saisie du lendemain
+            // rendra faux, sans que rien ne le dise: le panneau d'ecart
+            // attribuerait la difference a un poste plutot qu'a une saisie
+            // tardive. Mieux vaut un trou dans l'historique, qui se voit et
+            // se rattrape en rejouant le cron.
+            const dates = (data.avances_provisoires_detail || [])
+                .map((e) => e.date).join(', ');
+            console.warn(`[pl-snapshot] REFUS: ${data.avances_provisoires} FCFA d'avances `
+                + `non encore saisies (${dates || 'dates inconnues'}).`);
+            console.warn('[pl-snapshot] le cout des ventes les compte a titre provisoire; '
+                + 'figer maintenant graverait un PL que la saisie rendra faux. Rien ecrit.');
             process.exitCode = 1;
         } else if (data.stock && data.stock.soir_estime) {
             const meta = data.stock.estimation || {};

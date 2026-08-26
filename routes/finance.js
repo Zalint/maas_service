@@ -4412,11 +4412,27 @@ router.post('/cash-autres', async (req, res) => {
 router.delete('/cash-autres/:id', async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
-        if (!Number.isFinite(id)) {
-            return res.status(400).json({ success: false, error: 'id requis' });
+        // LE MOIS EST EXIGE, et verifie.
+        //
+        // Supprimer par id seul rendait la suppression aveugle au contexte:
+        // un id perime - onglet reste ouvert sur un autre mois, retour en
+        // arriere du navigateur - effacait une ligne d'un mois different de
+        // celui affiche, sans que l'ecran courant ne bouge. La ligne
+        // disparaissait d'un total que personne ne regardait.
+        const mois = String(req.query.mois || '').slice(0, 7);
+        if (!Number.isFinite(id) || !APPROB_MOIS.test(mois)) {
+            return res.status(400).json({ success: false,
+                error: 'id et mois (AAAA-MM) requis' });
         }
-        await sequelize.query('DELETE FROM cash_theorique_autres WHERE id = :id',
-            { replacements: { id } });
+        const [, meta] = await sequelize.query(
+            'DELETE FROM cash_theorique_autres WHERE id = :id AND mois = :mois',
+            { replacements: { id, mois } });
+        if (!meta || !meta.rowCount) {
+            // Ni 500 ni succes silencieux: la ligne existe peut-etre, mais
+            // pas dans ce mois-la. Le dire evite de croire a une suppression.
+            return res.status(404).json({ success: false,
+                error: 'aucune ligne ' + id + ' pour le mois ' + mois });
+        }
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/cash-autres:', e);
