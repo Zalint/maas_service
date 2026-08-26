@@ -2735,6 +2735,26 @@
         });
     }
 
+    // LE DETAIL DES TAUX DE PARAGE RETENUS, pour les blocs de marge.
+    //
+    // Ils affirmaient « 5 % au parametre » alors que le taux vient desormais
+    // de la MESURE quand elle tient debout - bovin 3,96 % sur 23 jours en
+    // aout 2026 - et du parametre sinon. Un lecteur qui refait le calcul a la
+    // main doit trouver le meme chiffre que l'ecran.
+    function texteParage(detail) {
+        if (!detail) return '';
+        const nom = { bovin: 'bovin', ovin: 'ovin', autre: 'autres viandes' };
+        const parts = ['bovin', 'ovin', 'autre']
+            .filter((k) => detail[k])
+            .map((k) => {
+                const b = detail[k];
+                return esc(nom[k]) + ' ' + esc(String(b.pct)) + ' %'
+                    + (b.source === 'mesure'
+                        ? ' <span class="text-success">(mesuré sur ' + esc(String(b.jours)) + ' j)</span>'
+                        : ' <span class="text-muted">(paramètre — ' + esc(String(b.raison || '')) + ')</span>');
+            });
+        return parts.join(' · ');
+    }
     // L'INFOBULLE DES PRODUITS D'UNE COMMANDE, au survol de sa colonne
     // Lignes. « 7 lignes » ne dit pas quoi: le detail par produit est dans
     // la reponse, il manquait a l'ecran. Une infobulle native (title)
@@ -3294,8 +3314,11 @@
                         + ' au poste Ventes). Une vente a probablement été saisie après le figeage.</div>'
                       : ''}
                     <div class="text-muted small">Marge indicative : prix de vente moins prix
-                      d'achat divisé par (1 − ${esc(String(cj.parage_pct))} % de parage), au
-                      paramètre et non au parage mesuré. La commission MaaS n'y entre pas.
+                      d'achat divisé par (1 − le parage de son espèce). La commission MaaS
+                      n'y entre pas.
+                      ${cj.parage_detail
+                        ? '<span class="d-block">Taux retenus : ' + texteParage(cj.parage_detail) + '</span>'
+                        : ''}
                       Le taux rapporte la marge au CA <em>chiffré</em>, pas au CA total :
                       un produit sans prix d'achat connu ne compte ni au numérateur ni au
                       dénominateur, et une commande dont aucun coût n'est connu affiche
@@ -3963,8 +3986,14 @@
         //
         // Le cout des ventes, c'est cette tresorerie MOINS ce qui est reste sur
         // l'etal: on ne compte que ce qui a ete consomme.
+        //
+        // 'avances_provisoires' aussi: le serveur les ajoute au cout des
+        // ventes (coutDesVentes = avances + avances_provisoires + paiements -
+        // stock), les exclure ici ferait afficher une marge plus haute que
+        // celle qui explique reellement le PL en dessous.
         const margeBrute = postes
-            .filter((p) => ['ventes', 'avances', 'paiements', 'stock'].includes(p.cle) && actif(p))
+            .filter((p) => ['ventes', 'avances', 'avances_provisoires', 'paiements', 'stock'].includes(p.cle)
+                && actif(p))
             .reduce((s, p) => s + p.signe * p.montant, 0);
         // Retrouve par sa CLE, pas par sa position: postes[0] se trouve etre
         // les ventes aujourd'hui, mais reordonner le tableau ferait alors
@@ -3986,12 +4015,13 @@
         // 397 727 affiches. A zero on ne l'affiche pas: un « - 0 » n'aide
         // personne et la plupart des sites n'ont aucun fournisseur externe.
         const termesMarge = postes
-            .filter((p) => ['ventes', 'avances', 'stock'].includes(p.cle)
+            .filter((p) => ['ventes', 'avances', 'avances_provisoires', 'stock'].includes(p.cle)
                 || (p.cle === 'paiements' && nb(p.montant) !== 0))
             .map((p) => {
                 const off = !actif(p);
                 const valeur = p.signe * p.montant;
-                const libelle = { ventes: 'Ventes', avances: 'Avances', paiements: 'Paiements fournisseur', stock: 'Variation stock' }[p.cle]
+                const libelle = { ventes: 'Ventes', avances: 'Avances', avances_provisoires: 'Avances provisoires',
+                    paiements: 'Paiements fournisseur', stock: 'Variation stock' }[p.cle]
                     + (p.cle === 'stock' && stock.soir_estime === true ? ' (estimée)' : '');
                 const texte = `${valeur >= 0 ? '+' : '−'} ${fmtMoney(Math.abs(valeur))}`;
                 return off
@@ -4329,9 +4359,11 @@
                     ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
              </tbody></table></div>` : ''}
             <div class="text-muted small">Marge indicative : prix de vente moins prix d'achat
-              divisé par (1 − ${esc(String(cp.parage_pct))} % de parage), au paramètre et non au
-              parage mesuré. Le prix d'achat est celui de la DATE de chaque vente, pas le dernier
-              connu. La commission MaaS n'y entre pas. Le taux rapporte la marge au CA
+              divisé par (1 − le parage de son espèce). Le prix d'achat est celui de la DATE de
+              chaque vente, pas le dernier connu.
+              ${cp.parage_detail
+                ? '<span class="d-block">Taux retenus : ' + texteParage(cp.parage_detail) + '</span>'
+                : ''} La commission MaaS n'y entre pas. Le taux rapporte la marge au CA
               <em>chiffré</em> : un produit sans prix d'achat ne compte ni au numérateur ni au
               dénominateur.
               ${nb(cp.ca_sans_cout) > 0

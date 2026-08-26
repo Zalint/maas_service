@@ -2859,6 +2859,49 @@ const _clientsMemo = new Map();
 const CLIENTS_MEMO_TTL_MS = 60 * 1000;
 const CLIENTS_MEMO_MAX_ENTRIES = 200;
 
+// LE PARAGE A APPLIQUER, mesure par espece plutot que decide.
+//
+// Le parametre stock_pertes_decoupe_pct est un chiffre pose une fois et
+// applique au boeuf, au veau et a l'agneau sans distinction. Le depot mesure
+// pourtant la perte reelle: aout 2026 a Mbao, bovin 3,96 % sur 23 jours,
+// ovin 1,4 % sur 2 jours seulement. Le choix entre mesure et parametre - et
+// le refus d'une mesure trop courte ou aberrante - vit dans un module pur
+// (lib/parage-effectif.js).
+//
+// Le taux du MOIS, pas du jour: sur une seule journee le ratio est du bruit,
+// il se calcule parfois sur un stock du soir ESTIME, et il a les ventes du
+// jour a son numerateur - l'utiliser pour valoriser ces memes ventes serait
+// circulaire.
+async function parageEffectifPour(dateIso, contexte) {
+    const { tauxParageMois } = require('../lib/parage-mois');
+    const { tauxParEspece, paragePourProduit } = require('../lib/parage-effectif');
+    const { lirePackCompositions } = require('../lib/pack-compositions');
+
+    const cfgRows = await FinanceConfig.findAll();
+    const cfgMap = Object.fromEntries(cfgRows.map((x) => [x.key, x.value]));
+    const parametrePct = parseFloat(await resolveConfigPourMois(
+        dateIso.slice(0, 7), 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+    ));
+
+    let mesures = {};
+    try {
+        // Les packs comptent dans les ventes ajustees: sans eux, une vente de
+        // pack ne serait pas vue et le parage serait surestime d'autant.
+        const packs = await lirePackCompositions();
+        mesures = await tauxParageMois(sequelize, dateIso, contexte, packs) || {};
+    } catch (e) {
+        // Sans mesure, le parametre reste - c'est exactement le repli prevu.
+        console.warn('[parage] mesure du mois indisponible:', e.message);
+    }
+
+    const taux = tauxParEspece({ mesures: mesures, parametrePct: parametrePct });
+    return {
+        taux: taux,
+        parametrePct: Number.isFinite(parametrePct) ? parametrePct : 5,
+        paragePour: paragePourProduit(taux, contexte.categorieDe, contexte.estBoucherie)
+    };
+}
+
 async function calculerClientsPeriode(dateDebut, dateFin) {
     const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
     const { chargerContexteParage } = require('../lib/parage-contexte');
@@ -2868,9 +2911,7 @@ async function calculerClientsPeriode(dateDebut, dateFin) {
         FinanceConfig.findAll()
     ]);
     const cfgMap = Object.fromEntries(cfgRows.map((x) => [x.key, x.value]));
-    const paragePct = parseFloat(await resolveConfigPourMois(
-        dateFin.slice(0, 7), 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
-    ));
+    const parage = await parageEffectifPour(dateFin, ctxPar);
 
     // Un resolveur PAR DATE, garde en cache le temps du calcul: pourDate()
     // rejoue l'historique des receptions, on ne le fait qu'une fois par jour
@@ -2897,12 +2938,17 @@ async function calculerClientsPeriode(dateDebut, dateFin) {
         return m ? m[3] + '-' + m[2] + '-' + m[1] : t;
     };
 
-    return agregerClients({
+    const r = agregerClients({
         lignes: lignes.map((l) => Object.assign({}, l, { date: versIso(l.date) })),
         prixAchatDe: prixAchatDe,
         estBoucherie: (produit) => ctxPar.estBoucherie(produit),
-        paragePct: paragePct
+        paragePour: parage.paragePour,
+        paragePct: parage.parametrePct
     });
+    // Le detail des taux retenus: l'ecran doit pouvoir dire « boeuf 3,96 %
+    // mesure sur 23 jours » plutot que « 5 % au parametre », qui serait faux.
+    r.parage_detail = parage.taux;
+    return r;
 }
 
 async function clientsPeriodeMemoise(dateDebut, dateFin) {
@@ -2945,9 +2991,7 @@ async function calculerCommandesDuJour(dateISO) {
     // « Pertes decoupe » du meme ecran, qui montre celui du mois. Le PL
     // (computePl) et Cash et Stock resolvent tous deux par mois.
     const cfgParMap = Object.fromEntries(cfgRowsPar.map((x) => [x.key, x.value]));
-    const paragePct = await resolveConfigPourMois(
-        dateISO.slice(0, 7), 'stock_pertes_decoupe_pct', cfgParMap.stock_pertes_decoupe_pct
-    );
+    const parage = await parageEffectifPour(dateISO, ctxPar);
     const lignes = await Vente.findAll({
         where: { date: { [Op.in]: graphiesDeDatesPourPeriode(dateISO, dateISO) } },
         attributes: ['produit', 'nombre', 'montant', 'prix_unit',
@@ -2956,12 +3000,15 @@ async function calculerCommandesDuJour(dateISO) {
     });
     // L'agregation elle-meme est pure et testee (lib/commandes-marge.js): ici
     // on ne fait que charger et brancher.
-    return agregerCommandes({
+    const r = agregerCommandes({
         lignes: lignes,
         prixAchatDe: prixAchatDe,
         estBoucherie: (produit) => ctxPar.estBoucherie(produit),
-        paragePct: parseFloat(paragePct)
+        paragePour: parage.paragePour,
+        paragePct: parage.parametrePct
     });
+    r.parage_detail = parage.taux;
+    return r;
 }
 
 /**
