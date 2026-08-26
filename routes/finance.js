@@ -3884,6 +3884,22 @@ router.post('/pl/snapshot', async (req, res) => {
             });
         }
 
+        // MEME REFUS QUE LE CRON, ICI AUSSI : une avance en retard n'est pas
+        // une avance absente, mais le cout des ventes la compte quand meme a
+        // titre provisoire. Le bouton manuel gravait ce chiffre alors que la
+        // garde du cron (scripts/pl-snapshot-cron.js) le refusait deja la
+        // nuit - un superviseur pressé de figer avant le cron produisait
+        // exactement le PL que la garde nocturne existe pour empecher.
+        if (data.avances_provisoires > 0) {
+            const dates = (data.avances_provisoires_detail || []).map((e) => e.date).join(', ');
+            return res.status(409).json({
+                success: false,
+                code: 'avances_provisoires',
+                error: `${data.avances_provisoires} FCFA d'avances non encore saisies `
+                    + `(${dates || 'dates inconnues'}) : le coût des ventes les compte à titre `
+                    + `provisoire, figer maintenant graverait un PL que la saisie rendra faux.`
+            });
+        }
 
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({
@@ -4392,10 +4408,14 @@ router.delete('/depots-approuves', async (req, res) => {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(montant)) {
             return res.status(400).json({ success: false, error: 'date et montant requis' });
         }
-        await sequelize.query(
+        const [, meta] = await sequelize.query(
             'DELETE FROM depots_mata_approuves WHERE date = :date AND montant = :montant',
             { replacements: { date, montant } }
         );
+        if (!meta || !meta.rowCount) {
+            return res.status(404).json({ success: false,
+                error: 'aucune approbation ' + date + ' / ' + montant + ' FCFA' });
+        }
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/depots-approuves:', e);
@@ -4459,11 +4479,27 @@ router.post('/cash-autres', async (req, res) => {
 router.delete('/cash-autres/:id', async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
-        if (!Number.isFinite(id)) {
-            return res.status(400).json({ success: false, error: 'id requis' });
+        // LE MOIS EST EXIGE, et verifie.
+        //
+        // Supprimer par id seul rendait la suppression aveugle au contexte:
+        // un id perime - onglet reste ouvert sur un autre mois, retour en
+        // arriere du navigateur - effacait une ligne d'un mois different de
+        // celui affiche, sans que l'ecran courant ne bouge. La ligne
+        // disparaissait d'un total que personne ne regardait.
+        const mois = String(req.query.mois || '').slice(0, 7);
+        if (!Number.isFinite(id) || !APPROB_MOIS.test(mois)) {
+            return res.status(400).json({ success: false,
+                error: 'id et mois (AAAA-MM) requis' });
         }
-        await sequelize.query('DELETE FROM cash_theorique_autres WHERE id = :id',
-            { replacements: { id } });
+        const [, meta] = await sequelize.query(
+            'DELETE FROM cash_theorique_autres WHERE id = :id AND mois = :mois',
+            { replacements: { id, mois } });
+        if (!meta || !meta.rowCount) {
+            // Ni 500 ni succes silencieux: la ligne existe peut-etre, mais
+            // pas dans ce mois-la. Le dire evite de croire a une suppression.
+            return res.status(404).json({ success: false,
+                error: 'aucune ligne ' + id + ' pour le mois ' + mois });
+        }
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/cash-autres:', e);

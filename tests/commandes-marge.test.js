@@ -381,3 +381,79 @@ describe('parage par espece', () => {
         expect(b.commandes[0].marge).toBeGreaterThan(a.commandes[0].marge);
     });
 });
+
+describe('detail par produit, pour le survol', () => {
+    test('les quantites ET LE COUT REEL se cumulent par produit, triees decroissantes', () => {
+        // COUTS = { Boeuf: 3000, Poivre: 100 }, Boeuf boucherie (div 0,95).
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 2, montant: 10000, commande_id: 'C1' },
+            { produit: 'Boeuf', nombre: 3, montant: 15000, commande_id: 'C1' },
+            { produit: 'Poivre', nombre: 1, montant: 100, commande_id: 'C1' }
+        ]);
+        // Cout REEL = prix d'achat / (1 - parage) * quantite - pas une
+        // soustraction (CA - marge) au niveau de la commande.
+        expect(r.commandes[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 },
+            { produit: 'Poivre', quantite: 1, unite: 'piece', cout: 100 }
+        ]);
+    });
+
+    test('l unite suit la frontiere boucherie: kg dedans, piece dehors', () => {
+        // La base ne connait pas l'unite (unite_stock vaut 'unite' partout):
+        // c'est estBoucherie qui tranche, comme pour le parage.
+        const r = agreger([
+            { produit: 'Mystere', nombre: 4, montant: 5000, commande_id: 'C1' }
+        ]);
+        // Meme sans cout connu, la quantite se lit: le detail ne depend pas
+        // de la marge. cout: null, pas 0 - un cout partiel se ferait passer
+        // pour le cout entier.
+        expect(r.commandes[0].produits).toEqual([
+            { produit: 'Mystere', quantite: 4, unite: 'piece', cout: null }
+        ]);
+    });
+
+    test('les clients de la periode portent le meme detail, cumule', () => {
+        const PRIX = () => 4480;
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', 'Mme Ndiaye', 'C1', 'Boeuf', 2, 10000),
+                L('2026-08-20', 'Mme Ndiaye', 'C2', 'Boeuf', 3, 15000)
+            ],
+            prixAchatDe: PRIX, estBoucherie: () => true, paragePct: 5
+        });
+        expect(r.clients[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(4480 / 0.95 * 5 * 100) / 100 }
+        ]);
+    });
+
+    test('le comptoir aussi, commande par commande', () => {
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', '', 'X1', 'Boeuf', 2, 10000),
+                L('2026-08-03', '', 'X1', 'Yell', 1, 2500)
+            ],
+            prixAchatDe: () => 4480, estBoucherie: (p) => p === 'Boeuf', paragePct: 5
+        });
+        expect(r.comptoir.commandes[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 2, unite: 'kg', cout: Math.round(4480 / 0.95 * 2 * 100) / 100 },
+            { produit: 'Yell', quantite: 1, unite: 'piece', cout: 4480 }
+        ]);
+    });
+
+    test('un produit a graphies multiples cumule son cout, pas seulement sa quantite', () => {
+        // Meme protection que la normalisation de quantite : deux graphies du
+        // meme produit ne doivent pas non plus ecarteler son cout en deux
+        // lignes distinctes. Le prix d'achat suit ici la meme normalisation
+        // que le regroupement, comme le fait le vrai resolveur (lib/parage).
+        const r = agregerCommandes({
+            lignes: [
+                { produit: 'Boeuf', nombre: 2, montant: 10000, commande_id: 'C1' },
+                { produit: 'boeuf', nombre: 3, montant: 15000, commande_id: 'C1' }
+            ],
+            prixAchatDe: () => 3000, estBoucherie: () => true, paragePct: 5
+        });
+        expect(r.commandes[0].produits).toEqual([
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 }
+        ]);
+    });
+});
