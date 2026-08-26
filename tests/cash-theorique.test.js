@@ -168,7 +168,7 @@ describe('le total', () => {
         }));
         expect(r.lignes.find((l) => l.cle === 'depots').montant).toBe(0);
         expect(r.total).toBe(750000);
-        expect(r.commentaire).toMatch(/ne sont PAS soustraits/);
+        expect(r.commentaire).toMatch(/Aucun n.est soustrait une seconde fois/);
     });
 
     test('un depot non retrouve EST soustrait, et le commentaire le dit', () => {
@@ -230,16 +230,19 @@ describe('le sens des lignes', () => {
         );
         expect(parCle).toEqual({
             depart: 1, ventes: 1,
-            depenses: -1, paiements: -1, remboursements: -1, depots: -1
+            depenses: -1, paiements: -1, remboursements: -1, depots: -1,
+            // « Autres » porte un montant SIGNE: sans ligne, il vaut 0 et le
+            // signe retombe a +1 - c'est le cas neutre.
+            autres: 1
         });
     });
 
-    test('les six lignes sont toujours presentes, meme a zero', () => {
+    test('les sept lignes sont toujours presentes, meme a zero', () => {
         // L'ecran boucle sur ct.lignes: une ligne absente disparaitrait du
         // tableau sans que le total ne bouge, et le lecteur ne pourrait plus
         // refaire l'addition.
         expect(construireCashTheorique({}).lignes.map((l) => l.cle)).toEqual(
-            ['depart', 'ventes', 'depenses', 'paiements', 'remboursements', 'depots']
+            ['depart', 'ventes', 'depenses', 'paiements', 'remboursements', 'depots', 'autres']
         );
     });
 
@@ -251,5 +254,106 @@ describe('le sens des lignes', () => {
         }));
         const somme = r.lignes.reduce((t, l) => t + l.signe * l.montant, 0);
         expect(r.total).toBeCloseTo(somme, 6);
+    });
+});
+
+/**
+ * L'APPROBATION MANUELLE et les lignes « Autres ».
+ *
+ * Le rapprochement automatique ne retrouve pas tout - un versement du samedi
+ * ressort le lundi, deux depots du meme montant se disputent le meme
+ * remboursement. L'exploitant, lui, SAIT que l'argent est arrive. Approuver
+ * sort le montant du total soustrait SANS lui inventer un appariement.
+ */
+describe('approbation manuelle', () => {
+    const d = (date, montant) => ({ date, montant });
+    const BASE = {
+        cashDepart: 571100, cashDepartDate: '2026-07-31', ventes: 4683650,
+        depenses: 47500, paiementsFournisseur: 223000, remboursements: 4400000,
+        depots: [d('2026-08-08', 150000), d('2026-08-11', 200000),
+            d('2026-08-23', 200000), d('2026-08-24', 350000)],
+        operationsRemboursement: []
+    };
+    const depots = (r) => r.lignes.find((l) => l.cle === 'depots').montant;
+
+    test('le cas demande: approuver 200 000 du 23/08 les retire du total', () => {
+        const avant = construireCashTheorique(BASE);
+        const apres = construireCashTheorique(Object.assign({}, BASE, {
+            approuves: [{ date: '2026-08-23', montant: 200000 }]
+        }));
+        expect(depots(avant)).toBe(900000);
+        expect(depots(apres)).toBe(700000);
+        expect(apres.total - avant.total).toBe(200000);
+    });
+
+    test('un depot approuve n est PAS marque apparie', () => {
+        // On ne lui invente pas de remboursement: il n'y en a pas.
+        const r = construireCashTheorique(Object.assign({}, BASE, {
+            approuves: [{ date: '2026-08-23', montant: 200000 }]
+        }));
+        const l = r.rapprochement.appariements.find((a) => a.date === '2026-08-23');
+        expect(l.apparie).toBe(false);
+        expect(l.approuve).toBe(true);
+        expect(r.rapprochement.nb_approuves).toBe(1);
+        expect(r.rapprochement.total_approuve).toBe(200000);
+    });
+
+    test('un montant qui ne correspond pas laisse le depot soustrait', () => {
+        // Cle = date + montant: une cloture rectifiee fait tomber
+        // l'approbation, et la ligne redevient rouge.
+        const r = construireCashTheorique(Object.assign({}, BASE, {
+            approuves: [{ date: '2026-08-23', montant: 500000 }]
+        }));
+        expect(depots(r)).toBe(900000);
+    });
+
+    test('approuver un depot DEJA retrouve ne change rien', () => {
+        const r = construireCashTheorique(Object.assign({}, BASE, {
+            operationsRemboursement: [d('2026-08-24', 350000)],
+            approuves: [{ date: '2026-08-24', montant: 350000 }]
+        }));
+        const l = r.rapprochement.appariements.find((a) => a.date === '2026-08-24');
+        expect(l.apparie).toBe(true);
+        expect(l.approuve).toBe(false);
+        expect(depots(r)).toBe(550000);
+    });
+});
+
+describe('lignes Autres', () => {
+    const BASE2 = {
+        cashDepart: 300000, cashDepartDate: '2026-07-31', ventes: 1000000,
+        depenses: 50000, paiementsFournisseur: 100000, remboursements: 400000,
+        depots: [], operationsRemboursement: []
+    };
+    const ligne = (r) => r.lignes.find((l) => l.cle === 'autres');
+
+    test('plusieurs lignes se somment, signe compris', () => {
+        const r = construireCashTheorique(Object.assign({}, BASE2, {
+            autres: [{ id: 1, montant: 50000, commentaire: 'avance' },
+                { id: 2, montant: -12000, commentaire: 'erreur caisse' }]
+        }));
+        expect(r.total_autres).toBe(38000);
+        expect(r.total).toBe(750000 + 38000);
+        expect(r.autres).toHaveLength(2);
+    });
+
+    test('un total negatif rend une ligne au signe negatif', () => {
+        // L'ecran colore d'apres `signe` et affiche |montant|: sans cette
+        // bascule il afficherait « + -12 000 ».
+        const r = construireCashTheorique(Object.assign({}, BASE2, {
+            autres: [{ id: 1, montant: -12000, commentaire: 'erreur caisse' }]
+        }));
+        expect(ligne(r).signe).toBe(-1);
+        expect(ligne(r).montant).toBe(12000);
+        expect(r.total).toBe(750000 - 12000);
+    });
+
+    test('le detail est conserve, pas seulement le total', () => {
+        // Un total de 38 000 sans le detail ne s'explique plus au bout d'un
+        // mois - c'est exactement ce que cette ligne doit eviter.
+        const r = construireCashTheorique(Object.assign({}, BASE2, {
+            autres: [{ id: 7, montant: 5000, commentaire: 'apport' }]
+        }));
+        expect(r.autres[0]).toEqual({ id: 7, montant: 5000, commentaire: 'apport' });
     });
 });

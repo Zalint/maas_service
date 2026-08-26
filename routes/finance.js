@@ -71,7 +71,7 @@ const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
 const { ecartJour, resoudreMode, fenetreEntrees, TOLERANCE_BOUCLAGE }
     = require('../lib/pl-ecart-jour');
-const { agregerCommandes } = require('../lib/commandes-marge');
+const { agregerCommandes, agregerClients } = require('../lib/commandes-marge');
 const { construireCashTheorique } = require('../lib/cash-theorique');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
@@ -520,6 +520,10 @@ const ADVANCED_FINANCE_PREFIXES = [
     // les memes constats (livraison non saisie, ecart de caisse) et merite
     // la meme garde. Il recoit AUSSI checkPlAccess plus bas, comme /pl.
     '/notes',
+    // Approbations de depots et lignes « Autres »: elles n'existent que
+    // dans Cash et Stock et changent son total. Meme garde que lui.
+    '/depots-approuves',
+    '/cash-autres',
     // La simulation expose les memes chiffres que le PL, sous un autre angle:
     // elle merite la meme garde.
     '/simulation'
@@ -546,6 +550,8 @@ router.use('/pl', checkPlAccess);
 // cette ligne il n'etait garde que par checkAuth, et un role 'user' - qui ne
 // voit ni l'un ni l'autre - pouvait lire et ecraser ces notes.
 router.use('/notes', checkPlAccess);
+router.use('/depots-approuves', checkPlAccess);
+router.use('/cash-autres', checkPlAccess);
 
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
 // MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
@@ -2837,6 +2843,86 @@ async function commandesDuJourMemoise(dateISO) {
     return data;
 }
 
+// LES CLIENTS DE LA PERIODE, classes par marge.
+//
+// Meme regle que les commandes du jour, mais cumulee: une ligne = un CLIENT,
+// avec le nombre de commandes qu'il a passees. « Mme Ndiaye » qui commande
+// deux fois dans le mois fait une ligne et deux commandes.
+//
+// LE PRIX D'ACHAT SUIT LA DATE DE CHAQUE VENTE. Un resolveur par date, cree
+// une seule fois puis reutilise: sur 25 jours, en recreer un par ligne
+// rejouerait 25 fois l'historique des receptions.
+//
+// Memoise comme _plMemo (TTL 60s, meme invalidation): l'ecran du PL se
+// consulte par allers-retours, et ce calcul lit toutes les ventes du mois.
+const _clientsMemo = new Map();
+const CLIENTS_MEMO_TTL_MS = 60 * 1000;
+const CLIENTS_MEMO_MAX_ENTRIES = 200;
+
+async function calculerClientsPeriode(dateDebut, dateFin) {
+    const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+    const { chargerContexteParage } = require('../lib/parage-contexte');
+    const [resPrix, ctxPar, cfgRows] = await Promise.all([
+        creerResolveurPrixAchat(dateFin),
+        chargerContexteParage(sequelize),
+        FinanceConfig.findAll()
+    ]);
+    const cfgMap = Object.fromEntries(cfgRows.map((x) => [x.key, x.value]));
+    const paragePct = parseFloat(await resolveConfigPourMois(
+        dateFin.slice(0, 7), 'stock_pertes_decoupe_pct', cfgMap.stock_pertes_decoupe_pct
+    ));
+
+    // Un resolveur PAR DATE, garde en cache le temps du calcul: pourDate()
+    // rejoue l'historique des receptions, on ne le fait qu'une fois par jour
+    // traverse plutot qu'une fois par ligne de vente.
+    const parDate = new Map();
+    const prixAchatDe = (produit, date) => {
+        const d = String(date || '').slice(0, 10) || dateFin;
+        if (!parDate.has(d)) parDate.set(d, resPrix.pourDate(d).prixAchat);
+        return parDate.get(d)(produit);
+    };
+
+    const lignes = await Vente.findAll({
+        where: { date: { [Op.in]: graphiesDeDatesPourPeriode(dateDebut, dateFin) } },
+        attributes: ['date', 'produit', 'nombre', 'montant', 'prix_unit',
+            'commande_id', 'nom_client'],
+        raw: true
+    });
+    // Les dates de vente sont du TEXTE a plusieurs graphies: on les ramene en
+    // ISO pour que le resolveur de prix et le regroupement par journee
+    // travaillent sur la meme forme.
+    const versIso = (v) => {
+        const t = String(v || '').slice(0, 10);
+        const m = t.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+        return m ? m[3] + '-' + m[2] + '-' + m[1] : t;
+    };
+
+    return agregerClients({
+        lignes: lignes.map((l) => Object.assign({}, l, { date: versIso(l.date) })),
+        prixAchatDe: prixAchatDe,
+        estBoucherie: (produit) => ctxPar.estBoucherie(produit),
+        paragePct: paragePct
+    });
+}
+
+async function clientsPeriodeMemoise(dateDebut, dateFin) {
+    const cle = dateDebut + '|' + dateFin;
+    const maintenant = Date.now();
+    const present = _clientsMemo.get(cle);
+    if (present && (maintenant - present.at) < CLIENTS_MEMO_TTL_MS) return present.data;
+    for (const [k, v] of _clientsMemo) {
+        if ((maintenant - v.at) >= CLIENTS_MEMO_TTL_MS) _clientsMemo.delete(k);
+    }
+    const data = await calculerClientsPeriode(dateDebut, dateFin);
+    _clientsMemo.set(cle, { data, at: Date.now() });
+    while (_clientsMemo.size > CLIENTS_MEMO_MAX_ENTRIES) {
+        const plusAncienne = _clientsMemo.keys().next().value;
+        if (plusAncienne === undefined) break;
+        _clientsMemo.delete(plusAncienne);
+    }
+    return data;
+}
+
 async function calculerCommandesDuJour(dateISO) {
     const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
     const { chargerContexteParage } = require('../lib/parage-contexte');
@@ -3000,6 +3086,7 @@ async function computePl(dateDebut, dateFin) {
         //    On somme donc les operations 'avance' filtrees sur la periode,
         //    exactement comme le fait l'UI pour son tableau et ses tuiles.
         let totalAvances = 0;
+        const avancesParDate = [];
         // Etat de la SOURCE, distinct du montant. Un zero peut vouloir dire
         // "aucune avance sur la periode" ou "on n'a pas pu demander": ces deux
         // reponses ne se valent pas, et rien ne les distinguait.
@@ -3056,7 +3143,9 @@ async function computePl(dateDebut, dateFin) {
                 avancesEtat = 'indisponible';
                 avancesRaison = 'réponse MataBanq sans bloc de détails';
             }
-            const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
+                // Gardees a part pour le rapprochement ci-dessous: le total seul
+            // ne dit pas QUELLES journees ont ete facturees.
+        const ops = (cdb && Array.isArray(cdb.details) && cdb.details[0]
                 && Array.isArray(cdb.details[0].operations))
                 ? cdb.details[0].operations : [];
             for (const op of ops) {
@@ -3065,6 +3154,7 @@ async function computePl(dateDebut, dateFin) {
                 const d = String(op.date_operation || '').slice(0, 10);
                 if (!d || d < dateDebut || d > dateFin) continue;
                 totalAvances += parseFloat(op.montant) || 0;
+                avancesParDate.push({ date: d, montant: parseFloat(op.montant) || 0 });
             }
         } catch (e) {
             // Le catch reste un filet: il ne peut pas servir de signal, mais
@@ -3319,7 +3409,58 @@ async function computePl(dateDebut, dateFin) {
         // marge - ici +15 347 F sur 2,85 M de CA, soit 0,5 %, alors que la
         // marge reelle est de 10,4 %. L'ecart, ce sont les 377 517 F de
         // marchandise payee et pas encore vendue.
-        const coutDesVentes = totalAvances + totalPaiementsFournisseur - variationStockNette;
+        // AVANCES NON ENCORE SAISIES.
+        //
+        // Une journee peut avoir recu de la marchandise - « Detail par date »
+        // la valorise au prix d'achat fournisseur - sans que MataBanq ait
+        // encore enregistre l'avance correspondante. Le cout des ventes est
+        // alors ampute de ce montant, et le PL surestime le resultat d'autant.
+        //
+        // On le compte PROVISOIREMENT, en le nommant. Il disparaitra de
+        // lui-meme le jour ou l'avance sera saisie: la date cessera d'etre
+        // « sans avance » et le montant basculera dans totalAvances, sans
+        // double compte puisque les deux termes s'excluent par construction.
+        //
+        // Les journees dont un produit n'a pas de prix d'achat sont ECARTEES
+        // (statut 'incomplet'): leur total est partiel, l'ecart ne decrirait
+        // qu'une donnee absente.
+        let avancesProvisoires = 0;
+        let avancesProvisoiresDetail = [];
+        // LA SOURCE DOIT AVOIR REPONDU.
+        //
+        // Sans reponse de MataBanq, avancesParDate est VIDE: toutes les
+        // journees ayant recu de la marchandise passent alors « sans avance »
+        // et leur valorisation entiere entre dans le cout des ventes. Mesure
+        // sur aout 2026 a Mbao: 3 921 940 F ajoutes, le PL affichant
+        // -3 877 920 au lieu de +44 019 - un chiffre qui ne decrit qu'une
+        // panne reseau, presente comme un poste ordinaire du tableau.
+        //
+        // On ne calcule donc RIEN quand la source est muette. Le PL rend deja
+        // sources.avances.etat pour que l'ecran le dise.
+        if (avancesEtat !== 'ok') {
+            console.warn('[PL] avances provisoires non calculees: source '
+                + avancesEtat + ' (' + (avancesRaison || 'sans raison') + ')');
+        } else {
+            try {
+                const { rapprocherAvances } = require('../lib/rapprochement-avances');
+                const rap = rapprocherAvances({
+                    detailParDate: creances.detail_par_date || [],
+                    avances: avancesParDate
+                });
+                avancesProvisoiresDetail = Object.values(rap.par_date || {})
+                    .filter((e) => e.statut === 'sans_avance' && e.montant_achat > 0)
+                    .map((e) => ({ date: e.date, montant: round2(e.montant_achat),
+                        nb_produits: e.nb_produits }))
+                    .sort((x, y) => y.date.localeCompare(x.date));
+                avancesProvisoires = round2(
+                    avancesProvisoiresDetail.reduce((t, e) => t + e.montant, 0));
+            } catch (e) {
+                console.warn('[PL] avances provisoires indisponibles:', e.message);
+            }
+        }
+
+        const coutDesVentes = totalAvances + avancesProvisoires
+            + totalPaiementsFournisseur - variationStockNette;
         const margeDesVentes = totalVentes - coutDesVentes;
 
         // Le PL s'ecrit alors comme une cascade lisible, et rend EXACTEMENT
@@ -3383,6 +3524,11 @@ async function computePl(dateDebut, dateFin) {
                     ? round2((ventesHorsBoucherie / totalVentes) * 100)
                     : null,
                 total_avances: round2(totalAvances),
+                // Livraisons valorisees sans avance MataBanq en face:
+                // comptees dans le cout des ventes, et nommees pour que
+                // l'ecran puisse le dire et permettre de les retirer.
+                avances_provisoires: round2(avancesProvisoires),
+                avances_provisoires_detail: avancesProvisoiresDetail,
                 commission_maas: round2(commission),
                 marge_cdc: round2(margeCdc),
                 depenses_periode: round2(totalDepenses),
@@ -3524,7 +3670,18 @@ router.get('/pl', async (req, res) => {
         }
 
         const data = await computePlMemoise(dateDebut, dateFin);
-        res.json({ success: true, data });
+        // LES CLIENTS DE LA PERIODE sont attaches ICI, pas dans computePl:
+        // le cron de figeage passe par computePl et n'a que faire d'un
+        // classement destine a l'ecran. Un echec ne doit pas emporter le PL.
+        let clients = null;
+        try {
+            clients = await clientsPeriodeMemoise(dateDebut, dateFin);
+        } catch (e) {
+            console.warn('[PL] clients de la periode indisponibles:', e.message);
+        }
+        res.json({ success: true, data: Object.assign({}, data, {
+            clients_periode: clients
+        }) });
     } catch (e) {
         if (!e.statusHttp) console.error('GET /api/finance/pl:', e);
         res.status(e.statusHttp || 500).json({ success: false, error: e.message });
@@ -3680,6 +3837,22 @@ router.post('/pl/snapshot', async (req, res) => {
             });
         }
 
+        // MEME REFUS QUE LE CRON, ICI AUSSI : une avance en retard n'est pas
+        // une avance absente, mais le cout des ventes la compte quand meme a
+        // titre provisoire. Le bouton manuel gravait ce chiffre alors que la
+        // garde du cron (scripts/pl-snapshot-cron.js) le refusait deja la
+        // nuit - un superviseur pressé de figer avant le cron produisait
+        // exactement le PL que la garde nocturne existe pour empecher.
+        if (data.avances_provisoires > 0) {
+            const dates = (data.avances_provisoires_detail || []).map((e) => e.date).join(', ');
+            return res.status(409).json({
+                success: false,
+                code: 'avances_provisoires',
+                error: `${data.avances_provisoires} FCFA d'avances non encore saisies `
+                    + `(${dates || 'dates inconnues'}) : le coût des ventes les compte à titre `
+                    + `provisoire, figer maintenant graverait un PL que la saisie rendra faux.`
+            });
+        }
 
         const username = req.session && req.session.user ? req.session.user.username : null;
         await PlSnapshot.upsert({
@@ -4057,6 +4230,9 @@ function invalidateFinanceDerivedCaches() {
     // en plus des ventes elles-memes: une vente saisie en retard sur un jour
     // passe doit apparaitre tout de suite, pas au bout du TTL.
     _commandesMemo.clear();
+    // Meme raison: les clients de la periode dependent des memes prix,
+    // du meme parage et des memes ventes.
+    _clientsMemo.clear();
 }
 router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // Le cron du soir (scripts/pl-snapshot-cron.js) et le snapshot manuel
@@ -4115,6 +4291,171 @@ router.put('/notes', async (req, res) => {
         res.json({ success: true, data: { mois, ecran, texte, updated_by: par } });
     } catch (e) {
         console.error('PUT /api/finance/notes:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// APPROBATION MANUELLE D'UN DEPOT MATA
+// =====================================================
+// Le rapprochement automatique ne retrouve pas tout: un versement du samedi
+// ressort le lundi, deux depots du meme montant se disputent le meme
+// remboursement. L'exploitant, lui, SAIT que l'argent est arrive. Il le
+// declare ici, et le montant sort du « non retrouve » sans qu'on invente un
+// appariement qui n'existe pas.
+//
+// Cle (date, montant): l'approbation tombe si la cloture est rectifiee - cf
+// lib/cash-theorique.js#cleApprobation.
+const APPROB_MOIS = /^\d{4}-\d{2}$/;
+
+router.get('/depots-approuves', async (req, res) => {
+    try {
+        const mois = String(req.query.mois || '').slice(0, 7);
+        const où = APPROB_MOIS.test(mois)
+            ? "WHERE to_char(date, 'YYYY-MM') = :mois" : '';
+        const rows = await sequelize.query(
+            'SELECT to_char(date, \'YYYY-MM-DD\') AS date, montant, commentaire, '
+            + 'approuve_par, approuve_le FROM depots_mata_approuves '
+            + où + ' ORDER BY date DESC',
+            { type: sequelize.QueryTypes.SELECT, replacements: { mois } }
+        );
+        res.json({ success: true, data: rows.map((r) => ({
+            date: r.date, montant: parseFloat(r.montant) || 0,
+            commentaire: r.commentaire || '',
+            approuve_par: r.approuve_par, approuve_le: r.approuve_le
+        })) });
+    } catch (e) {
+        console.error('GET /api/finance/depots-approuves:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.put('/depots-approuves', async (req, res) => {
+    try {
+        const b = req.body || {};
+        const date = String(b.date || '').slice(0, 10);
+        const montant = parseFloat(b.montant);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(montant)) {
+            return res.status(400).json({ success: false, error: 'date (AAAA-MM-JJ) et montant requis' });
+        }
+        const par = (req.session && req.session.user && req.session.user.username) || null;
+        await sequelize.query(
+            'INSERT INTO depots_mata_approuves (date, montant, commentaire, approuve_par, approuve_le) '
+            + 'VALUES (:date, :montant, :commentaire, :par, NOW()) '
+            + 'ON CONFLICT (date, montant) DO UPDATE SET commentaire = EXCLUDED.commentaire, '
+            + 'approuve_par = EXCLUDED.approuve_par, approuve_le = NOW()',
+            { replacements: { date, montant,
+                commentaire: String(b.commentaire == null ? '' : b.commentaire).slice(0, 2000), par } }
+        );
+        res.json({ success: true });
+    } catch (e) {
+        console.error('PUT /api/finance/depots-approuves:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.delete('/depots-approuves', async (req, res) => {
+    try {
+        const date = String(req.query.date || '').slice(0, 10);
+        const montant = parseFloat(req.query.montant);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(montant)) {
+            return res.status(400).json({ success: false, error: 'date et montant requis' });
+        }
+        const [, meta] = await sequelize.query(
+            'DELETE FROM depots_mata_approuves WHERE date = :date AND montant = :montant',
+            { replacements: { date, montant } }
+        );
+        if (!meta || !meta.rowCount) {
+            return res.status(404).json({ success: false,
+                error: 'aucune approbation ' + date + ' / ' + montant + ' FCFA' });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/finance/depots-approuves:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// LIGNES « AUTRES » DU CASH THEORIQUE
+// =====================================================
+// Ce que le modele ne sait pas nommer: une avance sur salaire, une erreur de
+// caisse rattrapee, un apport. Montant SIGNE - positif entre, negatif sort -
+// et commentaire OBLIGATOIRE: un montant libre sans explication redevient
+// illisible au bout d'un mois, et c'est justement ce qu'on cherche a eviter.
+router.get('/cash-autres', async (req, res) => {
+    try {
+        const mois = String(req.query.mois || '').slice(0, 7);
+        if (!APPROB_MOIS.test(mois)) {
+            return res.status(400).json({ success: false, error: 'mois (AAAA-MM) requis' });
+        }
+        const rows = await sequelize.query(
+            'SELECT id, montant, commentaire, cree_par, cree_le FROM cash_theorique_autres '
+            + 'WHERE mois = :mois ORDER BY id',
+            { type: sequelize.QueryTypes.SELECT, replacements: { mois } }
+        );
+        res.json({ success: true, data: rows.map((r) => ({
+            id: r.id, montant: parseFloat(r.montant) || 0,
+            commentaire: r.commentaire || '', cree_par: r.cree_par, cree_le: r.cree_le
+        })) });
+    } catch (e) {
+        console.error('GET /api/finance/cash-autres:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.post('/cash-autres', async (req, res) => {
+    try {
+        const b = req.body || {};
+        const mois = String(b.mois || '').slice(0, 7);
+        const montant = parseFloat(b.montant);
+        const commentaire = String(b.commentaire == null ? '' : b.commentaire).trim().slice(0, 2000);
+        if (!APPROB_MOIS.test(mois) || !Number.isFinite(montant) || montant === 0) {
+            return res.status(400).json({ success: false, error: 'mois (AAAA-MM) et montant non nul requis' });
+        }
+        if (!commentaire) {
+            return res.status(400).json({ success: false, error: 'commentaire obligatoire : un montant libre sans explication ne se relit pas' });
+        }
+        const par = (req.session && req.session.user && req.session.user.username) || null;
+        const r = await sequelize.query(
+            'INSERT INTO cash_theorique_autres (mois, montant, commentaire, cree_par, cree_le) '
+            + 'VALUES (:mois, :montant, :commentaire, :par, NOW()) RETURNING id',
+            { type: sequelize.QueryTypes.INSERT, replacements: { mois, montant, commentaire, par } }
+        );
+        res.json({ success: true, data: { id: (r && r[0] && r[0][0] && r[0][0].id) || null } });
+    } catch (e) {
+        console.error('POST /api/finance/cash-autres:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.delete('/cash-autres/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        // LE MOIS EST EXIGE, et verifie.
+        //
+        // Supprimer par id seul rendait la suppression aveugle au contexte:
+        // un id perime - onglet reste ouvert sur un autre mois, retour en
+        // arriere du navigateur - effacait une ligne d'un mois different de
+        // celui affiche, sans que l'ecran courant ne bouge. La ligne
+        // disparaissait d'un total que personne ne regardait.
+        const mois = String(req.query.mois || '').slice(0, 7);
+        if (!Number.isFinite(id) || !APPROB_MOIS.test(mois)) {
+            return res.status(400).json({ success: false,
+                error: 'id et mois (AAAA-MM) requis' });
+        }
+        const [, meta] = await sequelize.query(
+            'DELETE FROM cash_theorique_autres WHERE id = :id AND mois = :mois',
+            { replacements: { id, mois } });
+        if (!meta || !meta.rowCount) {
+            // Ni 500 ni succes silencieux: la ligne existe peut-etre, mais
+            // pas dans ce mois-la. Le dire evite de croire a une suppression.
+            return res.status(404).json({ success: false,
+                error: 'aucune ligne ' + id + ' pour le mois ' + mois });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/finance/cash-autres:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -4396,6 +4737,22 @@ router.get('/cash-stock', async (req, res) => {
                 throw new Error('__source_partenaire_muette__');
             }
 
+            // Les approbations manuelles et les lignes « Autres » du mois.
+            const [approuvesRows, autresRows] = await Promise.all([
+                sequelize.query(
+                    'SELECT to_char(date, \'YYYY-MM-DD\') AS date, montant, commentaire '
+                    + 'FROM depots_mata_approuves '
+                    + 'WHERE date BETWEEN :debut AND :fin',
+                    { type: sequelize.QueryTypes.SELECT,
+                        replacements: { debut: premierDuMois, fin: dateD } }
+                ),
+                sequelize.query(
+                    'SELECT id, montant, commentaire FROM cash_theorique_autres '
+                    + 'WHERE mois = :mois ORDER BY id',
+                    { type: sequelize.QueryTypes.SELECT, replacements: { mois: moisIso } }
+                )
+            ]);
+
             cashTheorique = construireCashTheorique({
                 cashDepart: cashDepart,
                 cashDepartDate: cashDepartDate,
@@ -4407,12 +4764,24 @@ router.get('/cash-stock', async (req, res) => {
                 remboursements: remboursements.reduce((t, o) => t + o.montant, 0),
                 depots: depotRows.map((r) => ({ date: String(r.date).slice(0, 10),
                     montant: parseFloat(r.total) || 0 })),
-                operationsRemboursement: remboursements
+                operationsRemboursement: remboursements,
+                approuves: approuvesRows.map((r) => ({
+                    date: r.date, montant: parseFloat(r.montant) || 0,
+                    commentaire: r.commentaire || ''
+                })),
+                autres: autresRows.map((r) => ({
+                    id: r.id, montant: parseFloat(r.montant) || 0,
+                    commentaire: r.commentaire || ''
+                }))
             });
             cashTheorique.periode = { debut: premierDuMois, fin: dateD };
             cashTheorique.depart_manquant = !depart;
             cashTheorique.depart_nb_pv = departNbPv;
             cashTheorique.depart_nb_pv_attendus = cashParPv.length;
+            cashTheorique.mois = moisIso;
+            cashTheorique.approbations = approuvesRows.map((r) => ({
+                date: r.date, montant: parseFloat(r.montant) || 0,
+                commentaire: r.commentaire || '' }));
             // La source du partenaire a-t-elle repondu ? Sans elle, les
             // remboursements valent zero et le total serait faux de plusieurs
             // millions - l'ecran doit le dire, pas l'afficher tel quel.

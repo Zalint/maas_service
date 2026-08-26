@@ -197,3 +197,48 @@ describe('robustesse', () => {
         expect(r.par_date['2026-08-10'].statut).toBe('correspond');
     });
 });
+
+/**
+ * LA SELECTION QUE LE PL UTILISE pour ses « avances non encore saisies ».
+ *
+ * routes/finance.js ne retient que les dates 'sans_avance' dont le total est
+ * strictement positif, et les compte dans le cout des ventes. Deux exclusions
+ * comptent autant que l'inclusion:
+ *   - 'incomplet' : un produit du jour n'a pas de prix d'achat, le total est
+ *     partiel. Le compter ferait porter au PL un montant qu'on sait faux.
+ *   - 'ecart'     : l'avance EXISTE, elle est juste d'un autre montant. La
+ *     recompter la doublerait.
+ */
+describe('selection des avances provisoires (PL)', () => {
+    const selection = (r) => Object.values(r.par_date)
+        .filter((e) => e.statut === 'sans_avance' && e.montant_achat > 0)
+        .map((e) => e.date);
+
+    test('ne retient que les dates sans aucune avance', () => {
+        const r = rapprocherAvances({
+            detailParDate: [
+                l('2026-08-10', 'A', 100000),   // avance exacte -> exclu
+                l('2026-08-11', 'B', 90000),    // avance differente -> exclu
+                l('2026-08-12', 'C', 50000),    // aucune avance -> RETENU
+                l('2026-08-13', 'D', null)      // prix inconnu -> exclu
+            ],
+            avances: [av('2026-08-10', 100000), av('2026-08-11', 100000), av('2026-08-13', 1)]
+        });
+        expect(selection(r)).toEqual(['2026-08-12']);
+    });
+
+    test('une date sans avance et sans montant ne compte pas', () => {
+        // Une journee a 0 F de livraison valorisee n'a rien a provisionner.
+        const r = rapprocherAvances({ detailParDate: [l('2026-08-12', 'C', 0)], avances: [] });
+        expect(selection(r)).toEqual([]);
+    });
+
+    test('le montant provisionne est le total de la journee', () => {
+        const r = rapprocherAvances({
+            detailParDate: [l('2026-08-12', 'C', 50000), l('2026-08-12', 'D', 30000)],
+            avances: []
+        });
+        expect(r.par_date['2026-08-12'].montant_achat).toBe(80000);
+        expect(selection(r)).toEqual(['2026-08-12']);
+    });
+});
