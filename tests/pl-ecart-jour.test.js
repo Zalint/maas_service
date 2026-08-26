@@ -797,3 +797,48 @@ describe('la variation nette n est PAS (fin - depart) x coeff', () => {
         expect(p.ecart_soir).not.toBeCloseTo(p.ecart_poste, 2);
     });
 });
+
+/**
+ * UNE AVANCE NON SAISIE se reconnait a une signature precise: le stock MONTE
+ * alors qu'aucune avance n'est enregistree. MATA facturant au prix d'achat,
+ * une livraison laisse toujours une avance derriere elle.
+ *
+ * Sans ce drapeau, la journee du 25/08/2026 a Mbao affichait +185 847 F de
+ * marge, soit 148,68 % des ventes - un taux qui n'existe pas sur de la
+ * marchandise, et qui ne disait rien d'autre que la facture manquante.
+ */
+describe('drapeau: avance non saisie', () => {
+    // total_avances, pas avances.total: c'est le champ que POSTES lit
+    // (cf lire: (p) => nb(p.total_avances)). Se tromper de champ ferait
+    // passer le test « une avance eteint le drapeau » pour la mauvaise
+    // raison - l'avance ne serait jamais lue.
+    const jour = (ventes, stock, avances) => ({
+        pl: 1, total_ventes: ventes, stock: { variation_nette: stock },
+        total_avances: avances, charges: {}, volumes: {}
+    });
+    const flag = (v, j) => (ecartJour({ veille: v, jour: j, depenses: [], paiements: [] })
+        .drapeaux || []).find((x) => x.cle === 'avance_absente');
+
+    test('le cas reel du 25/08: stock en hausse, zero avance', () => {
+        const d = flag(jour(4558650, 132050, 0), jour(4683650, 192897, 0));
+        expect(d).toBeDefined();
+        expect(d.niveau).toBe('fort');
+        expect(d.texte).toContain('60 847');
+        // Le taux garde ses deux decimales: arrondi a 149 il ferait douter.
+        expect(d.texte).toContain('148.68 %');
+    });
+
+    test('une avance saisie eteint le drapeau', () => {
+        expect(flag(jour(4558650, 132050, 0), jour(4683650, 192897, 60000))).toBeUndefined();
+    });
+
+    test('un stock qui BAISSE sans avance est normal', () => {
+        // Journee sans livraison: on vend le stock, rien n'entre, rien n'est
+        // facture. Lever un drapeau la crierait au loup tous les jours.
+        expect(flag(jour(4558650, 200000, 0), jour(4683650, 150000, 0))).toBeUndefined();
+    });
+
+    test('sans vente, pas de drapeau', () => {
+        expect(flag(jour(100000, 0, 0), jour(100000, 50000, 0))).toBeUndefined();
+    });
+});

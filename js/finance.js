@@ -2736,6 +2736,16 @@
     }
 
     const plPostesNeutralises = new Set();
+
+    // MEMES REGLES QUE LE PL pour le cash theorique: cliquer une ligne la
+    // retire et montre son effet. C'est une SIMULATION, jamais un
+    // enregistrement - rien ne part en base, et un rechargement remet tout.
+    //
+    // Recalculer le total ICI est legitime, contrairement aux approbations
+    // de depots qui repassent par le serveur: le total du cash theorique est
+    // une simple somme signee de sept lignes, sans rapprochement ni regle
+    // metier. Il n'y a donc pas de seconde arithmetique qui pourrait diverger.
+    const ctLignesNeutralisees = new Set();
     // PL BOUCHERIE SEULE. Retire le hors boucherie des postes ou l'information
     // existe: ventes (champ `categorie` fiable) et variation de stock (le
     // serveur isole deja variation_boucherie et variation_hors_boucherie).
@@ -3863,6 +3873,23 @@
                     : '') },
             { cle: 'avances', signe: -1, montant: d.total_avances || 0, couleur: 'danger', neutralisable: false,
               libelle: '<i class="bi bi-bank text-danger"></i> Total avances (MataBanq)' },
+            // AVANCES NON ENCORE SAISIES. Des journees ont recu de la
+            // marchandise valorisee sans que MataBanq ait enregistre l'avance:
+            // sans cette ligne, le PL surestime le resultat d'autant. Elle est
+            // NEUTRALISABLE - un clic montre le PL sans elle - et disparaitra
+            // d'elle-meme quand l'avance sera saisie.
+            ...(nb(d.avances_provisoires) > 0 ? [{
+                cle: 'avances_provisoires', signe: -1,
+                montant: d.avances_provisoires, couleur: 'danger', neutralisable: true,
+                titre: 'Livraisons valorisées sans avance MataBanq en face : '
+                    + (d.avances_provisoires_detail || [])
+                        .map((x) => fmtDateFr(x.date) + ' (' + fmtMoney(x.montant) + ')').join(', ')
+                    + '. Comptées provisoirement, en attendant la saisie réelle.',
+                libelle: '<i class="bi bi-hourglass-split text-danger"></i> Avances non encore saisies'
+                    + ' <span class="badge bg-warning text-dark ms-1">provisoire</span>'
+                    + ` <span class="badge bg-light text-dark border ms-1">${
+                        esc(String((d.avances_provisoires_detail || []).length))} date(s)</span>`
+            }] : []),
             { cle: 'commission', signe: -1, montant: d.commission_maas || 0, couleur: 'warning', neutralisable: true,
               libelle: '<i class="bi bi-percent text-warning"></i> Commission MaaS (3%)' },
             { cle: 'marge_cdc', signe: 1, montant: d.marge_cdc || 0, couleur: 'success', neutralisable: true,
@@ -4185,6 +4212,107 @@
                     <div class="small text-muted mt-1">* valorisé au prix de vente saisi, faute de prix d'achat connu.</div>
                 </div>` : '';
 
+        // LES MEILLEURS CLIENTS DE LA PERIODE.
+        //
+        // Le PL dit COMBIEN on a gagne, la decomposition dit AVEC QUOI. Il
+        // manquait AVEC QUI. Meme regle de marge que « les commandes du jour »
+        // - prix de vente moins prix d'achat divise par (1 - parage) - mais
+        // cumulee sur la periode affichee, et par CLIENT: deux commandes du
+        // meme client font une ligne et deux commandes.
+        //
+        // Replie par defaut: la question ne se pose pas a chaque consultation,
+        // mais quand elle se pose il faut pouvoir y repondre.
+        const cp = d.clients_periode || null;
+        const cpLignes = cp ? (cp.clients || []) : [];
+        const aQuelqueChose = cpLignes.length || ((cp && cp.comptoir && cp.comptoir.nb_commandes) || 0) > 0;
+        const blocClients = aQuelqueChose ? `<details class="mt-3">
+            <summary class="text-primary small" style="cursor:pointer">
+              Les meilleurs clients de la période
+              (${esc(String(cp.nb_clients))} client${cp.nb_clients > 1 ? 's' : ''} identifié${cp.nb_clients > 1 ? 's' : ''},
+               ${esc(String(cp.total_commandes))} commande${cp.total_commandes > 1 ? 's' : ''},
+               marge totale ${nb(cp.total_ca_chiffre) > 0
+                 ? esc(fmtMoney(cp.total_marge))
+                 : 'inconnue, aucun coût d\u2019achat renseigné'})</summary>
+            <div class="table-responsive mt-2">
+             <table class="table table-sm mb-1"><thead><tr>
+               <th>Client</th>
+               <th class="text-end">Commandes</th>
+               <th class="text-end">Lignes</th>
+               <th class="text-end">CA</th>
+               <th class="text-end">Marge</th>
+               <th class="text-end">Taux</th></tr></thead><tbody>
+               ${cpLignes.map((c) => `<tr>
+                 <td>${c.client ? esc(c.client)
+                    : '<span class="text-muted">Ventes au comptoir</span>'}
+                   ${(c.sans_cout || []).length
+                      ? '<span class="text-muted small d-block">marge partielle : '
+                        + esc((c.sans_cout || []).slice(0, 4).join(', ')) + ' sans coût connu</span>'
+                      : ''}</td>
+                 <td class="text-end">${esc(String(c.nb_commandes))}</td>
+                 <td class="text-end text-muted">${esc(String(c.lignes))}</td>
+                 <td class="text-end">${esc(fmtMoney(c.ca))}</td>
+                 <td class="text-end fw-bold text-${c.ca_chiffre > 0
+                    ? (nb(c.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
+                   ${c.ca_chiffre > 0
+                    ? (nb(c.marge) >= 0 ? '+' : '') + esc(fmtMoney(c.marge))
+                    : '\u2014'}</td>
+                 <td class="text-end text-muted">${c.taux_pct === null || c.taux_pct === undefined
+                    ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
+               <tr class="table-light fw-bold">
+                 <td>Total</td>
+                 <td class="text-end">${esc(String(cp.total_commandes))}</td>
+                 <td></td>
+                 <td class="text-end">${esc(fmtMoney(cp.total_ca))}</td>
+                 <td class="text-end">${nb(cp.total_ca_chiffre) > 0
+                    ? esc(fmtMoney(cp.total_marge)) : '\u2014'}</td>
+                 <td class="text-end">${nb(cp.total_ca_chiffre) > 0
+                    ? esc((nb(cp.total_marge) / nb(cp.total_ca_chiffre) * 100).toFixed(1)) + ' %'
+                    : '\u2014'}</td></tr>
+             </tbody></table></div>
+            ${((cp.comptoir || {}).nb_commandes || 0) > 0 ? `
+            <div class="mt-3 mb-1 fw-medium small">Ventes au comptoir
+              <span class="text-muted">— ${esc(String(cp.comptoir.nb_commandes))} commande${
+                cp.comptoir.nb_commandes > 1 ? 's' : ''}, ${esc(fmtMoney(cp.comptoir.total_ca))} de
+                CA, marge ${nb(cp.comptoir.total_ca_chiffre) > 0
+                  ? esc(fmtMoney(cp.comptoir.total_marge)) : 'inconnue'}</span></div>
+            <div class="text-muted small mb-2">Sans nom de client, il n'y a rien à cumuler : le
+              comptoir se lit commande par commande. Voici les
+              ${esc(String(cp.comptoir.nb_affichees))} plus grosses marges${
+                cp.comptoir.nb_masquees > 0
+                  ? `, <strong>${esc(String(cp.comptoir.nb_masquees))} autres ne sont pas affichées</strong>`
+                  : ''}.</div>
+            <div class="table-responsive">
+             <table class="table table-sm mb-1"><thead><tr>
+               <th>Date</th><th>Commande</th>
+               <th class="text-end">Lignes</th>
+               <th class="text-end">CA</th>
+               <th class="text-end">Marge</th>
+               <th class="text-end">Taux</th></tr></thead><tbody>
+               ${(cp.comptoir.commandes || []).map((c) => `<tr>
+                 <td>${esc(fmtDateFr(c.date))}</td>
+                 <td class="small text-muted">${esc(c.commande_id || 'sans identifiant')}</td>
+                 <td class="text-end text-muted">${esc(String(c.lignes))}</td>
+                 <td class="text-end">${esc(fmtMoney(c.ca))}</td>
+                 <td class="text-end fw-bold text-${c.ca_chiffre > 0
+                    ? (nb(c.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
+                   ${c.ca_chiffre > 0
+                    ? (nb(c.marge) >= 0 ? '+' : '') + esc(fmtMoney(c.marge))
+                    : '\u2014'}</td>
+                 <td class="text-end text-muted">${c.taux_pct === null || c.taux_pct === undefined
+                    ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
+             </tbody></table></div>` : ''}
+            <div class="text-muted small">Marge indicative : prix de vente moins prix d'achat
+              divisé par (1 − ${esc(String(cp.parage_pct))} % de parage), au paramètre et non au
+              parage mesuré. Le prix d'achat est celui de la DATE de chaque vente, pas le dernier
+              connu. La commission MaaS n'y entre pas. Le taux rapporte la marge au CA
+              <em>chiffré</em> : un produit sans prix d'achat ne compte ni au numérateur ni au
+              dénominateur.
+              ${nb(cp.ca_sans_cout) > 0
+                ? ' ' + esc(fmtMoney(cp.ca_sans_cout)) + ' de CA n\u2019a pas de prix d\u2019achat'
+                  + ' connu et ne porte donc aucune marge ici.'
+                : ''}</div>
+           </details>` : '';
+
         resultEl.innerHTML = `
             ${plBandeauSansVente}
             ${plBandeauNegatifs}
@@ -4328,8 +4456,19 @@
                         </tr>` : ''}
                     </tbody>
                 </table>
+                ${nb(d.avances_provisoires) > 0 ? `
+                <div class="alert alert-warning py-2 px-2 small mt-2 mb-0">
+                  <strong>${esc(fmtMoney(d.avances_provisoires))}</strong> de marchandise reçue
+                  n'a pas encore d'avance MataBanq en face
+                  (${(d.avances_provisoires_detail || [])
+                      .map((x) => esc(fmtDateFr(x.date)) + ' : ' + esc(fmtMoney(x.montant))).join(', ')}).
+                  Ce montant est compté <strong>provisoirement</strong> dans le coût des ventes ;
+                  sans lui, le PL serait surestimé d'autant. Il disparaîtra de lui-même dès que
+                  l'avance sera enregistrée. Cliquez la ligne pour voir le PL sans elle.
+                </div>` : ''}
                 ${plLegendePrix}
                 ${plNoteStock}
+                ${blocClients}
                 ${plAvertPrix}
                 ${blocDetailStock}
             </div>
@@ -4366,6 +4505,7 @@
         // Delegation apres le rendu: ce fichier est une IIFE, un onclick inline
         // ne trouverait pas la fonction. Un seul ecouteur pour tout le tableau,
         // repose a chaque rendu puisque innerHTML detruit les precedents.
+
         const table = document.getElementById('fin-pl-decomposition');
         if (table) {
             table.addEventListener('click', (ev) => {
@@ -4916,6 +5056,162 @@
         }
     }
 
+
+    // LA CARTE DU CASH THEORIQUE, isolee pour pouvoir etre re-rendue SEULE.
+    //
+    // Approuver un depot rechargeait tout l'ecran Cash et Stock: le stock,
+    // le cash par point de vente, la note du mois, tout. Long, et on
+    // perdait la position de defilement et le rapprochement deplie. Le
+    // serveur reste la source du calcul - on refait l'appel - mais on ne
+    // remplace que ce qui a change.
+    function htmlCashTheorique(ct) {
+        const rap = ct ? (ct.rapprochement || {}) : {};
+        // Le total des lignes ENCORE actives. Sans neutralisation il vaut
+        // exactement ct.total - identite verifiee par les tests du module.
+        const ctTotalAffiche = !ct ? 0 : (ctLignesNeutralisees.size
+            ? Math.round((ct.lignes || [])
+                .filter((l) => !ctLignesNeutralisees.has(l.cle))
+                .reduce((t, l) => t + l.signe * nb(l.montant), 0) * 100) / 100
+            : nb(ct.total));
+        return !ct ? '' : `
+            <div class="card mt-3" id="ct-carte">
+                <div class="card-header bg-light d-flex align-items-center justify-content-between">
+                    <strong>Cash théorique du mois</strong>
+                    <span class="small text-muted">${esc(String((ct.periode || {}).debut || ''))}
+                        → ${esc(String((ct.periode || {}).fin || ''))}</span>
+                </div>
+                <div class="card-body">
+                    ${ct.source_partenaire === 'indisponible'
+                      ? `<div class="alert alert-danger py-2 px-2 small">La source du partenaire n'a pas
+                          répondu : les remboursements comptent pour 0 et ce total est faux de tout ce
+                          qui a été remboursé sur le mois. Ne pas s'y fier.</div>`
+                      : ''}
+                    ${ct.depart_manquant
+                      ? `<div class="alert alert-warning py-2 px-2 small">Aucune clôture de caisse avant
+                          le 1er du mois : le point de départ compte pour 0, et ce total ne vaut donc
+                          que comme variation depuis le début du mois.</div>`
+                      : ''}
+                    ${nb(ct.depart_nb_pv_attendus) > 0 && nb(ct.depart_nb_pv) < nb(ct.depart_nb_pv_attendus)
+                      ? `<div class="alert alert-warning py-2 px-2 small">Seuls ${esc(String(ct.depart_nb_pv))}
+                          des ${esc(String(ct.depart_nb_pv_attendus))} points de vente avaient clôturé le
+                          ${esc(String(ct.lignes && ct.lignes[0] ? String(ct.lignes[0].libelle).replace('Caisse au ', '') : '?'))} :
+                          le point de départ ne porte que leur caisse, et le total est d'autant trop bas.</div>`
+                      : ''}
+                    ${ct.total === null || ct.total === undefined ? '' : `
+                    <div class="small text-muted mb-1">
+                      Cliquez une ligne pour la retirer et voir son effet.
+                      ${ctLignesNeutralisees.size
+                        ? `<button class="btn btn-sm btn-link p-0 align-baseline" id="ct-reactiver">
+                             tout réactiver (${esc(String(ctLignesNeutralisees.size))})</button>`
+                        : ''}
+                    </div>
+                    <table class="table table-sm mb-2" id="ct-decomposition"><tbody>
+                        ${(ct.lignes || []).map((l) => {
+                          const off = ctLignesNeutralisees.has(l.cle);
+                          return `<tr data-ct-poste="${esc(l.cle)}" style="cursor:pointer${
+                            off ? ';opacity:.45;text-decoration:line-through' : ''}"
+                            title="Cliquer pour ${off ? 'remettre' : 'retirer'} cette ligne">
+                          <td>${l.signe > 0 ? '' : '− '}${esc(l.libelle)}</td>
+                          <td class="text-end ${off ? 'text-muted' : (l.signe > 0 ? 'text-success' : 'text-danger')}">${
+                            l.signe > 0 ? '+ ' : '− '}${esc(fmtMoney(Math.abs(nb(l.montant))))}</td>
+                        </tr>`; }).join('')}
+                        <tr style="background:#e7f5ff;border-top:2px solid #339af0">
+                          <th>= Cash théorique${ctLignesNeutralisees.size
+                            ? ' <span class="badge bg-secondary">simulé</span>' : ''}</th>
+                          <th class="text-end text-${nb(ctTotalAffiche) >= 0 ? 'success' : 'danger'}">${
+                            esc(fmtMoney(ctTotalAffiche))}</th></tr>
+                    </tbody></table>`}
+                    <div class="text-muted small">${esc(ct.commentaire || '')}</div>
+                    ${ct.total === null || ct.total === undefined ? '' : `
+                    <div class="border-top mt-2 pt-2">
+                      <div class="d-flex align-items-center justify-content-between mb-1">
+                        <strong class="small">Autres</strong>
+                        <span class="small text-muted">ce que le modèle ne sait pas nommer</span>
+                      </div>
+                      ${(ct.autres || []).length ? `<table class="table table-sm mb-1"><tbody>
+                        ${(ct.autres || []).map((x) => `<tr>
+                          <td class="small">${esc(x.commentaire)}</td>
+                          <td class="text-end small text-${nb(x.montant) >= 0 ? 'success' : 'danger'}">${
+                            nb(x.montant) >= 0 ? '+ ' : '− '}${esc(fmtMoney(Math.abs(nb(x.montant))))}</td>
+                          <td class="text-end" style="width:1%">
+                            <button class="btn btn-sm btn-outline-danger py-0 ct-autre-suppr"
+                              data-id="${esc(String(x.id))}" title="Supprimer cette ligne">×</button></td>
+                        </tr>`).join('')}
+                      </tbody></table>` : '<div class="text-muted small mb-1">Aucune ligne.</div>'}
+                      <div class="row g-1 align-items-center">
+                        <div class="col-auto">
+                          <input type="number" step="1" class="form-control form-control-sm"
+                            id="ct-autre-montant" placeholder="Montant" style="width:130px">
+                        </div>
+                        <div class="col">
+                          <input type="text" class="form-control form-control-sm"
+                            id="ct-autre-commentaire" placeholder="Commentaire (obligatoire)">
+                        </div>
+                        <div class="col-auto">
+                          <button class="btn btn-sm btn-outline-primary" id="ct-autre-ajouter">Ajouter</button>
+                        </div>
+                      </div>
+                      <div class="text-muted small mt-1">Montant <strong>signé</strong> : positif pour
+                        une entrée de caisse, négatif pour une sortie. Le commentaire est obligatoire —
+                        un montant libre sans explication ne se relit pas au bout d'un mois.</div>
+                      <div class="small mt-1" id="ct-autre-etat"></div>
+                    </div>`}
+                    ${nb((ct.creances || {}).montant) > 0
+                      ? `<div class="alert alert-warning py-2 px-2 small mt-2 mb-0">
+                          ${esc(String((ct.creances || {}).nb))} vente(s) à crédit sur le mois, pour
+                          ${esc(fmtMoney((ct.creances || {}).montant))} : elles ne sont PAS dans les
+                          ventes ci-dessus, puisqu'aucun billet n'est entré en caisse. Elles
+                          entreront le jour où elles seront encaissées.</div>`
+                      : '<div class="text-muted small mt-1">Aucune vente à crédit sur le mois.</div>'}
+                    ${(rap.appariements || []).length ? `<details class="mt-2">
+                      <summary class="text-primary small" style="cursor:pointer">
+                        Le rapprochement dépôt Mata / remboursement
+                        (${esc(String(rap.nb_apparies))} sur
+                         ${esc(String((rap.appariements || []).length))} retrouvés)</summary>
+                      <div class="table-responsive mt-2">
+                       <table class="table table-sm mb-1"><thead><tr>
+                         <th>Dépôt</th><th class="text-end">Montant</th>
+                         <th>Remboursement</th><th></th></tr></thead><tbody>
+                         ${(rap.appariements || []).map((x) => `<tr>
+                           <td>${esc(x.date)}</td>
+                           <td class="text-end">${esc(fmtMoney(x.montant))}</td>
+                           <td class="${x.apparie ? 'text-success' : 'text-danger'}">${
+                             x.apparie
+                               ? esc(x.date_remboursement) + (x.decalage === 0 ? ' (le jour même)'
+                                   : x.decalage > 0 ? ' (J+' + esc(String(x.decalage)) + ')'
+                                   : ' (J' + esc(String(x.decalage)) + ')')
+                                 + (x.ambigu ? ' <span class="text-warning-emphasis">· plusieurs candidats</span>' : '')
+                               : x.approuve
+                                 ? '<span class="text-success">approuvé à la main</span>'
+                                 : (x.dispute
+                                   ? 'non retrouvé <span class="text-warning-emphasis">· un versement du même montant a été pris par un autre dépôt</span>'
+                                   : 'non retrouvé')}</td>
+                         <td class="text-end">${x.apparie ? '' : (x.approuve
+                            ? `<button class="btn btn-sm btn-outline-secondary py-0 ct-desapprouver"
+                                 data-date="${esc(x.date)}" data-montant="${esc(String(x.montant))}"
+                                 title="Retirer l'approbation : le montant redeviendra soustrait.">annuler</button>`
+                            : `<button class="btn btn-sm btn-outline-success py-0 ct-approuver"
+                                 data-date="${esc(x.date)}" data-montant="${esc(String(x.montant))}"
+                                 title="Vous constatez que ce versement est bien arrivé : le montant sort du total soustrait.">approuver</button>`)}</td>
+                       </tr>`).join('')}
+                       </tbody></table></div>
+                      <div class="text-muted small">Règle : même montant exact, à ±${
+                        esc(String(rap.tolerance_jours))} jour. Mesuré sur août 2026 à Mbao,
+                        les dépôts retrouvés le sont tous au lendemain, jamais le jour même.
+                        ${nb(rap.nb_remboursements_sans_depot) > 0
+                          ? esc(String(rap.nb_remboursements_sans_depot)) + ' remboursement(s) n\u2019ont'
+                            + ' aucun dépôt en face : tout ne passe pas par la caisse (virement,'
+                            + ' versement direct).'
+                          : ''}
+                        ${nb(rap.nb_ambigus) + nb(rap.nb_disputes) > 0
+                          ? ' Les montants ronds se répètent : quand plusieurs versements du même'
+                            + ' montant tombent dans la fenêtre, le rapprochement ligne à ligne est'
+                            + ' indicatif, pas certain.'
+                          : ''}</div>
+                     </details>` : ''}
+                </div>
+            </div>`;
+    }
     function renderCashStock(d) {
         const resultEl = document.getElementById('fin-cashstock-result');
         if (!resultEl) return;
@@ -5098,89 +5394,7 @@
         // Tout le calcul vient du serveur (lib/cash-theorique.js, module pur
         // et teste): on ne fait ici que mettre en forme.
         const ct = d.cash_theorique || null;
-        const rap = ct ? (ct.rapprochement || {}) : {};
-        const blocCashTheorique = !ct ? '' : `
-            <div class="card mt-3">
-                <div class="card-header bg-light d-flex align-items-center justify-content-between">
-                    <strong>Cash théorique du mois</strong>
-                    <span class="small text-muted">${esc(String((ct.periode || {}).debut || ''))}
-                        → ${esc(String((ct.periode || {}).fin || ''))}</span>
-                </div>
-                <div class="card-body">
-                    ${ct.source_partenaire === 'indisponible'
-                      ? `<div class="alert alert-danger py-2 px-2 small">La source du partenaire n'a pas
-                          répondu : les remboursements comptent pour 0 et ce total est faux de tout ce
-                          qui a été remboursé sur le mois. Ne pas s'y fier.</div>`
-                      : ''}
-                    ${ct.depart_manquant
-                      ? `<div class="alert alert-warning py-2 px-2 small">Aucune clôture de caisse avant
-                          le 1er du mois : le point de départ compte pour 0, et ce total ne vaut donc
-                          que comme variation depuis le début du mois.</div>`
-                      : ''}
-                    ${nb(ct.depart_nb_pv_attendus) > 0 && nb(ct.depart_nb_pv) < nb(ct.depart_nb_pv_attendus)
-                      ? `<div class="alert alert-warning py-2 px-2 small">Seuls ${esc(String(ct.depart_nb_pv))}
-                          des ${esc(String(ct.depart_nb_pv_attendus))} points de vente avaient clôturé le
-                          ${esc(String(ct.lignes && ct.lignes[0] ? String(ct.lignes[0].libelle).replace('Caisse au ', '') : '?'))} :
-                          le point de départ ne porte que leur caisse, et le total est d'autant trop bas.</div>`
-                      : ''}
-                    ${ct.total === null || ct.total === undefined ? '' : `
-                    <table class="table table-sm mb-2"><tbody>
-                        ${(ct.lignes || []).map((l) => `<tr>
-                          <td>${l.signe > 0 ? '' : '− '}${esc(l.libelle)}</td>
-                          <td class="text-end ${l.signe > 0 ? 'text-success' : 'text-danger'}">${
-                            l.signe > 0 ? '+ ' : '− '}${esc(fmtMoney(Math.abs(nb(l.montant))))}</td>
-                        </tr>`).join('')}
-                        <tr style="background:#e7f5ff;border-top:2px solid #339af0">
-                          <th>= Cash théorique</th>
-                          <th class="text-end text-${nb(ct.total) >= 0 ? 'success' : 'danger'}">${
-                            esc(fmtMoney(ct.total))}</th></tr>
-                    </tbody></table>`}
-                    <div class="text-muted small">${esc(ct.commentaire || '')}</div>
-                    ${nb((ct.creances || {}).montant) > 0
-                      ? `<div class="alert alert-warning py-2 px-2 small mt-2 mb-0">
-                          ${esc(String((ct.creances || {}).nb))} vente(s) à crédit sur le mois, pour
-                          ${esc(fmtMoney((ct.creances || {}).montant))} : elles ne sont PAS dans les
-                          ventes ci-dessus, puisqu'aucun billet n'est entré en caisse. Elles
-                          entreront le jour où elles seront encaissées.</div>`
-                      : '<div class="text-muted small mt-1">Aucune vente à crédit sur le mois.</div>'}
-                    ${(rap.appariements || []).length ? `<details class="mt-2">
-                      <summary class="text-primary small" style="cursor:pointer">
-                        Le rapprochement dépôt Mata / remboursement
-                        (${esc(String(rap.nb_apparies))} sur
-                         ${esc(String((rap.appariements || []).length))} retrouvés)</summary>
-                      <div class="table-responsive mt-2">
-                       <table class="table table-sm mb-1"><thead><tr>
-                         <th>Dépôt</th><th class="text-end">Montant</th>
-                         <th>Remboursement</th></tr></thead><tbody>
-                         ${(rap.appariements || []).map((x) => `<tr>
-                           <td>${esc(x.date)}</td>
-                           <td class="text-end">${esc(fmtMoney(x.montant))}</td>
-                           <td class="${x.apparie ? 'text-success' : 'text-danger'}">${
-                             x.apparie
-                               ? esc(x.date_remboursement) + (x.decalage === 0 ? ' (le jour même)'
-                                   : x.decalage > 0 ? ' (J+' + esc(String(x.decalage)) + ')'
-                                   : ' (J' + esc(String(x.decalage)) + ')')
-                                 + (x.ambigu ? ' <span class="text-warning-emphasis">· plusieurs candidats</span>' : '')
-                               : (x.dispute
-                                   ? 'non retrouvé <span class="text-warning-emphasis">· un versement du même montant a été pris par un autre dépôt</span>'
-                                   : 'non retrouvé')}</td></tr>`).join('')}
-                       </tbody></table></div>
-                      <div class="text-muted small">Règle : même montant exact, à ±${
-                        esc(String(rap.tolerance_jours))} jour. Mesuré sur août 2026 à Mbao,
-                        les dépôts retrouvés le sont tous au lendemain, jamais le jour même.
-                        ${nb(rap.nb_remboursements_sans_depot) > 0
-                          ? esc(String(rap.nb_remboursements_sans_depot)) + ' remboursement(s) n\u2019ont'
-                            + ' aucun dépôt en face : tout ne passe pas par la caisse (virement,'
-                            + ' versement direct).'
-                          : ''}
-                        ${nb(rap.nb_ambigus) + nb(rap.nb_disputes) > 0
-                          ? ' Les montants ronds se répètent : quand plusieurs versements du même'
-                            + ' montant tombent dans la fenêtre, le rapprochement ligne à ligne est'
-                            + ' indicatif, pas certain.'
-                          : ''}</div>
-                     </details>` : ''}
-                </div>
-            </div>`;
+        const blocCashTheorique = htmlCashTheorique(ct);
 
         resultEl.innerHTML = `
             <div class="card border-${valColor} mb-3">
@@ -5248,6 +5462,177 @@
             ${blocNoteMois('cash_stock', String(d.date || '').slice(0, 7))}
         `;
         cablerNoteMois('cash_stock', String(d.date || '').slice(0, 7));
+        cablerCashTheorique(d);
+    }
+
+    // LES ACTIONS DU CASH THEORIQUE: approuver un depot, gerer les « Autres ».
+    //
+    // Chaque action ecrit en base puis RELANCE le calcul complet, au lieu de
+    // corriger le total dans le DOM. Le total depend de six lignes et d'un
+    // rapprochement: le recalculer ici en ferait une seconde arithmetique,
+    // qui divergerait de celle du serveur des la premiere subtilite.
+    function cablerCashTheorique(d) {
+        const ct = d.cash_theorique;
+        if (!ct) return;
+        // Recharger le calcul cote serveur, puis remplacer LA SEULE carte.
+        // On garde le serveur comme source du chiffre - il refait le
+        // rapprochement, que l'on ne veut pas rejouer ici - mais l'ecran ne
+        // clignote plus et le rapprochement reste deplie.
+        const recalculer = async () => {
+            const carte = document.getElementById('ct-carte');
+            if (carte) carte.style.opacity = '.5';
+            try {
+                const date = (document.getElementById('fin-cashstock-date') || {}).value
+                    || (d && d.date) || '';
+                const r = await fetch('/api/finance/cash-stock?date=' + encodeURIComponent(date),
+                    { credentials: 'same-origin' });
+                const j = await r.json();
+                if (!j || !j.success || !j.data) throw new Error((j && j.error) || 'réponse invalide');
+                const frais = j.data;
+                const remplacante = document.createElement('div');
+                remplacante.innerHTML = htmlCashTheorique(frais.cash_theorique);
+                const neuve = remplacante.firstElementChild;
+                if (carte && neuve) {
+                    carte.replaceWith(neuve);
+                    // Les ecouteurs sont morts avec l'ancien noeud: on les repose.
+                    cablerCashTheorique(frais);
+                } else if (carte) {
+                    carte.style.opacity = '';
+                }
+            } catch (e) {
+                if (carte) carte.style.opacity = '';
+                alert('Rechargement impossible : ' + e.message);
+            }
+        };
+        // Re-rendre la carte SANS appel serveur, pour les changements qui ne
+        // concernent que l'affichage (neutralisation, annulation de saisie).
+        const rendreCarte = (donnees) => {
+            const carte = document.getElementById('ct-carte');
+            const boite = document.createElement('div');
+            boite.innerHTML = htmlCashTheorique(donnees.cash_theorique);
+            const neuve = boite.firstElementChild;
+            if (carte && neuve) { carte.replaceWith(neuve); cablerCashTheorique(donnees); }
+        };
+
+        const dire = (t, ok) => {
+            const e = document.getElementById('ct-autre-etat');
+            if (e) e.innerHTML = t ? `<span class="text-${ok ? 'success' : 'danger'}">${esc(t)}</span>` : '';
+        };
+
+        // NEUTRALISATION: un seul ecouteur pour tout le tableau, repose a
+        // chaque rendu puisque innerHTML a detruit le precedent. Meme motif
+        // que la decomposition du PL.
+        const tableCt = document.getElementById('ct-decomposition');
+        if (tableCt) {
+            tableCt.addEventListener('click', (ev) => {
+                const tr = ev.target.closest('tr[data-ct-poste]');
+                const cle = tr && tr.getAttribute('data-ct-poste');
+                if (!cle) return;
+                if (ctLignesNeutralisees.has(cle)) ctLignesNeutralisees.delete(cle);
+                else ctLignesNeutralisees.add(cle);
+                // La neutralisation ne touche pas au serveur: on re-rend la
+                // carte depuis les MEMES donnees, sans aucun appel.
+                rendreCarte(d);
+            });
+        }
+        const reactiver = document.getElementById('ct-reactiver');
+        if (reactiver) reactiver.addEventListener('click', () => {
+            ctLignesNeutralisees.clear();
+            rendreCarte(d);
+        });
+
+        // SAISIE EN LIGNE, pas prompt().
+        //
+        // prompt() n'est utilise nulle part ailleurs dans ce depot, et
+        // js/ui-helpers.js remplace deja window.alert par une modale maison:
+        // la boite native ne s'ouvrait pas, et le bouton restait sans effet.
+        // Un champ pose dans la cellule ne depend d'aucune boite de dialogue,
+        // et se teste sans stub - ce que prompt() empechait justement.
+        const envoyerApprobation = async (date, montant, commentaire, cellule) => {
+            try {
+                const r = await fetch('/api/finance/depots-approuves', {
+                    method: 'PUT', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date, montant, commentaire })
+                });
+                const j = await r.json();
+                if (j && j.success) return recalculer();
+                cellule.innerHTML = '<span class="text-danger small">'
+                    + esc((j && j.error) || 'échec') + '</span>';
+            } catch (e) {
+                cellule.innerHTML = '<span class="text-danger small">' + esc(e.message) + '</span>';
+            }
+        };
+
+        document.querySelectorAll('.ct-approuver').forEach((b) => {
+            b.addEventListener('click', () => {
+                const date = b.dataset.date;
+                const montant = parseFloat(b.dataset.montant);
+                const cellule = b.parentElement;
+                cellule.innerHTML = `<div class="d-flex gap-1 justify-content-end">
+                    <input type="text" class="form-control form-control-sm ct-motif"
+                       placeholder="Pourquoi ? (ex. vu sur le relevé)" style="min-width:200px">
+                    <button class="btn btn-sm btn-success py-0 ct-valider">valider</button>
+                    <button class="btn btn-sm btn-outline-secondary py-0 ct-annuler-saisie">×</button>
+                </div>`;
+                const champ = cellule.querySelector('.ct-motif');
+                champ.focus();
+                const valider = () => envoyerApprobation(date, montant, champ.value.trim(), cellule);
+                cellule.querySelector('.ct-valider').addEventListener('click', valider);
+                champ.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') valider(); });
+                cellule.querySelector('.ct-annuler-saisie').addEventListener('click', () => {
+                    // Re-rendre la carte depuis les memes donnees remet le bouton.
+                    rendreCarte(d);
+                });
+            });
+        });
+
+        document.querySelectorAll('.ct-desapprouver').forEach((b) => {
+            b.addEventListener('click', async () => {
+                b.disabled = true;
+                try {
+                    const q = '?date=' + encodeURIComponent(b.dataset.date)
+                        + '&montant=' + encodeURIComponent(b.dataset.montant);
+                    const r = await fetch('/api/finance/depots-approuves' + q,
+                        { method: 'DELETE', credentials: 'same-origin' });
+                    const j = await r.json();
+                    if (j && j.success) recalculer();
+                    else { b.disabled = false; alert('Échec : ' + ((j && j.error) || 'inconnu')); }
+                } catch (e) { b.disabled = false; alert('Échec : ' + e.message); }
+            });
+        });
+
+        const ajouter = document.getElementById('ct-autre-ajouter');
+        if (ajouter) ajouter.addEventListener('click', async () => {
+            const m = parseFloat((document.getElementById('ct-autre-montant') || {}).value);
+            const c = ((document.getElementById('ct-autre-commentaire') || {}).value || '').trim();
+            if (!Number.isFinite(m) || m === 0) return dire('Montant non nul requis.', false);
+            if (!c) return dire('Commentaire obligatoire.', false);
+            ajouter.disabled = true; dire('enregistrement…', true);
+            try {
+                const r = await fetch('/api/finance/cash-autres', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mois: ct.mois, montant: m, commentaire: c })
+                });
+                const j = await r.json();
+                if (j && j.success) recalculer();
+                else { ajouter.disabled = false; dire((j && j.error) || 'échec', false); }
+            } catch (e) { ajouter.disabled = false; dire(e.message, false); }
+        });
+
+        document.querySelectorAll('.ct-autre-suppr').forEach((b) => {
+            b.addEventListener('click', async () => {
+                b.disabled = true;
+                try {
+                    const r = await fetch('/api/finance/cash-autres/' + encodeURIComponent(b.dataset.id),
+                        { method: 'DELETE', credentials: 'same-origin' });
+                    const j = await r.json();
+                    if (j && j.success) recalculer();
+                    else { b.disabled = false; alert('Échec : ' + ((j && j.error) || 'inconnu')); }
+                } catch (e) { b.disabled = false; alert('Échec : ' + e.message); }
+            });
+        });
     }
 
 })();

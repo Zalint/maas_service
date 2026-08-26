@@ -171,3 +171,140 @@ describe('robustesse', () => {
         expect(r.commandes[0].taux_pct).toBeNull();
     });
 });
+
+/**
+ * LES CLIENTS DE LA PERIODE, cumules.
+ *
+ * L'unite change: une ligne n'est plus une commande mais un CLIENT. Deux
+ * commandes du meme client dans le mois font UNE ligne et deux commandes -
+ * c'est tout l'interet de cumuler, et c'est ce que compte la colonne dediee.
+ */
+const { agregerClients } = require('../lib/commandes-marge');
+
+const L = (date, client, cmd, produit, q, m) => ({
+    date, nom_client: client, commande_id: cmd, produit, nombre: q, montant: m
+});
+
+describe('clients de la periode', () => {
+    const PRIX = (p, d) => (p === 'Boeuf' ? (d < '2026-08-10' ? 4480 : 4520)
+        : p === 'Yell' ? 2000 : NaN);
+    const faire = (lignes) => agregerClients({
+        lignes, prixAchatDe: PRIX, estBoucherie: () => true, paragePct: 5
+    });
+
+    test('deux commandes du meme client font UNE ligne', () => {
+        const r = faire([
+            L('2026-08-03', 'Mme Ndiaye', 'C1', 'Boeuf', 1, 5000),
+            L('2026-08-20', 'Mme Ndiaye', 'C2', 'Boeuf', 1, 5000)
+        ]);
+        expect(r.clients).toHaveLength(1);
+        expect(r.clients[0].nb_commandes).toBe(2);
+        expect(r.clients[0].ca).toBe(10000);
+        expect(r.clients[0].lignes).toBe(2);
+    });
+
+    test('le prix d achat suit la DATE de chaque vente', () => {
+        // Le meme produit, deux dates, deux prix: 4 480 puis 4 520. Valoriser
+        // les deux au dernier prix deplacerait la marge du debut de mois.
+        const avant = faire([L('2026-08-03', 'A', 'C1', 'Boeuf', 1, 5000)]);
+        const apres = faire([L('2026-08-20', 'A', 'C2', 'Boeuf', 1, 5000)]);
+        expect(avant.clients[0].marge).toBeCloseTo(5000 - 4480 / 0.95, 1);
+        expect(apres.clients[0].marge).toBeCloseTo(5000 - 4520 / 0.95, 1);
+        expect(avant.clients[0].marge).toBeGreaterThan(apres.clients[0].marge);
+    });
+
+    test('le comptoir SORT du classement des clients', () => {
+        // Cumule, il pesait 399 commandes et 41 % du CA: il prenait la
+        // premiere ligne d'un tableau qui s'appelle « les meilleurs clients ».
+        const r = faire([
+            L('2026-08-05', 'Mme Ndiaye', 'C1', 'Boeuf', 1, 5000),
+            L('2026-08-05', null, 'K1', 'Boeuf', 1, 5000),
+            L('2026-08-06', null, 'K2', 'Boeuf', 1, 5000)
+        ]);
+        expect(r.clients.map((c) => c.client)).toEqual(['Mme Ndiaye']);
+        expect(r.comptoir.nb_commandes).toBe(2);
+    });
+
+    test('le comptoir est detaille par COMMANDE, pas cumule', () => {
+        const r = faire([
+            L('2026-08-05', null, 'K1', 'Boeuf', 1, 5000),
+            L('2026-08-05', null, 'K1', 'Yell', 1, 2000),
+            L('2026-08-06', null, 'K2', 'Boeuf', 1, 5000)
+        ]);
+        expect(r.comptoir.nb_commandes).toBe(2);
+        const k1 = r.comptoir.commandes.find((c) => c.commande_id === 'K1');
+        expect(k1.lignes).toBe(2);
+        expect(k1.ca).toBe(7000);
+    });
+
+    test('une vente anonyme SANS identifiant compte par journee', () => {
+        const r = faire([
+            L('2026-08-05', null, null, 'Boeuf', 1, 5000),
+            L('2026-08-05', null, null, 'Yell', 1, 2000),
+            L('2026-08-06', null, null, 'Boeuf', 1, 5000)
+        ]);
+        // Deux JOURNEES: deux passages, pas trois produits.
+        expect(r.comptoir.nb_commandes).toBe(2);
+    });
+
+    test('la liste du comptoir est bornee, et dit ce qu elle cache', () => {
+        // Une liste tronquee qui se tait passe pour une liste complete.
+        const lignes = [];
+        for (let i = 1; i <= 25; i++) {
+            lignes.push(L('2026-08-05', null, 'K' + i, 'Boeuf', 1, 5000 + i));
+        }
+        const r = agregerClients({
+            lignes, prixAchatDe: PRIX, estBoucherie: () => true,
+            paragePct: 5, limiteComptoir: 20
+        });
+        expect(r.comptoir.nb_commandes).toBe(25);
+        expect(r.comptoir.commandes).toHaveLength(20);
+        expect(r.comptoir.nb_masquees).toBe(5);
+        // Ce sont les PLUS GROSSES marges qui restent.
+        expect(r.comptoir.commandes[0].ca).toBe(5025);
+    });
+
+    test('classe par marge decroissante', () => {
+        const r = faire([
+            L('2026-08-03', 'Petit', 'C1', 'Boeuf', 1, 4800),
+            L('2026-08-03', 'Gros', 'C2', 'Boeuf', 2, 12000)
+        ]);
+        expect(r.clients.map((c) => c.client)).toEqual(['Gros', 'Petit']);
+    });
+
+    test('le taux ne compte que le CA chiffre', () => {
+        const r = faire([
+            L('2026-08-03', 'A', 'C1', 'Boeuf', 1, 5000),
+            L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000)
+        ]);
+        const c = r.clients[0];
+        expect(c.ca).toBe(15000);
+        expect(c.ca_chiffre).toBe(5000);
+        expect(c.sans_cout).toEqual(['Mystere']);
+        expect(c.taux_pct).toBeCloseTo((c.marge / 5000) * 100, 1);
+    });
+
+    test('un client sans aucun cout connu rend null, pas zero', () => {
+        const r = faire([L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000)]);
+        expect(r.clients[0].taux_pct).toBeNull();
+        expect(r.clients[0].marge).toBe(0);
+    });
+
+    test('les totaux clients + comptoir couvrent tout le CA', () => {
+        // Le partage ne doit rien perdre: mesure sur aout 2026 a Mbao,
+        // 2 756 075 + 1 927 575 = 4 683 650, le total_ventes du PL.
+        const r = faire([
+            L('2026-08-03', 'Mme Ndiaye', 'C1', 'Boeuf', 1, 5000),
+            L('2026-08-03', null, 'K1', 'Boeuf', 1, 3000)
+        ]);
+        expect(r.nb_clients).toBe(1);
+        expect(r.total_ca + r.comptoir.total_ca).toBe(8000);
+    });
+
+    test('aucune ligne rend des totaux a zero, pas NaN', () => {
+        const r = faire([]);
+        expect(r.clients).toEqual([]);
+        expect(r.total_ca).toBe(0);
+        expect(r.total_commandes).toBe(0);
+    });
+});

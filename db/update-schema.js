@@ -379,6 +379,40 @@ async function updateSchema() {
         `);
         console.log('Table finance_notes_mois verifiee');
 
+        // APPROBATION MANUELLE d'un depot Mata que le rapprochement
+        // automatique n'a pas retrouve. Cle (date, montant): porter
+        // l'approbation sur la seule date la ferait survivre a une cloture
+        // rectifiee, et un depot corrige resterait approuve sans revue.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS depots_mata_approuves (
+                date DATE NOT NULL,
+                montant NUMERIC(14,2) NOT NULL,
+                commentaire TEXT,
+                approuve_par VARCHAR(100),
+                approuve_le TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (date, montant)
+            )
+        `);
+        console.log('Table depots_mata_approuves verifiee');
+
+        // LIGNES « AUTRES » du cash theorique: montant SIGNE et commentaire,
+        // par mois. Plusieurs lignes par mois - deux evenements distincts ne
+        // doivent pas etre additionnes a la main dans un seul texte.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS cash_theorique_autres (
+                id SERIAL PRIMARY KEY,
+                mois VARCHAR(7) NOT NULL,
+                montant NUMERIC(14,2) NOT NULL,
+                commentaire TEXT NOT NULL,
+                cree_par VARCHAR(100),
+                cree_le TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(
+            'CREATE INDEX IF NOT EXISTS idx_cash_autres_mois ON cash_theorique_autres (mois)'
+        );
+        console.log('Table cash_theorique_autres verifiee');
+
         // HORS MATA sur les transferts: la marchandise qui n'est pas venue
         // de MATA ne doit pas porter la commission 3%.
         //
