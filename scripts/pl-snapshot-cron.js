@@ -26,12 +26,6 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env.local'), overr
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
-// Pas de dependance pour un seul cast: ce script tourne seul.
-function nb(v) {
-    const n = parseFloat(v);
-    return Number.isFinite(n) ? n : 0;
-}
-
 (async () => {
     const t0 = Date.now();
     // Hisse hors du try: si le require lui-meme echoue, sequelize reste
@@ -122,7 +116,7 @@ function nb(v) {
             console.warn(`[pl-snapshot] REFUS de figer le ${dateFin}: ${raison}.`);
             console.warn('[pl-snapshot] les avances comptent pour 0, le PL serait faux. Rien ecrit.');
             process.exitCode = 1;
-        } else if (nb(data.avances_provisoires) > 0) {
+        } else if (data.avances_provisoires > 0) {
             // UNE AVANCE EN RETARD N'EST PAS UNE AVANCE ABSENTE.
             //
             // Le refus ci-dessus couvre la source MUETTE. Ici la source

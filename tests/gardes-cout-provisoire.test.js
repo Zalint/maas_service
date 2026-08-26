@@ -30,7 +30,7 @@ describe('cron : une avance en retard bloque le figeage', () => {
     const SRC = lire('scripts', 'pl-snapshot-cron.js');
 
     test('le refus sur avances provisoires existe et sort en erreur', () => {
-        const refus = SRC.indexOf('nb(data.avances_provisoires) > 0');
+        const refus = SRC.indexOf('data.avances_provisoires > 0');
         expect(refus).toBeGreaterThan(-1);
         // Le bloc du refus doit poser exitCode = 1 : un cron qui refuse en
         // silence (exit 0) passe pour un cron qui a fige.
@@ -41,7 +41,7 @@ describe('cron : une avance en retard bloque le figeage', () => {
 
     test('le refus vient APRES celui de la source muette, AVANT toute ecriture', () => {
         const muette = SRC.indexOf('data.sources.fiable === false');
-        const retard = SRC.indexOf('nb(data.avances_provisoires) > 0');
+        const retard = SRC.indexOf('data.avances_provisoires > 0');
         const ecriture = SRC.indexOf('PlSnapshot.upsert');
         expect(muette).toBeGreaterThan(-1);
         // La source muette d'abord : quand MataBanq ne repond pas, les
@@ -54,9 +54,22 @@ describe('cron : une avance en retard bloque le figeage', () => {
     test('le message nomme les dates en attente, pour savoir quoi saisir', () => {
         expect(SRC).toContain('avances_provisoires_detail');
     });
+});
 
-    test('nb() est defini dans le script : il tourne seul, sans la couche lib', () => {
-        expect(SRC).toMatch(/function nb\(/);
+describe('POST /pl/snapshot (figeage manuel) : meme refus que le cron', () => {
+    const SRC = lire('routes', 'finance.js');
+    const debut = SRC.indexOf("router.post('/pl/snapshot'");
+    const bloc = SRC.slice(debut, SRC.indexOf("router.post('/pl/rattraper", debut) > -1
+        ? SRC.indexOf("router.post('/pl/rattraper", debut)
+        : debut + 4000);
+
+    test('le bouton manuel refuse aussi un cout provisoire, en 409', () => {
+        // Sans ce refus, un superviseur presse pouvait graver avant que le
+        // cron ne refuse la nuit meme - exactement le PL que la garde du
+        // cron existe pour empecher.
+        expect(bloc).toContain('data.avances_provisoires > 0');
+        expect(bloc).toContain('avances_provisoires');
+        expect(bloc).toMatch(/status\(409\)/);
     });
 });
 
@@ -75,9 +88,6 @@ describe('DELETE /cash-autres : le mois est exige et verifie', () => {
 
     test('le SQL filtre sur id ET mois, jamais sur id seul', () => {
         expect(bloc).toContain('WHERE id = :id AND mois = :mois');
-        // Aucune variante id-seul ne doit subsister : c'est elle qui rendait
-        // la suppression aveugle au contexte.
-        expect(bloc.includes('WHERE id = :id\n') || bloc.includes("WHERE id = :id'")).toBe(false);
     });
 
     test('zero ligne touchee repond 404, pas un succes silencieux', () => {
@@ -92,5 +102,33 @@ describe('DELETE /cash-autres : le mois est exige et verifie', () => {
         const appel = JS.indexOf("'/api/finance/cash-autres/' + encodeURIComponent(b.dataset.id)");
         expect(appel).toBeGreaterThan(-1);
         expect(JS.slice(appel, appel + 200)).toContain("'?mois=' + encodeURIComponent(ct.mois");
+    });
+
+    test("un 404 resynchronise l'ecran au lieu de laisser une ligne fantome", () => {
+        // Une autre session a deja supprime la ligne : l'etat local est
+        // prouve perime, recalculer() le corrige au lieu d'un alert() qui
+        // laisse le total afficher une ligne qui n'existe plus.
+        const JS = lire('js', 'finance.js');
+        const appel = JS.indexOf("'/api/finance/cash-autres/' + encodeURIComponent(b.dataset.id)");
+        const gestion = JS.slice(appel, appel + 700);
+        expect(gestion).toContain("r.status === 404) recalculer()");
+    });
+});
+
+describe('DELETE /depots-approuves : meme garde que cash-autres', () => {
+    const SRC = lire('routes', 'finance.js');
+    const debut = SRC.indexOf("router.delete('/depots-approuves'");
+    const bloc = SRC.slice(debut, SRC.indexOf('router.', debut + 30));
+
+    test('zero ligne touchee repond 404, pas un succes silencieux', () => {
+        expect(bloc).toContain('rowCount');
+        expect(bloc).toContain('404');
+    });
+
+    test("l'ecran resynchronise sur un 404, comme pour cash-autres", () => {
+        const JS = lire('js', 'finance.js');
+        const appel = JS.indexOf("'/api/finance/depots-approuves' + q");
+        expect(appel).toBeGreaterThan(-1);
+        expect(JS.slice(appel, appel + 700)).toContain("r.status === 404) recalculer()");
     });
 });

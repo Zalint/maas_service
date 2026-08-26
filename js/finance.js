@@ -5617,7 +5617,10 @@
                     const r = await fetch('/api/finance/depots-approuves' + q,
                         { method: 'DELETE', credentials: 'same-origin' });
                     const j = await r.json();
-                    if (j && j.success) recalculer();
+                    // 404 : une autre session a deja supprime cette ligne. L'etat
+                    // local est prouve perime, recalculer() le resynchronise au
+                    // lieu de laisser une ligne fantome dans le total affiche.
+                    if ((j && j.success) || r.status === 404) recalculer();
                     else { b.disabled = false; alert('Échec : ' + ((j && j.error) || 'inconnu')); }
                 } catch (e) { b.disabled = false; alert('Échec : ' + e.message); }
             });
@@ -5650,7 +5653,10 @@
                         + '?mois=' + encodeURIComponent(ct.mois || ''),
                         { method: 'DELETE', credentials: 'same-origin' });
                     const j = await r.json();
-                    if (j && j.success) recalculer();
+                    // 404 : une autre session a deja supprime cette ligne. L'etat
+                    // local est prouve perime, recalculer() le resynchronise au
+                    // lieu de laisser une ligne fantome dans le total affiche.
+                    if ((j && j.success) || r.status === 404) recalculer();
                     else { b.disabled = false; alert('Échec : ' + ((j && j.error) || 'inconnu')); }
                 } catch (e) { b.disabled = false; alert('Échec : ' + e.message); }
             });
