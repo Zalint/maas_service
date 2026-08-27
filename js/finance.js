@@ -4289,19 +4289,52 @@
         const produitsPeriode = (cp && cp.produits_periode) || [];
         const vendentAPerte = produitsPeriode.filter((p) => p.marge !== null && p.marge < 0).slice(0, 5);
         const coutInconnu = produitsPeriode.filter((p) => p.marge === null && p.ca > 0).slice(0, 5);
-        const blocRecommandations = (vendentAPerte.length || coutInconnu.length) ? `
+
+        // RECOMMANDATIONS CLIENT: memes fonctions pures que l'onglet
+        // Simulation (window.Sim2Projection, deja charge sur la page), sur
+        // l'historique que le PL calcule desormais lui aussi.
+        const PJ = (typeof window !== 'undefined' && window.Sim2Projection) || null;
+        const histo = cp && cp.clients_historique;
+        const aRelancer = (PJ && histo)
+            ? PJ.clientsARelancer({ clients: histo.clients, dateAnalyse: d.periode.dateFin, limite: 3 })
+            : [];
+        const perdus = (PJ && histo)
+            ? PJ.clientsPerdus({ clients: histo.clients, dateAnalyse: d.periode.dateFin, limite: 5 })
+            : [];
+
+        const blocRecommandations = (vendentAPerte.length || coutInconnu.length || aRelancer.length) ? `
             <div class="list-group mb-3">
               ${vendentAPerte.map((p) => `<div class="list-group-item py-2">
                 <i class="bi bi-tag me-2 text-muted"></i><strong>${esc(p.produit)} vend à perte</strong>
                 <span class="small text-muted"> — marge nette ${esc(fmtMoney(p.marge))} sur
                   ${esc(fmtDec(p.quantite))} ${p.unite === 'kg' ? 'kg' : 'pièces'} :
                   revoir le prix d'achat au catalogue, ou promo assumée d'écoulement</span></div>`).join('')}
+              ${aRelancer.map((c) => `<div class="list-group-item py-2">
+                <i class="bi bi-person-heart me-2 text-muted"></i><strong>Relancer ${esc(c.nom)}</strong>
+                <span class="small text-muted"> — vient environ tous les ${esc(String(Math.round(c.intervalle)))} jours
+                  (${esc(String(c.nbVisites))} passages), et rien depuis ${esc(String(c.silence))} jours —
+                  soit ${esc(c.retard.toFixed(1))}× son rythme. ${esc(fmtMoney(c.ca))} sur la fenêtre.</span></div>`).join('')}
               ${coutInconnu.map((p) => `<div class="list-group-item py-2">
                 <i class="bi bi-database-exclamation me-2 text-muted"></i>
                 <strong>Coût inconnu pour ${esc(p.produit)}</strong>
                 <span class="small text-muted"> — ${esc(fmtMoney(p.ca))} de ventes sans prix
                   d'achat : la marge l'ignore, renseignez le catalogue Prix fournisseur</span></div>`).join('')}
-            </div>` : '';
+            </div>${perdus.length ? `
+            <h6 class="small fw-medium mb-1">Gros clients du mois dernier, rien ce mois-ci</h6>
+            <div class="list-group mb-3">${perdus.map((c) => {
+                const rythme = c.habitudeEtablie
+                    ? 'vient environ tous les ' + Math.round(c.intervalle) + ' j (' + c.nbVisites + ' passages)'
+                    : 'habitude non établie (' + c.nbVisites + ' passage' + (c.nbVisites > 1 ? 's' : '') + ')';
+                return `<div class="list-group-item py-2">
+                  <i class="bi bi-person-dash me-2 text-muted"></i><strong>${esc(c.nom)}</strong>
+                  <span class="small text-muted"> — ${esc(fmtMoney(c.caMoisDernier))} F le mois dernier,
+                    rien ce mois-ci · ${esc(rythme)}${c.silence !== null ? ' · silence de ' + c.silence + ' j' : ''}</span>
+                  ${!c.habitudeEtablie
+                      ? ' <span class="badge bg-light text-dark border">habitude inconnue</span>'
+                      : (c.premature
+                          ? ' <span class="badge bg-secondary">pas encore en retard</span>'
+                          : ' <span class="badge bg-warning text-dark">à relancer</span>')}</div>`;
+            }).join('')}</div>` : ''}` : '';
 
         const blocClients = aQuelqueChose ? `<details class="mt-3">
             <summary class="text-primary small" style="cursor:pointer">

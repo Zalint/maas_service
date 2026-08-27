@@ -2902,6 +2902,111 @@ async function parageEffectifPour(dateIso, contexte) {
     };
 }
 
+/**
+ * L'HABITUDE D'ACHAT DE CHAQUE CLIENT, sur l'historique ET la periode
+ * courante - meme calcul que le bloc equivalent de /api/finance/simulation
+ * (v2), au service du PL cette fois. Duplique plutot que partage: le bloc v2
+ * reutilise en plus lignesHisto pour la calibration du coefficient P1/P2 (ca
+ * par jour), et refactoriser les deux ensemble aurait touche une route deja
+ * en production et sans test, pour un gain marginal.
+ *
+ * Relancer sur un delai fixe ("aucun passage depuis 7 jours") se trompe des
+ * deux cotes: on harcele le client bimensuel et on laisse filer
+ * l'hebdomadaire qui a saute deux tours. Ce qu'il faut comparer, c'est le
+ * silence a SON rythme a lui - c'est ce que rendent clientsARelancer et
+ * clientsPerdus (js/simulation-v2-projection.js), sur la forme rendue ici.
+ *
+ * @param {string} dateDebut
+ * @param {string} dateFin
+ * @param {Array} lignesPeriode  lignes de vente de la periode, deja lues
+ *   ({date, montant, nom_client}), date en ISO ou format DB brut.
+ */
+async function calculerClientsHistorique(dateDebut, dateFin, lignesPeriode) {
+    const finHisto = new Date(dateDebut + 'T00:00:00Z');
+    finHisto.setUTCDate(finHisto.getUTCDate() - 1);
+    const debutHisto = new Date(finHisto);
+    debutHisto.setUTCDate(debutHisto.getUTCDate() - 91);
+    const histoDebutIso = debutHisto.toISOString().slice(0, 10);
+    const histoFinIso = finHisto.toISOString().slice(0, 10);
+    // nom_client sur la MEME requete: l'habitude d'achat d'un client ne se
+    // lit pas sur la periode courante seule. « Aucun passage depuis 7 jours »
+    // ne veut rien dire pour qui vient tous les quinze jours.
+    const lignesHisto = await sequelize.query(
+        `SELECT date, montant, nom_client FROM ventes WHERE date IN (:dl)`,
+        {
+            type: sequelize.QueryTypes.SELECT,
+            replacements: { dl: graphiesDeDatesPourPeriode(histoDebutIso, histoFinIso) }
+        }
+    );
+
+    // On transporte les JOURNEES de passage, pas les lignes: deux achats le
+    // meme jour sont une visite. Le calcul d'intervalle et la decision
+    // vivent dans le module pur, teste (js/simulation-v2-projection.js).
+    const habitudes = new Map();
+    const noterPassage = (nomBrut, iso, montant) => {
+        const nom = String(nomBrut || '').trim();
+        if (!nom || !iso) return;
+        const cle = nom.toLowerCase();
+        if (!habitudes.has(cle)) habitudes.set(cle, { nom, jours: new Map(), ca: 0 });
+        const h = habitudes.get(cle);
+        const m = parseFloat(montant) || 0;
+        h.jours.set(iso, (h.jours.get(iso) || 0) + m);
+        h.ca += m;
+    };
+    for (const l of lignesHisto) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+    for (const l of (lignesPeriode || [])) noterPassage(l.nom_client, parseDateVersISO(l.date), l.montant);
+
+    // Plafonne aux 40 plus gros de la fenetre: de quoi tenir un top 5 et des
+    // relances, sans porter toute la clientele dans la reponse. Le plafond
+    // retient les plus gros SUR LA FENETRE **et** les plus gros DU MOIS
+    // DERNIER.
+    //
+    // Trier sur le seul CA de la fenetre ecartait le client qui n'est present
+    // que depuis peu: un restaurant a 900 000 F le mois dernier passait
+    // derriere quarante reguliers cumulant plus sur trois mois, et
+    // disparaissait donc du « top 5 des gros clients du mois dernier » - la
+    // liste ratait precisement celui qu'elle cherche. On garde les deux
+    // classements, dedupliques.
+    const moisPrecedent = (() => {
+        const d = new Date(String(dateFin).slice(0, 7) + '-01T00:00:00Z');
+        d.setUTCMonth(d.getUTCMonth() - 1);
+        return d.toISOString().slice(0, 7);
+    })();
+    const caMoisDernier = (h) => {
+        let s = 0;
+        for (const [j, m] of h.jours.entries()) {
+            if (String(j).slice(0, 7) === moisPrecedent) s += m;
+        }
+        return s;
+    };
+    const tous = Array.from(habitudes.values());
+    const parFenetre = tous.slice().sort((a, b) => b.ca - a.ca).slice(0, 40);
+    const parMoisDernier = tous.slice()
+        .sort((a, b) => caMoisDernier(b) - caMoisDernier(a)).slice(0, 20);
+    const retenus = [];
+    const vus = new Set();
+    for (const h of parFenetre.concat(parMoisDernier)) {
+        const cle = String(h.nom).trim().toLowerCase();
+        if (vus.has(cle)) continue;
+        vus.add(cle);
+        retenus.push(h);
+    }
+
+    return {
+        debut: histoDebutIso,
+        fin: dateFin,
+        clients: retenus.map((h) => ({
+            nom: h.nom,
+            ca_fenetre: round2(h.ca),
+            // [date ISO, montant] triees: l'ecran en tire les intervalles et
+            // les cumuls mensuels qu'il veut.
+            passages: Array.from(h.jours.entries())
+                .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+                .map(([j, m]) => ({ date: j, ca: round2(m) }))
+        }))
+    };
+}
+
 async function calculerClientsPeriode(dateDebut, dateFin) {
     const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
     const { chargerContexteParage } = require('../lib/parage-contexte');
@@ -2961,6 +3066,16 @@ async function calculerClientsPeriode(dateDebut, dateFin) {
         paragePour: parage.paragePour,
         paragePct: parage.parametrePct
     });
+    // L'HISTORIQUE CLIENT, pour relancer qui se fait attendre. Une requete de
+    // plus (92 jours en arriere) que le reste de calculerClientsPeriode n'a
+    // pas besoin: un echec ici ne doit pas priver l'ecran des clients de la
+    // periode, qui fonctionnent deja sans elle.
+    try {
+        r.clients_historique = await calculerClientsHistorique(dateDebut, dateFin, lignesIso);
+    } catch (e) {
+        console.warn('[PL] clients_historique indisponible:', e.message);
+        r.clients_historique = null;
+    }
     return r;
 }
 
