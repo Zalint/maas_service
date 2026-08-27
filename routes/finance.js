@@ -71,7 +71,7 @@ const financeCache = require('../lib/finance-cache');
 const audit = require('../lib/finance-audit');
 const { ecartJour, resoudreMode, fenetreEntrees, TOLERANCE_BOUCLAGE }
     = require('../lib/pl-ecart-jour');
-const { agregerCommandes, agregerClients } = require('../lib/commandes-marge');
+const { agregerCommandes, agregerClients, agregerProduitsPeriode } = require('../lib/commandes-marge');
 const { construireCashTheorique } = require('../lib/cash-theorique');
 
 // Limite cote API pour matcher VARCHAR(150) du PK alias_produit.
@@ -2938,8 +2938,10 @@ async function calculerClientsPeriode(dateDebut, dateFin) {
         return m ? m[3] + '-' + m[2] + '-' + m[1] : t;
     };
 
+    const lignesIso = lignes.map((l) => Object.assign({}, l, { date: versIso(l.date) }));
+
     const r = agregerClients({
-        lignes: lignes.map((l) => Object.assign({}, l, { date: versIso(l.date) })),
+        lignes: lignesIso,
         prixAchatDe: prixAchatDe,
         estBoucherie: (produit) => ctxPar.estBoucherie(produit),
         paragePour: parage.paragePour,
@@ -2948,6 +2950,17 @@ async function calculerClientsPeriode(dateDebut, dateFin) {
     // Le detail des taux retenus: l'ecran doit pouvoir dire « boeuf 3,96 %
     // mesure sur 23 jours » plutot que « 5 % au parametre », qui serait faux.
     r.parage_detail = parage.taux;
+    // LE COUT REEL PAR PRODUIT, cumule sur toute la periode: signale un
+    // produit qui vend a perte (souvent un prix d'achat mal saisi au
+    // catalogue) ou dont le cout n'est jamais connu - une anomalie qui se
+    // dilue et disparait dans la vue par client.
+    r.produits_periode = agregerProduitsPeriode({
+        lignes: lignesIso,
+        prixAchatDe: prixAchatDe,
+        estBoucherie: (produit) => ctxPar.estBoucherie(produit),
+        paragePour: parage.paragePour,
+        paragePct: parage.parametrePct
+    });
     return r;
 }
 

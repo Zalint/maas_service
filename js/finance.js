@@ -3286,7 +3286,7 @@
                               ? '<span class="text-muted small d-block">' + esc(x.commande_id) + '</span>'
                               : ''}
                            ${(x.sans_cout || []).length
-                              ? '<span class="text-muted small d-block">marge partielle : '
+                              ? '<span class="text-muted small d-block">marge supposée nulle : '
                                 + esc((x.sans_cout || []).join(', ')) + ' sans coût connu</span>'
                               : ''}</td>
                          <td class="text-end text-muted"><span${titreProduits(x.produits)}>${esc(String(x.lignes))}</span></td>
@@ -4282,6 +4282,27 @@
         const cp = d.clients_periode || null;
         const cpLignes = cp ? (cp.clients || []) : [];
         const aQuelqueChose = cpLignes.length || ((cp && cp.comptoir && cp.comptoir.nb_commandes) || 0) > 0;
+
+        // RECOMMANDATIONS PAR PRODUIT: un produit qui vend a perte ou dont le
+        // cout n'est jamais connu se dilue et disparait dans la vue par
+        // client. Cinq de chaque suffisent a alerter, sans noyer l'ecran.
+        const produitsPeriode = (cp && cp.produits_periode) || [];
+        const vendentAPerte = produitsPeriode.filter((p) => p.marge !== null && p.marge < 0).slice(0, 5);
+        const coutInconnu = produitsPeriode.filter((p) => p.marge === null && p.ca > 0).slice(0, 5);
+        const blocRecommandations = (vendentAPerte.length || coutInconnu.length) ? `
+            <div class="list-group mb-3">
+              ${vendentAPerte.map((p) => `<div class="list-group-item py-2">
+                <i class="bi bi-tag me-2 text-muted"></i><strong>${esc(p.produit)} vend à perte</strong>
+                <span class="small text-muted"> — marge nette ${esc(fmtMoney(p.marge))} sur
+                  ${esc(fmtDec(p.quantite))} ${p.unite === 'kg' ? 'kg' : 'pièces'} :
+                  revoir le prix d'achat au catalogue, ou promo assumée d'écoulement</span></div>`).join('')}
+              ${coutInconnu.map((p) => `<div class="list-group-item py-2">
+                <i class="bi bi-database-exclamation me-2 text-muted"></i>
+                <strong>Coût inconnu pour ${esc(p.produit)}</strong>
+                <span class="small text-muted"> — ${esc(fmtMoney(p.ca))} de ventes sans prix
+                  d'achat : la marge l'ignore, renseignez le catalogue Prix fournisseur</span></div>`).join('')}
+            </div>` : '';
+
         const blocClients = aQuelqueChose ? `<details class="mt-3">
             <summary class="text-primary small" style="cursor:pointer">
               Les meilleurs clients de la période
@@ -4302,7 +4323,7 @@
                  <td>${c.client ? esc(c.client)
                     : '<span class="text-muted">Ventes au comptoir</span>'}
                    ${(c.sans_cout || []).length
-                      ? '<span class="text-muted small d-block">marge partielle : '
+                      ? '<span class="text-muted small d-block">marge supposée nulle : '
                         + esc((c.sans_cout || []).slice(0, 4).join(', ')) + ' sans coût connu</span>'
                       : ''}</td>
                  <td class="text-end">${esc(String(c.nb_commandes))}</td>
@@ -4527,7 +4548,6 @@
                 </div>` : ''}
                 ${plLegendePrix}
                 ${plNoteStock}
-                ${blocClients}
                 ${plAvertPrix}
                 ${blocDetailStock}
             </div>
@@ -4553,6 +4573,11 @@
                     </tfoot>
                 </table>
             </div>
+
+            <!-- Qui sont mes clients -->
+            <h6 class="fin-subheading">Qui sont mes clients</h6>
+            ${blocRecommandations}
+            ${blocClients}
             ${blocNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7))}
         `;
         cablerNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7));
