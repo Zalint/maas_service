@@ -617,6 +617,16 @@ const ANALYSE_MEMO_MAX = 40;
 // un PL mais un abus (ou un bug d'appelant), et OpenAI facture au token.
 const ANALYSE_PAYLOAD_MAX = 200 * 1024;
 
+// LES MODELES PERMIS, le premier etant le defaut. gpt-5-mini pour l'analyse
+// courante (analytique, quelques francs par appel non cache), o4-mini en
+// analyse approfondie (raisonnement complet, ~10x le prix, a la demande
+// seulement). Surchargables par variable d'environnement sans toucher au
+// code - mais PAS par le client, qui ne choisit que dans cette liste.
+const MODELES_ANALYSE = [
+    process.env.OPENAI_MODEL_ANALYSE || 'gpt-5-mini',
+    process.env.OPENAI_MODEL_ANALYSE_APPROFONDIE || 'o4-mini'
+];
+
 const PROMPTS_ANALYSE = {
     pl: 'Tu commentes le compte de resultat (PL) mensuel d\'une boucherie au Senegal, '
         + 'pour son gerant. Le JSON fourni contient les chiffres, leur mode de calcul '
@@ -657,6 +667,12 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
         if (!payload || typeof payload !== 'object') {
             return res.status(400).json({ success: false, error: 'payload requis' });
         }
+        // Le client demande un NIVEAU, jamais un nom de modele: c'est le
+        // serveur qui traduit via MODELES_ANALYSE. L'ecran n'a pas a
+        // connaitre les noms - et il ne choisit pas la facture: tout niveau
+        // inconnu retombe sur le standard.
+        const niveau = String((req.body || {}).niveau || '');
+        const modele = niveau === 'approfondie' ? MODELES_ANALYSE[1] : MODELES_ANALYSE[0];
         const texte = JSON.stringify(payload);
         if (texte.length > ANALYSE_PAYLOAD_MAX) {
             return res.status(413).json({ success: false,
@@ -667,10 +683,12 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
         // fois dans la demi-heure ne paie qu'un appel. `genere_le` est exclu
         // du hachage - il change a chaque construction du payload et rendait
         // chaque clic unique: le cache ne servait jamais (constate au test).
+        // Le MODELE entre dans la cle: la meme periode analysee en standard
+        // puis en approfondi sont deux analyses, pas une.
         const crypto = require('crypto');
         const pourEmpreinte = Object.assign({}, payload);
         delete pourEmpreinte.genere_le;
-        const cle = type + ':' + crypto.createHash('sha256')
+        const cle = type + ':' + modele + ':' + crypto.createHash('sha256')
             .update(JSON.stringify(pourEmpreinte)).digest('hex');
         const maintenant = Date.now();
         const present = _analyseMemo.get(cle);
@@ -686,16 +704,34 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
 
         const OpenAI = require('openai');
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const modele = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-        const completion = await openai.chat.completions.create({
+        // Les familles gpt-5 et o-* REFUSENT max_tokens et une temperature
+        // differente de 1: elles exigent max_completion_tokens et gerent la
+        // temperature elles-memes. Et un modele a raisonnement consomme son
+        // budget de sortie en tokens de REFLEXION avant d'ecrire: 600 tokens
+        // suffisaient a gpt-4o-mini, ils rendraient une reponse tronquee ou
+        // vide chez o4-mini - d'ou le budget triple.
+        const familleRaisonnement = /^(gpt-5|o\d)/.test(modele);
+        const params = {
             model: modele,
-            temperature: 0.3,
-            max_tokens: 600,
             messages: [
                 { role: 'system', content: prompt },
                 { role: 'user', content: texte }
             ]
-        });
+        };
+        if (familleRaisonnement) {
+            // Le budget de sortie paie D'ABORD la reflexion, la redaction
+            // ensuite. A 1800 tokens, gpt-5-mini rendait un contenu VIDE:
+            // toute l'enveloppe partait en raisonnement (constate au test).
+            // Effort bas pour l'analyse standard - commenter un JSON deja
+            // calcule ne merite pas une longue deliberation - et moyen pour
+            // l'approfondie, qui est justement la pour creuser.
+            params.max_completion_tokens = 4000;
+            params.reasoning_effort = (niveau === 'approfondie') ? 'medium' : 'low';
+        } else {
+            params.temperature = 0.3;
+            params.max_tokens = 600;
+        }
+        const completion = await openai.chat.completions.create(params);
         const analyse = (completion.choices && completion.choices[0]
             && completion.choices[0].message && completion.choices[0].message.content || '')
             // L'ecran affiche du texte brut (white-space:pre-wrap), pas du

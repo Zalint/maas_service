@@ -288,6 +288,31 @@ describe('POST /analyse-ia', () => {
         const bloc = SRC.slice(debut, debut + 4000);
         expect(bloc).toContain('delete pourEmpreinte.genere_le');
     });
+
+    test('le client demande un NIVEAU, le serveur traduit via sa liste blanche', () => {
+        // L'ecran ne connait aucun nom de modele: il envoie 'approfondie' ou
+        // rien, et tout niveau inconnu retombe sur le standard - le client ne
+        // choisit jamais la facture.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 4000);
+        expect(bloc).toMatch(/niveau === 'approfondie' \? MODELES_ANALYSE\[1\] : MODELES_ANALYSE\[0\]/);
+        // Et le modele entre dans la cle de cache: standard et approfondie
+        // sur la meme periode sont deux analyses.
+        expect(bloc).toMatch(/type \+ ':' \+ modele \+ ':'/);
+    });
+
+    test('les familles a raisonnement recoivent leurs parametres, les autres les classiques', () => {
+        // gpt-5* et o* refusent max_tokens/temperature; et a budget trop
+        // court, la reflexion mange toute l'enveloppe et le contenu revient
+        // VIDE (constate au test reel a 1800 tokens). Le garde-fou est la
+        // presence des deux branches, avec reasoning_effort module par niveau.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 5000);
+        expect(bloc).toMatch(/familleRaisonnement = \/\^\(gpt-5\|o\\d\)\//);
+        expect(bloc).toContain('max_completion_tokens');
+        expect(bloc).toContain('reasoning_effort');
+        expect(bloc).toMatch(/params\.temperature = 0\.3/);
+    });
 });
 
 /**

@@ -153,6 +153,13 @@
         if (plExportJson) plExportJson.addEventListener('click', () => exporterPlJson(plExportJson));
         const plAnalyse = document.getElementById('fin-pl-analyse');
         if (plAnalyse) plAnalyse.addEventListener('click', () => analyserPl(plAnalyse));
+        // L'approfondie passe par le meme chemin, seul le modele change - le
+        // serveur ne connait que sa liste blanche, jamais un nom libre.
+        const plAnalyseAppro = document.getElementById('fin-pl-analyse-approfondie');
+        if (plAnalyseAppro) plAnalyseAppro.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            analyserPl(plAnalyse, 'approfondie');
+        });
         const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
         if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
         const plHistorique = document.getElementById('fin-pl-historique');
@@ -2762,7 +2769,7 @@
      * qui le fait commenter par un LLM. Le LLM COMMENTE, il ne calcule pas -
      * la regle est posee cote serveur, dans le prompt.
      */
-    async function analyserPl(bouton) {
+    async function analyserPl(bouton, niveau) {
         if (!plDernieresDonnees) {
             if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
             return;
@@ -2774,13 +2781,15 @@
             if (panneau) {
                 panneau.style.display = '';
                 panneau.innerHTML = '<div class="text-muted small"><i class="bi bi-hourglass-split"></i> '
-                    + 'Analyse en cours…</div>';
+                    + (niveau === 'approfondie'
+                        ? 'Analyse approfondie en cours — le modèle raisonne, comptez 15 à 30 s…'
+                        : 'Analyse en cours…') + '</div>';
             }
             const payload = await construirePayloadPl();
             const res = await fetch('/api/finance/analyse-ia', {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'pl', payload: payload })
+                body: JSON.stringify({ type: 'pl', payload: payload, niveau: niveau || 'standard' })
             });
             const j = await res.json();
             if (!j.success) throw new Error(j.error || 'analyse indisponible');
