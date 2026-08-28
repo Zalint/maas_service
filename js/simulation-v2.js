@@ -237,6 +237,9 @@
         +     '<button class="btn btn-sm btn-outline-dark ms-1" id="sim2-export-json" '
         +       'title="Télécharger la projection calculée (rythmes, scénarios, volumes, plan équilibre, recommandations) en JSON, structuré pour être lu par un LLM.">'
         +       'Export JSON</button>'
+        +     '<button class="btn btn-sm btn-outline-dark" id="sim2-analyse" '
+        +       'title="Faire commenter la projection par un modèle de langage : où va le mois, hypothèses, risques, action. Le modèle commente les chiffres, il n\'en calcule aucun.">'
+        +       '<i class="bi bi-robot"></i> Analyser (IA)</button>'
         +     '<div class="form-check form-switch ms-1 d-flex align-items-center">'
         +       '<input class="form-check-input" type="checkbox" id="sim2-hors-stock">'
         +       '<label class="form-check-label small ms-1" for="sim2-hors-stock" '
@@ -271,6 +274,8 @@
         // EXPORT JSON de la couche calculee. `$` prefixe par 'sim2-'.
         var btnExport = $('export-json');
         if (btnExport) btnExport.addEventListener('click', exporterProjectionJson);
+        var btnAnalyse = $('analyse');
+        if (btnAnalyse) btnAnalyse.addEventListener('click', analyserProjection);
         $('reset').addEventListener('click', function () {
             etat.leviers = {};
             // reinitGlobaux(), PAS null. Poser null laissait nbActifs() lire
@@ -1929,13 +1934,81 @@
         // pouvoir la replier n'offrait qu'un ecran vide sous une bascule qui
         // annonce « Projection fin de mois ». Le resume reste en entete, il
         // portait deja les chiffres cles.
-        return '<div class="card border-primary mb-3" id="sim2-proj-section">'
+        return carteAnalyseProjection()
+            + '<div class="card border-primary mb-3" id="sim2-proj-section">'
             + '<div class="card-header bg-primary bg-opacity-10 fw-medium">'
             + '<i class="bi bi-calendar-check me-1"></i> Projection fin de mois'
             + (resume ? '<span class="small text-muted ms-2">' + resume + '</span>' : '')
             + '</div>'
             + '<div class="card-body py-3">' + corps + '</div>'
             + '</div>';
+    }
+
+    /**
+     * L'ANALYSE IA de la projection, rendue AU-DESSUS de la carte.
+     *
+     * Le texte vit dans etat.analyseIA, pas dans le DOM: chaque frappe de
+     * levier reconstruit corps.innerHTML, et une carte posee a la main
+     * disparaitrait au premier rendu. Marquee perimee (pas effacee) quand la
+     * projection a ete recalculee depuis: un commentaire d'hier sur les
+     * chiffres d'aujourd'hui, ca se signale.
+     */
+    function carteAnalyseProjection() {
+        var a = etat.analyseIA;
+        if (!a) return '';
+        if (a.enCours) {
+            return '<div class="alert alert-light border small mb-3">'
+                + '<i class="bi bi-hourglass-split"></i> Analyse en cours…</div>';
+        }
+        if (a.erreur) {
+            return '<div class="alert alert-warning py-2 small mb-3">'
+                + '<i class="bi bi-robot"></i> ' + esc(a.erreur) + '</div>';
+        }
+        var perimee = a.pourResume && etat.projResume && a.pourResume !== etat.projResume;
+        return '<div class="card border-secondary mb-3">'
+            + '<div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">'
+            + '<span class="fw-medium small"><i class="bi bi-robot me-1"></i>Analyse IA de la projection'
+            + (perimee ? ' <span class="badge bg-warning text-dark">calculée avant vos derniers réglages</span>' : '')
+            + '</span>'
+            + '<span class="small text-muted">' + esc(a.modele || '')
+            + (a.cache ? ' · en cache' : '') + '</span></div>'
+            + '<div class="card-body py-2 small" style="white-space:pre-wrap">' + esc(a.texte || '') + '</div>'
+            + '<div class="card-footer bg-transparent py-1 small text-muted">'
+            + 'Généré par un modèle de langage à partir de la projection affichée : '
+            + 'relecture, pas source de vérité. Les montants font foi dans la carte.'
+            + '</div></div>';
+    }
+
+    function analyserProjection() {
+        var payload = construirePayloadProjection();
+        if (!payload) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('Calcule la projection avant de l’analyser.', 'warning');
+            }
+            return;
+        }
+        // Basculer sur la vue projection: le resultat s'affiche la-bas, et
+        // lancer une analyse depuis le scenario sans rien voir arriver
+        // ressemblerait a un bouton mort.
+        etat.vue = 'projection';
+        etat.analyseIA = { enCours: true };
+        rendre();
+        fetch('/api/finance/analyse-ia', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'projection', payload: payload })
+        }).then(function (r) { return r.json().catch(function () { return null; }); })
+            .then(function (j) {
+                etat.analyseIA = (j && j.success && j.data)
+                    ? { texte: j.data.analyse, modele: j.data.modele, cache: j.data.cache,
+                        pourResume: etat.projResume }
+                    : { erreur: (j && j.error) || 'analyse indisponible' };
+                rendre();
+            })
+            .catch(function (e) {
+                etat.analyseIA = { erreur: e.message };
+                rendre();
+            });
     }
 
     /**
@@ -3847,15 +3920,12 @@
      * scenarios ni du plan. Un LLM qui lit ce fichier doit trouver les
      * conclusions, pas les avoir a rebatir.
      */
-    function exporterProjectionJson() {
-        if (!projCalculee) {
-            if (typeof window.showToast === 'function') {
-                window.showToast('Calcule la projection avant d’exporter.', 'warning');
-            }
-            return;
-        }
+    /** Le payload de la projection, partage par l'export JSON et l'analyse
+     *  IA: les deux doivent decrire exactement le meme calcul. */
+    function construirePayloadProjection() {
+        if (!projCalculee) return null;
         var c = etat.contexte || {};
-        var sortie = {
+        return {
             genere_le: new Date().toISOString(),
             a_propos: {
                 source: 'Maas App — onglet Finance > Simulation 2.0 > Projection fin de mois',
@@ -3914,6 +3984,16 @@
             plan_equilibre: projCalculee.plan_equilibre,
             recommandations: projCalculee.recommandations
         };
+    }
+
+    function exporterProjectionJson() {
+        var sortie = construirePayloadProjection();
+        if (!sortie) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('Calcule la projection avant d’exporter.', 'warning');
+            }
+            return;
+        }
         var nom = 'projection-' + (projCalculee.periode.debut || '') + '-au-'
             + (projCalculee.periode.fin || '') + '.json';
         var blob = new Blob([JSON.stringify(sortie, null, 2)], { type: 'application/json' });

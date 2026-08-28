@@ -237,6 +237,60 @@ describe("GET /simulation et GET /cash-stock n'ont plus de filtre de role redond
 });
 
 /**
+ * L'ANALYSE IA: un POST qui n'ecrit rien, ouvert au meme cercle que la
+ * lecture du PL - et qui coute de l'argent a chaque appel non cache.
+ */
+describe('POST /analyse-ia', () => {
+    const construire = () => {
+        const corps = SRC.slice(SRC.indexOf('function checkAnalyseAccess'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        return new Function('return ' + corps.slice(0, fin + 2))();
+    };
+
+    test("la garde laisse passer admin, superviseur, 'user' et canManageAdvanced, refuse 'lecteur'", () => {
+        const fn = construire();
+        const essayer = (user) => {
+            let passe = false, statut = null;
+            fn({ session: { user } },
+                { status(c) { statut = c; return this; }, json() { return this; } },
+                () => { passe = true; });
+            return { passe, statut };
+        };
+        for (const u of [{ role: 'admin' }, { role: 'superviseur' }, { role: 'user' },
+            { role: 'superutilisateur', canManageAdvanced: true }]) {
+            expect(essayer(u).passe).toBe(true);
+        }
+        const r = essayer({ role: 'lecteur' });
+        expect(r.passe).toBe(false);
+        expect(r.statut).toBe(403);
+    });
+
+    test('la route porte la garde, refuse sans cle et borne le payload', () => {
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        expect(debut).toBeGreaterThan(-1);
+        const bloc = SRC.slice(debut, debut + 3000);
+        expect(SRC.slice(debut, debut + 80)).toContain('checkAnalyseAccess');
+        // Sans cle: un 503 explicite, pas un appel qui part planter chez
+        // OpenAI avec une cle vide.
+        expect(bloc).toContain('OPENAI_API_KEY');
+        expect(bloc).toMatch(/status\(503\)/);
+        // Payload borne: chaque octet part chez OpenAI et se facture.
+        expect(bloc).toContain('ANALYSE_PAYLOAD_MAX');
+        expect(bloc).toMatch(/status\(413\)/);
+    });
+
+    test("l'empreinte du cache exclut genere_le, sinon chaque clic est unique", () => {
+        // Constate au premier test reel: l'horodatage changeait a chaque
+        // construction du payload, l'empreinte aussi, et le cache ne servait
+        // jamais - chaque relecture payait un appel OpenAI.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 4000);
+        expect(bloc).toContain('delete pourEmpreinte.genere_le');
+    });
+});
+
+/**
  * TOUTE ROUTE D'ECRITURE DE FINANCE PORTE UNE GARDE DE ROLE.
  *
  * Le trou de /notes n'etait pas isole: POST /depenses n'avait lui non plus

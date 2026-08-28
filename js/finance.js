@@ -151,6 +151,8 @@
         if (plExport) plExport.addEventListener('click', exporterPlExcel);
         const plExportJson = document.getElementById('fin-pl-export-json');
         if (plExportJson) plExportJson.addEventListener('click', () => exporterPlJson(plExportJson));
+        const plAnalyse = document.getElementById('fin-pl-analyse');
+        if (plAnalyse) plAnalyse.addEventListener('click', () => analyserPl(plAnalyse));
         const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
         if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
         const plHistorique = document.getElementById('fin-pl-historique');
@@ -2586,15 +2588,17 @@
      * est DECLENCHE ici en mode auto - exporter un fichier sans l'explication
      * alors que le bouton la promet serait pire qu'une attente d'une seconde.
      */
-    async function exporterPlJson(bouton) {
+    /**
+     * LE PAYLOAD DU PL, partage par l'export JSON et l'analyse IA.
+     *
+     * Une seule construction pour les deux: le fichier telecharge et le
+     * contexte envoye au LLM doivent decrire exactement la meme chose, sinon
+     * l'analyse commenterait un PL different de celui qu'on peut relire.
+     */
+    async function construirePayloadPl() {
         const d = plDernieresDonnees;
-        if (!d) {
-            if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
-            return;
-        }
-        const libelleInitial = bouton ? bouton.innerHTML : null;
-        try {
-            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Préparation…'; }
+        if (!d) return null;
+        {
             const p = d.periode || {};
             const fin = isoDeSnapshot(p.dateFin);
             const debut = isoDeSnapshot(p.dateDebut);
@@ -2679,9 +2683,71 @@
                 stock: d.stock,
                 volumes: d.volumes,
                 sources: d.sources,
+                // LES SIGNAUX QUI CHANGENT LA LECTURE, absents du premier
+                // export et pourtant decisifs: un lecteur (humain ou LLM) qui
+                // ne les voit pas prendrait un PL provisoire pour un final.
+                avances_provisoires: d.avances_provisoires,
+                avances_provisoires_detail: d.avances_provisoires_detail,
+                ventes_date_fin: d.ventes_date_fin,
                 ecart_du_jour: ecart
             };
 
+            // LES CLIENTS DE LA PERIODE, resumes. Le detail complet (chaque
+            // commande du comptoir, chaque produit par client) gonflerait le
+            // fichier sans aider la lecture: on garde les totaux, le podium,
+            // et surtout produits_periode - c'est la que vivent les ventes a
+            // perte et les couts inconnus.
+            const cp = d.clients_periode;
+            if (cp) {
+                sortie.clients_periode = {
+                    nb_clients: cp.nb_clients,
+                    total_ca: cp.total_ca,
+                    total_marge: cp.total_marge,
+                    total_commandes: cp.total_commandes,
+                    ca_sans_cout: cp.ca_sans_cout,
+                    top_clients: (cp.clients || []).slice(0, 5).map((c) => ({
+                        client: c.client, ca: c.ca, marge: c.marge, taux_pct: c.taux_pct
+                    })),
+                    comptoir: cp.comptoir ? {
+                        nb_commandes: cp.comptoir.nb_commandes,
+                        total_ca: cp.comptoir.total_ca,
+                        total_marge: cp.comptoir.total_marge
+                    } : null,
+                    produits_en_perte_ou_sans_cout: (cp.produits_periode || [])
+                        .filter((x) => (x.marge !== null && x.marge < 0) || x.marge === null)
+                        .slice(0, 10)
+                };
+            }
+
+            // LA NOTE DU MOIS: ce que un humain a juge bon d'expliquer
+            // (livraison non saisie, inventaire partiel...). C'est le contexte
+            // que les chiffres seuls ne portent pas. Best effort: son absence
+            // ne bloque ni l'export ni l'analyse.
+            if (fin) {
+                try {
+                    const rn = await fetch('/api/finance/notes?mois=' + fin.slice(0, 7)
+                        + '&ecran=pl', { credentials: 'include' });
+                    const jn = await rn.json();
+                    if (jn && jn.success && jn.data && jn.data.texte) {
+                        sortie.note_du_mois = jn.data.texte;
+                    }
+                } catch (eNote) { /* la note est un bonus, pas une condition */ }
+            }
+
+            return sortie;
+        }
+    }
+
+    async function exporterPlJson(bouton) {
+        if (!plDernieresDonnees) {
+            if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
+            return;
+        }
+        const libelleInitial = bouton ? bouton.innerHTML : null;
+        try {
+            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Préparation…'; }
+            const sortie = await construirePayloadPl();
+            const p = (plDernieresDonnees || {}).periode || {};
             telechargerJson(sortie, 'pl-' + (p.dateDebut || 'periode') + '-au-'
                 + (p.dateFin || '') + '.json');
         } catch (e) {
@@ -2689,6 +2755,60 @@
         } finally {
             if (bouton) { bouton.disabled = false; bouton.innerHTML = libelleInitial; }
         }
+    }
+
+    /**
+     * ANALYSE IA DU PL: le meme payload que l'export JSON part au serveur,
+     * qui le fait commenter par un LLM. Le LLM COMMENTE, il ne calcule pas -
+     * la regle est posee cote serveur, dans le prompt.
+     */
+    async function analyserPl(bouton) {
+        if (!plDernieresDonnees) {
+            if (typeof showToast === 'function') showToast("Charge d'abord le PL.", "warning");
+            return;
+        }
+        const panneau = document.getElementById('fin-pl-analyse-panel');
+        const libelleInitial = bouton ? bouton.innerHTML : null;
+        try {
+            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Analyse…'; }
+            if (panneau) {
+                panneau.style.display = '';
+                panneau.innerHTML = '<div class="text-muted small"><i class="bi bi-hourglass-split"></i> '
+                    + 'Analyse en cours…</div>';
+            }
+            const payload = await construirePayloadPl();
+            const res = await fetch('/api/finance/analyse-ia', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'pl', payload: payload })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'analyse indisponible');
+            if (panneau) panneau.innerHTML = carteAnalyseIa(j.data);
+        } catch (e) {
+            if (panneau) {
+                panneau.innerHTML = '<div class="alert alert-warning py-2 small mb-0">'
+                    + '<i class="bi bi-robot"></i> ' + esc(e.message) + '</div>';
+            }
+        } finally {
+            if (bouton) { bouton.disabled = false; bouton.innerHTML = libelleInitial; }
+        }
+    }
+
+    /** La carte qui affiche une analyse IA. Texte brut du modele, echappe,
+     *  les sauts de ligne preserves. */
+    function carteAnalyseIa(data) {
+        return '<div class="card border-secondary mb-0">'
+            + '<div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">'
+            + '<span class="fw-medium small"><i class="bi bi-robot me-1"></i>Analyse IA</span>'
+            + '<span class="small text-muted">' + esc(data.modele || '')
+            + (data.cache ? ' · en cache' : '') + '</span></div>'
+            + '<div class="card-body py-2 small" style="white-space:pre-wrap">'
+            + esc(data.analyse || '') + '</div>'
+            + '<div class="card-footer bg-transparent py-1 small text-muted">'
+            + 'Généré par un modèle de langage à partir des chiffres affichés : '
+            + 'relecture, pas source de vérité. Les montants font foi dans le tableau.'
+            + '</div></div>';
     }
 
     /** Telechargement d'un objet en fichier .json. Une seule ecriture pour

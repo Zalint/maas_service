@@ -584,6 +584,148 @@ router.use('/notes', checkPlAccess);
 router.use('/depots-approuves', checkPlAccess);
 router.use('/cash-autres', checkPlAccess);
 
+// L'analyse IA commente ce que ces roles peuvent deja LIRE (le PL, la
+// projection): meme cercle que la lecture, y compris 'user'. C'est un POST -
+// il porte un payload - mais il n'ecrit rien: ni base, ni fichier.
+function checkAnalyseAccess(req, res, next) {
+    const user = req.user || (req.session && req.session.user) || null;
+    const role = String((user && user.role) || '').toLowerCase();
+    if ((user && user.canManageAdvanced) || ['admin', 'superviseur', 'user'].includes(role)) {
+        return next();
+    }
+    return res.status(403).json({
+        success: false,
+        error: 'Accès réservé aux rôles qui lisent le PL'
+    });
+}
+
+// =====================================================
+// ANALYSE IA — le LLM commente, il ne calcule jamais
+// =====================================================
+//
+// Le client envoie LE MEME payload que son export JSON (PL ou projection):
+// une seule construction des donnees, donc l'analyse decrit exactement ce
+// que l'utilisateur peut telecharger et relire.
+//
+// Cache memoire par empreinte du payload: le PL d'une periode ne change que
+// si ses chiffres changent, et chaque appel OpenAI coute. TTL long (30 min),
+// purge par taille comme les memos du PL.
+const _analyseMemo = new Map();
+const ANALYSE_MEMO_TTL_MS = 30 * 60 * 1000;
+const ANALYSE_MEMO_MAX = 40;
+// Un payload d'analyse pese quelques dizaines de Ko; au-dela, ce n'est plus
+// un PL mais un abus (ou un bug d'appelant), et OpenAI facture au token.
+const ANALYSE_PAYLOAD_MAX = 200 * 1024;
+
+const PROMPTS_ANALYSE = {
+    pl: 'Tu commentes le compte de resultat (PL) mensuel d\'une boucherie au Senegal, '
+        + 'pour son gerant. Le JSON fourni contient les chiffres, leur mode de calcul '
+        + '(champ a_propos), les signaux de fiabilite (sources, stock.soir_estime, '
+        + 'avances_provisoires, ventes_date_fin, ca_sans_cout), les meilleurs clients, '
+        + 'les produits en perte, l\'ecart avec la veille et une eventuelle note du mois. '
+        + 'REGLES STRICTES: tu ne fais AUCUN calcul nouveau - tu cites uniquement des '
+        + 'montants presents dans le JSON, en FCFA arrondis. Si un signal de fiabilite '
+        + 'est degrade, tu le dis AVANT tout verdict. Reponds en francais, 150 a 220 mots, '
+        + 'en quatre blocs titres exactement ainsi: VERDICT (une phrase), POURQUOI (les 2-3 '
+        + 'postes qui expliquent le resultat), VIGILANCE (donnees provisoires ou anomalies, '
+        + 'produits en perte), ACTION (1-2 gestes concrets tires des donnees).',
+    projection: 'Tu commentes la projection de fin de mois du resultat (PL) d\'une '
+        + 'boucherie au Senegal, pour son gerant. Le JSON contient la methode (a_propos, '
+        + 'hypotheses), le CA projete, les scenarios, l\'indice de confiance, le plan '
+        + 'd\'equilibre et des recommandations deja calculees. REGLES STRICTES: tu ne fais '
+        + 'AUCUN calcul nouveau - tu cites uniquement des montants presents dans le JSON, '
+        + 'en FCFA arrondis. Tu rappelles le niveau de confiance et les hypotheses '
+        + 'discretionnaires (stock, depenses) AVANT tout verdict. Reponds en francais, '
+        + '150 a 220 mots, en quatre blocs titres exactement ainsi: OU VA LE MOIS (une '
+        + 'phrase, scenario central), HYPOTHESES (ce qui est pose, pas mesure), RISQUES '
+        + '(ce qui ferait devier), ACTION (1-2 gestes tires du plan d\'equilibre ou des '
+        + 'recommandations).'
+};
+
+router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
+    try {
+        if (!process.env.OPENAI_API_KEY) {
+            return res.status(503).json({ success: false,
+                error: 'Analyse IA non configurée sur ce déploiement (OPENAI_API_KEY absente).' });
+        }
+        const type = String((req.body || {}).type || '');
+        const prompt = PROMPTS_ANALYSE[type];
+        if (!prompt) {
+            return res.status(400).json({ success: false, error: 'type: pl ou projection attendu' });
+        }
+        const payload = (req.body || {}).payload;
+        if (!payload || typeof payload !== 'object') {
+            return res.status(400).json({ success: false, error: 'payload requis' });
+        }
+        const texte = JSON.stringify(payload);
+        if (texte.length > ANALYSE_PAYLOAD_MAX) {
+            return res.status(413).json({ success: false,
+                error: 'payload trop volumineux pour une analyse (' + texte.length + ' octets)' });
+        }
+
+        // Empreinte du CONTENU, pas de la date d'appel: le meme PL relu dix
+        // fois dans la demi-heure ne paie qu'un appel. `genere_le` est exclu
+        // du hachage - il change a chaque construction du payload et rendait
+        // chaque clic unique: le cache ne servait jamais (constate au test).
+        const crypto = require('crypto');
+        const pourEmpreinte = Object.assign({}, payload);
+        delete pourEmpreinte.genere_le;
+        const cle = type + ':' + crypto.createHash('sha256')
+            .update(JSON.stringify(pourEmpreinte)).digest('hex');
+        const maintenant = Date.now();
+        const present = _analyseMemo.get(cle);
+        if (present && (maintenant - present.at) < ANALYSE_MEMO_TTL_MS) {
+            return res.json({ success: true, data: Object.assign({}, present.data, { cache: true }) });
+        }
+        for (const [k, v] of _analyseMemo) {
+            if ((maintenant - v.at) >= ANALYSE_MEMO_TTL_MS) _analyseMemo.delete(k);
+        }
+        if (_analyseMemo.size >= ANALYSE_MEMO_MAX) {
+            _analyseMemo.delete(_analyseMemo.keys().next().value);
+        }
+
+        const OpenAI = require('openai');
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const modele = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+        const completion = await openai.chat.completions.create({
+            model: modele,
+            temperature: 0.3,
+            max_tokens: 600,
+            messages: [
+                { role: 'system', content: prompt },
+                { role: 'user', content: texte }
+            ]
+        });
+        const analyse = (completion.choices && completion.choices[0]
+            && completion.choices[0].message && completion.choices[0].message.content || '')
+            // L'ecran affiche du texte brut (white-space:pre-wrap), pas du
+            // markdown: les ### et ** du modele resteraient visibles tels
+            // quels. On les retire plutot que d'embarquer un moteur markdown
+            // pour quatre titres.
+            .replace(/^#+\s*/gm, '')
+            .replace(/\*\*/g, '')
+            .trim();
+        if (!analyse) {
+            return res.status(502).json({ success: false, error: 'réponse vide du modèle' });
+        }
+        const data = { analyse: analyse, modele: modele, cache: false };
+        _analyseMemo.set(cle, { at: maintenant, data: data });
+        res.json({ success: true, data: data });
+    } catch (e) {
+        console.error('POST /api/finance/analyse-ia:', e.message);
+        // Les erreurs OpenAI portent un status exploitable (401 cle, 429
+        // quota): les traduire en message actionnable plutot qu'un 500 nu.
+        const st = e.status || e.statusCode;
+        if (st === 401) {
+            return res.status(502).json({ success: false, error: 'Clé OpenAI refusée : vérifier OPENAI_API_KEY.' });
+        }
+        if (st === 429) {
+            return res.status(502).json({ success: false, error: 'Quota OpenAI épuisé ou limite atteinte : réessayer plus tard.' });
+        }
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 10 MB: une
 // photo de justificatif prise au telephone (JPEG plein cadre, bon eclairage)
 // depasse couramment les 5 Mo d'origine - mesure sur le terrain, c'etait la
