@@ -44,14 +44,14 @@ describe('garde du commentaire mensuel', () => {
         }
     });
 
-    test('la garde de lecture elargie ne couvre que /cash-stock et /simulation, '
-        + 'les deux prefixes sans garde plus stricte en aval', () => {
+    test('la garde de lecture elargie ne couvre que les prefixes sans garde '
+        + 'plus stricte en aval : /cash-stock, /config et /simulation', () => {
         const bloc = SRC.slice(
             SRC.indexOf('const PREFIXES_PL_LECTURE_ELARGIE'),
             SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach')
         );
         expect(Array.from(bloc.matchAll(/'(\/[^']+)'/g)).map((m) => m[1]).sort())
-            .toEqual(['/cash-stock', '/simulation']);
+            .toEqual(['/cash-stock', '/config', '/simulation']);
         const debut = SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach');
         expect(debut).toBeGreaterThan(-1);
         expect(SRC.slice(debut, debut + 100)).toContain('checkAdvancedOuLecturePourUser');
@@ -331,5 +331,28 @@ describe('gardes de toutes les routes d ecriture', () => {
     test('GET /paiements et son justificatif portent checkWriteAccess', () => {
         expect(SRC).toMatch(/router\.get\('\/paiements',\s*checkWriteAccess,/);
         expect(SRC).toMatch(/router\.get\('\/paiements\/:id\/justificatif',\s*checkWriteAccess,/);
+    });
+
+    // /config a quitte ADVANCED_FINANCE_PREFIXES pour la liste de lecture
+    // elargie: sa LECTURE s'ouvre a 'user' (le moteur de Simulation y prend
+    // le taux de commission), son ECRITURE doit rester ou elle etait.
+    test("PUT /config reste reserve a canManageAdvanced apres l'ouverture en lecture", () => {
+        const corps = SRC.slice(SRC.indexOf('function checkAdvancedOuLecturePourUser'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        const garde = new Function('return ' + corps.slice(0, fin + 2))();
+        const essayer = (user, method) => {
+            let passe = false, statut = null;
+            garde({ method, session: { user } },
+                { status(c) { statut = c; return this; }, json() { return this; } },
+                () => { passe = true; });
+            return { passe, statut };
+        };
+        // Ecriture: seul canManageAdvanced passe, comme sous l'ancien prefixe.
+        expect(essayer({ role: 'user' }, 'PUT').passe).toBe(false);
+        expect(essayer({ role: 'user' }, 'PUT').statut).toBe(403);
+        expect(essayer({ role: 'superutilisateur', canManageAdvanced: true }, 'PUT').passe).toBe(true);
+        // Lecture: 'user' passe, c'est tout l'objet du deplacement.
+        expect(essayer({ role: 'user' }, 'GET').passe).toBe(true);
     });
 });

@@ -511,8 +511,7 @@ const ADVANCED_FINANCE_PREFIXES = [
     '/prix-achat',
     '/prix-vente-fournisseur',
     '/alias',
-    '/charges',
-    '/config'
+    '/charges'
 ];
 // Paiements fournisseur n'est plus dans la liste ci-dessus: comme les
 // depenses, un utilisateur simple doit pouvoir en enregistrer un avec son
@@ -543,7 +542,14 @@ const PREFIXES_PL_LECTURE_ELARGIE = [
     '/cash-stock',
     // La simulation expose les memes chiffres que le PL, sous un autre angle:
     // elle merite la meme garde.
-    '/simulation'
+    '/simulation',
+    // Le moteur de Simulation lit /config pour le taux de commission. En 403
+    // il retombait sur 3 % en dur, et un tenant a taux different aurait vu sa
+    // Simulation contredire son propre PL. Ces reglages (commission, parage)
+    // sont deja affiches en clair dans le PL, que ce role lit desormais:
+    // les lui rendre n'expose rien de plus. L'ECRITURE reste inchangee -
+    // canManageAdvanced, comme sous l'ancien prefixe.
+    '/config'
 ];
 function checkAdvancedOuLecturePourUser(req, res, next) {
     const user = req.user || (req.session && req.session.user) || null;

@@ -3985,7 +3985,13 @@
             // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme
             // pas les reglages a un role qui ne peut pas lire le PL. Les
             // routes refont le controle de toute facon.
-            if (['admin', 'superviseur'].indexOf(role) < 0) return;
+            //
+            // 'user' compris depuis que la Simulation lui est ouverte en
+            // lecture: sans lui ici, l'onglet s'affichait mais le moteur v2
+            // n'etait jamais injecte, et il tombait sur la v1 - un ecran
+            // different de celui que voient les autres roles, pour les memes
+            // chiffres. Ses boutons d'ecriture sont masques plus bas.
+            if (['admin', 'superviseur', 'user'].indexOf(role) < 0) return;
             jsonOu('/api/simulation-v2/reglages', null).then(function (d) {
                 if (d && d.actif) injecter();
             });
