@@ -2423,6 +2423,14 @@
         const dateFin = document.getElementById('fin-pl-date-fin').value;
         const clePeriode = dateDebut + '|' + dateFin;
         if (!force && plChargePour === clePeriode && plDernieresDonnees) return;
+        // L'analyse IA decrit UNE periode. Le panneau vit hors de
+        // fin-pl-result pour survivre aux re-rendus - mais changer de periode
+        // laissait le commentaire de l'ancienne affiche sous les chiffres de
+        // la nouvelle. Un recalcul de la MEME periode (force), lui, le garde.
+        if (plChargePour !== null && plChargePour !== clePeriode) {
+            const panneauIa = document.getElementById('fin-pl-analyse-panel');
+            if (panneauIa) { panneauIa.style.display = 'none'; panneauIa.innerHTML = ''; }
+        }
         resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
         try {
             const qs = new URLSearchParams();
@@ -2808,8 +2816,19 @@
         }
         const panneau = document.getElementById('fin-pl-analyse-panel');
         const libelleInitial = bouton ? bouton.innerHTML : null;
+        // TOUS les declencheurs sont verrouilles pendant l'appel, pas
+        // seulement le bouton clique: l'item « Analyse approfondie » restait
+        // actif pendant une analyse standard (et inversement), et chaque clic
+        // partait en requete OpenAI concurrente - payante.
+        const verrous = [bouton, document.getElementById('fin-pl-analyse-approfondie'),
+            document.querySelector('#fin-pl-analyse + .dropdown-toggle')].filter(Boolean);
+        const verrouiller = (on) => verrous.forEach((el) => {
+            el.classList.toggle('disabled', on);
+            if ('disabled' in el) el.disabled = on;
+        });
         try {
-            if (bouton) { bouton.disabled = true; bouton.innerHTML = 'Analyse…'; }
+            verrouiller(true);
+            if (bouton) bouton.innerHTML = 'Analyse…';
             if (panneau) {
                 panneau.style.display = '';
                 panneau.innerHTML = '<div class="text-muted small"><i class="bi bi-hourglass-split"></i> '
@@ -2832,7 +2851,8 @@
                     + '<i class="bi bi-robot"></i> ' + esc(e.message) + '</div>';
             }
         } finally {
-            if (bouton) { bouton.disabled = false; bouton.innerHTML = libelleInitial; }
+            verrouiller(false);
+            if (bouton) bouton.innerHTML = libelleInitial;
         }
     }
 

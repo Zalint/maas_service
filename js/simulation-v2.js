@@ -2003,19 +2003,39 @@
     }
 
     function analyserProjection(niveau) {
+        // BASCULER ET RENDRE **AVANT** de construire le payload.
+        //
+        // projCalculee est pose par le rendu de la vue projection - et remis a
+        // null par ses gardes. Construire le payload d'abord, depuis la vue
+        // Scenario, envoyait au modele la projection du DERNIER rendu: des
+        // dates changees entre-temps donnaient une analyse d'une autre
+        // periode que celle affichee.
+        etat.vue = 'projection';
+        etat.analyseIA = { enCours: true, niveau: niveau };
+        rendre();
         var payload = construirePayloadProjection();
         if (!payload) {
+            etat.analyseIA = null;
+            rendre();
             if (typeof window.showToast === 'function') {
                 window.showToast('Calcule la projection avant de l’analyser.', 'warning');
             }
             return;
         }
-        // Basculer sur la vue projection: le resultat s'affiche la-bas, et
-        // lancer une analyse depuis le scenario sans rien voir arriver
-        // ressemblerait a un bouton mort.
-        etat.vue = 'projection';
-        etat.analyseIA = { enCours: true, niveau: niveau };
-        rendre();
+        // Les DEUX declencheurs verrouilles pendant l'appel: l'item
+        // « approfondie » restait cliquable pendant une analyse standard, et
+        // chaque clic partait en requete OpenAI concurrente - payante. Ils
+        // vivent dans la barre d'outils, que rendre() ne reconstruit pas: les
+        // references restent valides pendant tout l'appel.
+        var verrous = [document.getElementById('sim2-analyse'),
+            document.getElementById('sim2-analyse-approfondie')].filter(Boolean);
+        var verrouiller = function (on) {
+            verrous.forEach(function (el) {
+                el.classList.toggle('disabled', on);
+                if ('disabled' in el) el.disabled = on;
+            });
+        };
+        verrouiller(true);
         fetch('/api/finance/analyse-ia', {
             method: 'POST', credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -2027,10 +2047,12 @@
                     ? { texte: j.data.analyse, cache: j.data.cache, niveau: niveau,
                         pourResume: etat.projResume }
                     : { erreur: (j && j.error) || 'analyse indisponible' };
+                verrouiller(false);
                 rendre();
             })
             .catch(function (e) {
                 etat.analyseIA = { erreur: e.message };
+                verrouiller(false);
                 rendre();
             });
     }

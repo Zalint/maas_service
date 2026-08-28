@@ -663,11 +663,14 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
             return res.status(503).json({ success: false,
                 error: 'Analyse IA non configurée sur ce déploiement (OPENAI_API_KEY absente).' });
         }
+        // Liste blanche EXPLICITE, pas un simple acces d'objet: un type
+        // '__proto__', 'constructor' ou 'toString' tombe sur l'heritage
+        // d'Object, rend une valeur TRUTHY, et partait comme prompt systeme.
         const type = String((req.body || {}).type || '');
-        const prompt = PROMPTS_ANALYSE[type];
-        if (!prompt) {
+        if (type !== 'pl' && type !== 'projection') {
             return res.status(400).json({ success: false, error: 'type: pl ou projection attendu' });
         }
+        const prompt = PROMPTS_ANALYSE[type];
         const payload = (req.body || {}).payload;
         if (!payload || typeof payload !== 'object') {
             return res.status(400).json({ success: false, error: 'payload requis' });
@@ -708,7 +711,12 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
         }
 
         const OpenAI = require('openai');
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        // Timeout EXPLICITE: le SDK attend 10 minutes par defaut, et une
+        // requete qui traine tenait la reponse HTTP ouverte tout ce temps.
+        // 90 s et non 60: l'approfondie (o4-mini, effort moyen) a ete mesuree
+        // a 13 s mais un payload charge peut depasser la minute - au-dela,
+        // c'est un incident, pas une analyse lente.
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 90000 });
         // Les familles gpt-5 et o-* REFUSENT max_tokens et une temperature
         // differente de 1: elles exigent max_completion_tokens et gerent la
         // temperature elles-memes. Et un modele a raisonnement consomme son
