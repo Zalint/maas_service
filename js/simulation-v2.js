@@ -90,10 +90,13 @@
         // de 15 000 F. Le voir sans le stock dit de combien on depend de cette
         // mesure - pas ce que vaut l'exploitation.
         horsStock: false,
-        // La projection est la partie qu'on vient consulter: ouverte par
-        // defaut. L'etat est MEMORISE, sinon chaque rendu - et il y en a un a
-        // chaque frappe de levier - la refermerait sous les doigts.
-        projOuverte: true,
+        // LA VUE AFFICHEE: 'scenario' ou 'projection'. Les deux repondent a
+        // des questions differentes - « que se passe-t-il si je bouge ce
+        // levier » contre « ou finit le mois » - et les empiler obligeait a
+        // faire defiler tout le scenario pour atteindre la projection.
+        // Memorisee comme les autres etats d'affichage: un rendu declenche
+        // par une frappe de levier ne doit pas ramener l'autre vue.
+        vue: 'scenario',
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
@@ -169,49 +172,23 @@
      */
     function injecter() {
         var v1 = document.querySelector('[data-fin-pane="simulation"]');
-        if (!v1 || document.getElementById('sim2-bascule')) return false;
+        if (!v1 || document.getElementById('sim2-boite')) return false;
 
-        // Capture AVANT insertion: la bascule et la boite ne doivent pas se
-        // masquer elles-memes.
-        var enfantsV1 = Array.prototype.slice.call(v1.children).map(function (el) {
-            return { el: el, display: el.style.display };
+        // PLUS DE BASCULE v1/v2. Cette fonction n'est appelee que lorsque le
+        // reglage `actif` du tenant est vrai (cf. amorcer): dans ce cas la 2.0
+        // EST la Simulation, et proposer un retour a l'ancien ecran laissait
+        // deux reponses possibles a la meme question. La v1 est simplement
+        // masquee - son code reste en place, et desactiver le reglage la
+        // ramene telle quelle.
+        Array.prototype.slice.call(v1.children).forEach(function (el) {
+            el.style.display = 'none';
         });
-
-        var bascule = document.createElement('div');
-        bascule.id = 'sim2-bascule';
-        bascule.className = 'btn-group btn-group-sm mb-3';
-        // La couleur du texte selectionne est posee EN LIGNE, pas laissee aux
-        // classes Bootstrap: le theme de l'application redefinit la couleur de
-        // .btn-primary et de .active, et le libelle du bouton choisi
-        // ressortait bleu sur fond bleu, donc illisible.
-        bascule.innerHTML =
-            '<button type="button" class="btn btn-primary" data-v="1" style="color:#fff">Version actuelle</button>'
-            + '<button type="button" class="btn btn-outline-primary" data-v="2">Simulation 2.0</button>';
 
         var boite = document.createElement('div');
         boite.id = 'sim2-boite';
-        boite.style.display = 'none';
         boite.innerHTML = gabarit();
-
-        v1.insertBefore(bascule, v1.firstChild);
         v1.appendChild(boite);
-
-        bascule.addEventListener('click', function (e) {
-            var b = e.target.closest('[data-v]');
-            if (!b) return;
-            var versDeux = b.dataset.v === '2';
-            bascule.querySelectorAll('[data-v]').forEach(function (x) {
-                var choisi = x === b;
-                x.classList.toggle('btn-primary', choisi);
-                x.classList.toggle('btn-outline-primary', !choisi);
-                x.style.color = choisi ? '#fff' : '';
-            });
-            enfantsV1.forEach(function (o) {
-                o.el.style.display = versDeux ? 'none' : o.display;
-            });
-            boite.style.display = versDeux ? '' : 'none';
-            if (versDeux) charger();
-        });
+        charger();
 
         cabler();
         return true;
@@ -755,24 +732,24 @@
         var total = effetTotal(s);
         var n = nbActifs(s);
 
-        // Repli de la projection: lu SUR LE DOM juste avant de le remplacer,
-        // pas depuis l'evenement 'toggle'. Celui-ci est asynchrone: un rendu
-        // declenche dans la foulee d'un clic lisait encore l'ancien etat, et la
-        // section se rouvrait toute seule.
-        var sect0 = document.getElementById('sim2-proj-section');
-        if (sect0) etat.projOuverte = sect0.open;
-
         $('bandeaux').innerHTML = bandeaux();
-        $('corps').innerHTML = ''
-            + panneauScenario(s, g)
-            + kpis(total, n)
-            + tableau(s, total)
-            + equilibre(s)
-            + matrice(s)
-            + projection()
-            + tousLesProduits(s)
+        // UNE VUE A LA FOIS. Le scenario garde ce qui le sert - KPI, tableau
+        // de sensibilite, equilibre, matrice, liste des produits: tout cela
+        // decrit l'effet des leviers. La projection, elle, repond a une autre
+        // question et tient seule.
+        var vueProjection = etat.vue === 'projection';
+        $('corps').innerHTML = basculeVues()
+            + (vueProjection
+                ? projection()
+                : (panneauScenario(s, g)
+                    + kpis(total, n)
+                    + tableau(s, total)
+                    + equilibre(s)
+                    + matrice(s)
+                    + tousLesProduits(s)))
             + (etat.debug ? debug(s, g, total) : '');
-        cablerLeviers();
+        cablerBasculeVues();
+        if (!vueProjection) cablerLeviers();
 
         // L'ouverture du bloc « Tous les produits » survit au prochain rendu.
         // Le `toggle` est ASYNCHRONE: on lit det.open depuis l'evenement, pas
@@ -781,6 +758,39 @@
         if (det) {
             det.addEventListener('toggle', function () { etat.tousProduitsOuverts = det.open; });
         }
+    }
+
+    /**
+     * LA BASCULE ENTRE LES DEUX VUES, sur le modele de celle qui separait la
+     * v1 de la v2: meme btn-group, meme traitement de la couleur.
+     *
+     * La couleur du texte selectionne est posee EN LIGNE, pas laissee aux
+     * classes Bootstrap: le theme de l'application redefinit la couleur de
+     * .btn-primary, et le libelle du bouton choisi ressortait bleu sur fond
+     * bleu, donc illisible.
+     */
+    function basculeVues() {
+        var bouton = function (vue, libelle) {
+            var choisi = etat.vue === vue;
+            return '<button type="button" class="btn '
+                + (choisi ? 'btn-primary' : 'btn-outline-primary') + '" data-vue="' + vue + '"'
+                + (choisi ? ' style="color:#fff"' : '') + '>' + libelle + '</button>';
+        };
+        return '<div class="btn-group btn-group-sm mb-3" id="sim2-vues">'
+            + bouton('scenario', 'Scénario')
+            + bouton('projection', 'Projection fin de mois')
+            + '</div>';
+    }
+
+    function cablerBasculeVues() {
+        var groupe = document.getElementById('sim2-vues');
+        if (!groupe) return;
+        groupe.addEventListener('click', function (e) {
+            var b = e.target.closest('[data-vue]');
+            if (!b || b.dataset.vue === etat.vue) return;
+            etat.vue = b.dataset.vue;
+            rendre();
+        });
     }
 
     /**
@@ -1793,15 +1803,17 @@
         var corps = projectionCorps();
         if (!corps) return '';
         var resume = etat.projResume || '';
-        return '<details class="card border-primary mb-3" id="sim2-proj-section"'
-            + (etat.projOuverte ? ' open' : '') + '>'
-            + '<summary class="card-header bg-primary bg-opacity-10 fw-medium" '
-            + 'style="cursor:pointer;list-style:revert">'
+        // PLUS DE REPLI. C'est desormais une VUE, atteinte par son bouton:
+        // pouvoir la replier n'offrait qu'un ecran vide sous une bascule qui
+        // annonce « Projection fin de mois ». Le resume reste en entete, il
+        // portait deja les chiffres cles.
+        return '<div class="card border-primary mb-3" id="sim2-proj-section">'
+            + '<div class="card-header bg-primary bg-opacity-10 fw-medium">'
             + '<i class="bi bi-calendar-check me-1"></i> Projection fin de mois'
             + (resume ? '<span class="small text-muted ms-2">' + resume + '</span>' : '')
-            + '</summary>'
+            + '</div>'
             + '<div class="card-body py-3">' + corps + '</div>'
-            + '</details>';
+            + '</div>';
     }
 
     /**
