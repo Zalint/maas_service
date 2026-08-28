@@ -234,4 +234,25 @@ describe('updateSchema migrations: vérifications source', () => {
         expect(src).toMatch(/Pack.*Conserve.*Riz & Féculents.*Superette.*Boissons/);
         expect(src).toMatch(/Epicerie/);
     });
+
+    // POISSON, nommement. Il manquait a la liste Boucherie et retombait donc
+    // en 'Autres' a chaque provisionnement de tenant - le reclasser a la main
+    // ne tenait pas, la valeur repartait au defaut. Sans lui dans la famille
+    // Boucherie, son cout echappe au PL « boucherie seule » et au coefficient
+    // de decoupe. Un test nomme, pour que le retrait de la ligne se voie.
+    test('Poisson est pre-rempli en Boucherie, comme les autres viandes', () => {
+        const seed = src.match(
+            /UPDATE categories SET famille = 'Boucherie'[\s\S]*?nom IN \(([^)]*)\)/
+        );
+        expect(seed).not.toBeNull();
+        expect(seed[1]).toContain("'Poisson'");
+    });
+
+    // L'idempotence tient a ce WHERE: sans lui, chaque redemarrage ecraserait
+    // un reclassement fait a la main depuis l'ecran.
+    test('le seed ne touche que les categories restees au defaut', () => {
+        expect(src).toMatch(
+            /UPDATE categories SET famille = 'Boucherie'\s*\n\s*WHERE famille = 'Autres'/
+        );
+    });
 });
