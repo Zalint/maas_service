@@ -90,13 +90,23 @@
         // de 15 000 F. Le voir sans le stock dit de combien on depend de cette
         // mesure - pas ce que vaut l'exploitation.
         horsStock: false,
-        // LA VUE AFFICHEE: 'scenario' ou 'projection'. Les deux repondent a
-        // des questions differentes - « que se passe-t-il si je bouge ce
-        // levier » contre « ou finit le mois » - et les empiler obligeait a
+        // LA VUE AFFICHEE: 'projection' ou 'scenario'. Les deux repondent a
+        // des questions differentes - « ou finit le mois » contre « que se
+        // passe-t-il si je bouge ce levier » - et les empiler obligeait a
         // faire defiler tout le scenario pour atteindre la projection.
+        //
+        // La PROJECTION par defaut: c'est la reponse qu'on vient chercher en
+        // ouvrant l'ecran. Le scenario sert ensuite, quand on a vu ou l'on va
+        // et qu'on cherche quoi faire.
+        //
         // Memorisee comme les autres etats d'affichage: un rendu declenche
         // par une frappe de levier ne doit pas ramener l'autre vue.
-        vue: 'scenario',
+        vue: 'projection',
+        // Les bandeaux d'information sont REPLIES au chargement. Ils se
+        // lisent une fois; les laisser ouverts rendait l'ecran identique a
+        // celui d'avant la pastille. Explicite plutot que laisse a undefined:
+        // la valeur par defaut est une decision, pas un oubli.
+        bandeauxOuverts: false,
         // Parametres de la projection fin de mois, ajustables a l'ecran.
         // coeff null = prendre le calibre sur l'historique, sinon la
         // reference du document.
@@ -170,6 +180,14 @@
      * display d'origine est memorise et restitue. La v1 continue de rendre
      * dans #fin-sim-result, qui reste son enfant a elle.
      */
+    // LE GRIS ARDOISE DE LA PALETTE FINANCE (--fin-neutral), pas le bleu de
+    // Bootstrap, qui ne portait aucune information sur cet ecran. Partage par
+    // la bascule de vues et le bouton Calculer, pour qu'ils ne divergent pas.
+    // Les jetons --fin-* sont portes par #finance-section, qui englobe cet
+    // ecran; le repli couvre le cas ou ce bloc serait rendu ailleurs.
+    var STYLE_ARDOISE = 'background:var(--fin-neutral,#475569);'
+        + 'border-color:var(--fin-neutral,#475569);color:#fff';
+
     function injecter() {
         var v1 = document.querySelector('[data-fin-pane="simulation"]');
         if (!v1 || document.getElementById('sim2-boite')) return false;
@@ -213,7 +231,8 @@
         +     '<select id="sim2-mode" class="form-select form-select-sm">'
         +       '<option value="auto">Automatique</option><option value="manuel">Manuel</option></select></div>'
         +   '<div class="col-md-3"><label class="form-label">&nbsp;</label><div class="d-flex gap-2">'
-        +     '<button class="btn btn-sm btn-primary" id="sim2-calc"><i class="bi bi-calculator"></i> Calculer</button>'
+        +     '<button class="btn btn-sm" id="sim2-calc" style="' + STYLE_ARDOISE + '">'
+        +       '<i class="bi bi-calculator"></i> Calculer</button>'
         +     '<button class="btn btn-sm btn-outline-secondary" id="sim2-reset">Réinitialiser</button>'
         +     '<button class="btn btn-sm btn-outline-dark ms-1" id="sim2-export-json" '
         +       'title="Télécharger la projection calculée (rythmes, scénarios, volumes, plan équilibre, recommandations) en JSON, structuré pour être lu par un LLM.">'
@@ -719,8 +738,7 @@
     function rendre() {
         if (!etat.base) return;
         etat.enAttente = false;
-        var b = $('calc');
-        if (b) { b.classList.remove('btn-warning'); b.classList.add('btn-primary'); b.innerHTML = '<i class="bi bi-calculator"></i> Calculer'; }
+        peindreCalc($('calc'), false);
 
         var s = snapshotEtat();
         // La matrice et son detail au clic doivent decrire le MEME scenario:
@@ -733,6 +751,7 @@
         var n = nbActifs(s);
 
         $('bandeaux').innerHTML = bandeaux();
+        cablerBandeaux();
         // UNE VUE A LA FOIS. Le scenario garde ce qui le sert - KPI, tableau
         // de sensibilite, equilibre, matrice, liste des produits: tout cela
         // decrit l'effet des leviers. La projection, elle, repond a une autre
@@ -772,13 +791,15 @@
     function basculeVues() {
         var bouton = function (vue, libelle) {
             var choisi = etat.vue === vue;
-            return '<button type="button" class="btn '
-                + (choisi ? 'btn-primary' : 'btn-outline-primary') + '" data-vue="' + vue + '"'
-                + (choisi ? ' style="color:#fff"' : '') + '>' + libelle + '</button>';
+            var style = choisi ? STYLE_ARDOISE
+                : 'background:transparent;border-color:var(--fin-border-strong,#cbd5e1);'
+                  + 'color:var(--fin-text-secondary,#475569)';
+            return '<button type="button" class="btn" data-vue="' + vue + '" style="' + style + '">'
+                + libelle + '</button>';
         };
         return '<div class="btn-group btn-group-sm mb-3" id="sim2-vues">'
-            + bouton('scenario', 'Scénario')
             + bouton('projection', 'Projection fin de mois')
+            + bouton('scenario', 'Scénario')
             + '</div>';
     }
 
@@ -924,8 +945,27 @@
 
     function marquerEnAttente() {
         etat.enAttente = true;
-        var b = $('calc');
-        if (b) { b.classList.remove('btn-primary'); b.classList.add('btn-warning'); b.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Calculer (en attente)'; }
+        peindreCalc($('calc'), true);
+    }
+
+    // LE BOUTON CALCULER, dans ses deux etats.
+    //
+    // Gris ardoise au repos, comme la bascule de vues: le bleu de Bootstrap
+    // ne portait aucune information ici. L'ORANGE de l'attente reste, lui -
+    // il ne decore pas, il signale qu'un levier a bouge sans etre recalcule,
+    // et c'est la seule couleur de cet ecran qui merite d'attirer l'oeil.
+    function peindreCalc(b, enAttente) {
+        if (!b) return;
+        if (enAttente) {
+            b.classList.remove('btn-primary');
+            b.classList.add('btn-warning');
+            b.removeAttribute('style');
+            b.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Calculer (en attente)';
+        } else {
+            b.classList.remove('btn-warning', 'btn-primary');
+            b.setAttribute('style', STYLE_ARDOISE);
+            b.innerHTML = '<i class="bi bi-calculator"></i> Calculer';
+        }
     }
 
     function onLevier() {
@@ -933,47 +973,57 @@
         rendre();
     }
 
-    function bandeaux() {
-        var b = etat.base, st = b.stock || {}, h = '';
+    /**
+     * LES BANDEAUX, COLLECTES PLUTOT QU'EMPILES.
+     *
+     * Ils occupaient un ecran entier avant le premier chiffre - quatre pavés
+     * a lire pour arriver aux boutons. Ils restent indispensables (une source
+     * muette ou un cout inconnu changent la lecture du resultat), mais ils se
+     * consultent une fois, pas a chaque rendu.
+     *
+     * Rendus ici en LISTE, avec leur niveau: c'est bandeaux() qui decide de
+     * l'emballage - une pastille refermee, ouverte au clic.
+     */
+    function collecterBandeaux() {
+        var b = etat.base, st = b.stock || {}, m = [];
         var src = b.sources && b.sources.avances;
         if (src && src.etat === 'indisponible') {
-            h += '<div class="alert alert-danger py-2 small mb-2"><i class="bi bi-exclamation-triangle"></i> '
+            m.push({ niveau: 'danger', corps: '<i class="bi bi-exclamation-triangle"></i> '
                + '<strong>Avances MataBanq indisponibles.</strong> ' + esc(src.raison || '')
-               + '. Elles comptent pour 0 : le résultat est surévalué d\'autant, et le PL ne peut pas être figé.</div>';
+               + '. Elles comptent pour 0 : le résultat est surévalué d\'autant, et le PL ne peut pas être figé.' });
         } else if (src && src.etat === 'non_configure') {
-            h += '<div class="alert alert-secondary py-2 small mb-2"><i class="bi bi-info-circle"></i> '
-               + 'MataBanq n\'est pas configuré ici : les avances valent zéro, ce qui est normal sur ce déploiement.</div>';
+            m.push({ niveau: 'secondary', corps: '<i class="bi bi-info-circle"></i> '
+               + 'MataBanq n\'est pas configuré ici : les avances valent zéro, ce qui est normal sur ce déploiement.' });
         }
         (b.avertissements || []).forEach(function (a) {
-            h += '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle"></i> '
-               + esc(a) + '</div>';
+            m.push({ niveau: 'warning', corps: '<i class="bi bi-exclamation-triangle"></i> ' + esc(a) });
         });
         // Derniere journee sans vente: la simulation part du meme PL, elle
         // herite donc du meme resultat tronque. Le taire ici ferait raisonner
         // sur des leviers appliques a une periode incomplete.
         var vdf = b.ventesDateFin;
         if (vdf && vdf.aucune_vente === true) {
-            h += '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-calendar-x"></i> '
+            m.push({ niveau: 'warning', corps: '<i class="bi bi-calendar-x"></i> '
                + '<strong>Aucune vente saisie le ' + esc(vdf.date) + '</strong>, dernier jour de la période. '
                + (vdf.derniere_date_avec_vente
                    ? 'Dernière journée avec des ventes : ' + esc(vdf.derniere_date_avec_vente) + '. '
                    : 'Aucune vente sur toute la période. ')
-               + 'Le résultat de référence est incomplet, et les leviers s\'y appliquent tels quels.</div>';
+               + 'Le résultat de référence est incomplet, et les leviers s\'y appliquent tels quels.' });
         }
         // Un resultat ampute d'un poste ne doit JAMAIS pouvoir se lire comme le
         // PL: le dire est la condition pour offrir cette lecture.
         if (etat.horsStock) {
-            h += '<div class="alert alert-info py-2 small mb-2"><i class="bi bi-eye"></i> '
+            m.push({ niveau: 'info', corps: '<i class="bi bi-eye"></i> '
                + '<strong>Lecture hors stock — mesure d\'exposition, pas le résultat.</strong> '
                + 'La variation de stock (' + esc(fmt(nb(st.variation_nette))) + ' F) est retirée. '
                + 'Elle n\'est pas un gain fictif : elle est dans le PL pour ne PAS passer en charge '
                + 'une marchandise achetée mais pas encore vendue — ce stock partira, et sa marge avec. '
                + 'Ce que ce mode montre, c\'est la part de votre résultat qui repose sur une '
                + 'marchandise encore invendue, donc sur un comptage et une valorisation : le PL réel '
-               + 'reste <strong>' + esc(fmt(b.pl)) + ' F</strong>.</div>';
+               + 'reste <strong>' + esc(fmt(b.pl)) + ' F</strong>.' });
         }
         var poids = b.pl ? Math.abs(nb(st.variation_nette) / b.pl) * 100 : 0;
-        h += '<div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle"></i> '
+        m.push({ niveau: 'light', corps: '<i class="bi bi-info-circle"></i> '
            + 'Résultat <strong>' + esc(b.source) + '</strong>, du ' + esc(b.periode.dateDebut || '')
            + ' au ' + esc(b.periode.dateFin || '') + '. '
            + 'Stock du soir au ' + esc(st.soir_date || '—') + ', il pèse ' + esc(fmt(nb(st.variation_nette)))
@@ -989,14 +1039,76 @@
            // exactement le defaut qu'on vient de corriger.
            + ' <span class="text-muted">La projection de fin de mois, elle, part du '
            + '<strong>dernier prix d’achat connu</strong> et du dernier prix de vente '
-           + 'constaté — voir « les deux méthodes » sous les scénarios.</span>'
-           + '</div>';
+           + 'constaté — voir « les deux méthodes » sous les scénarios.</span>' });
         var av = (etat.sim && etat.sim.prix_achat && etat.sim.prix_achat.avertissements) || [];
         if (av.length) {
-            h += '<div class="alert alert-warning py-2 small mb-3"><i class="bi bi-exclamation-triangle"></i> '
-               + av.map(esc).join('<br>') + '</div>';
+            m.push({ niveau: 'warning', corps: '<i class="bi bi-exclamation-triangle"></i> '
+               + av.map(esc).join('<br>') });
         }
-        return h;
+        return m;
+    }
+
+    /**
+     * LA PASTILLE, et les bandeaux derriere elle.
+     *
+     * Repliee par defaut: ces messages se lisent une fois, pas a chaque
+     * rendu, et ils reprenaient tout le haut de l'ecran avant le premier
+     * chiffre. Le compte et la couleur du plus grave restent visibles - une
+     * source muette ne doit pas pouvoir se cacher derriere un pli.
+     */
+    var SEVERITE = { danger: 3, warning: 2, info: 1, secondary: 0, light: 0 };
+
+    function bandeaux() {
+        var m = collecterBandeaux();
+        if (!m.length) return '';
+        var pire = m.reduce(function (acc, x) {
+            return SEVERITE[x.niveau] > SEVERITE[acc] ? x.niveau : acc;
+        }, 'light');
+        // 'light' n'a pas de contraste suffisant pour une pastille: on la
+        // rend 'secondary' dans ce cas, le fond gris de l'application.
+        var ton = pire === 'light' ? 'secondary' : pire;
+        var ouvert = etat.bandeauxOuverts === true;
+        return '<div class="mb-3">'
+            + '<button type="button" class="btn btn-sm btn-outline-' + ton + '" id="sim2-notifs-btn"'
+            + ' title="' + m.length + (m.length > 1 ? ' informations' : ' information')
+            + ' sur ce résultat — cliquer pour ' + (ouvert ? 'replier' : 'lire') + '"'
+            + ' aria-label="' + m.length + (m.length > 1 ? ' informations' : ' information')
+            + ' sur ce résultat"'
+            + ' aria-expanded="' + (ouvert ? 'true' : 'false') + '" aria-controls="sim2-notifs">'
+            // Le COMPTE et un « i », pas le mot: la pastille tient sur une
+            // ligne courte et ne prend plus la place qu'elle est censee
+            // rendre. Le titre porte le mot pour qui survole, et l'icone de
+            // severite reste devant - une source muette ne doit pas se
+            // presenter comme une simple information.
+            + '<i class="bi bi-' + (pire === 'danger' || pire === 'warning'
+                ? 'exclamation-triangle' : 'info-circle') + '"></i> '
+            + m.length + ' <span class="fst-italic">i</span>'
+            + ' <i class="bi bi-chevron-' + (ouvert ? 'up' : 'down') + '"></i>'
+            + '</button>'
+            + '<div id="sim2-notifs" class="mt-2"' + (ouvert ? '' : ' style="display:none"') + '>'
+            + m.map(function (x) {
+                return '<div class="alert alert-' + x.niveau + ' py-2 small mb-2">' + x.corps + '</div>';
+            }).join('')
+            + '</div></div>';
+    }
+
+    function cablerBandeaux() {
+        var btn = document.getElementById('sim2-notifs-btn');
+        var boite = document.getElementById('sim2-notifs');
+        if (!btn || !boite) return;
+        btn.addEventListener('click', function () {
+            etat.bandeauxOuverts = !(etat.bandeauxOuverts === true);
+            var ouvert = etat.bandeauxOuverts;
+            boite.style.display = ouvert ? '' : 'none';
+            btn.setAttribute('aria-expanded', ouvert ? 'true' : 'false');
+            // Le chevron seul change: re-rendre tout l'ecran pour un pli
+            // serait payer un recalcul complet pour une fleche.
+            var chevron = btn.querySelector('.bi-chevron-down, .bi-chevron-up');
+            if (chevron) {
+                chevron.classList.toggle('bi-chevron-down', !ouvert);
+                chevron.classList.toggle('bi-chevron-up', ouvert);
+            }
+        });
     }
 
     function panneauScenario(s, g) {
