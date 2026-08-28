@@ -2825,7 +2825,7 @@
             });
             const j = await res.json();
             if (!j.success) throw new Error(j.error || 'analyse indisponible');
-            if (panneau) panneau.innerHTML = carteAnalyseIa(j.data);
+            if (panneau) panneau.innerHTML = carteAnalyseIa(j.data, niveau);
         } catch (e) {
             if (panneau) {
                 panneau.innerHTML = '<div class="alert alert-warning py-2 small mb-0">'
@@ -2837,13 +2837,15 @@
     }
 
     /** La carte qui affiche une analyse IA. Texte brut du modele, echappe,
-     *  les sauts de ligne preserves. */
-    function carteAnalyseIa(data) {
+     *  les sauts de ligne preserves. Le NOM du modele n'apparait pas: c'est
+     *  un detail d'implementation - seul le NIVEAU parle a l'utilisateur. */
+    function carteAnalyseIa(data, niveau) {
         return '<div class="card border-secondary mb-0">'
             + '<div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">'
-            + '<span class="fw-medium small"><i class="bi bi-robot me-1"></i>Analyse IA</span>'
-            + '<span class="small text-muted">' + esc(data.modele || '')
-            + (data.cache ? ' · en cache' : '') + '</span></div>'
+            + '<span class="fw-medium small"><i class="bi bi-robot me-1"></i>Analyse IA'
+            + (niveau === 'approfondie' ? ' <span class="badge bg-secondary">approfondie</span>' : '')
+            + '</span>'
+            + '<span class="small text-muted">' + (data.cache ? 'déjà calculée à l’instant · servie du cache' : '') + '</span></div>'
             + '<div class="card-body py-2 small" style="white-space:pre-wrap">'
             + esc(data.analyse || '') + '</div>'
             + '<div class="card-footer bg-transparent py-1 small text-muted">'

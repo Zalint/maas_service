@@ -1990,10 +1990,11 @@
         return '<div class="card border-secondary mb-3">'
             + '<div class="card-header bg-light py-2 d-flex justify-content-between align-items-center">'
             + '<span class="fw-medium small"><i class="bi bi-robot me-1"></i>Analyse IA de la projection'
+            + (a.niveau === 'approfondie' ? ' <span class="badge bg-secondary">approfondie</span>' : '')
             + (perimee ? ' <span class="badge bg-warning text-dark">calculée avant vos derniers réglages</span>' : '')
             + '</span>'
-            + '<span class="small text-muted">' + esc(a.modele || '')
-            + (a.cache ? ' · en cache' : '') + '</span></div>'
+            + '<span class="small text-muted">'
+            + (a.cache ? 'déjà calculée à l’instant · servie du cache' : '') + '</span></div>'
             + '<div class="card-body py-2 small" style="white-space:pre-wrap">' + esc(a.texte || '') + '</div>'
             + '<div class="card-footer bg-transparent py-1 small text-muted">'
             + 'Généré par un modèle de langage à partir de la projection affichée : '
@@ -2023,7 +2024,7 @@
         }).then(function (r) { return r.json().catch(function () { return null; }); })
             .then(function (j) {
                 etat.analyseIA = (j && j.success && j.data)
-                    ? { texte: j.data.analyse, modele: j.data.modele, cache: j.data.cache,
+                    ? { texte: j.data.analyse, cache: j.data.cache, niveau: niveau,
                         pourResume: etat.projResume }
                     : { erreur: (j && j.error) || 'analyse indisponible' };
                 rendre();
