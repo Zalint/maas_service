@@ -300,9 +300,19 @@ async function updateSchema() {
                 ALTER TABLE categories
                 ADD COLUMN IF NOT EXISTS "famille" VARCHAR(20) NOT NULL DEFAULT 'Autres'
             `);
+            // POISSON EST DE LA BOUCHERIE, au sens ou ce depot l'entend: il
+            // se vend au poids, se pare, et son cout doit entrer dans le PL
+            // « boucherie seule » comme dans le coefficient de decoupe.
+            // Absent de cette liste, il retombait en 'Autres' a chaque
+            // provisionnement - et le reclasser a la main ne tenait pas: la
+            // valeur repartait au defaut sur tout tenant reprovisionne.
+            //
+            // Le WHERE famille = 'Autres' rend l'ecriture idempotente et
+            // respecte un reclassement deja fait: un tenant ou Poisson a deja
+            // ete range ailleurs n'est pas touche.
             await sequelize.query(`
                 UPDATE categories SET famille = 'Boucherie'
-                WHERE famille = 'Autres' AND nom IN ('Bovin', 'Ovin', 'Caprin', 'Volaille')
+                WHERE famille = 'Autres' AND nom IN ('Bovin', 'Ovin', 'Caprin', 'Volaille', 'Poisson')
             `);
             await sequelize.query(`
                 UPDATE categories SET famille = 'Epicerie'
