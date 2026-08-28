@@ -768,7 +768,17 @@
                     + tousLesProduits(s)))
             + (etat.debug ? debug(s, g, total) : '');
         cablerBasculeVues();
-        if (!vueProjection) cablerLeviers();
+        // TOUJOURS, quelle que soit la vue. cablerLeviers() ne cable pas que
+        // les leviers: c'est elle qui branche aussi les .sim2-proj-ctl, donc
+        // TOUS les reglages de la projection. La sauter en vue projection -
+        // qui est la vue par DEFAUT - laissait coefficient, ponderation,
+        // methode de CA, stock et depenses inertes: on changeait la valeur,
+        // rien ne se recalculait.
+        //
+        // Sans danger dans l'autre sens: les selecteurs portent sur des
+        // elements absents de la vue courante, et querySelectorAll sur un
+        // ensemble vide ne fait rien.
+        cablerLeviers();
 
         // L'ouverture du bloc « Tous les produits » survit au prochain rendu.
         // Le `toggle` est ASYNCHRONE: on lit det.open depuis l'evenement, pas
