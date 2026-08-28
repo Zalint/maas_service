@@ -3843,6 +3843,16 @@
         });
         var sauve = document.getElementById('sim2-suivi-save');
         if (sauve) sauve.addEventListener('click', enregistrerProduitsSuivis);
+
+        // ECRITURE ADMIN STRICT (routes/simulation-v2.js: PUT /reglages exige
+        // exactement 'admin', plus severe que checkAdvancedAccess). La
+        // Simulation est desormais aussi VISIBLE a un 'user' et reste visible
+        // a un superviseur: ni l'un ni l'autre ne doit voir un bouton qui
+        // echouera en 403.
+        if (String((window.currentUser || {}).role || '').toLowerCase() !== 'admin') {
+            [sauve, document.getElementById('sim2-calibrer'), document.getElementById('sim2-calibrer-effacer')]
+                .forEach(function (el) { if (el) el.style.display = 'none'; });
+        }
         // 'change' et non 'input': ces controles declenchent un rendu complet,
         // qui remplace le champ en cours de saisie. Sur un nombre tape chiffre
         // par chiffre - 1, puis 12 - le focus etait perdu des le premier. Un

@@ -397,8 +397,9 @@ describe('detail par produit, pour le survol', () => {
         // Cout REEL = prix d'achat / (1 - parage) * quantite - pas une
         // soustraction (CA - marge) au niveau de la commande.
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 },
-            { produit: 'Poivre', quantite: 1, unite: 'piece', cout: 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(3000 / 0.95 * 5 * 100) / 100, cout_avant_parage: 15000 },
+            { produit: 'Poivre', quantite: 1, unite: 'piece', ca: 100, cout: 100, cout_avant_parage: 100 }
         ]);
     });
 
@@ -412,7 +413,7 @@ describe('detail par produit, pour le survol', () => {
         // de la marge. cout: null, pas 0 - un cout partiel se ferait passer
         // pour le cout entier.
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Mystere', quantite: 4, unite: 'piece', cout: null }
+            { produit: 'Mystere', quantite: 4, unite: 'piece', ca: 5000, cout: null, cout_avant_parage: null }
         ]);
     });
 
@@ -426,7 +427,8 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: PRIX, estBoucherie: () => true, paragePct: 5
         });
         expect(r.clients[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(4480 / 0.95 * 5 * 100) / 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(4480 / 0.95 * 5 * 100) / 100, cout_avant_parage: 22400 }
         ]);
     });
 
@@ -439,8 +441,9 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: () => 4480, estBoucherie: (p) => p === 'Boeuf', paragePct: 5
         });
         expect(r.comptoir.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 2, unite: 'kg', cout: Math.round(4480 / 0.95 * 2 * 100) / 100 },
-            { produit: 'Yell', quantite: 1, unite: 'piece', cout: 4480 }
+            { produit: 'Boeuf', quantite: 2, unite: 'kg', ca: 10000,
+                cout: Math.round(4480 / 0.95 * 2 * 100) / 100, cout_avant_parage: 8960 },
+            { produit: 'Yell', quantite: 1, unite: 'piece', ca: 2500, cout: 4480, cout_avant_parage: 4480 }
         ]);
     });
 
@@ -457,8 +460,55 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: () => 3000, estBoucherie: () => true, paragePct: 5
         });
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(3000 / 0.95 * 5 * 100) / 100, cout_avant_parage: 15000 }
         ]);
+    });
+
+    test('le prix d achat brut (avant parage) se distingue du cout retenu (apres parage)', () => {
+        // Boeuf boucherie, div 0,95 : cout = 3000/0,95 = 3157,89, brut = 3000.
+        // Poivre hors boucherie, div 1 : les deux valeurs sont identiques.
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 1, montant: 5000, commande_id: 'C1' },
+            { produit: 'Poivre', nombre: 1, montant: 150, commande_id: 'C1' }
+        ]);
+        const [boeuf, poivre] = r.commandes[0].produits.sort((a, b) => b.ca - a.ca);
+        expect(boeuf.cout_avant_parage).toBe(3000);
+        expect(boeuf.cout).toBeGreaterThan(boeuf.cout_avant_parage);
+        expect(poivre.cout).toBe(poivre.cout_avant_parage);
+    });
+});
+
+describe('cout total, reconcilie avec marge = CA chiffre - cout', () => {
+    test('agregerCommandes : le cout suit la meme logique de marge nulle sur cout inconnu', () => {
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 1, montant: 5000, commande_id: 'C1' },
+            { produit: 'Mystere', nombre: 1, montant: 10000, commande_id: 'C1' }
+        ]);
+        const c = r.commandes[0];
+        // Boeuf: cout = 3000 / 0.95 = 3157.89. Mystere: cout = ca = 10000
+        // (marge supposee nulle). Total attendu : 13157.89.
+        expect(c.cout).toBeCloseTo(3157.89 + 10000, 1);
+        expect(c.ca_chiffre - c.cout).toBeCloseTo(c.marge, 6);
+        expect(r.total_cout).toBeCloseTo(c.cout, 1);
+    });
+
+    test('agregerClients : cout du client et du comptoir se reconcilient avec la marge', () => {
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', 'A', 'C1', 'Boeuf', 1, 5000),
+                L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000),
+                L('2026-08-03', '', 'X1', 'Boeuf', 1, 5000)
+            ],
+            prixAchatDe: (p) => (p === 'Boeuf' ? 3000 : NaN),
+            estBoucherie: () => true, paragePct: 5
+        });
+        const c = r.clients[0];
+        expect(c.ca_chiffre - c.cout).toBeCloseTo(c.marge, 6);
+        expect(r.total_cout).toBeCloseTo(c.cout, 1);
+        const cp = r.comptoir.commandes[0];
+        expect(cp.ca_chiffre - cp.cout).toBeCloseTo(cp.marge, 6);
+        expect(r.comptoir.total_cout).toBeCloseTo(cp.cout, 1);
     });
 });
 

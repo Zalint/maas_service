@@ -16,6 +16,15 @@
     'use strict';
 
     const fmtMoney = (n) => (Math.round(parseFloat(n) || 0)).toLocaleString('fr-FR') + ' FCFA';
+    // UN CHAMP ABSENT N'EST PAS UN ZERO.
+    //
+    // fmtMoney(undefined) rend « 0 FCFA », indiscernable d'un vrai zero. Les
+    // PL FIGES avant l'ajout du cout par produit sont rejoues tels quels
+    // (renderPl(snap.payload)): leurs lignes clients n'ont ni cout ni
+    // total_cout, et la colonne Cout affichait 0 a cote d'une marge correcte
+    // - la reconciliation CA - Cout = Marge devenait fausse en silence.
+    const fmtMoneyOuTiret = (n) => (n === null || n === undefined)
+        ? '—' : fmtMoney(n);
     // Variante HTML qui separe le suffixe FCFA en span muted (utilise dans
     // les valeurs KPI pour mettre l'accent sur le chiffre).
     const fmtAmount = (n) => {
@@ -107,6 +116,7 @@
                 if (target === 'creances') loadCreances();
                 if (target === 'cdc') loadCdc();
                 if (target === 'depenses') loadDepenses();
+                if (target === 'paiement-fournisseur') loadPaiementsFournisseur();
                 if (target === 'prix') loadPrix();
                 if (target === 'mapping') loadMapping();
                 if (target === 'charges') loadCharges();
@@ -208,6 +218,9 @@
         const depenseRefresh = document.getElementById('fin-depense-refresh');
         if (depenseRefresh) depenseRefresh.addEventListener('click', loadDepenses);
 
+        const paiementRefresh = document.getElementById('fin-paiement-refresh');
+        if (paiementRefresh) paiementRefresh.addEventListener('click', loadPaiementsFournisseur);
+
         // Boutons prix
         const prixSave = document.getElementById('fin-prix-save');
         if (prixSave) prixSave.addEventListener('click', onPrixSave);
@@ -254,11 +267,11 @@
         const dd = String(now.getDate()).padStart(2, '0');
         const todayISO = `${yyyy}-${mm}-${dd}`;
         const firstISO = `${yyyy}-${mm}-01`;
-        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-pl-date-debut', 'fin-sim-date-debut']) {
+        for (const id of ['fin-creances-date-debut', 'fin-cdc-date-debut', 'fin-depense-date-debut', 'fin-paiement-date-debut', 'fin-pl-date-debut', 'fin-sim-date-debut']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = firstISO;
         }
-        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-pl-date-fin', 'fin-sim-date-fin']) {
+        for (const id of ['fin-creances-date-fin', 'fin-cdc-date-fin', 'fin-depense-date-fin', 'fin-paiement-date-fin', 'fin-pl-date-fin', 'fin-sim-date-fin']) {
             const el = document.getElementById(id);
             if (el && !el.value) el.value = todayISO;
         }
@@ -728,12 +741,14 @@
         const cards = document.getElementById('fin-creances-cards');
         const soldeCommission = (data.ce_que_je_dois || 0) - (data.paiements_effectues || 0);
 
-        // Badges totaux dans les headers d'accordeon (visibles meme replies)
+        // Badge total dans le header d'accordeon (visible meme replie).
         const maasBadge = document.getElementById('fin-cre-acc-maas-total');
         if (maasBadge) maasBadge.textContent = 'Je dois ' + fmtMoney(data.ce_que_je_dois || 0);
-        const paiementsBadge = document.getElementById('fin-cre-acc-paiements-total');
-        if (paiementsBadge) paiementsBadge.textContent = 'Payé ' + fmtMoney(data.paiements_effectues || 0);
         // 3 cartes au lieu de 4 (col-md-4). On override la col du helper.
+        // "Paiements locaux saisis" et "Solde commission" restent ICI: elles
+        // lisent data.paiements_effectues, deja calcule cote serveur sur la
+        // meme table fournisseur_paiements. Seuls la LISTE et le FORMULAIRE
+        // d'ajout ont demenage dans leur propre onglet (Paiement fournisseur).
         const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
             .replace('col-md-3', 'col-md-4');
         cards.innerHTML = [
@@ -757,18 +772,49 @@
         // backend converti en DD/MM/YYYY pour lisibilite FR. Filtre dette>0
         // pour ne pas montrer les jours sans vente eligible.
         renderDetailParDate(data);
+    }
 
+    // ===== Paiements fournisseur (son propre onglet, plus un sous-accordeon
+    // de Creances) =====
+    //
+    // Charge INDEPENDAMMENT de /creances desormais: la liste et le formulaire
+    // d'ajout n'ont plus besoin du calcul de commission pour s'afficher, et
+    // /creances garde son propre paiements_effectues pour ses cartes.
+    async function loadPaiementsFournisseur() {
+        try {
+            const params = new URLSearchParams();
+            const dd = document.getElementById('fin-paiement-date-debut').value;
+            const df = document.getElementById('fin-paiement-date-fin').value;
+            if (dd) params.set('dateDebut', dd);
+            if (df) params.set('dateFin', df);
+            const res = await fetch('/api/finance/paiements?' + params.toString(), { credentials: 'include' });
+            const json = await res.json();
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderPaiementsFournisseur(json.data);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur paiements: ' + e.message, 'danger');
+        }
+    }
+
+    function renderPaiementsFournisseur(rows) {
         const pbody = document.querySelector('#fin-paiements-list tbody');
-        pbody.innerHTML = data.paiements.map((p) => `
+        if (!pbody) return;
+        pbody.innerHTML = rows.map((p) => `
             <tr>
                 <td>${esc(p.date)}</td>
                 <td class="text-end">${esc(fmtMoney(p.montant))}</td>
                 <td>${esc(p.mode || '')}</td>
                 <td>${esc(p.reference || '')}</td>
-                <td>${esc(p.commentaire || '')}</td>
+                <td>${esc(p.commentaire || '')}${p.hors_boucherie
+                    ? ' <span class="badge bg-secondary-subtle text-secondary" title="Exclu du PL quand la case Boucherie seulement est cochée">hors boucherie</span>'
+                    : ''}</td>
+                <td>${p.justificatif_filename
+                    ? `<a href="/api/finance/paiements/${p.id}/justificatif" target="_blank" rel="noopener">${esc(p.justificatif_filename)}</a>`
+                    : '<span class="text-muted">—</span>'}</td>
+                <td>${esc(p.created_by || '')}</td>
                 <td><button class="btn btn-sm btn-outline-danger" data-paiement-delete="${p.id}">×</button></td>
             </tr>
-        `).join('') || '<tr><td colspan="6" class="text-muted text-center">Aucun paiement sur la période</td></tr>';
+        `).join('') || '<tr><td colspan="8" class="text-muted text-center">Aucun paiement sur la période</td></tr>';
 
         pbody.querySelectorAll('[data-paiement-delete]').forEach((btn) => {
             btn.addEventListener('click', async () => {
@@ -787,7 +833,7 @@
                     if (typeof showToast === 'function') showToast('Erreur: ' + j.error, 'danger');
                     return;
                 }
-                loadCreances();
+                loadPaiementsFournisseur();
             });
         });
     }
@@ -796,19 +842,17 @@
         e.preventDefault();
         const form = e.target;
         const fd = new FormData(form);
-        const body = Object.fromEntries(fd.entries());
         try {
             const res = await fetch('/api/finance/paiements', {
                 method: 'POST',
                 credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
+                body: fd  // multipart automatique, comme onDepenseSubmit
             });
             const j = await res.json();
             if (!j.success) throw new Error(j.error || 'Erreur');
             form.reset();
             if (typeof showToast === 'function') showToast('Paiement enregistré', 'success');
-            loadCreances();
+            loadPaiementsFournisseur();
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }
@@ -2682,6 +2726,28 @@
     // information qui n'existait que dans la tete de celui qui l'avait
     // trouvee. La note la fixe, par mois et par ecran.
     //
+    // LECTURE SEULE pour un role 'user': il voit desormais le PL et Cash et
+    // Stock (routes/finance.js: checkAdvancedOuLecturePourUser laisse passer
+    // un GET), mais leurs ACTIONS D'ECRITURE restent reservees a
+    // admin/superviseur - le serveur les refuserait de toute facon (403),
+    // ce verrou cote ecran evite juste le clic qui echoue pour rien.
+    //
+    // Appelee a la fin de chaque rendu: innerHTML detruit les boutons
+    // precedents a chaque appel, ce verrou doit donc se reposer a chaque fois.
+    function appliquerLectureSeulePl() {
+        const role = String((window.currentUser || {}).role || '').toLowerCase();
+        if (['admin', 'superviseur'].includes(role)) return;
+        const btnFiger = document.getElementById('fin-pl-snapshot');
+        if (btnFiger) btnFiger.style.display = 'none';
+        document.querySelectorAll(
+            '.ct-approuver, .ct-desapprouver, .ct-autre-suppr, #ct-autre-ajouter, '
+            + '#ct-autre-montant, #ct-autre-commentaire'
+        ).forEach((el) => { el.style.display = 'none'; });
+        // Le commentaire mensuel reste LISIBLE, juste plus editable: un
+        // champ desactive garde son texte a l'ecran.
+        document.querySelectorAll('textarea[id^="fin-note-"]').forEach((ta) => { ta.disabled = true; });
+    }
+
     // Enregistrement a la SORTIE du champ, pas a chaque frappe: une requete
     // par caractere saturerait la route pour rien.
     function blocNoteMois(ecran, mois) {
@@ -2781,6 +2847,85 @@
         return ' title="' + esc(txt).replace(new RegExp('\n', 'g'), '&#10;')
             + '" style="cursor:help;text-decoration:underline dotted"';
     };
+
+    /**
+     * LA RECONCILIATION NUMERIQUE DU COUT D'UN CLIENT : produit par produit,
+     * la meme donnee que l'infobulle (titreProduits) mais dans une modale
+     * lisible, avec le CA de chaque produit a cote pour verifier
+     * marge = CA - coût a l'oeil, sans faire le calcul soi-meme.
+     *
+     * Reutilise la modale generique "Détails du calcul" (fin-cdc-details-*),
+     * deja servie pour le Centre de Decoupe.
+     */
+    function afficherDetailCoutClient(c) {
+        const title = document.getElementById('fin-cdc-details-title');
+        const body = document.getElementById('fin-cdc-details-body');
+        const modalEl = document.getElementById('fin-cdc-details-modal');
+        if (!title || !body || !modalEl) return;
+        const nomClient = c.client || 'Ventes au comptoir';
+        title.innerHTML = '<i class="bi bi-calculator me-2"></i>Détail du coût — <strong>'
+            + esc(nomClient) + '</strong>';
+        const produits = (c.produits || []).slice().sort((a, b) => nb(b.ca) - nb(a.ca));
+        body.innerHTML = `
+            <p class="small text-muted">Coût = prix d'achat résolu à la date de chaque vente, divisé
+              par (1 − le parage de son espèce pour la boucherie). Un produit sans prix d'achat
+              connu compte pour une marge nulle dans le total : son coût y vaut alors son CA,
+              plutôt que d'être exclu — voir la note en bas de tableau.</p>
+            <div class="table-responsive">
+             <table class="table table-sm mb-2"><thead><tr>
+               <th>Produit</th>
+               <th class="text-end">Quantité</th>
+               <th class="text-end">Coût unitaire</th>
+               <th class="text-end">CA</th>
+               <th class="text-end">Coût</th>
+               <th class="text-end">Marge</th></tr></thead><tbody>
+               ${produits.map((p) => {
+                   const u = p.unite === 'kg' ? 'kg' : (nb(p.quantite) > 1 ? 'pièces' : 'pièce');
+                   const coutConnu = p.cout !== null && p.cout !== undefined;
+                   const margeP = coutConnu ? nb(p.ca) - nb(p.cout) : 0;
+                   const coutUnitaire = coutConnu && nb(p.quantite) > 0 ? nb(p.cout) / nb(p.quantite) : null;
+                   // Prix d'achat BRUT (avant parage), meme moyenne ponderee
+                   // que le cout retenu - au dessus dans le detail, une seule
+                   // ligne peut cumuler plusieurs dates a des prix differents.
+                   const prixAchatMoyen = coutConnu && nb(p.quantite) > 0
+                      ? nb(p.cout_avant_parage) / nb(p.quantite) : null;
+                   const tauxEffectif = prixAchatMoyen > 0 && coutUnitaire > 0
+                      ? Math.round((1 - prixAchatMoyen / coutUnitaire) * 100 * 100) / 100 : null;
+                   const explication = coutUnitaire === null ? ''
+                      : (tauxEffectif > 0
+                          ? `Prix d'achat moyen (pondéré sur les ${esc(fmtDec(p.quantite))} ${esc(u)} `
+                            + `vendus, à leurs dates et prix respectifs) : ${esc(fmtMoney(prixAchatMoyen))} / `
+                            + `${esc(p.unite === 'kg' ? 'kg' : 'pièce')}. Divisé par (1 − ${esc(String(tauxEffectif))} % `
+                            + `de parage) = ${esc(fmtMoney(coutUnitaire))} / ${esc(p.unite === 'kg' ? 'kg' : 'pièce')}.`
+                          : `Prix d'achat, hors boucherie : pas de parage appliqué.`);
+                   return `<tr>
+                     <td>${esc(p.produit)}</td>
+                     <td class="text-end text-muted">${esc(fmtDec(p.quantite))} ${esc(u)}</td>
+                     <td class="text-end text-muted"${explication
+                        ? ' title="' + esc(explication) + '" style="cursor:help;text-decoration:underline dotted"' : ''}>
+                        ${coutUnitaire === null
+                        ? '—' : esc(fmtMoney(coutUnitaire)) + ' / ' + esc(p.unite === 'kg' ? 'kg' : 'pièce')}</td>
+                     <td class="text-end">${esc(fmtMoneyOuTiret(p.ca))}</td>
+                     <td class="text-end">${coutConnu
+                        ? esc(fmtMoney(p.cout)) : '<span class="text-muted">inconnu, = CA supposé</span>'}</td>
+                     <td class="text-end fw-medium text-${margeP >= 0 ? 'success' : 'danger'}">
+                       ${coutConnu
+                        ? (margeP >= 0 ? '+' : '') + esc(fmtMoney(margeP)) : '—'}</td></tr>`;
+               }).join('')}
+               <tr class="table-light fw-bold">
+                 <td>Total</td>
+                 <td></td>
+                 <td></td>
+                 <td class="text-end">${esc(fmtMoney(c.ca_chiffre))}</td>
+                 <td class="text-end">${esc(fmtMoneyOuTiret(c.cout))}</td>
+                 <td class="text-end text-${nb(c.marge) >= 0 ? 'success' : 'danger'}">
+                   ${(nb(c.marge) >= 0 ? '+' : '') + esc(fmtMoney(c.marge))}</td></tr>
+             </tbody></table></div>
+            ${(c.sans_cout || []).length ? `<div class="small text-muted">Sans prix d'achat connu :
+              ${esc((c.sans_cout || []).join(', '))}.</div>` : ''}
+        `;
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
 
     const plPostesNeutralises = new Set();
 
@@ -4345,14 +4490,16 @@
                  ? esc(fmtMoney(cp.total_marge))
                  : 'inconnue, aucun coût d\u2019achat renseigné'})</summary>
             <div class="table-responsive mt-2">
-             <table class="table table-sm mb-1"><thead><tr>
+             <table class="table table-sm mb-1" id="fin-pl-clients-table"><thead><tr>
                <th>Client</th>
                <th class="text-end">Commandes</th>
                <th class="text-end">Lignes</th>
                <th class="text-end">CA</th>
+               <th class="text-end">Coût</th>
                <th class="text-end">Marge</th>
-               <th class="text-end">Taux</th></tr></thead><tbody>
-               ${cpLignes.map((c) => `<tr>
+               <th class="text-end">Taux</th>
+               <th></th></tr></thead><tbody>
+               ${cpLignes.map((c, i) => `<tr>
                  <td>${c.client ? esc(c.client)
                     : '<span class="text-muted">Ventes au comptoir</span>'}
                    ${(c.sans_cout || []).length
@@ -4362,23 +4509,29 @@
                  <td class="text-end">${esc(String(c.nb_commandes))}</td>
                  <td class="text-end text-muted"><span${titreProduits(c.produits)}>${esc(String(c.lignes))}</span></td>
                  <td class="text-end">${esc(fmtMoney(c.ca))}</td>
+                 <td class="text-end text-muted">${esc(fmtMoneyOuTiret(c.cout))}</td>
                  <td class="text-end fw-bold text-${c.ca_chiffre > 0
                     ? (nb(c.marge) >= 0 ? 'success' : 'danger') : 'muted'}">
                    ${c.ca_chiffre > 0
                     ? (nb(c.marge) >= 0 ? '+' : '') + esc(fmtMoney(c.marge))
                     : '\u2014'}</td>
                  <td class="text-end text-muted">${c.taux_pct === null || c.taux_pct === undefined
-                    ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td></tr>`).join('')}
+                    ? '\u2014' : esc(nb(c.taux_pct).toFixed(1)) + ' %'}</td>
+                 <td class="text-end"><button type="button" class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    data-detail-cout-client="${i}" title="Détail du calcul du coût">
+                    <i class="bi bi-info-circle"></i></button></td></tr>`).join('')}
                <tr class="table-light fw-bold">
                  <td>Total</td>
                  <td class="text-end">${esc(String(cp.total_commandes))}</td>
                  <td></td>
                  <td class="text-end">${esc(fmtMoney(cp.total_ca))}</td>
+                 <td class="text-end">${esc(fmtMoneyOuTiret(cp.total_cout))}</td>
                  <td class="text-end">${nb(cp.total_ca_chiffre) > 0
                     ? esc(fmtMoney(cp.total_marge)) : '\u2014'}</td>
                  <td class="text-end">${nb(cp.total_ca_chiffre) > 0
                     ? esc((nb(cp.total_marge) / nb(cp.total_ca_chiffre) * 100).toFixed(1)) + ' %'
-                    : '\u2014'}</td></tr>
+                    : '\u2014'}</td>
+                 <td></td></tr>
              </tbody></table></div>
             ${((cp.comptoir || {}).nb_commandes || 0) > 0 ? `
             <div class="mt-3 mb-1 fw-medium small">Ventes au comptoir
@@ -4607,13 +4760,14 @@
                 </table>
             </div>
 
-            <!-- Qui sont mes clients -->
-            <h6 class="fin-subheading">Qui sont mes clients</h6>
+            <!-- Que faut-il faire ? -->
+            <h6 class="fin-subheading">Que faut-il faire ?</h6>
             ${blocRecommandations}
             ${blocClients}
             ${blocNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7))}
         `;
         cablerNoteMois('pl', String((d.periode || {}).dateFin || '').slice(0, 7));
+        appliquerLectureSeulePl();
 
         // L'ecart avec le dernier PL fige, en asynchrone: il demande
         // l'historique, et renderPl doit rester synchrone.
@@ -4632,6 +4786,19 @@
                 if (plPostesNeutralises.has(cle)) plPostesNeutralises.delete(cle);
                 else plPostesNeutralises.add(cle);
                 renderPl(plDernieresDonnees);
+            });
+        }
+        // LE DETAIL DU CALCUL DU COUT, par client: la colonne Cout ne dit que
+        // le total, le bouton ouvre la reconciliation produit par produit qui
+        // y mene. cpLignes est capture par la fermeture du rendu courant,
+        // l'index suffit donc a retrouver le bon client.
+        const tableClients = document.getElementById('fin-pl-clients-table');
+        if (tableClients) {
+            tableClients.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('[data-detail-cout-client]');
+                if (!btn) return;
+                const i = parseInt(btn.getAttribute('data-detail-cout-client'), 10);
+                if (Number.isFinite(i) && cpLignes[i]) afficherDetailCoutClient(cpLignes[i]);
             });
         }
         // PANNEAU DE DETAIL DE L'ESTIMATION. Meme motif que ci-dessus: les
@@ -5580,6 +5747,13 @@
         `;
         cablerNoteMois('cash_stock', String(d.date || '').slice(0, 7));
         cablerCashTheorique(d);
+        // ICI AUSSI, et pas seulement dans cablerCashTheorique: celle-ci sort
+        // par `if (!ct) return` quand la source partenaire n'a pas repondu
+        // (cash_theorique null), et le verrou ne s'appliquait alors a rien -
+        // alors que cablerNoteMois vient de rendre et cabler un textarea que
+        // le serveur refusera en 403. Appel idempotent: le rappeler quand la
+        // carte existe ne coute qu'un querySelectorAll.
+        appliquerLectureSeulePl();
     }
 
     // LES ACTIONS DU CASH THEORIQUE: approuver un depot, gerer les « Autres ».
@@ -5757,6 +5931,10 @@
                 } catch (e) { b.disabled = false; alert('Échec : ' + e.message); }
             });
         });
+
+        // Reposee a chaque regeneration de la carte (recalculer, rendreCarte):
+        // htmlCashTheorique la reconstruit avec ses boutons a chaque appel.
+        appliquerLectureSeulePl();
     }
 
 })();

@@ -634,6 +634,12 @@ async function computeCreances(opts = {}) {
 
     // 6. Paiements faits AU fournisseur sur la periode (info brute, pas deduits).
     // dateDebut/dateFin sont deja en YYYY-MM-DD (format DATEONLY Postgres).
+    //
+    // SANS LE BINAIRE. Depuis que fournisseur_paiements porte un justificatif
+    // (BYTEA, jusqu'a 10 Mo par ligne), un findAll sans restriction ramenait
+    // la photo de chaque recu juste pour en sommer le montant. Ce calcul
+    // alimente aussi le PL et le cumul Cash et Stock: vingt paiements
+    // justifies faisaient transiter des centaines de Mo par recalcul.
     const paiements = await FournisseurPaiement.findAll({
         where: {
             date: {
@@ -641,6 +647,7 @@ async function computeCreances(opts = {}) {
                 [Op.lte]: dateFin
             }
         },
+        attributes: { exclude: ['justificatif_data'] },
         order: [['date', 'ASC']]
     });
     const totalPaiements = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);

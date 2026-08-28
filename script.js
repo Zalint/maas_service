@@ -1034,12 +1034,17 @@ async function checkAuth() {
         }
 
         // Sous-onglets Finance par niveau d'acces:
-        //   - utilisateur simple: Creances fournisseur, Centre de Decoupe, Depenses
+        //   - utilisateur simple: Creances fournisseur, Centre de Decoupe, Depenses,
+        //     +PL / Cash et Stock / Simulation en CONSULTATION seule
         //   - admin/superutilisateur/superviseur: +Prix fournisseur, Mapping, Charges
-        //   - admin/superviseur uniquement: +PL, Cash et Stock
-        // Les routes API correspondantes appliquent les memes garde-fous cote serveur.
+        //   - admin/superviseur uniquement: les boutons d'ECRITURE de PL et Cash et
+        //     Stock (figer le PL, approuver un depot, note mensuelle...), geres dans
+        //     chaque ecran plutot qu'ici.
+        // Les routes API correspondantes appliquent les memes garde-fous cote serveur
+        // (routes/finance.js: checkAdvancedOuLecturePourUser laisse un GET passer
+        // pour 'user', checkPlAccess continue de reserver l'ecriture).
         const canAdvanced = !!currentUser.canManageAdvanced;
-        const isAdminOrSuperviseur = ['admin', 'superviseur']
+        const peutVoirPlCashStock = ['admin', 'superviseur', 'user']
             .includes(String(currentUser.role || '').toLowerCase());
 
         document.querySelectorAll('.fin-tab-advanced').forEach((el) => {
@@ -1047,11 +1052,11 @@ async function checkAuth() {
         });
         const plTabItem = document.getElementById('fin-pl-tab-item');
         const cashStockTabItem = document.getElementById('fin-cashstock-tab-item');
-        if (plTabItem) plTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
-        if (cashStockTabItem) cashStockTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+        if (plTabItem) plTabItem.style.display = peutVoirPlCashStock ? '' : 'none';
+        if (cashStockTabItem) cashStockTabItem.style.display = peutVoirPlCashStock ? '' : 'none';
         // Simulation: memes chiffres que le PL, donc meme visibilite.
         const simulationTabItem = document.getElementById('fin-simulation-tab-item');
-        if (simulationTabItem) simulationTabItem.style.display = isAdminOrSuperviseur ? '' : 'none';
+        if (simulationTabItem) simulationTabItem.style.display = peutVoirPlCashStock ? '' : 'none';
 
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         

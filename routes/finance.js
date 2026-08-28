@@ -512,38 +512,63 @@ const ADVANCED_FINANCE_PREFIXES = [
     '/prix-vente-fournisseur',
     '/alias',
     '/charges',
-    '/config',
-    '/paiements',
-    '/pl',
+    '/config'
+];
+// Paiements fournisseur n'est plus dans la liste ci-dessus: comme les
+// depenses, un utilisateur simple doit pouvoir en enregistrer un avec son
+// justificatif. Les gardes vivent desormais route par route (checkWriteAccess
+// pour ecrire, checkAdvancedAccess pour supprimer) - cf. plus bas.
+ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
+// DELETE /depenses/:id reste admin via inline check (cf le handler).
+
+// PL, Cash et Stock et Simulation: un utilisateur simple (role 'user') peut
+// desormais les CONSULTER. Checkpoint separe du bloc ci-dessus: ces six
+// prefixes gagnent une lecture (GET) elargie a 'user', mais gardent l'ecriture
+// (approuver un depot, ajouter une note, figer le PL) reservee a
+// admin/superviseur via checkPlAccess plus bas.
+// UNE SEULE GARDE PAR PREFIXE.
+//
+// Ces deux-la n'ont pas de garde plus stricte en aval: superutilisateur y
+// accede (canManageAdvanced), et 'user' en lecture seule.
+//
+// Les quatre autres ecrans de cette famille - /pl, /notes, /depots-approuves,
+// /cash-autres - portent checkPlAccess plus bas, qui est STRICTEMENT plus
+// severe (admin/superviseur seulement). Les empiler n'ajoutait aucune
+// protection et repondait a la place de la bonne garde: une ecriture d'un
+// role 'user' etait refusee ici avec « Niveau superutilisateur requis », un
+// message faux (un superutilisateur aurait ete refuse aussi, par
+// checkPlAccess) et sous une cle `message` que l'ecran ne lit pas - il lit
+// `error`. Une seule garde par prefixe, celle qui decide vraiment.
+const PREFIXES_PL_LECTURE_ELARGIE = [
     '/cash-stock',
-    // Le commentaire mensuel appartient au PL et a Cash et Stock: il porte
-    // les memes constats (livraison non saisie, ecart de caisse) et merite
-    // la meme garde. Il recoit AUSSI checkPlAccess plus bas, comme /pl.
-    '/notes',
-    // Approbations de depots et lignes « Autres »: elles n'existent que
-    // dans Cash et Stock et changent son total. Meme garde que lui.
-    '/depots-approuves',
-    '/cash-autres',
     // La simulation expose les memes chiffres que le PL, sous un autre angle:
     // elle merite la meme garde.
     '/simulation'
 ];
-ADVANCED_FINANCE_PREFIXES.forEach((p) => router.use(p, checkAdvancedAccess));
-// DELETE /depenses/:id reste admin via inline check (cf le handler).
+function checkAdvancedOuLecturePourUser(req, res, next) {
+    const user = req.user || (req.session && req.session.user) || null;
+    if (user && user.canManageAdvanced) return next();
+    const role = String((user && user.role) || '').toLowerCase();
+    if (req.method === 'GET' && role === 'user') return next();
+    return res.status(403).json({ success: false, message: 'Accès non autorisé - Niveau superutilisateur requis' });
+}
+PREFIXES_PL_LECTURE_ELARGIE.forEach((p) => router.use(p, checkAdvancedOuLecturePourUser));
 
-// Garde PL: admin ou superviseur uniquement, PLUS stricte que
-// checkAdvancedAccess ci-dessus (qui laisse aussi passer superutilisateur).
-// Etait duplique identique sur GET /pl, POST /pl/snapshot, GET
-// /pl/snapshots et GET /pl/snapshots/:date - une seule definition ici.
+// Garde PL: admin ou superviseur pour ECRIRE, 'user' en LECTURE seule. Plus
+// stricte que checkAdvancedOuLecturePourUser ci-dessus, qui laisse aussi
+// passer superutilisateur en ecriture. Etait duplique identique sur GET /pl,
+// POST /pl/snapshot, GET /pl/snapshots et GET /pl/snapshots/:date - une seule
+// definition ici.
 function checkPlAccess(req, res, next) {
     const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-    if (!['admin', 'superviseur'].includes(role)) {
-        return res.status(403).json({
-            success: false,
-            error: 'Accès réservé aux administrateurs et superviseurs'
-        });
-    }
-    next();
+    if (['admin', 'superviseur'].includes(role)) return next();
+    // Lecture seule pour un utilisateur simple: il voit le PL et Cash et
+    // Stock, sans pouvoir figer, approuver ni annoter.
+    if (req.method === 'GET' && role === 'user') return next();
+    return res.status(403).json({
+        success: false,
+        error: 'Accès réservé aux administrateurs et superviseurs'
+    });
 }
 router.use('/pl', checkPlAccess);
 // Le commentaire mensuel decrit ce que le PL et Cash et Stock montrent: sans
@@ -553,8 +578,11 @@ router.use('/notes', checkPlAccess);
 router.use('/depots-approuves', checkPlAccess);
 router.use('/cash-autres', checkPlAccess);
 
-// Upload memoire (la donnee va en BDD, pas sur disque). Limite 5 MB.
-// MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
+// Upload memoire (la donnee va en BDD, pas sur disque). Limite 10 MB: une
+// photo de justificatif prise au telephone (JPEG plein cadre, bon eclairage)
+// depasse couramment les 5 Mo d'origine - mesure sur le terrain, c'etait la
+// cause la plus frequente d'un ajout de depense qui semblait "ne jamais
+// marcher". MIME types acceptes: JPEG, PNG, PDF, DOC, DOCX.
 const ALLOWED_MIMES = new Set([
     'image/jpeg',
     'image/png',
@@ -564,13 +592,32 @@ const ALLOWED_MIMES = new Set([
 ]);
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: 10 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         if (!file) return cb(null, true);
         if (ALLOWED_MIMES.has(file.mimetype)) return cb(null, true);
         cb(new Error(`Type de fichier non autorise: ${file.mimetype}`));
     }
 });
+
+// MULTER REND SON ERREUR PAR next(err), et sans middleware d'erreur en aval
+// Express retombe sur sa page HTML par defaut: un fichier trop lourd ou d'un
+// type refuse plantait donc en 500 brut, avec la stack trace du serveur dans
+// la reponse. Cote ecran, `await res.json()` sur ce corps HTML levait une
+// SyntaxError sans rapport ("Unexpected token '<'"), et l'utilisateur ne
+// savait jamais QUE son fichier etait en cause ni pourquoi.
+function televerserJustificatif(req, res, next) {
+    upload.single('justificatif')(req, res, (err) => {
+        if (!err) return next();
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ success: false,
+                error: 'Justificatif trop volumineux : 10 Mo maximum. Réduisez la '
+                    + 'résolution de la photo (ou compressez-la) avant de la joindre.' });
+        }
+        return res.status(400).json({ success: false,
+            error: err.message || 'Justificatif invalide.' });
+    });
+}
 
 // =====================================================
 // PRIX FOURNISSEUR
@@ -1913,7 +1960,11 @@ router.delete('/charges/:nom', async (req, res) => {
 router.get('/simulation', async (req, res) => {
     try {
         const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
+        // Cette route est deja gardee par checkAdvancedOuLecturePourUser
+        // (router.use plus haut): un 'user' l'atteint donc deja en lecture.
+        // Ce filtre redondant datait d'avant cette garde et bloquait encore
+        // 'user' ici, sans que rien au niveau du router.use ne le signale.
+        if (!['admin', 'superviseur', 'user'].includes(role)) {
             return res.status(403).json({
                 success: false,
                 error: 'Accès réservé aux administrateurs et superviseurs'
@@ -4637,9 +4688,12 @@ router.delete('/cash-autres/:id', async (req, res) => {
 
 router.get('/cash-stock', async (req, res) => {
     try {
-        // Auth: seuls admin et superviseur (meme regle que PL).
+        // Auth: deja gardee par checkAdvancedOuLecturePourUser (router.use
+        // plus haut), qui laisse un 'user' passer en lecture (GET). Ce
+        // filtre redondant datait d'avant cette garde et bloquait encore
+        // 'user' ici, sans que rien au niveau du router.use ne le signale.
         const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
-        if (!['admin', 'superviseur'].includes(role)) {
+        if (!['admin', 'superviseur', 'user'].includes(role)) {
             return res.status(403).json({
                 success: false,
                 error: 'Accès réservé aux administrateurs et superviseurs'
@@ -5232,7 +5286,7 @@ router.get('/depenses', async (req, res) => {
 // checkPlAccess. Un lecteur pouvait donc creer une depense (et televerser un
 // justificatif) qui pesait sur le PL, sans pouvoir la retirer: DELETE
 // /depenses/:id demande checkAdvancedAccess et aucun PUT n'existe.
-router.post('/depenses', checkWriteAccess, upload.single('justificatif'), async (req, res) => {
+router.post('/depenses', checkWriteAccess, televerserJustificatif, async (req, res) => {
     try {
         const { date, montant, categorie, description, hors_boucherie } = req.body;
         if (!date || !montant) {
@@ -5316,7 +5370,16 @@ router.get('/depenses/:id/justificatif', async (req, res) => {
 // PAIEMENTS FOURNISSEUR
 // =====================================================
 
-router.get('/paiements', async (req, res) => {
+// checkWriteAccess sur une LECTURE, volontairement: retirer '/paiements' de
+// ADVANCED_FINANCE_PREFIXES lui a enleve sa garde de prefixe, et sans rien en
+// face n'importe quel compte connecte - le role 'lecteur' compris, qui n'a
+// jamais eu acces a cet ecran - pouvait lister montants, references et
+// commentaires de tous les paiements fournisseur.
+//
+// canWrite plutot que canRead: l'ouverture demandee etait « un utilisateur
+// simple doit pouvoir saisir un paiement », soit exactement le passage de
+// canManageAdvanced a canWrite. 'lecteur' reste dehors, comme avant.
+router.get('/paiements', checkWriteAccess, async (req, res) => {
     try {
         const { Op } = require('sequelize');
         const where = {};
@@ -5327,6 +5390,7 @@ router.get('/paiements', async (req, res) => {
         }
         const rows = await FournisseurPaiement.findAll({
             where,
+            attributes: { exclude: ['justificatif_data'] }, // exclure le binaire dans la liste
             order: [['date', 'DESC'], ['id', 'DESC']]
         });
         res.json({ success: true, data: rows });
@@ -5336,7 +5400,10 @@ router.get('/paiements', async (req, res) => {
     }
 });
 
-router.post('/paiements', async (req, res) => {
+// POST multipart, meme forme que POST /depenses: checkWriteAccess ('user' y
+// a droit, 'lecteur' non) + televerserJustificatif (meme validation, memes
+// messages d'erreur propres sur type/taille refuses).
+router.post('/paiements', checkWriteAccess, televerserJustificatif, async (req, res) => {
     try {
         const { date, montant, mode, reference, commentaire, hors_boucherie } = req.body;
         if (!date || !montant) {
@@ -5346,7 +5413,7 @@ router.post('/paiements', async (req, res) => {
         if (!Number.isFinite(mt) || mt <= 0) {
             return res.status(400).json({ success: false, error: 'montant doit etre un nombre > 0' });
         }
-        const created = await FournisseurPaiement.create({
+        const payload = {
             date,
             montant: mt,
             mode: mode || null,
@@ -5355,15 +5422,27 @@ router.post('/paiements', async (req, res) => {
             hors_boucherie: hors_boucherie === true || hors_boucherie === 'true'
                 || hors_boucherie === 'on' || hors_boucherie === '1',
             created_by: req.session?.user?.username || null
-        });
-        res.json({ success: true, data: created });
+        };
+        if (req.file) {
+            payload.justificatif_filename = req.file.originalname;
+            payload.justificatif_mime = req.file.mimetype;
+            payload.justificatif_data = req.file.buffer;
+            payload.justificatif_size = req.file.size;
+        }
+        const created = await FournisseurPaiement.create(payload);
+        // Ne pas renvoyer le binaire dans la reponse de creation.
+        const { justificatif_data, ...slim } = created.toJSON();
+        res.json({ success: true, data: slim });
     } catch (e) {
         console.error('POST /api/finance/paiements:', e);
-        res.status(500).json({ success: false, error: e.message });
+        const status = e.message?.startsWith('Type de fichier non autorise') ? 400 : 500;
+        res.status(status).json({ success: false, error: e.message });
     }
 });
 
-router.delete('/paiements/:id', async (req, res) => {
+// Suppression reservee, comme DELETE /depenses/:id: un 'user' peut ajouter un
+// paiement mais pas en retirer un que quelqu'un d'autre a saisi.
+router.delete('/paiements/:id', checkAdvancedAccess, async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
         if (!Number.isInteger(id)) {
@@ -5376,6 +5455,32 @@ router.delete('/paiements/:id', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/paiements/:id:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Telecharge le justificatif binaire, meme forme que GET /depenses/:id/justificatif.
+// Meme garde que la liste ci-dessus: le justificatif est la piece jointe de
+// ces memes lignes, il ne se telecharge pas plus librement qu'elles ne se
+// lisent.
+router.get('/paiements/:id/justificatif', checkWriteAccess, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isInteger(id)) {
+            return res.status(400).json({ success: false, error: 'id invalide' });
+        }
+        const p = await FournisseurPaiement.findByPk(id);
+        if (!p || !p.justificatif_data) {
+            return res.status(404).json({ success: false, error: 'Justificatif introuvable' });
+        }
+        res.setHeader('Content-Type', p.justificatif_mime || 'application/octet-stream');
+        res.setHeader(
+            'Content-Disposition',
+            `inline; filename="${(p.justificatif_filename || 'justificatif').replace(/"/g, '')}"`
+        );
+        res.send(p.justificatif_data);
+    } catch (e) {
+        console.error('GET /api/finance/paiements/:id/justificatif:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

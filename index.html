@@ -2699,6 +2699,9 @@
                             <li class="nav-item">
                                 <a class="nav-link" href="#" data-fin-tab="depenses">Dépenses</a>
                             </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" data-fin-tab="paiement-fournisseur">Paiement fournisseur</a>
+                            </li>
                             <li class="nav-item fin-tab-advanced" id="fin-prix-tab-item">
                                 <a class="nav-link" href="#" data-fin-tab="prix">Prix fournisseur</a>
                             </li>
@@ -2827,72 +2830,6 @@
                                     </div>
                                 </div>
 
-                                <!-- Section 3: Paiements faits au fournisseur (notes locales Maas) -->
-                                <div class="accordion-item">
-                                    <h2 class="accordion-header">
-                                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#fin-cre-acc-paiements" aria-expanded="false" aria-controls="fin-cre-acc-paiements">
-                                            <i class="bi bi-wallet2 me-2"></i>
-                                            <strong>Paiements faits au fournisseur</strong>
-                                            <span class="text-muted ms-2 small">(notes locales Maas)</span>
-                                            <span class="fin-pill fin-pill--info ms-2" id="fin-cre-acc-paiements-total"></span>
-                                        </button>
-                                    </h2>
-                                    <div id="fin-cre-acc-paiements" class="accordion-collapse collapse">
-                                        <div class="accordion-body">
-                                            <div class="table-responsive mb-3">
-                                                <table class="table table-sm mb-0" id="fin-paiements-list">
-                                                    <thead>
-                                                        <tr><th>Date</th><th class="text-end">Montant</th><th>Mode</th><th>Référence</th><th>Commentaire</th><th></th></tr>
-                                                    </thead>
-                                                    <tbody></tbody>
-                                                </table>
-                                            </div>
-                                            <h6 class="mt-3">Enregistrer un paiement</h6>
-                                            <form id="fin-paiement-form" class="row g-2 align-items-end">
-                                                <div class="col-md-2">
-                                                    <label class="form-label">Date</label>
-                                                    <input type="date" name="date" class="form-control form-control-sm" required>
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label">Montant (FCFA)</label>
-                                                    <input type="number" name="montant" min="0" step="1" class="form-control form-control-sm" required>
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label">Mode</label>
-                                                    <select name="mode" class="form-select form-select-sm">
-                                                        <option value="">—</option>
-                                                        <option value="cash">Cash</option>
-                                                        <option value="virement">Virement</option>
-                                                        <option value="mobile_money">Mobile Money</option>
-                                                        <option value="autre">Autre</option>
-                                                    </select>
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label">Référence</label>
-                                                    <input type="text" name="reference" class="form-control form-control-sm" maxlength="100">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label">Commentaire</label>
-                                                    <input type="text" name="commentaire" class="form-control form-control-sm" maxlength="200">
-                                                </div>
-                                                <div class="col-md-2">
-                                                    <label class="form-label d-block">Hors boucherie</label>
-                                                    <div class="form-check">
-                                                        <input class="form-check-input" type="checkbox"
-                                                               name="hors_boucherie" id="fin-paie-hb" value="true">
-                                                        <label class="form-check-label small" for="fin-paie-hb"
-                                                               title="Cochez si ce paiement achète de la marchandise qui n'est PAS de la boucherie. Le PL pourra alors l'exclure.">
-                                                            légumes, épicerie…
-                                                        </label>
-                                                    </div>
-                                                </div>
-                                                <div class="col-md-1">
-                                                    <button class="btn btn-sm btn-success w-100">Ajouter</button>
-                                                </div>
-                                            </form>
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
 
@@ -3018,6 +2955,77 @@
                                 <table class="table table-sm table-striped" id="fin-depense-list">
                                     <thead>
                                         <tr><th>Date</th><th>Catégorie</th><th>Description</th><th class="text-end">Montant</th><th>Justificatif</th><th>Auteur</th><th></th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Pane: Paiement fournisseur (sa propre place, plus un sous-accordeon de Creances) -->
+                        <div data-fin-pane="paiement-fournisseur" style="display:none">
+                            <form id="fin-paiement-form" class="row g-2 align-items-end mb-3" enctype="multipart/form-data">
+                                <div class="col-md-2">
+                                    <label class="form-label">Date</label>
+                                    <input type="date" name="date" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Montant (FCFA)</label>
+                                    <input type="number" name="montant" min="0" step="1" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Mode</label>
+                                    <select name="mode" class="form-select form-select-sm">
+                                        <option value="">—</option>
+                                        <option value="cash">Cash</option>
+                                        <option value="virement">Virement</option>
+                                        <option value="mobile_money">Mobile Money</option>
+                                        <option value="autre">Autre</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Référence</label>
+                                    <input type="text" name="reference" class="form-control form-control-sm" maxlength="100">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Commentaire</label>
+                                    <input type="text" name="commentaire" class="form-control form-control-sm" maxlength="200">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label d-block">Hors boucherie</label>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox"
+                                               name="hors_boucherie" id="fin-paie-hb" value="true">
+                                        <label class="form-check-label small" for="fin-paie-hb"
+                                               title="Cochez si ce paiement achète de la marchandise qui n'est PAS de la boucherie. Le PL pourra alors l'exclure.">
+                                            légumes, épicerie…
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Justificatif</label>
+                                    <input type="file" name="justificatif" class="form-control form-control-sm" accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,image/jpeg,image/png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+                                </div>
+                                <div class="col-md-1">
+                                    <button class="btn btn-sm btn-success w-100">Ajouter</button>
+                                </div>
+                            </form>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Filtre date début</label>
+                                    <input type="date" id="fin-paiement-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Filtre date fin</label>
+                                    <input type="date" id="fin-paiement-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-paiement-refresh">Filtrer</button>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-striped" id="fin-paiements-list">
+                                    <thead>
+                                        <tr><th>Date</th><th class="text-end">Montant</th><th>Mode</th><th>Référence</th><th>Commentaire</th><th>Justificatif</th><th>Auteur</th><th></th></tr>
                                     </thead>
                                     <tbody></tbody>
                                 </table>
