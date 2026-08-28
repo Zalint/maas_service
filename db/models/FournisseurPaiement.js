@@ -5,6 +5,10 @@ const { sequelize } = require('../index');
  * FournisseurPaiement — chaque versement effectue AU fournisseur. Permet
  * de calculer "ce que je dois encore" = creances - sum(paiements) sur la
  * periode. Inclus dans la reponse de l'API publique /api/external/creance.
+ *
+ * Le justificatif est stocke en binaire dans la BDD, meme choix que Depense
+ * (pas de filesystem, Render etant ephemere). Types autorises cote upload:
+ * JPEG/PNG/PDF/DOC/DOCX.
  */
 const FournisseurPaiement = sequelize.define('FournisseurPaiement', {
     id: {
@@ -31,6 +35,26 @@ const FournisseurPaiement = sequelize.define('FournisseurPaiement', {
     commentaire: {
         type: DataTypes.TEXT,
         allowNull: true
+    },
+    justificatif_filename: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        field: 'justificatif_filename'
+    },
+    justificatif_mime: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: 'justificatif_mime'
+    },
+    justificatif_data: {
+        type: DataTypes.BLOB('long'),
+        allowNull: true,
+        field: 'justificatif_data'
+    },
+    justificatif_size: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        field: 'justificatif_size'
     },
     hors_boucherie: {
         type: DataTypes.BOOLEAN,

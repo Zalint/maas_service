@@ -26,35 +26,38 @@ const agreger = (lignes, paragePct) => agregerCommandes({
 });
 
 describe('taux de marge par commande', () => {
-    test('une commande sans aucun cout connu rend null, pas zero', () => {
+    test('une commande sans aucun cout connu compte pour une marge nulle, pas exclue', () => {
         const r = agreger([
             { produit: 'Mystere', nombre: 2, montant: 5000, commande_id: 'C1' }
         ]);
         const c = r.commandes[0];
         expect(c.marge).toBe(0);
         expect(c.ca).toBe(5000);
-        expect(c.ca_chiffre).toBe(0);
-        // Le point du correctif: null se lit "inconnu", 0 se lisait "nul".
-        expect(c.taux_pct).toBeNull();
+        // Le CA compte desormais AVEC une marge supposee nulle plutot que
+        // d'etre exclu: l'exclure aurait suppose une marge moyenne sur la
+        // part inconnue, ce qui gonflait le taux affiche.
+        expect(c.ca_chiffre).toBe(5000);
+        expect(c.taux_pct).toBe(0);
         expect(c.sans_cout).toEqual(['Mystere']);
         expect(r.ca_sans_cout).toBe(5000);
     });
 
-    test('le taux ne compte que le CA chiffre, pas le CA total', () => {
+    test('un cout inconnu dilue le taux au lieu d etre exclu du denominateur', () => {
         // Boeuf: 1 kg vendu 5 000, cout 3 000 / 0,95 = 3 157,89 -> marge 1 842,11
-        // Mystere: 10 000 de CA sans cout, qui ne doit PAS diluer le taux.
+        // Mystere: 10 000 de CA sans cout, compte desormais pour une marge nulle.
         const r = agreger([
             { produit: 'Boeuf', nombre: 1, montant: 5000, commande_id: 'C1' },
             { produit: 'Mystere', nombre: 1, montant: 10000, commande_id: 'C1' }
         ]);
         const c = r.commandes[0];
         expect(c.ca).toBe(15000);
-        expect(c.ca_chiffre).toBe(5000);
+        expect(c.ca_chiffre).toBe(15000);
         expect(c.marge).toBeCloseTo(1842.11, 1);
-        // Sur le CA chiffre: 36,8 %. Sur le CA total ce serait 12,3 % - un
-        // taux qui ne decrit aucune marchandise reelle.
-        expect(c.taux_pct).toBeCloseTo(36.84, 1);
-        expect(c.taux_pct).not.toBeCloseTo(12.28, 1);
+        // Sur le CA total desormais: 12,3 %. L'ancien taux sur le seul CA
+        // chiffre (36,8 %) aurait suppose que les 10 000 F de Mystere
+        // pesaient autant que le Boeuf, une hypothese que rien ne justifie.
+        expect(c.taux_pct).toBeCloseTo(12.28, 1);
+        expect(c.taux_pct).not.toBeCloseTo(36.84, 1);
     });
 
     test('sans ligne sans cout, le taux reste celui du CA complet', () => {
@@ -74,7 +77,7 @@ describe('taux de marge par commande', () => {
             { produit: 'Mystere', nombre: 1, montant: 10000, commande_id: 'C2' }
         ]);
         expect(r.total_ca).toBe(15000);
-        expect(r.total_ca_chiffre).toBe(5000);
+        expect(r.total_ca_chiffre).toBe(15000);
         expect(r.total_marge).toBeCloseTo(1842.11, 1);
     });
 });
@@ -168,7 +171,7 @@ describe('robustesse', () => {
             paragePct: 5
         });
         expect(r.commandes[0].sans_cout).toEqual(['Boeuf']);
-        expect(r.commandes[0].taux_pct).toBeNull();
+        expect(r.commandes[0].taux_pct).toBe(0);
     });
 });
 
@@ -272,21 +275,22 @@ describe('clients de la periode', () => {
         expect(r.clients.map((c) => c.client)).toEqual(['Gros', 'Petit']);
     });
 
-    test('le taux ne compte que le CA chiffre', () => {
+    test('un cout inconnu dilue le taux au lieu d etre exclu du denominateur', () => {
         const r = faire([
             L('2026-08-03', 'A', 'C1', 'Boeuf', 1, 5000),
             L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000)
         ]);
         const c = r.clients[0];
         expect(c.ca).toBe(15000);
-        expect(c.ca_chiffre).toBe(5000);
+        expect(c.ca_chiffre).toBe(15000);
         expect(c.sans_cout).toEqual(['Mystere']);
-        expect(c.taux_pct).toBeCloseTo((c.marge / 5000) * 100, 1);
+        expect(c.taux_pct).toBeCloseTo((c.marge / 15000) * 100, 1);
     });
 
-    test('un client sans aucun cout connu rend null, pas zero', () => {
+    test('un client sans aucun cout connu compte pour une marge nulle, pas exclu', () => {
         const r = faire([L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000)]);
-        expect(r.clients[0].taux_pct).toBeNull();
+        expect(r.clients[0].ca_chiffre).toBe(10000);
+        expect(r.clients[0].taux_pct).toBe(0);
         expect(r.clients[0].marge).toBe(0);
     });
 
@@ -393,8 +397,9 @@ describe('detail par produit, pour le survol', () => {
         // Cout REEL = prix d'achat / (1 - parage) * quantite - pas une
         // soustraction (CA - marge) au niveau de la commande.
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 },
-            { produit: 'Poivre', quantite: 1, unite: 'piece', cout: 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(3000 / 0.95 * 5 * 100) / 100, cout_avant_parage: 15000 },
+            { produit: 'Poivre', quantite: 1, unite: 'piece', ca: 100, cout: 100, cout_avant_parage: 100 }
         ]);
     });
 
@@ -408,7 +413,7 @@ describe('detail par produit, pour le survol', () => {
         // de la marge. cout: null, pas 0 - un cout partiel se ferait passer
         // pour le cout entier.
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Mystere', quantite: 4, unite: 'piece', cout: null }
+            { produit: 'Mystere', quantite: 4, unite: 'piece', ca: 5000, cout: null, cout_avant_parage: null }
         ]);
     });
 
@@ -422,7 +427,8 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: PRIX, estBoucherie: () => true, paragePct: 5
         });
         expect(r.clients[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(4480 / 0.95 * 5 * 100) / 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(4480 / 0.95 * 5 * 100) / 100, cout_avant_parage: 22400 }
         ]);
     });
 
@@ -435,8 +441,9 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: () => 4480, estBoucherie: (p) => p === 'Boeuf', paragePct: 5
         });
         expect(r.comptoir.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 2, unite: 'kg', cout: Math.round(4480 / 0.95 * 2 * 100) / 100 },
-            { produit: 'Yell', quantite: 1, unite: 'piece', cout: 4480 }
+            { produit: 'Boeuf', quantite: 2, unite: 'kg', ca: 10000,
+                cout: Math.round(4480 / 0.95 * 2 * 100) / 100, cout_avant_parage: 8960 },
+            { produit: 'Yell', quantite: 1, unite: 'piece', ca: 2500, cout: 4480, cout_avant_parage: 4480 }
         ]);
     });
 
@@ -453,7 +460,120 @@ describe('detail par produit, pour le survol', () => {
             prixAchatDe: () => 3000, estBoucherie: () => true, paragePct: 5
         });
         expect(r.commandes[0].produits).toEqual([
-            { produit: 'Boeuf', quantite: 5, unite: 'kg', cout: Math.round(3000 / 0.95 * 5 * 100) / 100 }
+            { produit: 'Boeuf', quantite: 5, unite: 'kg', ca: 25000,
+                cout: Math.round(3000 / 0.95 * 5 * 100) / 100, cout_avant_parage: 15000 }
         ]);
+    });
+
+    test('le prix d achat brut (avant parage) se distingue du cout retenu (apres parage)', () => {
+        // Boeuf boucherie, div 0,95 : cout = 3000/0,95 = 3157,89, brut = 3000.
+        // Poivre hors boucherie, div 1 : les deux valeurs sont identiques.
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 1, montant: 5000, commande_id: 'C1' },
+            { produit: 'Poivre', nombre: 1, montant: 150, commande_id: 'C1' }
+        ]);
+        const [boeuf, poivre] = r.commandes[0].produits.sort((a, b) => b.ca - a.ca);
+        expect(boeuf.cout_avant_parage).toBe(3000);
+        expect(boeuf.cout).toBeGreaterThan(boeuf.cout_avant_parage);
+        expect(poivre.cout).toBe(poivre.cout_avant_parage);
+    });
+});
+
+describe('cout total, reconcilie avec marge = CA chiffre - cout', () => {
+    test('agregerCommandes : le cout suit la meme logique de marge nulle sur cout inconnu', () => {
+        const r = agreger([
+            { produit: 'Boeuf', nombre: 1, montant: 5000, commande_id: 'C1' },
+            { produit: 'Mystere', nombre: 1, montant: 10000, commande_id: 'C1' }
+        ]);
+        const c = r.commandes[0];
+        // Boeuf: cout = 3000 / 0.95 = 3157.89. Mystere: cout = ca = 10000
+        // (marge supposee nulle). Total attendu : 13157.89.
+        expect(c.cout).toBeCloseTo(3157.89 + 10000, 1);
+        expect(c.ca_chiffre - c.cout).toBeCloseTo(c.marge, 6);
+        expect(r.total_cout).toBeCloseTo(c.cout, 1);
+    });
+
+    test('agregerClients : cout du client et du comptoir se reconcilient avec la marge', () => {
+        const r = agregerClients({
+            lignes: [
+                L('2026-08-03', 'A', 'C1', 'Boeuf', 1, 5000),
+                L('2026-08-03', 'A', 'C1', 'Mystere', 1, 10000),
+                L('2026-08-03', '', 'X1', 'Boeuf', 1, 5000)
+            ],
+            prixAchatDe: (p) => (p === 'Boeuf' ? 3000 : NaN),
+            estBoucherie: () => true, paragePct: 5
+        });
+        const c = r.clients[0];
+        expect(c.ca_chiffre - c.cout).toBeCloseTo(c.marge, 6);
+        expect(r.total_cout).toBeCloseTo(c.cout, 1);
+        const cp = r.comptoir.commandes[0];
+        expect(cp.ca_chiffre - cp.cout).toBeCloseTo(cp.marge, 6);
+        expect(r.comptoir.total_cout).toBeCloseTo(cp.cout, 1);
+    });
+});
+
+describe('agregerProduitsPeriode : le cout reel cumule par produit', () => {
+    const { agregerProduitsPeriode } = require('../lib/commandes-marge');
+
+    test('un produit qui vend a perte ressort avec une marge negative', () => {
+        // Prix d'achat mal saisi au catalogue (conditionnement gros au lieu
+        // du prix au detail) : Tigua Degue vendu 487, "achete" 20 000.
+        const r = agregerProduitsPeriode({
+            lignes: [
+                { date: '2026-08-03', produit: 'Tigua Degué', nombre: 1, montant: 487 },
+                { date: '2026-08-05', produit: 'Tigua Degué', nombre: 1, montant: 487 }
+            ],
+            prixAchatDe: () => 20000,
+            estBoucherie: () => false
+        });
+        expect(r).toHaveLength(1);
+        expect(r[0].produit).toBe('Tigua Degué');
+        expect(r[0].quantite).toBe(2);
+        expect(r[0].ca).toBe(974);
+        expect(r[0].cout).toBeCloseTo(40000, 0);
+        expect(r[0].marge).toBeLessThan(0);
+    });
+
+    test('un cout inconnu rend une marge null, pas zero, meme si le CA est connu', () => {
+        const r = agregerProduitsPeriode({
+            lignes: [{ date: '2026-08-03', produit: 'Carotte', nombre: 5, montant: 2000 }],
+            prixAchatDe: () => NaN,
+            estBoucherie: () => false
+        });
+        expect(r[0].marge).toBeNull();
+        expect(r[0].cout).toBeNull();
+        expect(r[0].ca).toBe(2000);
+    });
+
+    test('deux graphies du meme produit se cumulent', () => {
+        const r = agregerProduitsPeriode({
+            lignes: [
+                { date: '2026-08-03', produit: 'Boeuf', nombre: 2, montant: 10000 },
+                { date: '2026-08-05', produit: 'boeuf', nombre: 3, montant: 15000 }
+            ],
+            prixAchatDe: () => 3000,
+            estBoucherie: () => true
+        });
+        expect(r).toHaveLength(1);
+        expect(r[0].quantite).toBe(5);
+        expect(r[0].ca).toBe(25000);
+    });
+
+    test('tri : marges connues les plus mauvaises en tete, couts inconnus par CA decroissant ensuite', () => {
+        const r = agregerProduitsPeriode({
+            lignes: [
+                { date: '2026-08-03', produit: 'Bon', nombre: 1, montant: 5000 },
+                { date: '2026-08-03', produit: 'Mauvais', nombre: 1, montant: 100 },
+                { date: '2026-08-03', produit: 'InconnuGros', nombre: 1, montant: 9000 },
+                { date: '2026-08-03', produit: 'InconnuPetit', nombre: 1, montant: 500 }
+            ],
+            prixAchatDe: (p) => ({ Bon: 1000, Mauvais: 5000 }[p] ?? NaN),
+            estBoucherie: () => false
+        });
+        expect(r.map((x) => x.produit)).toEqual(['Mauvais', 'Bon', 'InconnuGros', 'InconnuPetit']);
+    });
+
+    test('aucune ligne rend un tableau vide', () => {
+        expect(agregerProduitsPeriode({ lignes: [], prixAchatDe: () => NaN, estBoucherie: () => false })).toEqual([]);
     });
 });

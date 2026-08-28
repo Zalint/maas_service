@@ -5,11 +5,13 @@
  *
  * Le routeur finance est monte avec checkAuth SEUL (server.js: app.use(
  * '/api/finance', checkAuth, financeRouter)). Chaque route sensible ajoute
- * donc sa propre garde, par prefixe (ADVANCED_FINANCE_PREFIXES) ou par
- * router.use. GET/PUT /notes avait ete ajoute sans aucune des deux: un role
- * 'user', qui ne voit ni le PL ni Cash et Stock, pouvait lire ET ecraser les
- * notes de gestion de ces deux ecrans - typiquement la description d'une
- * livraison non saisie ou d'un ecart de caisse.
+ * donc sa propre garde, par prefixe (ADVANCED_FINANCE_PREFIXES ou
+ * PREFIXES_PL_LECTURE_ELARGIE) ou par router.use.
+ *
+ * Un role 'user' peut desormais CONSULTER (GET) le PL, Cash et Stock, la
+ * Simulation et le commentaire mensuel qui les accompagne - mais toujours pas
+ * ecrire: approuver un depot, ajouter une ligne « Autres » ou ecraser une
+ * note reste reserve a admin/superviseur via checkPlAccess.
  *
  * Test sur la SOURCE plutot que sur le routeur monte: le fichier tire toute la
  * couche modeles au require, ce qu'un test unitaire n'a pas a demarrer.
@@ -26,12 +28,53 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'routes', 'finance.js'), 
     .replace(new RegExp('\\r\\n', 'g'), '\n');
 
 describe('garde du commentaire mensuel', () => {
-    test('/notes est declare dans ADVANCED_FINANCE_PREFIXES', () => {
+    // UNE SEULE GARDE PAR PREFIXE. /notes, /pl, /depots-approuves et
+    // /cash-autres portent checkPlAccess, strictement plus severe que
+    // checkAdvancedOuLecturePourUser: les empiler faisait repondre la moins
+    // stricte a la place de l'autre, avec un message faux et sous une cle
+    // (`message`) que l'ecran ne lit pas. Ces quatre prefixes ne doivent donc
+    // PAS figurer dans la liste de lecture elargie.
+    test("/notes n'est PAS dans PREFIXES_PL_LECTURE_ELARGIE : checkPlAccess le garde seul", () => {
         const bloc = SRC.slice(
-            SRC.indexOf('const ADVANCED_FINANCE_PREFIXES'),
-            SRC.indexOf('ADVANCED_FINANCE_PREFIXES.forEach')
+            SRC.indexOf('const PREFIXES_PL_LECTURE_ELARGIE'),
+            SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach')
         );
-        expect(bloc).toContain("'/notes'");
+        for (const p of ["'/notes'", "'/pl'", "'/depots-approuves'", "'/cash-autres'"]) {
+            expect(bloc).not.toContain(p);
+        }
+    });
+
+    test('la garde de lecture elargie ne couvre que les prefixes sans garde '
+        + 'plus stricte en aval : /cash-stock, /config et /simulation', () => {
+        const bloc = SRC.slice(
+            SRC.indexOf('const PREFIXES_PL_LECTURE_ELARGIE'),
+            SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach')
+        );
+        expect(Array.from(bloc.matchAll(/'(\/[^']+)'/g)).map((m) => m[1]).sort())
+            .toEqual(['/cash-stock', '/config', '/simulation']);
+        const debut = SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach');
+        expect(debut).toBeGreaterThan(-1);
+        expect(SRC.slice(debut, debut + 100)).toContain('checkAdvancedOuLecturePourUser');
+    });
+
+    test("un 'user' qui ECRIT sur /notes recoit le message de checkPlAccess, "
+        + 'pas celui de la garde large', () => {
+        // C'etait le bug: checkAdvancedOuLecturePourUser, monte en premier,
+        // repondait « Niveau superutilisateur requis » - faux, puisqu'un
+        // superutilisateur est refuse lui aussi ici - sous la cle `message`,
+        // alors que l'ecran lit `error`.
+        const corps = SRC.slice(SRC.indexOf('function checkPlAccess'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        const checkPlAccess = new Function('return ' + corps.slice(0, fin + 2))();
+        let recu = null;
+        checkPlAccess(
+            { method: 'PUT', session: { user: { role: 'user' } } },
+            { status() { return this; }, json(o) { recu = o; return this; } },
+            () => { recu = 'PASSE'; }
+        );
+        expect(recu).not.toBe('PASSE');
+        expect(recu.error).toContain('administrateurs et superviseurs');
     });
 
     test("/notes porte checkPlAccess, la garde stricte du PL", () => {
@@ -93,6 +136,104 @@ describe('garde du commentaire mensuel', () => {
         expect(suivant).toBe(false);
         expect(statut).toBe(403);
     });
+
+    test("checkPlAccess laisse un 'user' CONSULTER (GET) mais pas ECRIRE", () => {
+        const corps = SRC.slice(SRC.indexOf('function checkPlAccess'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        const checkPlAccess = new Function('return ' + corps.slice(0, fin + 2))();
+
+        const essayer = (role, method) => {
+            let statut = null, suivant = false;
+            const req = { method, session: { user: { role } } };
+            const res = {
+                status(c) { statut = c; return this; },
+                json() { return this; }
+            };
+            checkPlAccess(req, res, () => { suivant = true; });
+            return { statut, suivant };
+        };
+
+        expect(essayer('user', 'GET').suivant).toBe(true);
+        for (const m of ['POST', 'PUT', 'DELETE']) {
+            const r = essayer('user', m);
+            expect(r.suivant).toBe(false);
+            expect(r.statut).toBe(403);
+        }
+        // Un role hors du RBAC ne gagne rien a se faire passer pour un GET.
+        expect(essayer('lecteur', 'GET').suivant).toBe(false);
+        expect(essayer('superutilisateur', 'GET').suivant).toBe(false);
+    });
+});
+
+describe("checkAdvancedOuLecturePourUser (PL, Cash et Stock, Simulation)", () => {
+    const construire = () => {
+        const corps = SRC.slice(SRC.indexOf('function checkAdvancedOuLecturePourUser'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        return new Function('return ' + corps.slice(0, fin + 2))();
+    };
+
+    const essayer = (fn, user, method) => {
+        let statut = null, suivant = false;
+        const req = { method, session: { user } };
+        const res = {
+            status(c) { statut = c; return this; },
+            json() { return this; }
+        };
+        fn(req, res, () => { suivant = true; });
+        return { statut, suivant };
+    };
+
+    test("un 'user' passe en GET, pas en ecriture", () => {
+        const fn = construire();
+        expect(essayer(fn, { role: 'user' }, 'GET').suivant).toBe(true);
+        const r = essayer(fn, { role: 'user' }, 'POST');
+        expect(r.suivant).toBe(false);
+        expect(r.statut).toBe(403);
+    });
+
+    test('canManageAdvanced passe quelle que soit la methode - defense en '
+        + 'profondeur inchangee pour superutilisateur/superviseur/admin', () => {
+        const fn = construire();
+        for (const m of ['GET', 'POST', 'DELETE']) {
+            expect(essayer(fn, { role: 'superviseur', canManageAdvanced: true }, m).suivant).toBe(true);
+        }
+    });
+
+    test("un role hors RBAC ('lecteur') reste refuse meme en GET", () => {
+        const fn = construire();
+        const r = essayer(fn, { role: 'lecteur' }, 'GET');
+        expect(r.suivant).toBe(false);
+        expect(r.statut).toBe(403);
+    });
+});
+
+/**
+ * GET /simulation ET GET /cash-stock DUPLIQUAIENT LE FILTRE DE ROLE EN
+ * LIGNE, EN PLUS DU router.use.
+ *
+ * checkAdvancedOuLecturePourUser laisse un 'user' passer en GET, mais ces
+ * deux handlers refaisaient le meme test `['admin', 'superviseur']` a
+ * l'interieur du corps de la route - constate en base (403 malgre la garde
+ * du dessus deja corrigee). Un filtre redondant qui n'est pas mis a jour en
+ * meme temps que la garde qu'il double-verifie retombe exactement dans ce
+ * piege : la garde de tete dit "corrige", la route repond quand meme 403.
+ */
+describe("GET /simulation et GET /cash-stock n'ont plus de filtre de role redondant", () => {
+    test("GET /simulation accepte 'user' dans son filtre inline", () => {
+        const debut = SRC.indexOf("router.get('/simulation'");
+        const fin = SRC.indexOf("router.get(", debut + 30);
+        const bloc = SRC.slice(debut, fin > -1 ? fin : debut + 1500);
+        expect(bloc).toMatch(/\['admin',\s*'superviseur',\s*'user'\]\.includes\(role\)/);
+    });
+
+    test("GET /cash-stock accepte 'user' dans son filtre inline", () => {
+        const debut = SRC.indexOf("router.get('/cash-stock'");
+        const fin = SRC.indexOf("router.get(", debut + 30);
+        const bloc = SRC.slice(debut, fin > -1 ? fin : debut + 1500);
+        expect(bloc).toMatch(/\['admin',\s*'superviseur',\s*'user'\]\.includes\(role\)/);
+    });
 });
 
 /**
@@ -113,11 +254,19 @@ describe('gardes de toutes les routes d ecriture', () => {
     // Les prefixes gardes en bloc, lus dans la source pour rester d'accord
     // avec elle plutot que d'en tenir une copie.
     const PREFIXES = (() => {
-        const bloc = SRC.slice(
+        const bloc1 = SRC.slice(
             SRC.indexOf('const ADVANCED_FINANCE_PREFIXES'),
             SRC.indexOf('ADVANCED_FINANCE_PREFIXES.forEach')
         );
-        return Array.from(bloc.matchAll(/'(\/[^']+)'/g)).map((m) => m[1]);
+        // PREFIXES_PL_LECTURE_ELARGIE aussi: /cash-stock et /simulation n'ont
+        // pas d'autre garde nommee (pas de router.use('/x', checkPlAccess)
+        // litteral), donc pas de trace dans USE plus bas - une ecriture
+        // future sous ces deux prefixes doit rester detectable ici.
+        const bloc2 = SRC.slice(
+            SRC.indexOf('const PREFIXES_PL_LECTURE_ELARGIE'),
+            SRC.indexOf('PREFIXES_PL_LECTURE_ELARGIE.forEach')
+        );
+        return Array.from((bloc1 + bloc2).matchAll(/'(\/[^']+)'/g)).map((m) => m[1]);
     })();
 
     // Les gardes posees par router.use en dehors de la liste (ex: checkPlAccess).
@@ -156,5 +305,54 @@ describe('gardes de toutes les routes d ecriture', () => {
         expect(SRC).toMatch(/router\.post\('\/depenses',\s*checkWriteAccess,/);
         expect(SRC).toMatch(/require\('\.\.\/middlewares\/auth'\)/);
         expect(SRC.slice(0, SRC.indexOf('router.post'))).toContain('checkWriteAccess');
+    });
+
+    test('POST /paiements porte checkWriteAccess ET televerserJustificatif, '
+        + "meme forme que POST /depenses (un 'user' ajoute, un 'lecteur' non)", () => {
+        expect(SRC).toMatch(/router\.post\('\/paiements',\s*checkWriteAccess,\s*televerserJustificatif,/);
+    });
+
+    test('DELETE /paiements/:id porte checkAdvancedAccess, comme DELETE /depenses/:id', () => {
+        expect(SRC).toMatch(/router\.delete\('\/paiements\/:id',\s*checkAdvancedAccess,/);
+    });
+
+    test("'/paiements' n'est plus dans ADVANCED_FINANCE_PREFIXES (garde route par route desormais)", () => {
+        const bloc = SRC.slice(
+            SRC.indexOf('const ADVANCED_FINANCE_PREFIXES'),
+            SRC.indexOf('ADVANCED_FINANCE_PREFIXES.forEach')
+        );
+        expect(bloc).not.toContain("'/paiements'");
+    });
+
+    // Retirer le prefixe a enleve sa garde aux LECTURES aussi, pas seulement
+    // aux ecritures: sans ces deux gardes, tout compte connecte - dont
+    // 'lecteur', qui n'a jamais eu cet ecran - listait les paiements
+    // fournisseur et telechargeait leurs justificatifs.
+    test('GET /paiements et son justificatif portent checkWriteAccess', () => {
+        expect(SRC).toMatch(/router\.get\('\/paiements',\s*checkWriteAccess,/);
+        expect(SRC).toMatch(/router\.get\('\/paiements\/:id\/justificatif',\s*checkWriteAccess,/);
+    });
+
+    // /config a quitte ADVANCED_FINANCE_PREFIXES pour la liste de lecture
+    // elargie: sa LECTURE s'ouvre a 'user' (le moteur de Simulation y prend
+    // le taux de commission), son ECRITURE doit rester ou elle etait.
+    test("PUT /config reste reserve a canManageAdvanced apres l'ouverture en lecture", () => {
+        const corps = SRC.slice(SRC.indexOf('function checkAdvancedOuLecturePourUser'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        const garde = new Function('return ' + corps.slice(0, fin + 2))();
+        const essayer = (user, method) => {
+            let passe = false, statut = null;
+            garde({ method, session: { user } },
+                { status(c) { statut = c; return this; }, json() { return this; } },
+                () => { passe = true; });
+            return { passe, statut };
+        };
+        // Ecriture: seul canManageAdvanced passe, comme sous l'ancien prefixe.
+        expect(essayer({ role: 'user' }, 'PUT').passe).toBe(false);
+        expect(essayer({ role: 'user' }, 'PUT').statut).toBe(403);
+        expect(essayer({ role: 'superutilisateur', canManageAdvanced: true }, 'PUT').passe).toBe(true);
+        // Lecture: 'user' passe, c'est tout l'objet du deplacement.
+        expect(essayer({ role: 'user' }, 'GET').passe).toBe(true);
     });
 });

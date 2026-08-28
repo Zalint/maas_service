@@ -687,6 +687,15 @@ async function updateSchema() {
             ALTER TABLE fournisseur_paiements
                 ADD COLUMN IF NOT EXISTS hors_boucherie BOOLEAN NOT NULL DEFAULT FALSE
         `);
+        // Justificatif, meme forme que depenses: table deja existante en
+        // prod, colonnes ajoutees plutot que recreees.
+        await sequelize.query(`
+            ALTER TABLE fournisseur_paiements
+                ADD COLUMN IF NOT EXISTS justificatif_filename VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS justificatif_mime VARCHAR(100),
+                ADD COLUMN IF NOT EXISTS justificatif_data BYTEA,
+                ADD COLUMN IF NOT EXISTS justificatif_size INTEGER
+        `);
         console.log('Table fournisseur_paiements verifiee');
 
         // Charges mensuelles fixes pour le calcul PL (Profit/Loss).

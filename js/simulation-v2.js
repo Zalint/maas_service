@@ -3843,6 +3843,16 @@
         });
         var sauve = document.getElementById('sim2-suivi-save');
         if (sauve) sauve.addEventListener('click', enregistrerProduitsSuivis);
+
+        // ECRITURE ADMIN STRICT (routes/simulation-v2.js: PUT /reglages exige
+        // exactement 'admin', plus severe que checkAdvancedAccess). La
+        // Simulation est desormais aussi VISIBLE a un 'user' et reste visible
+        // a un superviseur: ni l'un ni l'autre ne doit voir un bouton qui
+        // echouera en 403.
+        if (String((window.currentUser || {}).role || '').toLowerCase() !== 'admin') {
+            [sauve, document.getElementById('sim2-calibrer'), document.getElementById('sim2-calibrer-effacer')]
+                .forEach(function (el) { if (el) el.style.display = 'none'; });
+        }
         // 'change' et non 'input': ces controles declenchent un rendu complet,
         // qui remplace le champ en cours de saisie. Sur un nombre tape chiffre
         // par chiffre - 1, puis 12 - le focus etait perdu des le premier. Un
@@ -3975,7 +3985,13 @@
             // Le drapeau n'a JAMAIS valu droit d'acces: on ne demande meme
             // pas les reglages a un role qui ne peut pas lire le PL. Les
             // routes refont le controle de toute facon.
-            if (['admin', 'superviseur'].indexOf(role) < 0) return;
+            //
+            // 'user' compris depuis que la Simulation lui est ouverte en
+            // lecture: sans lui ici, l'onglet s'affichait mais le moteur v2
+            // n'etait jamais injecte, et il tombait sur la v1 - un ecran
+            // different de celui que voient les autres roles, pour les memes
+            // chiffres. Ses boutons d'ecriture sont masques plus bas.
+            if (['admin', 'superviseur', 'user'].indexOf(role) < 0) return;
             jsonOu('/api/simulation-v2/reglages', null).then(function (d) {
                 if (d && d.actif) injecter();
             });
