@@ -2699,6 +2699,38 @@
                 ecart_du_jour: ecart
             };
 
+            // LA JOURNEE, en bloc nomme. Tout vit deja dans ecart_du_jour,
+            // mais enfoui: un lecteur (le LLM au premier chef) doit trouver
+            // la marge du jour, ses drapeaux et les commandes qui l'ont
+            // faite sans fouiller la structure de l'ecart. Top 3 par marge -
+            // et la liste complete de ecart_du_jour est REMPLACEE par ce
+            // meme top 3: chaque commande porte son detail produits, et la
+            // journee chargee d'un samedi pesait plus que tout le reste du
+            // payload envoye au modele.
+            if (ecart && ecart.ok) {
+                const cj = ecart.commandes_jour || {};
+                const top3 = (cj.commandes || []).slice(0, 3).map((c) => ({
+                    client: c.client || c.commande_id || 'comptoir',
+                    ca: c.ca, marge: c.marge, taux_pct: c.taux_pct,
+                    produits: (c.produits || []).map((x) =>
+                        x.produit + ' ' + x.quantite + ' ' + (x.unite === 'kg' ? 'kg' : 'pc')).join(', ')
+                }));
+                sortie.journee = {
+                    date: ecart.date_jour,
+                    marge: ecart.marge_jour,
+                    drapeaux: (ecart.drapeaux || []).slice(0, 4).map((f) => f.texte),
+                    nb_commandes: (cj.commandes || []).length,
+                    ca_commandes: cj.total_ca,
+                    marge_commandes: cj.total_marge,
+                    top_commandes: top3
+                };
+                if (ecart.commandes_jour) {
+                    sortie.ecart_du_jour = Object.assign({}, ecart, {
+                        commandes_jour: Object.assign({}, cj, { commandes: (cj.commandes || []).slice(0, 3) })
+                    });
+                }
+            }
+
             // LES CLIENTS DE LA PERIODE, resumes. Le detail complet (chaque
             // commande du comptoir, chaque produit par client) gonflerait le
             // fichier sans aider la lecture: on garde les totaux, le podium,
