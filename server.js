@@ -4022,6 +4022,67 @@ app.get('/api/external/gros-clients/commandes', validateMaasKeyApi, async (req, 
 });
 
 // ===========================================================================
+// GET /api/external/finance/synthese?date=YYYYMMDD[&blocs=pl,projection]
+// ===========================================================================
+//
+// Une date, cinq blocs: PL du mois, serie des PL journaliers, explication de
+// la journee, Valeur cash et stock, projection de fin de mois. Auth:
+// x-api-key = MAAS_KEY_API, comme les autres routes /api/external/* recentes.
+//
+// Les blocs viennent des MEMES calculs que les ecrans (computePl,
+// computeEcartJour, computeCashStock, computeSimulation, tous exportes par
+// routes/finance.js) - l'assemblage et le detail vivent dans
+// routes/finance-synthese.js. Refaire un calcul ici produirait un second
+// chiffre qui finirait par diverger de ce que voit le gerant.
+app.get('/api/external/finance/synthese', validateMaasKeyApi, async (req, res) => {
+    try {
+        const { construireSynthese, BLOCS_VALIDES } = require('./routes/finance-synthese');
+        // Meme validation de date que les autres routes externes: YYYYMMDD ou
+        // YYYY-MM-DD, et la date doit EXISTER (un 20261345 rend un 400, pas un
+        // resultat vide).
+        const { parseDateIso } = require('./lib/parage-periode');
+        const todayISO = new Date().toISOString().slice(0, 10);
+        const date = req.query.date ? parseDateIso(req.query.date) : todayISO;
+        if (!date) {
+            return res.status(400).json({
+                success: false,
+                message: 'date invalide - format YYYYMMDD (ex: 20260828)'
+            });
+        }
+        // Meme tolerance de fuseau que Cash et Stock: un jour au-dela de la
+        // date UTC du serveur, pas plus - au-dela, rien n'est mesure.
+        const borneHaute = new Date(new Date(todayISO + 'T00:00:00Z').getTime() + 24 * 3600 * 1000);
+        if (new Date(date + 'T00:00:00Z') > borneHaute) {
+            return res.status(400).json({
+                success: false,
+                message: 'date dans le futur : rien a synthetiser apres ' + todayISO
+            });
+        }
+        // ?blocs=pl,projection pour ne payer que ce qu'on lit. Absent = tous.
+        let blocs = null;
+        if (req.query.blocs !== undefined) {
+            blocs = String(req.query.blocs).split(',').map((s) => s.trim()).filter(Boolean);
+            const inconnus = blocs.filter((b) => !BLOCS_VALIDES.includes(b));
+            if (!blocs.length || inconnus.length) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'blocs invalides (' + inconnus.join(', ') + ') - valides : '
+                        + BLOCS_VALIDES.join(', ')
+                });
+            }
+        }
+        const data = await construireSynthese({ date, blocs, todayISO });
+        res.json(Object.assign(
+            { success: true, genere_le: new Date().toISOString() },
+            data
+        ));
+    } catch (e) {
+        console.error('GET /api/external/finance/synthese:', e.message);
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// ===========================================================================
 // GET /api/external/parage?date=YYYYMMDD[&pointVente=...]
 // ===========================================================================
 //

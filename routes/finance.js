@@ -2202,6 +2202,24 @@ router.get('/simulation', async (req, res) => {
             });
         }
 
+        res.json({ success: true, data: await computeSimulation(dateDebut, dateFin) });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Le corps de GET /simulation, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js): la projection de fin de mois
+ * y consomme exactement les donnees que l'ecran Simulation recoit, sans
+ * seconde requete ni seconde definition.
+ *
+ * CONTRAT: les dates arrivent DEJA validees (ISO existantes, ordonnees,
+ * periode bornee a 366 jours). Les gardes restent dans les routes - chaque
+ * appelant a son propre vocabulaire d'erreur HTTP.
+ */
+async function computeSimulation(dateDebut, dateFin) {
+    try {
         // MEME filtre de date que le PL, via le meme helper. J'avais d'abord
         // ecrit `date >= :debut AND date <= :fin`, en supposant que ventes.date
         // etait toujours en ISO. C'est vrai des tenants d'aujourd'hui - verifie,
@@ -2932,9 +2950,7 @@ router.get('/simulation', async (req, res) => {
         // qui ne somment plus.
         const totalToutesLignes = volumes.total_ca;
 
-        res.json({
-            success: true,
-            data: {
+        return {
                 periode: { dateDebut, dateFin },
                 produits,
                 // Null hors v2: le plan d'equilibre n'y existe pas.
@@ -2996,13 +3012,14 @@ router.get('/simulation', async (req, res) => {
                     boeuf_stats: (v2 && typeof resolveurPrix.statsPrixBoeuf === 'function')
                         ? resolveurPrix.statsPrixBoeuf() : null
                 }
-            }
-        });
+        };
     } catch (error) {
+        // Journalise ICI, au plus pres du contexte: la route comme la synthese
+        // ne font ensuite que traduire l'echec dans leur vocabulaire.
         console.error('Erreur simulation:', error);
-        res.status(500).json({ success: false, error: error.message });
+        throw error;
     }
-});
+}
 
 // Periode par defaut du PL: 1er du mois -> aujourd'hui (UTC). Partagee par
 // la route, le bouton "Figer le PL du jour" et le cron du soir.
@@ -4365,6 +4382,29 @@ router.get('/pl/ecart-jour', async (req, res) => {
             return res.status(400).json({ success: false,
                 error: 'la référence doit précéder la date' });
         }
+        const data = await computeEcartJour({
+            dateISO,
+            veilleISO,
+            mode: resoudreMode(req.query),
+            debut: parseDateVersISO(String(req.query.debut || '')) || null
+        });
+        res.json({ success: true, data });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * Le corps de GET /pl/ecart-jour, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js): le bloc « journee » y est
+ * exactement l'ecart que le panneau du PL explique.
+ *
+ * CONTRAT: dateISO et veilleISO sont des ISO deja validees et ordonnees
+ * (veille < jour). `debut` est le debut de cumul PREFERE (ISO ou null):
+ * la resolution complete a besoin du snapshot, elle reste donc ici.
+ */
+async function computeEcartJour({ dateISO, veilleISO, mode, debut }) {
+    try {
         const [snapJour, snapVeille] = await Promise.all([
             PlSnapshot.findByPk(dateISO, { raw: true }),
             PlSnapshot.findByPk(veilleISO, { raw: true })
@@ -4386,13 +4426,12 @@ router.get('/pl/ecart-jour', async (req, res) => {
         //   fige           - ne comparer que des photos figees, sans rien
         //                    recalculer.
         // `recalculer=0/1` reste accepte: c'est l'ancien parametre.
-        const mode = resoudreMode(req.query);
         // LE DEBUT DU CUMUL vient du client, qui sait quelle periode il
         // affiche. Sans lui, un PL du 05 au 14 aurait ete explique par des
         // cumuls partant du 1er: l'ecart de la journee serait reste juste -
         // les deux cumuls partagent leur base - mais les colonnes « veille »
         // et « jour » auraient montre des totaux etrangers a l'ecran.
-        const debutPeriode = parseDateVersISO(String(req.query.debut || ''))
+        const debutPeriode = debut
             || ((snapJour && snapJour.payload && snapJour.payload.periode) || {}).dateDebut
             || dateISO.slice(0, 8) + '01';
         let payloadJour = snapJour ? snapJour.payload : null;
@@ -4500,9 +4539,7 @@ router.get('/pl/ecart-jour', async (req, res) => {
             commandesJour.complet =
                 Math.abs(commandesJour.total_ca - attendu) <= TOLERANCE_BOUCLAGE;
         }
-        res.json({
-            success: true,
-            data: Object.assign({
+        return Object.assign({
                 commandes_jour: commandesJour,
                 date_jour: dateISO,
                 date_veille: veilleISO,
@@ -4521,13 +4558,12 @@ router.get('/pl/ecart-jour', async (req, res) => {
                     : (snapVeille ? snapVeille.source : null),
                 fige_jour: jourRecalcule ? null : (snapJour ? snapJour.updated_at : null),
                 fige_veille: veilleRecalculee ? null : (snapVeille ? snapVeille.updated_at : null)
-            }, r)
-        });
+        }, r);
     } catch (e) {
         console.error('GET /api/finance/pl/ecart-jour:', e);
-        res.status(500).json({ success: false, error: e.message });
+        throw e;
     }
-});
+}
 
 function round2(n) {
     return Math.round(n * 100) / 100;
@@ -4663,6 +4699,16 @@ router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // comme invalidateFinanceDerivedCaches ci-dessus.
 router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
+// La synthese externe (routes/finance-synthese.js) assemble PL, journee,
+// cash et projection a partir des MEMES calculs que les ecrans - exportes
+// ici plutot que reecrits la-bas, ou ils divergeraient.
+router.computePlMemoise = computePlMemoise;
+router.clientsPeriodeMemoise = clientsPeriodeMemoise;
+router.computeSimulation = computeSimulation;
+router.computeCashStock = computeCashStock;
+router.computeEcartJour = computeEcartJour;
+router.lireConfigPublique = lireConfigPublique;
+router.parseDateVersISO = parseDateVersISO;
 // Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
 router.resoudreCibleSnapshot = resoudreCibleSnapshot;
 router.validerCoefficient = validerCoefficient;
@@ -4931,6 +4977,23 @@ router.get('/cash-stock', async (req, res) => {
             });
         }
 
+        res.json({ success: true, data: await computeCashStock(dateD, todayISO) });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * Le corps de GET /cash-stock, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js).
+ *
+ * CONTRAT: dateD est une ISO deja validee, au plus un jour apres todayISO
+ * (la tolerance de fuseau de la route). todayISO est passee par l'appelant
+ * pour que la fonction reste sans horloge propre - deux lectures de l'heure
+ * dans le meme calcul peuvent changer de jour entre elles.
+ */
+async function computeCashStock(dateD, todayISO) {
+    try {
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
         // stocks.date est en TEXTE DD-MM-YYYY; on convertit en ISO via la
         // constante STOCKS_DATE_AS_ISO_SQL (IMMUTABLE, indexable - cf
@@ -5231,9 +5294,7 @@ router.get('/cash-stock', async (req, res) => {
         const dansLaTolerance = dateD > todayISO;
         const aucuneDonnee = dansLaTolerance && cashParPv.length === 0;
 
-        res.json({
-            success: true,
-            data: {
+        return {
                 date: dateD,
                 stock: {
                     soir_brut: round2(stockSoirBrut),
@@ -5284,13 +5345,12 @@ router.get('/cash-stock', async (req, res) => {
                 // cloture: l'interface affiche un message neutre plutot que ce
                 // total, qui n'est mesure sur rien.
                 aucune_donnee: aucuneDonnee
-            }
-        });
+        };
     } catch (e) {
         console.error('GET /api/finance/cash-stock:', e);
-        res.status(500).json({ success: false, error: e.message });
+        throw e;
     }
-});
+}
 
 // =====================================================
 // CONFIG
