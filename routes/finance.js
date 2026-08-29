@@ -5333,6 +5333,11 @@ async function lireConfigPublique() {
 router.get('/config', async (req, res) => {
     try {
         const config = await lireConfigPublique();
+        // CALCULE, jamais stocke: l'ecran doit savoir AVANT le clic si
+        // l'analyse IA existe sur ce deploiement, pour masquer le bouton
+        // plutot que d'offrir un geste qui finirait en 503. La cle elle-meme
+        // ne quitte evidemment pas le serveur.
+        config.analyse_ia_active = !!process.env.OPENAI_API_KEY;
 
         const mois = req.query.mois;
         if (mois) {

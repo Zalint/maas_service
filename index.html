@@ -3206,7 +3206,7 @@
                                             title="Télécharger le PL affiché ET l'explication de l'écart du jour en JSON, structuré pour être lu par un LLM. Si le panneau « D'où vient cet écart ? » n'a pas été ouvert, l'explication est calculée à la demande.">
                                         <i class="bi bi-filetype-json"></i> Export JSON
                                     </button>
-                                    <div class="btn-group btn-group-sm" role="group">
+                                    <div class="btn-group btn-group-sm" role="group" id="fin-pl-analyse-groupe">
                                         <button class="btn btn-sm btn-outline-dark" id="fin-pl-analyse"
                                                 title="Faire commenter le PL affiché par un modèle de langage : verdict, causes, points de vigilance, action. Le modèle commente les chiffres, il n'en calcule aucun.">
                                             <i class="bi bi-robot"></i> Analyser (IA)
@@ -4068,12 +4068,12 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260829-revue-112"></script>
+    <script src="js/finance.js?v=20260829-bouton-sans-cle"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>
     <script src="js/simulation-v2-projection.js?v=20260829-analyse-niveaux"></script>
-    <script src="js/simulation-v2.js?v=20260829-revue-112"></script>
+    <script src="js/simulation-v2.js?v=20260829-bouton-sans-cle"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

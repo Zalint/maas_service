@@ -280,6 +280,14 @@ describe('POST /analyse-ia', () => {
         expect(bloc).toMatch(/status\(413\)/);
     });
 
+    test("GET /config expose analyse_ia_active, calcule depuis l'environnement", () => {
+        // L'ecran masque le bouton Analyser quand la cle manque: il doit
+        // pouvoir le savoir AVANT le clic, sans que la cle ne voyage.
+        const debut = SRC.indexOf("router.get('/config'");
+        const bloc = SRC.slice(debut, debut + 800);
+        expect(bloc).toContain('analyse_ia_active = !!process.env.OPENAI_API_KEY');
+    });
+
     test("l'empreinte du cache exclut genere_le, sinon chaque clic est unique", () => {
         // Constate au premier test reel: l'horodatage changeait a chaque
         // construction du payload, l'empreinte aussi, et le cache ne servait

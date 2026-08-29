@@ -160,6 +160,17 @@
             ev.preventDefault();
             analyserPl(plAnalyse, 'approfondie');
         });
+        // SANS CLE OPENAI, pas de bouton. Un bouton qui finit toujours en
+        // « non configurée » n'est pas une fonctionnalite, c'est un piege.
+        // On ne masque que sur un NON explicite du serveur: si /config est
+        // injoignable, le bouton reste et le 503 de la route fera foi.
+        fetch('/api/finance/config', { credentials: 'include' })
+            .then((r) => r.json()).then((j) => {
+                if (j && j.success && j.data && j.data.analyse_ia_active === false) {
+                    const groupe = document.getElementById('fin-pl-analyse-groupe');
+                    if (groupe) groupe.style.display = 'none';
+                }
+            }).catch(() => { /* au doute, on laisse le bouton */ });
         const plSnapshotBtn = document.getElementById('fin-pl-snapshot');
         if (plSnapshotBtn) plSnapshotBtn.addEventListener('click', figerPlDuJour);
         const plHistorique = document.getElementById('fin-pl-historique');

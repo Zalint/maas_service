@@ -374,6 +374,17 @@
         ]).then(function (r) {
             etat.chargement = false;
             var sim = r[0], pl = r[1], cfg = r[2] || {}, snaps = r[3] || [], snap = r[4];
+            // SANS CLE OPENAI, pas de bouton Analyser. Masque sur un NON
+            // explicite seulement: cfg vaut {} quand /config est injoignable,
+            // et au doute le bouton reste - le 503 de la route fera foi. La
+            // barre d'outils n'est pas reconstruite par rendre(), le geste
+            // tient pour toute la session.
+            if (cfg.analyse_ia_active === false) {
+                var grpAnalyse = document.getElementById('sim2-analyse');
+                if (grpAnalyse && grpAnalyse.closest('.btn-group')) {
+                    grpAnalyse.closest('.btn-group').style.display = 'none';
+                }
+            }
             if (!sim || !pl) {
                 corps.innerHTML = '<div class="alert alert-danger">Chiffres indisponibles. '
                     + 'Vérifiez la période, ou vos droits sur le PL.</div>';
