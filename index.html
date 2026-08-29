@@ -3206,6 +3206,22 @@
                                             title="Télécharger le PL affiché ET l'explication de l'écart du jour en JSON, structuré pour être lu par un LLM. Si le panneau « D'où vient cet écart ? » n'a pas été ouvert, l'explication est calculée à la demande.">
                                         <i class="bi bi-filetype-json"></i> Export JSON
                                     </button>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-sm btn-outline-dark" id="fin-pl-analyse"
+                                                title="Faire commenter le PL affiché par un modèle de langage : verdict, causes, points de vigilance, action. Le modèle commente les chiffres, il n'en calcule aucun.">
+                                            <i class="bi bi-robot"></i> Analyser (IA)
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-dark dropdown-toggle dropdown-toggle-split"
+                                                data-bs-toggle="dropdown" aria-expanded="false"
+                                                title="Choisir le niveau d'analyse">
+                                            <span class="visually-hidden">Niveau d'analyse</span>
+                                        </button>
+                                        <ul class="dropdown-menu">
+                                            <li><a class="dropdown-item small" href="#" id="fin-pl-analyse-approfondie"
+                                                   title="Modèle à raisonnement complet : plus fin, plus lent, nettement plus cher. À réserver aux clôtures ou aux mois qui surprennent.">
+                                                <i class="bi bi-search"></i> Analyse approfondie</a></li>
+                                        </ul>
+                                    </div>
                                     <button class="btn btn-sm btn-outline-primary" id="fin-pl-snapshot"
                                             title="Fige le PL du jour (période du 1ᵉʳ du mois à aujourd'hui). Un snapshot par date, le dernier écrase. Le cron du soir en fige un automatiquement à 23h35.">
                                         <i class="bi bi-camera"></i> Figer le PL du jour
@@ -3217,6 +3233,8 @@
                                 </div>
                             </div>
                             <div id="fin-pl-historique-panel" class="mb-3" style="display:none"></div>
+                            <!-- Analyse IA: hors de fin-pl-result, pour survivre aux re-rendus du PL -->
+                            <div id="fin-pl-analyse-panel" class="mb-3" style="display:none"></div>
                             <div id="fin-pl-result"></div>
                         </div>
 
@@ -4050,12 +4068,12 @@
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260826-parage-espece"></script>
+    <script src="js/finance.js?v=20260829-revue-112"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>
-    <script src="js/simulation-v2-projection.js?v=20260829-cabler-projection"></script>
-    <script src="js/simulation-v2.js?v=20260829-cabler-projection"></script>
+    <script src="js/simulation-v2-projection.js?v=20260829-analyse-niveaux"></script>
+    <script src="js/simulation-v2.js?v=20260829-revue-112"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>

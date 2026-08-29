@@ -584,6 +584,197 @@ router.use('/notes', checkPlAccess);
 router.use('/depots-approuves', checkPlAccess);
 router.use('/cash-autres', checkPlAccess);
 
+// L'analyse IA commente ce que ces roles peuvent deja LIRE (le PL, la
+// projection): meme cercle que la lecture, y compris 'user'. C'est un POST -
+// il porte un payload - mais il n'ecrit rien: ni base, ni fichier.
+function checkAnalyseAccess(req, res, next) {
+    const user = req.user || (req.session && req.session.user) || null;
+    const role = String((user && user.role) || '').toLowerCase();
+    if ((user && user.canManageAdvanced) || ['admin', 'superviseur', 'user'].includes(role)) {
+        return next();
+    }
+    return res.status(403).json({
+        success: false,
+        error: 'Accès réservé aux rôles qui lisent le PL'
+    });
+}
+
+// =====================================================
+// ANALYSE IA — le LLM commente, il ne calcule jamais
+// =====================================================
+//
+// Le client envoie LE MEME payload que son export JSON (PL ou projection):
+// une seule construction des donnees, donc l'analyse decrit exactement ce
+// que l'utilisateur peut telecharger et relire.
+//
+// Cache memoire par empreinte du payload: le PL d'une periode ne change que
+// si ses chiffres changent, et chaque appel OpenAI coute. TTL long (30 min),
+// purge par taille comme les memos du PL.
+const _analyseMemo = new Map();
+const ANALYSE_MEMO_TTL_MS = 30 * 60 * 1000;
+const ANALYSE_MEMO_MAX = 40;
+// Un payload d'analyse pese quelques dizaines de Ko; au-dela, ce n'est plus
+// un PL mais un abus (ou un bug d'appelant), et OpenAI facture au token.
+const ANALYSE_PAYLOAD_MAX = 200 * 1024;
+
+// LES MODELES PERMIS, le premier etant le defaut. gpt-5-mini pour l'analyse
+// courante (analytique, quelques francs par appel non cache), o4-mini en
+// analyse approfondie (raisonnement complet, ~10x le prix, a la demande
+// seulement). Surchargables par variable d'environnement sans toucher au
+// code - mais PAS par le client, qui ne choisit que dans cette liste.
+const MODELES_ANALYSE = [
+    process.env.OPENAI_MODEL_ANALYSE || 'gpt-5-mini',
+    process.env.OPENAI_MODEL_ANALYSE_APPROFONDIE || 'o4-mini'
+];
+
+const PROMPTS_ANALYSE = {
+    pl: 'Tu commentes le compte de resultat (PL) mensuel d\'une boucherie au Senegal, '
+        + 'pour son gerant. Le JSON fourni contient les chiffres, leur mode de calcul '
+        + '(champ a_propos), les signaux de fiabilite (sources, stock.soir_estime, '
+        + 'avances_provisoires, ventes_date_fin, ca_sans_cout), les meilleurs clients, '
+        + 'les produits en perte, une eventuelle note du mois, et la DERNIERE JOURNEE '
+        + 'dans le champ journee (marge du jour, drapeaux, meilleures commandes) avec '
+        + 'son detail poste par poste dans ecart_du_jour. '
+        + 'REGLES STRICTES: tu ne fais AUCUN calcul nouveau - tu cites uniquement des '
+        + 'montants presents dans le JSON, en FCFA arrondis. Si un signal de fiabilite '
+        + 'est degrade, tu le dis AVANT tout verdict. Reponds en francais, 180 a 260 mots, '
+        + 'en cinq blocs titres exactement ainsi: VERDICT (une phrase), POURQUOI (les 2-3 '
+        + 'postes qui expliquent le resultat), JOURNEE (la marge de la derniere journee, '
+        + 'ce qui l\'a faite - cite 1-2 commandes de journee.top_commandes avec leur '
+        + 'marge - et ses drapeaux; si journee est absent ou sans vente, dis-le en une '
+        + 'phrase), VIGILANCE (donnees provisoires ou anomalies, produits en perte), '
+        + 'ACTION (1-2 gestes concrets tires des donnees).',
+    projection: 'Tu commentes la projection de fin de mois du resultat (PL) d\'une '
+        + 'boucherie au Senegal, pour son gerant. Le JSON contient la methode (a_propos, '
+        + 'hypotheses), le CA projete, les scenarios, l\'indice de confiance, le plan '
+        + 'd\'equilibre et des recommandations deja calculees. REGLES STRICTES: tu ne fais '
+        + 'AUCUN calcul nouveau - tu cites uniquement des montants presents dans le JSON, '
+        + 'en FCFA arrondis. Tu rappelles le niveau de confiance et les hypotheses '
+        + 'discretionnaires (stock, depenses) AVANT tout verdict. Reponds en francais, '
+        + '150 a 220 mots, en quatre blocs titres exactement ainsi: OU VA LE MOIS (une '
+        + 'phrase, scenario central), HYPOTHESES (ce qui est pose, pas mesure), RISQUES '
+        + '(ce qui ferait devier), ACTION (1-2 gestes tires du plan d\'equilibre ou des '
+        + 'recommandations).'
+};
+
+router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
+    try {
+        if (!process.env.OPENAI_API_KEY) {
+            return res.status(503).json({ success: false,
+                error: 'Analyse IA non configurée sur ce déploiement (OPENAI_API_KEY absente).' });
+        }
+        // Liste blanche EXPLICITE, pas un simple acces d'objet: un type
+        // '__proto__', 'constructor' ou 'toString' tombe sur l'heritage
+        // d'Object, rend une valeur TRUTHY, et partait comme prompt systeme.
+        const type = String((req.body || {}).type || '');
+        if (type !== 'pl' && type !== 'projection') {
+            return res.status(400).json({ success: false, error: 'type: pl ou projection attendu' });
+        }
+        const prompt = PROMPTS_ANALYSE[type];
+        const payload = (req.body || {}).payload;
+        if (!payload || typeof payload !== 'object') {
+            return res.status(400).json({ success: false, error: 'payload requis' });
+        }
+        // Le client demande un NIVEAU, jamais un nom de modele: c'est le
+        // serveur qui traduit via MODELES_ANALYSE. L'ecran n'a pas a
+        // connaitre les noms - et il ne choisit pas la facture: tout niveau
+        // inconnu retombe sur le standard.
+        const niveau = String((req.body || {}).niveau || '');
+        const modele = niveau === 'approfondie' ? MODELES_ANALYSE[1] : MODELES_ANALYSE[0];
+        const texte = JSON.stringify(payload);
+        if (texte.length > ANALYSE_PAYLOAD_MAX) {
+            return res.status(413).json({ success: false,
+                error: 'payload trop volumineux pour une analyse (' + texte.length + ' octets)' });
+        }
+
+        // Empreinte du CONTENU, pas de la date d'appel: le meme PL relu dix
+        // fois dans la demi-heure ne paie qu'un appel. `genere_le` est exclu
+        // du hachage - il change a chaque construction du payload et rendait
+        // chaque clic unique: le cache ne servait jamais (constate au test).
+        // Le MODELE entre dans la cle: la meme periode analysee en standard
+        // puis en approfondi sont deux analyses, pas une.
+        const crypto = require('crypto');
+        const pourEmpreinte = Object.assign({}, payload);
+        delete pourEmpreinte.genere_le;
+        const cle = type + ':' + modele + ':' + crypto.createHash('sha256')
+            .update(JSON.stringify(pourEmpreinte)).digest('hex');
+        const maintenant = Date.now();
+        const present = _analyseMemo.get(cle);
+        if (present && (maintenant - present.at) < ANALYSE_MEMO_TTL_MS) {
+            return res.json({ success: true, data: Object.assign({}, present.data, { cache: true }) });
+        }
+        for (const [k, v] of _analyseMemo) {
+            if ((maintenant - v.at) >= ANALYSE_MEMO_TTL_MS) _analyseMemo.delete(k);
+        }
+        if (_analyseMemo.size >= ANALYSE_MEMO_MAX) {
+            _analyseMemo.delete(_analyseMemo.keys().next().value);
+        }
+
+        const OpenAI = require('openai');
+        // Timeout EXPLICITE: le SDK attend 10 minutes par defaut, et une
+        // requete qui traine tenait la reponse HTTP ouverte tout ce temps.
+        // 90 s et non 60: l'approfondie (o4-mini, effort moyen) a ete mesuree
+        // a 13 s mais un payload charge peut depasser la minute - au-dela,
+        // c'est un incident, pas une analyse lente.
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 90000 });
+        // Les familles gpt-5 et o-* REFUSENT max_tokens et une temperature
+        // differente de 1: elles exigent max_completion_tokens et gerent la
+        // temperature elles-memes. Et un modele a raisonnement consomme son
+        // budget de sortie en tokens de REFLEXION avant d'ecrire: 600 tokens
+        // suffisaient a gpt-4o-mini, ils rendraient une reponse tronquee ou
+        // vide chez o4-mini - d'ou le budget triple.
+        const familleRaisonnement = /^(gpt-5|o\d)/.test(modele);
+        const params = {
+            model: modele,
+            messages: [
+                { role: 'system', content: prompt },
+                { role: 'user', content: texte }
+            ]
+        };
+        if (familleRaisonnement) {
+            // Le budget de sortie paie D'ABORD la reflexion, la redaction
+            // ensuite. A 1800 tokens, gpt-5-mini rendait un contenu VIDE:
+            // toute l'enveloppe partait en raisonnement (constate au test).
+            // Effort bas pour l'analyse standard - commenter un JSON deja
+            // calcule ne merite pas une longue deliberation - et moyen pour
+            // l'approfondie, qui est justement la pour creuser.
+            params.max_completion_tokens = 4000;
+            params.reasoning_effort = (niveau === 'approfondie') ? 'medium' : 'low';
+        } else {
+            params.temperature = 0.3;
+            params.max_tokens = 600;
+        }
+        const completion = await openai.chat.completions.create(params);
+        const analyse = (completion.choices && completion.choices[0]
+            && completion.choices[0].message && completion.choices[0].message.content || '')
+            // L'ecran affiche du texte brut (white-space:pre-wrap), pas du
+            // markdown: les ### et ** du modele resteraient visibles tels
+            // quels. On les retire plutot que d'embarquer un moteur markdown
+            // pour quatre titres.
+            .replace(/^#+\s*/gm, '')
+            .replace(/\*\*/g, '')
+            .trim();
+        if (!analyse) {
+            return res.status(502).json({ success: false, error: 'réponse vide du modèle' });
+        }
+        const data = { analyse: analyse, modele: modele, cache: false };
+        _analyseMemo.set(cle, { at: maintenant, data: data });
+        res.json({ success: true, data: data });
+    } catch (e) {
+        console.error('POST /api/finance/analyse-ia:', e.message);
+        // Les erreurs OpenAI portent un status exploitable (401 cle, 429
+        // quota): les traduire en message actionnable plutot qu'un 500 nu.
+        const st = e.status || e.statusCode;
+        if (st === 401) {
+            return res.status(502).json({ success: false, error: 'Clé OpenAI refusée : vérifier OPENAI_API_KEY.' });
+        }
+        if (st === 429) {
+            return res.status(502).json({ success: false, error: 'Quota OpenAI épuisé ou limite atteinte : réessayer plus tard.' });
+        }
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
 // Upload memoire (la donnee va en BDD, pas sur disque). Limite 10 MB: une
 // photo de justificatif prise au telephone (JPEG plein cadre, bon eclairage)
 // depasse couramment les 5 Mo d'origine - mesure sur le terrain, c'etait la

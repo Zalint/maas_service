@@ -237,6 +237,85 @@ describe("GET /simulation et GET /cash-stock n'ont plus de filtre de role redond
 });
 
 /**
+ * L'ANALYSE IA: un POST qui n'ecrit rien, ouvert au meme cercle que la
+ * lecture du PL - et qui coute de l'argent a chaque appel non cache.
+ */
+describe('POST /analyse-ia', () => {
+    const construire = () => {
+        const corps = SRC.slice(SRC.indexOf('function checkAnalyseAccess'));
+        const fin = corps.indexOf('\n}\n');
+        // eslint-disable-next-line no-new-func
+        return new Function('return ' + corps.slice(0, fin + 2))();
+    };
+
+    test("la garde laisse passer admin, superviseur, 'user' et canManageAdvanced, refuse 'lecteur'", () => {
+        const fn = construire();
+        const essayer = (user) => {
+            let passe = false, statut = null;
+            fn({ session: { user } },
+                { status(c) { statut = c; return this; }, json() { return this; } },
+                () => { passe = true; });
+            return { passe, statut };
+        };
+        for (const u of [{ role: 'admin' }, { role: 'superviseur' }, { role: 'user' },
+            { role: 'superutilisateur', canManageAdvanced: true }]) {
+            expect(essayer(u).passe).toBe(true);
+        }
+        const r = essayer({ role: 'lecteur' });
+        expect(r.passe).toBe(false);
+        expect(r.statut).toBe(403);
+    });
+
+    test('la route porte la garde, refuse sans cle et borne le payload', () => {
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        expect(debut).toBeGreaterThan(-1);
+        const bloc = SRC.slice(debut, debut + 3000);
+        expect(SRC.slice(debut, debut + 80)).toContain('checkAnalyseAccess');
+        // Sans cle: un 503 explicite, pas un appel qui part planter chez
+        // OpenAI avec une cle vide.
+        expect(bloc).toContain('OPENAI_API_KEY');
+        expect(bloc).toMatch(/status\(503\)/);
+        // Payload borne: chaque octet part chez OpenAI et se facture.
+        expect(bloc).toContain('ANALYSE_PAYLOAD_MAX');
+        expect(bloc).toMatch(/status\(413\)/);
+    });
+
+    test("l'empreinte du cache exclut genere_le, sinon chaque clic est unique", () => {
+        // Constate au premier test reel: l'horodatage changeait a chaque
+        // construction du payload, l'empreinte aussi, et le cache ne servait
+        // jamais - chaque relecture payait un appel OpenAI.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 4000);
+        expect(bloc).toContain('delete pourEmpreinte.genere_le');
+    });
+
+    test('le client demande un NIVEAU, le serveur traduit via sa liste blanche', () => {
+        // L'ecran ne connait aucun nom de modele: il envoie 'approfondie' ou
+        // rien, et tout niveau inconnu retombe sur le standard - le client ne
+        // choisit jamais la facture.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 4000);
+        expect(bloc).toMatch(/niveau === 'approfondie' \? MODELES_ANALYSE\[1\] : MODELES_ANALYSE\[0\]/);
+        // Et le modele entre dans la cle de cache: standard et approfondie
+        // sur la meme periode sont deux analyses.
+        expect(bloc).toMatch(/type \+ ':' \+ modele \+ ':'/);
+    });
+
+    test('les familles a raisonnement recoivent leurs parametres, les autres les classiques', () => {
+        // gpt-5* et o* refusent max_tokens/temperature; et a budget trop
+        // court, la reflexion mange toute l'enveloppe et le contenu revient
+        // VIDE (constate au test reel a 1800 tokens). Le garde-fou est la
+        // presence des deux branches, avec reasoning_effort module par niveau.
+        const debut = SRC.indexOf("router.post('/analyse-ia'");
+        const bloc = SRC.slice(debut, debut + 5000);
+        expect(bloc).toMatch(/familleRaisonnement = \/\^\(gpt-5\|o\\d\)\//);
+        expect(bloc).toContain('max_completion_tokens');
+        expect(bloc).toContain('reasoning_effort');
+        expect(bloc).toMatch(/params\.temperature = 0\.3/);
+    });
+});
+
+/**
  * TOUTE ROUTE D'ECRITURE DE FINANCE PORTE UNE GARDE DE ROLE.
  *
  * Le trou de /notes n'etait pas isole: POST /depenses n'avait lui non plus
