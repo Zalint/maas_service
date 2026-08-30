@@ -1057,6 +1057,11 @@ async function checkAuth() {
         // Simulation: memes chiffres que le PL, donc meme visibilite.
         const simulationTabItem = document.getElementById('fin-simulation-tab-item');
         if (simulationTabItem) simulationTabItem.style.display = peutVoirPlCashStock ? '' : 'none';
+        // Finance corporate: meme visibilite que PL/Cash et Stock (consultation
+        // pour 'user', ecriture — solde d'ouverture, remboursements — reservee
+        // par .fin-tab-advanced ci-dessus, sur les blocs internes du pane).
+        const corporateTabItem = document.getElementById('fin-corporate-tab-item');
+        if (corporateTabItem) corporateTabItem.style.display = peutVoirPlCashStock ? '' : 'none';
 
         console.log('✅ Visibilité des onglets mise à jour (modules + permissions)');
         

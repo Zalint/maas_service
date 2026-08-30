@@ -44,6 +44,7 @@ const DepenseCategorie = require('./DepenseCategorie');
 const FournisseurPrix = require('./FournisseurPrix');
 const FinanceConfig = require('./FinanceConfig');
 const FournisseurPaiement = require('./FournisseurPaiement');
+const CreanceClientPaiement = require('./CreanceClientPaiement');
 const ProduitAlias = require('./ProduitAlias');
 const PrixVenteCdcHistory = require('./PrixVenteCdcHistory');
 const PrixAchatHistory = require('./PrixAchatHistory');
@@ -240,6 +241,7 @@ module.exports = {
   FournisseurPrix,
   FinanceConfig,
   FournisseurPaiement,
+  CreanceClientPaiement,
   ProduitAlias,
   PrixVenteCdcHistory,
   PrixAchatHistory,

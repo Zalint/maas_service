@@ -6138,6 +6138,111 @@ app.get('/api/reconciliation/parage', checkAuth, checkReadAccess, async (req, re
     }
 });
 
+// Le detail du mois, pour le bouton "Generer rapport de parage" de l'ecran
+// Reconciliation du mois. Contrairement a /api/reconciliation/parage
+// (une seule journee), celui-ci boucle le mois ENTIER et garde le detail
+// jour par jour - c'est ce que lib/parage-rapport.js a besoin de recevoir
+// pour distinguer jours avec/sans livraison, decouper par semaine, etc.
+app.get('/api/reconciliation/parage-rapport', checkAuth, checkReadAccess, async (req, res) => {
+    try {
+        const mois = parseInt(req.query.mois, 10);
+        const annee = parseInt(req.query.annee, 10);
+        if (!Number.isInteger(mois) || mois < 1 || mois > 12 || !Number.isInteger(annee)) {
+            return res.status(400).json({ success: false, message: 'mois (1-12) et annee requis' });
+        }
+        // pointVente absent ou 'tous' = tout le tenant, meme convention que
+        // l'ecran (select "Tous les points de vente").
+        const pvBrut = req.query.pointVente;
+        const filtrePv = (pvBrut && pvBrut !== 'tous') ? pvBrut : undefined;
+
+        const dernierJour = new Date(Date.UTC(annee, mois, 0)).getUTCDate();
+        const finMoisIso = `${annee}-${String(mois).padStart(2, '0')}-${String(dernierJour).padStart(2, '0')}`;
+
+        const { chargerContexteParage } = require('./lib/parage-contexte');
+        const { detailParageParJour } = require('./lib/parage-mois');
+        const { construireRapportParage } = require('./lib/parage-rapport');
+        const { creerResolveurPrixAchat } = require('./lib/prix-achat-date');
+
+        const contexte = await chargerContexteParage(sequelize);
+        const packs = await lirePackCompositions();
+
+        const { jours, parageParJour, parJourTransferts } = await detailParageParJour(
+            sequelize, finMoisIso, contexte, packs, filtrePv
+        );
+
+        // Jours ECARTES par un admin sur CET ecran (case "Exclure" de la
+        // grille) - cf lib/reconciliation-exclusions.js. Le bouton vit sur
+        // cet ecran meme: le rapport doit donc recalculer sur ce que
+        // l'utilisateur voit, pas sur le calcul canonique du PL qui, par
+        // conception documentee la-bas, ignore volontairement ces exclusions.
+        const { lireExclusions } = require('./lib/reconciliation-exclusions');
+        const moisCle = `${String(mois).padStart(2, '0')}-${annee}`;
+        const exclusionsDuMois = (await lireExclusions())[moisCle] || [];
+        // cle = 'JJ/MM/AAAA|Point de vente'. Sans filtre de PV, une journee
+        // ecartee pour UN point de vente est ecartee du jour entier: son
+        // inventaire a ete juge incertain, la confiance ne se rend qu'a la
+        // journee, pas point de vente par point de vente.
+        const joursExclus = new Set();
+        for (const e of exclusionsDuMois) {
+            const [dateFr, pv] = String(e.cle || '').split('|');
+            if (filtrePv && pv && pv !== filtrePv) continue;
+            const m = dateFr && dateFr.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            if (m) joursExclus.add(`${m[3]}-${m[2]}-${m[1]}`);
+        }
+
+        // "Jour avec livraison" = au moins un transfert ENTRANT (impact > 0)
+        // ce jour-la pour la categorie. Aucune convention prealable n'existait
+        // pour cette notion (cf recherche prealable) - c'est celle retenue ici,
+        // au meme titre que categorieDe classe deja chaque produit.
+        const aLivraisonParJour = jours.map((iso) => {
+            const rows = parJourTransferts[iso] || [];
+            const parCat = { bovin: false, ovin: false };
+            for (const t of rows) {
+                const imp = parseInt(t.impact, 10);
+                if (!Number.isFinite(imp) || imp <= 0) continue;
+                const cat = contexte.categorieDe(t.produit);
+                if (cat === 'bovin' || cat === 'ovin') parCat[cat] = true;
+            }
+            return parCat;
+        });
+
+        const resolveurPrix = await creerResolveurPrixAchat(finMoisIso);
+        const { prixAchatDefaut } = resolveurPrix.pourDate(finMoisIso);
+
+        const rapport = {};
+        for (const cat of ['bovin', 'ovin']) {
+            const joursCat = jours
+                .map((iso, i) => {
+                    const bloc = (parageParJour[i] || {})[cat];
+                    return {
+                        date: iso,
+                        theorique: bloc ? bloc.theorique : 0,
+                        vendu: bloc ? bloc.vendu : 0,
+                        a_livraison: aLivraisonParJour[i][cat]
+                    };
+                })
+                .filter((j) => !joursExclus.has(j.date));
+            rapport[cat] = construireRapportParage({
+                jours: joursCat,
+                prixParKg: Number.isFinite(prixAchatDefaut[cat]) ? prixAchatDefaut[cat] : null
+            });
+        }
+
+        res.json({
+            success: true,
+            mois, annee,
+            point_de_vente: filtrePv || 'tous',
+            jours_exclus: [...joursExclus].sort(),
+            periode: { debut: `${annee}-${String(mois).padStart(2, '0')}-01`, fin: finMoisIso },
+            bovin: rapport.bovin,
+            ovin: rapport.ovin
+        });
+    } catch (error) {
+        console.error('GET /api/reconciliation/parage-rapport:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/api/reconciliation/load', checkAuth, checkReadAccess, async (req, res) => {
     try {
         const { date } = req.query;
@@ -18158,7 +18263,7 @@ app.get('/api/clotures-caisse', checkAuth, async (req, res) => {
 
 app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
     try {
-        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, commercial, commentaire } = req.body;
+        const { date, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, montantWave, montantOm, commercial, commentaire } = req.body;
         const username = req.session?.user?.username || req.user?.username || 'inconnu';
         if (!date || !pointVente || montantEspeces === undefined || !commercial) {
             return res.status(400).json({ success: false, message: 'date, pointVente, montantEspeces et commercial sont requis' });
@@ -18190,6 +18295,26 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
                 return res.status(400).json({ success: false, message: 'depotMata ne peut pas depasser montantTotalCaisse' });
             }
             depotMataValide = vDepot;
+        }
+
+        // montant_wave / montant_om: OPTIONNELS, meme regime que depot_mata.
+        // Vide/absent reste NULL (= non renseigne), a ne pas confondre avec
+        // 0 = aucun solde.
+        let montantWaveValide = null;
+        if (montantWave !== undefined && montantWave !== null && montantWave !== '') {
+            const vWave = parseFloat(montantWave);
+            if (!Number.isFinite(vWave) || vWave < 0) {
+                return res.status(400).json({ success: false, message: 'montantWave doit etre un nombre >= 0' });
+            }
+            montantWaveValide = vWave;
+        }
+        let montantOmValide = null;
+        if (montantOm !== undefined && montantOm !== null && montantOm !== '') {
+            const vOm = parseFloat(montantOm);
+            if (!Number.isFinite(vOm) || vOm < 0) {
+                return res.status(400).json({ success: false, message: 'montantOm doit etre un nombre >= 0' });
+            }
+            montantOmValide = vOm;
         }
 
         let isoDate = date;
@@ -18263,7 +18388,7 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         let referenceManquante = false;
         try {
             await ClotureCaisse.update({ is_latest: false }, { where: { date: isoDate, point_de_vente: pointVente }, transaction });
-            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, depot_precedent_recupere: depotPrecedentValide, depot_precedent_date: depotPrecedentDate, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
+            cloture = await ClotureCaisse.create({ date: isoDate, point_de_vente: pointVente, montant_especes: parseFloat(montantEspeces), fond_de_caisse: parseFloat(fondDeCaisse) || 0, montant_estimatif: montantEstimatif !== undefined ? parseFloat(montantEstimatif) : null, montant_total_caisse: montantTotalCaisseValide, depot_mata: depotMataValide, depot_precedent_recupere: depotPrecedentValide, depot_precedent_date: depotPrecedentDate, montant_wave: montantWaveValide, montant_om: montantOmValide, commercial, commentaire: commentaire || null, created_by: username, is_latest: true }, { transaction });
             const cashRef = generateCashReference(pointVente);
             if (cashRef) {
                 // Upsert atomic via INSERT ... ON CONFLICT DO UPDATE.
