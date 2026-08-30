@@ -12,26 +12,8 @@
 (function () {
     'use strict';
 
-    function esc(s) {
-        return String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
-
-    function fmtKg(n) {
-        const v = parseFloat(n);
-        return (Number.isFinite(v) ? v : 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 }) + ' kg';
-    }
-
-    function fmtMoneyOuTiret(n) {
-        if (n === null || n === undefined) return '—';
-        return Math.round(parseFloat(n) || 0).toLocaleString('fr-FR') + ' FCFA';
-    }
-
-    function fmtPctOuTiret(n) {
-        if (n === null || n === undefined) return '—';
-        return parseFloat(n).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
-    }
+    // esc() vient de js/ui-helpers.js (charge avant ce fichier) - partagee
+    // avec js/finance.js plutot que redefinie ici.
 
     const LIBELLE_CATEGORIE = { bovin: 'Bœuf/Veau', ovin: 'Agneau' };
     const COULEUR_ROUGE = '#8c3a2e';
@@ -227,11 +209,15 @@
         }
     `;
 
+    // Chart.js ne liberes rien tout seul quand son canvas quitte le DOM (pas
+    // de MutationObserver interne) - il faut appeler .destroy() nous-memes,
+    // sinon chaque generation de rapport dans la meme session laisse deux
+    // instances orphelines (listeners de resize compris) par page.
     function tracerChartsPourPage(cat, rapport) {
         const ciblePct = rapport.cible_pct;
         const av = rapport.avec_livraison, sn = rapport.sans_livraison;
         // eslint-disable-next-line no-undef
-        new Chart(document.getElementById(`parage-chart-livraison-${cat}`), {
+        const chartLivraison = new Chart(document.getElementById(`parage-chart-livraison-${cat}`), {
             type: 'bar',
             data: {
                 labels: [`Jours avec\nlivraison (${av.n_jours} j)`, `Jours sans\nlivraison (${sn.n_jours} j)`],
@@ -255,7 +241,7 @@
 
         const semaines = rapport.semaines || [];
         // eslint-disable-next-line no-undef
-        new Chart(document.getElementById(`parage-chart-semaines-${cat}`), {
+        const chartSemaines = new Chart(document.getElementById(`parage-chart-semaines-${cat}`), {
             type: 'bar',
             data: {
                 labels: semaines.map((s) => `${s.label}\n${s.periode}`),
@@ -287,6 +273,8 @@
                 scales: { y: { beginAtZero: true, title: { display: true, text: 'Taux de parage (%)' } } }
             }
         });
+
+        return [chartLivraison, chartSemaines];
     }
 
     function attendreRendu() {
@@ -318,8 +306,9 @@
         conteneur.innerHTML += pages.map((p) => construirePageHtml(p.cat, p.rapport, p.poster, json.periode)).join('');
         document.body.appendChild(conteneur);
 
+        const charts = [];
         try {
-            for (const p of pages) tracerChartsPourPage(p.cat, p.rapport);
+            for (const p of pages) charts.push(...tracerChartsPourPage(p.cat, p.rapport));
             await attendreRendu();
 
             const nomBase = `rapport-parage-${json.annee}-${String(json.mois).padStart(2, '0')}`;
@@ -329,17 +318,27 @@
                 dimensionsHtml2canvas(el)
             );
 
-            // Un canvas par page: worker html2pdf dedie a CET element seul
-            // (API documentee .toCanvas().get('canvas') - pas de global
-            // html2canvas expose par ce bundle CDN). Sert au PNG ET au PDF:
-            // pagebreak.mode 'css' du bundle ne coupe pas fiablement un
-            // conteneur multi-pages (constate au test), donc le PDF combine
-            // est assemble a la main, page par page, plutot que d'esperer
-            // qu'il tranche correctement un rendu continu.
-            const canvases = [];
-            for (const el of pageEls) {
+            // Un canvas par page (API documentee .toCanvas().get('canvas') -
+            // pas de global html2canvas expose par ce bundle CDN). Sert au
+            // PNG ET au PDF: pagebreak.mode 'css' du bundle ne coupe pas
+            // fiablement un conteneur multi-pages (constate au test), donc
+            // le PDF combine est assemble a la main, page par page.
+            //
+            // Page 0 passe par un worker html2pdf COMPLET des le depart (et
+            // non un worker jetable juste pour son canvas): .toPdf(), appele
+            // plus bas sur ce MEME worker, reutilise le canvas deja rendu
+            // par .toCanvas() au lieu de relancer html2canvas une seconde
+            // fois sur la page la plus chargee (verifie: worker.get('canvas')
+            // rend alors la reference EXACTE du premier rendu).
+            const worker0 = html2pdf().set({
+                margin: 0,
+                html2canvas: optsHtml2canvas(pageEls[0]),
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            }).from(pageEls[0]);
+            const canvases = [await worker0.toCanvas().get('canvas')];
+            for (let i = 1; i < pageEls.length; i++) {
                 // eslint-disable-next-line no-undef
-                canvases.push(await html2pdf().set({ html2canvas: optsHtml2canvas(el) }).from(el).toCanvas().get('canvas'));
+                canvases.push(await html2pdf().set({ html2canvas: optsHtml2canvas(pageEls[i]) }).from(pageEls[i]).toCanvas().get('canvas'));
             }
             canvases.forEach((canvas, i) => {
                 const lien = document.createElement('a');
@@ -350,16 +349,6 @@
                 lien.remove();
             });
 
-            // Page 1 via un worker html2pdf complet (donne acces a un vrai
-            // jsPDF sans avoir besoin du constructeur global, absent de ce
-            // bundle); les pages suivantes s'ajoutent directement sur ce
-            // meme objet a partir des canvases deja rendus ci-dessus.
-            // eslint-disable-next-line no-undef
-            const worker0 = html2pdf().set({
-                margin: 0,
-                html2canvas: optsHtml2canvas(pageEls[0]),
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-            }).from(pageEls[0]);
             await worker0.toPdf();
             const pdf = await worker0.get('pdf');
             for (let i = 1; i < canvases.length; i++) {
@@ -370,6 +359,7 @@
 
             if (typeof showToast === 'function') showToast('Rapport de parage généré (PDF + PNG)', 'success');
         } finally {
+            charts.forEach((c) => c.destroy());
             conteneur.remove();
         }
     }

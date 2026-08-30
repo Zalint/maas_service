@@ -2735,7 +2735,7 @@
                             </li>
                             <!-- Finance corporate: tresorerie reelle, position nette, resultat/EBIT/EBITDA. Meme visibilite que PL -->
                             <li class="nav-item" id="fin-corporate-tab-item" style="display:none">
-                                <a class="nav-link" href="#" data-fin-tab="corporate">Finance corporate</a>
+                                <a class="nav-link" href="#" data-fin-tab="corporate">Finance d'entreprise</a>
                             </li>
                         </ul>
                     </div>
@@ -3321,12 +3321,12 @@
                             </div>
                             <div class="row g-2 mb-3 align-items-end">
                                 <div class="col-md-3">
-                                    <label class="form-label">Date de fin</label>
-                                    <input type="date" id="fin-corporate-date-fin" class="form-control form-control-sm">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-corporate-date-debut" class="form-control form-control-sm">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Depuis le (résultat)</label>
-                                    <input type="date" id="fin-corporate-date-debut" class="form-control form-control-sm">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-corporate-date-fin" class="form-control form-control-sm">
                                 </div>
                                 <div class="col-md-3">
                                     <button class="btn btn-sm btn-primary" id="fin-corporate-refresh">
@@ -4138,7 +4138,7 @@
         })();
     </script>
     <!-- Helpers UI partages (toast + modal de confirmation, override alert) -->
-    <script src="js/ui-helpers.js"></script>
+    <script src="js/ui-helpers.js?v=20260831-esc-partage"></script>
     <!-- La formule du parage, LA MEME qu'au serveur (window.parageLib).
          Charge avant reconciliationManager.js et script.js, qui la lisent
          au lieu d'en recopier le seuil et le calcul. -->
@@ -4156,9 +4156,9 @@
     <script src="script.js?v=20260825-hors-mata"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
-    <script src="js/parage-rapport.js?v=20260830-fix-html2pdf"></script>
+    <script src="js/parage-rapport.js?v=20260831-fixes-review"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260829-revue-112"></script>
+    <script src="js/finance.js?v=20260831-fixes-review"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>

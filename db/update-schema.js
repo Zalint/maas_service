@@ -715,13 +715,27 @@ async function updateSchema() {
             CREATE TABLE IF NOT EXISTS creance_client_paiements (
                 id SERIAL PRIMARY KEY,
                 date DATE NOT NULL,
-                montant NUMERIC(12, 2) NOT NULL CHECK (montant >= 0),
+                -- > 0 et non >= 0: un remboursement de zero n'en est pas un,
+                -- et la route POST rejette deja mt <= 0 - la contrainte doit
+                -- dire la meme regle, pas une plus large qu'elle ne sert pas.
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant > 0),
                 commentaire TEXT,
                 created_by VARCHAR(100),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         `);
         await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_creance_client_paiements_date ON creance_client_paiements(date DESC)`);
+        // Tenants ou la table existait deja avec l'ancienne contrainte
+        // (>= 0): la resserrer a > 0, idempotent comme le CHECK de
+        // fournisseur_paiements plus haut.
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'creance_client_paiements_montant_check' AND conrelid = 'creance_client_paiements'::regclass) THEN
+                    ALTER TABLE creance_client_paiements DROP CONSTRAINT creance_client_paiements_montant_check;
+                END IF;
+                ALTER TABLE creance_client_paiements ADD CONSTRAINT creance_client_paiements_montant_check CHECK (montant > 0);
+            END $$;
+        `);
         console.log('Table creance_client_paiements verifiee');
 
         // Charges mensuelles fixes pour le calcul PL (Profit/Loss).

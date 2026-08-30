@@ -56,13 +56,8 @@
         const x = parseFloat(v);
         return Number.isFinite(x) ? x : 0;
     };
-    // Les GUILLEMETS aussi: sans eux, une valeur placee dans un attribut
-    // pourrait en sortir. Aucun gabarit n'en met aujourd'hui, mais les
-    // libelles rendus viennent de la base - categorie de depense, commentaire
-    // de versement - et il suffirait d'un `title="${...}"` ajoute plus tard.
-    const esc = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // esc() vit desormais dans js/ui-helpers.js (charge avant ce fichier),
+    // partagee avec js/parage-rapport.js plutot que redefinie ici.
 
     // Construit le markup d'une carte KPI Finance.
     // tone: 'warning' | 'success' | 'danger' | 'info' | 'neutral'
@@ -881,26 +876,45 @@
     // ===== Finance corporate: tresorerie reelle, position nette, resultat =====
     let corporateChargePour = null;
     let corporateLastPn = null;
+    let corporateLastRes = null;
 
-    // Recalcule la Position nette a partir des composantes deja recues -
-    // aucun rappel API. `inclureDepot` decide si le depot Mata du jour est
-    // retranche (case a cocher, cf renderCorporateFinance): la dette
-    // fournisseur officielle et la commission MaaS, elles, sont TOUJOURS
-    // retranchees - ce sont deux dettes reelles, pas des options.
+    // Recalcule la Position nette sans rappel API. `pn.total` (calcule cote
+    // serveur, cf routes/finance.js computeCorporateFinance) retranche DEJA
+    // le depot par defaut - decocher la case l'ajoute simplement de retour,
+    // plutot que de reconstruire la formule entiere ici: un futur terme
+    // ajoute au calcul serveur (nouvelle dette, etc.) resterait alors
+    // automatiquement reflete, sans synchroniser deux copies de la formule.
+    //
+    // La meme case retranche AUSSI le depot du Resultat/EBIT/EBITDA affiches
+    // (demande explicite) - un mouvement de caisse qui n'entre pourtant pas
+    // dans le calcul du PL lui-meme. Rien ne change cote serveur ni dans le
+    // PL: seul l'AFFICHAGE de ces trois tuiles suit la case, comme celle de
+    // Position nette juste au-dessus.
     function recomputeCorporatePositionNette() {
         const pn = corporateLastPn;
         const totalEl = document.getElementById('fin-corporate-position-totale');
         if (!pn || !totalEl) return;
         const toggle = document.getElementById('fin-corporate-depot-toggle');
         const inclureDepot = !toggle || toggle.checked;
-        const total = Math.round((
-            nb(pn.tresorerie_reelle) + nb(pn.creances_clients)
-            - nb(pn.dette_fournisseur_officiel)
-            - nb(pn.commission_maas_mois)
-            - (inclureDepot ? nb(pn.depot_mata) : 0)
-        ) * 100) / 100;
+        const depot = inclureDepot ? nb(pn.depot_mata) : 0;
+
+        const total = Math.round((nb(pn.total) + (inclureDepot ? 0 : nb(pn.depot_mata))) * 100) / 100;
         totalEl.textContent = fmtMoney(total);
         totalEl.className = 'h5 mb-0 ' + (total >= 0 ? 'text-success' : 'text-danger');
+
+        const res = corporateLastRes;
+        if (res) {
+            const maj = (id, valeurBrute, colorable) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const v = Math.round((nb(valeurBrute) - depot) * 100) / 100;
+                el.textContent = fmtMoney(v);
+                if (colorable) el.className = 'h5 mb-0 ' + (v >= 0 ? 'text-success' : 'text-danger');
+            };
+            maj('fin-corporate-resultat-valeur', res.resultat, true);
+            maj('fin-corporate-ebit-valeur', res.ebit, false);
+            maj('fin-corporate-ebitda-valeur', res.ebitda, false);
+        }
     }
 
     function ensureCorporateDefaultDates() {
@@ -959,7 +973,7 @@
                 <div class="card h-100">
                     <div class="card-body text-center py-2">
                         <div class="small text-muted">${esc(label)}</div>
-                        <div class="h5 mb-0 ${o.color ? 'text-' + o.color : ''}">${esc(fmtMoney(valeur))}</div>
+                        <div class="h5 mb-0 ${o.color ? 'text-' + o.color : ''}"${o.id ? ` id="${o.id}"` : ''}>${esc(fmtMoney(valeur))}</div>
                     </div>
                 </div>
             </div>`;
@@ -973,6 +987,12 @@
         const cc = d.creances_clients_detail || {};
         const res = d.resultat || {};
         const fiab = tr.fiabilite || {};
+        // Memorisee au meme titre que pn: la case a cocher "inclure le depot
+        // Mata" retranche aussi ce depot du Resultat/EBIT/EBITDA affiches -
+        // demande explicite, meme si le depot (mouvement de caisse) ne fait
+        // pas partie du calcul du PL lui-meme. Rien n'est modifie cote
+        // serveur: seul l'AFFICHAGE de ces trois tuiles bouge avec la case.
+        corporateLastRes = res;
         // Memorisee pour que la case a cocher "inclure le depot Mata"
         // recalcule le total sans rappeler l'API - tout ce qu'il faut est deja
         // dans pn (cf routes/finance.js computeCorporateFinance).
@@ -998,7 +1018,11 @@
                </div>`
             : '';
 
-        const pvSansWaveOm = (tr.par_pv || []).filter((p) => p.wave == null && p.om == null)
+        // OR et non AND: un PV qui a saisi son Wave mais pas son Orange
+        // Money (ou l'inverse) a quand meme un trou - le total le compte
+        // pour 0 sur le canal manquant, sans que rien ne le signale si on
+        // n'exigeait l'absence des DEUX pour avertir.
+        const pvSansWaveOm = (tr.par_pv || []).filter((p) => p.wave == null || p.om == null)
             .map((p) => p.point_de_vente);
 
         resultEl.innerHTML = `
@@ -1018,7 +1042,7 @@
                         ${esc(String(fiab.pv_renseigne_cash || 0))} avec cash renseigné •
                         ${esc(String(fiab.pv_renseigne_wave || 0))} avec Wave •
                         ${esc(String(fiab.pv_renseigne_om || 0))} avec Orange Money
-                        ${pvSansWaveOm.length ? ' • Wave/OM non renseignés : ' + esc(pvSansWaveOm.join(', ')) : ''}
+                        ${pvSansWaveOm.length ? ' • Wave et/ou OM non renseignés : ' + esc(pvSansWaveOm.join(', ')) : ''}
                     </small>
                 </div>
             </div>
@@ -1072,9 +1096,9 @@
                     <span class="small text-muted ms-2">du ${esc((res.periode || {}).debut || '')} au ${esc((res.periode || {}).fin || '')}</span></div>
                 <div class="card-body">
                     <div class="row g-2 mb-2">
-                        ${tileCorporate('Résultat', res.resultat, { col: 4, color: nb(res.resultat) >= 0 ? 'success' : 'danger' })}
-                        ${tileCorporate('EBIT', res.ebit, { col: 4 })}
-                        ${tileCorporate('EBITDA', res.ebitda, { col: 4 })}
+                        ${tileCorporate('Résultat', res.resultat, { col: 4, color: nb(res.resultat) >= 0 ? 'success' : 'danger', id: 'fin-corporate-resultat-valeur' })}
+                        ${tileCorporate('EBIT', res.ebit, { col: 4, id: 'fin-corporate-ebit-valeur' })}
+                        ${tileCorporate('EBITDA', res.ebitda, { col: 4, id: 'fin-corporate-ebitda-valeur' })}
                     </div>
                     <small class="text-muted">${esc(res.note || '')}</small>
                 </div>
