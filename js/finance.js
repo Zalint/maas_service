@@ -1924,7 +1924,8 @@
                     row.prix_achat == null ? '' : row.prix_achat,
                     readOnly,
                     row.prix_achat_dynamique === true,
-                    row.hors_mata === true
+                    row.hors_mata === true,
+                    row.prix_vente_maas
                 );
             }
         } catch (e) {
@@ -1932,7 +1933,7 @@
         }
     }
 
-    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn, horsMata) {
+    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn, horsMata, prixVenteMaas) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
 
@@ -1981,6 +1982,34 @@
             return td;
         };
         const tdV = makePrixCell('prix_vente', prixVente, 'prix-vente-fournisseur', 'Prix vente fournisseur', 'prix_vente');
+        // Prix vente verrouille: DATA connait ce produit (prix-vente-maas),
+        // donc son prix fait foi - pas un reglage admin comme la case "Prix
+        // API (DATA)" du bœuf, mais une consequence automatique de ce que
+        // DATA renvoie. dataset.original garde la valeur stockee de cote:
+        // onPrixSave doit la renvoyer telle quelle, jamais celle affichee
+        // ici, sinon le repli en cas d'indisponibilite de DATA disparaitrait.
+        if (prixVenteMaas != null) {
+            const inV = tdV.querySelector('input');
+            if (inV) {
+                inV.dataset.original = prixVente == null ? '' : String(prixVente);
+                inV.value = prixVenteMaas;
+                inV.disabled = true;
+                inV.classList.add('fst-italic');
+                inV.title = 'Prix de vente verrouillé — lu depuis MAAS (DATA), non modifiable manuellement.';
+                // grp existe toujours ici: makePrixCell ne l'omet que pour un
+                // produit vide, et aucun appelant ne fournit prixVenteMaas
+                // pour une ligne sans produit (cf le bouton "ajouter une
+                // ligne", qui appelle addPrixRow sans ce parametre).
+                const grp = tdV.querySelector('.input-group');
+                if (grp) {
+                    const lock = document.createElement('span');
+                    lock.className = 'input-group-text';
+                    lock.innerHTML = '<i class="bi bi-lock-fill"></i>';
+                    lock.title = inV.title;
+                    grp.insertBefore(lock, grp.querySelector('button'));
+                }
+            }
+        }
         const tdA = makePrixCell('prix_achat', prixAchat, 'prix-achat', 'Prix achat fournisseur', 'prix_achat');
 
         // Colonne "Prix API (DATA)": bascule le prix achat de ce produit sur
@@ -2114,7 +2143,19 @@
                 inputs.forEach((inp) => {
                     // Le toggle "Prix API (DATA)" est une case a cocher: on
                     // envoie un booleen, pas la value ("on") du DOM.
-                    obj[inp.dataset.col] = inp.type === 'checkbox' ? inp.checked : inp.value;
+                    //
+                    // Un prix vente VERROUILLE (dataset.original pose par
+                    // addPrixRow quand DATA connait ce produit) affiche la
+                    // valeur DATA, pas la valeur stockee - la renvoyer telle
+                    // quelle ecraserait le repli en base par un instantane
+                    // DATA qui deviendrait faux des que DATA change d'avis.
+                    // Restreint a prix_vente explicitement: dataset.original
+                    // n'a de sens que pour ce verrouillage-la, pas un contrat
+                    // generique sur "n'importe quel input avec cet attribut".
+                    const original = inp.dataset.col === 'prix_vente' ? inp.dataset.original : undefined;
+                    obj[inp.dataset.col] = inp.type === 'checkbox'
+                        ? inp.checked
+                        : (original !== undefined ? original : inp.value);
                 });
                 if (obj.produit && obj.produit.trim()) items.push(obj);
             });

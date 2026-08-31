@@ -886,9 +886,28 @@ router.get('/prix', async (req, res) => {
         });
 
         const dateParam = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+        // Prix de vente MAAS (DATA): meme date que celle affichee (aujourd'hui
+        // en edition, la date choisie en as-of) - "le prix en vigueur a cette
+        // date" doit valoir pour cette source aussi. N'AJOUTE qu'un champ
+        // indicatif (prix_vente_maas): prix_vente reste la valeur stockee,
+        // inchangee - c'est l'ecran qui decide d'afficher l'un ou l'autre.
+        const { getPrixVenteMaasParNom } = require('../lib/prix-vente-maas-client');
+        const dateEffective = /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+            ? dateParam
+            : new Date().toISOString().slice(0, 10);
+        // Lance l'appel DATA sans l'attendre tout de suite: il ne depend
+        // d'aucune des requetes DB ci-dessous, donc on le fait chevaucher
+        // avec elles (Promise.all plus bas) plutot que de payer son delai
+        // (jusqu'a REQUEST_TIMEOUT_MS sur un cache froid) en plus du reste.
+        const prixVenteMaasPromise = getPrixVenteMaasParNom(dateEffective);
+
         // Mode normal (edition): valeurs courantes du catalogue.
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-            return res.json({ success: true, data: rows });
+            const { parNom: prixVenteMaasParNom } = await prixVenteMaasPromise;
+            const data = rows.map((r) => Object.assign({}, r, {
+                prix_vente_maas: prixVenteMaasParNom.get(normaliserNomProduit(r.produit)) ?? null
+            }));
+            return res.json({ success: true, data });
         }
 
         // Mode "as-of": prix effectifs a la date choisie (point-in-time).
@@ -897,7 +916,8 @@ router.get('/prix', async (req, res) => {
         // <= fin de journee, trie ASC, et la derniere ecriture par produit
         // gagne (= la plus recente <= date).
         const borne = new Date(dateParam + 'T23:59:59.999Z');
-        const [venteHist, achatHist] = await Promise.all([
+        const [{ parNom: prixVenteMaasParNom }, venteHist, achatHist] = await Promise.all([
+            prixVenteMaasPromise,
             PrixVenteHistory.findAll({
                 where: { created_at: { [Op.lte]: borne } },
                 order: [['created_at', 'ASC']],
@@ -925,6 +945,7 @@ router.get('/prix', async (req, res) => {
                 // config, pas des prix. Affiches en lecture seule en mode as-of.
                 prix_achat_dynamique: r.prix_achat_dynamique === true,
                 hors_mata: r.hors_mata === true,
+                prix_vente_maas: prixVenteMaasParNom.get(normaliserNomProduit(r.produit)) ?? null,
                 updated_at: r.updated_at,
                 as_of: dateParam,
                 // Aucune donnee historique <= date: produit pas encore au
