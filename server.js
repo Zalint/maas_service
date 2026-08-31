@@ -18300,9 +18300,13 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         // montant_wave / montant_om: OPTIONNELS, meme regime que depot_mata.
         // Vide/absent reste NULL (= non renseigne), a ne pas confondre avec
         // 0 = aucun solde.
+        // Number(), pas parseFloat(): parseFloat("500abc") vaut 500 (il
+        // s'arrete au premier caractere invalide au lieu de rejeter toute la
+        // valeur) - une saisie corrompue passerait alors pour un montant
+        // propre. Number("500abc") vaut NaN, rejete par Number.isFinite.
         let montantWaveValide = null;
         if (montantWave !== undefined && montantWave !== null && montantWave !== '') {
-            const vWave = parseFloat(montantWave);
+            const vWave = Number(montantWave);
             if (!Number.isFinite(vWave) || vWave < 0) {
                 return res.status(400).json({ success: false, message: 'montantWave doit etre un nombre >= 0' });
             }
@@ -18310,7 +18314,7 @@ app.post('/api/clotures-caisse', checkAuth, async (req, res) => {
         }
         let montantOmValide = null;
         if (montantOm !== undefined && montantOm !== null && montantOm !== '') {
-            const vOm = parseFloat(montantOm);
+            const vOm = Number(montantOm);
             if (!Number.isFinite(vOm) || vOm < 0) {
                 return res.status(400).json({ success: false, message: 'montantOm doit etre un nombre >= 0' });
             }

@@ -5086,11 +5086,28 @@ router.get('/corporate', async (req, res) => {
         if (dateDebut > dateFin) {
             return res.status(400).json({ success: false, error: 'dateDebut doit preceder dateFin' });
         }
+        // Meme garde que /pl et /simulation: sans elle, une periode de
+        // plusieurs annees se propage jusqu'a computePlMemoise, qui la
+        // refuse via erreurPl(400, ...) - mais le catch ci-dessous
+        // l'aurait renvoyee en 500 faute de lire statusHttp.
+        const nbJoursPeriode = Math.floor(
+            (new Date(dateFin + 'T00:00:00Z') - new Date(dateDebut + 'T00:00:00Z')) / 86400000
+        ) + 1;
+        const MAX_JOURS_CORPORATE = 366;
+        if (nbJoursPeriode > MAX_JOURS_CORPORATE) {
+            return res.status(400).json({
+                success: false,
+                error: `periode trop longue (${nbJoursPeriode} jours, max ${MAX_JOURS_CORPORATE})`
+            });
+        }
 
         res.json({ success: true, data: await computeCorporateFinance(dateDebut, dateFin, todayISO) });
     } catch (e) {
-        console.error('GET /api/finance/corporate:', e);
-        res.status(500).json({ success: false, error: e.message });
+        // e.statusHttp: erreur METIER (cf erreurPl) remontee par
+        // computePlMemoise a travers computeCorporateFinance - la mapper
+        // plutot que la faire passer pour un incident serveur.
+        if (!e.statusHttp) console.error('GET /api/finance/corporate:', e);
+        res.status(e.statusHttp || 500).json({ success: false, error: e.message });
     }
 });
 
