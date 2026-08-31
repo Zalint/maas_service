@@ -4098,6 +4098,16 @@ async function validerClotureCaisse() {
     const depotMata = (depotMataRaw == null || String(depotMataRaw).trim() === '')
         ? null
         : parseFloat(depotMataRaw);
+    // Wave / Orange Money: OPTIONNELS, meme regime que depot Mata. Vide reste
+    // null (= non renseigne), a ne pas confondre avec 0 = aucun solde.
+    const montantWaveRaw = document.getElementById('clotureMontantWave')?.value;
+    const montantWave = (montantWaveRaw == null || String(montantWaveRaw).trim() === '')
+        ? null
+        : parseFloat(montantWaveRaw);
+    const montantOmRaw = document.getElementById('clotureMontantOm')?.value;
+    const montantOm = (montantOmRaw == null || String(montantOmRaw).trim() === '')
+        ? null
+        : parseFloat(montantOmRaw);
     const commercial = document.getElementById('clotureCommercial').value.trim();
     const commentaire = document.getElementById('clotureCommentaire').value.trim();
 
@@ -4135,6 +4145,19 @@ async function validerClotureCaisse() {
         return;
     }
 
+    if (montantWave != null && (isNaN(montantWave) || montantWave < 0)) {
+        showToast('Le "Solde Wave" doit être un montant positif', 'error');
+        const el = document.getElementById('clotureMontantWave');
+        if (el) el.focus();
+        return;
+    }
+    if (montantOm != null && (isNaN(montantOm) || montantOm < 0)) {
+        showToast('Le "Solde Orange Money" doit être un montant positif', 'error');
+        const el = document.getElementById('clotureMontantOm');
+        if (el) el.focus();
+        return;
+    }
+
     // Recuperation du depot precedent: OBLIGATOIRE des qu'un depot est saisi et
     // qu'un depot anterieur existe. Le serveur refait le meme controle.
     const depotPrecedentRecupere = lireDepotPrecedentRecupere();
@@ -4166,7 +4189,7 @@ async function validerClotureCaisse() {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, commercial, commentaire })
+            body: JSON.stringify({ date: today, pointVente, montantEspeces, fondDeCaisse, montantEstimatif, montantTotalCaisse, depotMata, depotPrecedentRecupere, montantWave, montantOm, commercial, commentaire })
         });
         const data = await res.json();
 

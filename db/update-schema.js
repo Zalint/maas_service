@@ -708,6 +708,36 @@ async function updateSchema() {
         `);
         console.log('Table fournisseur_paiements verifiee');
 
+        // Remboursements clients sur ventes a credit, pour Finance > Corporate
+        // (solde des creances clients = solde d'ouverture + flux, cf
+        // lib/creances-client.js). Miroir reduit de fournisseur_paiements.
+        await sequelize.query(`
+            CREATE TABLE IF NOT EXISTS creance_client_paiements (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                -- > 0 et non >= 0: un remboursement de zero n'en est pas un,
+                -- et la route POST rejette deja mt <= 0 - la contrainte doit
+                -- dire la meme regle, pas une plus large qu'elle ne sert pas.
+                montant NUMERIC(12, 2) NOT NULL CHECK (montant > 0),
+                commentaire TEXT,
+                created_by VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await sequelize.query(`CREATE INDEX IF NOT EXISTS idx_creance_client_paiements_date ON creance_client_paiements(date DESC)`);
+        // Tenants ou la table existait deja avec l'ancienne contrainte
+        // (>= 0): la resserrer a > 0, idempotent comme le CHECK de
+        // fournisseur_paiements plus haut.
+        await sequelize.query(`
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'creance_client_paiements_montant_check' AND conrelid = 'creance_client_paiements'::regclass) THEN
+                    ALTER TABLE creance_client_paiements DROP CONSTRAINT creance_client_paiements_montant_check;
+                END IF;
+                ALTER TABLE creance_client_paiements ADD CONSTRAINT creance_client_paiements_montant_check CHECK (montant > 0);
+            END $$;
+        `);
+        console.log('Table creance_client_paiements verifiee');
+
         // Charges mensuelles fixes pour le calcul PL (Profit/Loss).
         // Editables depuis l'UI Finance > Charges. Le PL applique au
         // prorata des jours lineaires (30 jours conventionnels).
@@ -1232,6 +1262,24 @@ async function updateSchema() {
                 ADD COLUMN IF NOT EXISTS depot_precedent_date DATE
             `);
             console.log('Colonne clotures_caisse.depot_precedent_date verifiee');
+
+            // montant_wave / montant_om: soldes Wave et Orange Money du point
+            // de vente a la cloture, pour Finance > Corporate (tresorerie
+            // reelle). Meme regime que depot_mata - NULL autorise, pas de
+            // back-fill: les clotures anterieures n'avaient pas la question.
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS montant_wave NUMERIC(12, 2)
+                    CHECK (montant_wave IS NULL OR montant_wave >= 0)
+            `);
+            console.log('Colonne clotures_caisse.montant_wave verifiee');
+
+            await sequelize.query(`
+                ALTER TABLE clotures_caisse
+                ADD COLUMN IF NOT EXISTS montant_om NUMERIC(12, 2)
+                    CHECK (montant_om IS NULL OR montant_om >= 0)
+            `);
+            console.log('Colonne clotures_caisse.montant_om verifiee');
         }
 
         // ----------------------------------------------------------------

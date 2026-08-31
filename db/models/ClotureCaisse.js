@@ -65,6 +65,18 @@ const ClotureCaisse = sequelize.define('ClotureCaisse', {
             + 'un oui/non déjà enregistré vers un AUTRE dépôt. Écrite par le '
             + 'serveur, qui retrouve lui-même la clôture visée.'
     },
+    montant_wave: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        comment: 'Solde Wave de ce point de vente à la clôture. NULL = non '
+            + 'renseigné, à ne pas confondre avec 0 = aucun solde.'
+    },
+    montant_om: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        comment: 'Solde Orange Money de ce point de vente à la clôture. NULL '
+            + '= non renseigné, à ne pas confondre avec 0 = aucun solde.'
+    },
     commercial: {
         type: DataTypes.STRING(150),
         allowNull: false,

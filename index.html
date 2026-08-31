@@ -20,6 +20,9 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/fr.js"></script>
+    <!-- Meme version que pos.html: PDF + PNG du rapport de parage, cote
+         client, sans rien ajouter au backend (bundle html2canvas). -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <style>
         /* ============================================
            AUTH: Masquer tout le contenu avant vérification d'authentification
@@ -2625,6 +2628,13 @@
                                                 title="Bœuf et agneau, en kg : stock matin, stock soir, transferts et ventes saisies, jour par jour">
                                             <i class="fas fa-weight-hanging"></i> Export détails
                                         </button>
+                                        <!-- Poster PDF + PNG (bœuf et/ou agneau selon le volume du
+                                             mois), meme constats que le skill mata-analyse mais
+                                             calcules sur les donnees en base - pas d'export manuel. -->
+                                        <button class="btn btn-outline-primary ms-2" id="generer-rapport-parage"
+                                                title="Génère un poster A4 (PDF + PNG) : régime avec/sans livraison, dérive hebdomadaire, enjeu chiffré">
+                                            <i class="fas fa-file-pdf"></i> Générer rapport de parage
+                                        </button>
                                     </div>
                                 </div>
                                 
@@ -2722,6 +2732,10 @@
                             <!-- Simulation: meme visibilite que PL -->
                             <li class="nav-item" id="fin-simulation-tab-item" style="display:none">
                                 <a class="nav-link" href="#" data-fin-tab="simulation">Simulation</a>
+                            </li>
+                            <!-- Finance corporate: tresorerie reelle, position nette, resultat/EBIT/EBITDA. Meme visibilite que PL -->
+                            <li class="nav-item" id="fin-corporate-tab-item" style="display:none">
+                                <a class="nav-link" href="#" data-fin-tab="corporate">Finance d'entreprise</a>
                             </li>
                         </ul>
                     </div>
@@ -3295,6 +3309,81 @@
                                 </div>
                             </div>
                             <div id="fin-cashstock-result"></div>
+                        </div>
+
+                        <div data-fin-pane="corporate" style="display:none">
+                            <div class="alert alert-light border small mb-3">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Trésorerie réelle</strong> = cash en caisse + solde Wave + solde Orange Money
+                                (l'argent immédiatement disponible). <strong>Position nette</strong> = Trésorerie réelle
+                                + créances clients − dette fournisseur Mata (ce que vous seriez si tout se réglait
+                                aujourd'hui). Réservé aux administrateurs, superviseurs et utilisateurs.
+                            </div>
+                            <div class="row g-2 mb-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date début</label>
+                                    <input type="date" id="fin-corporate-date-debut" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date fin</label>
+                                    <input type="date" id="fin-corporate-date-fin" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-primary" id="fin-corporate-refresh">
+                                        <i class="bi bi-calculator"></i> Calculer
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="fin-corporate-result"></div>
+
+                            <hr class="my-4">
+
+                            <div class="row g-2 mb-3 align-items-end fin-tab-advanced">
+                                <div class="col-md-3">
+                                    <label class="form-label">Solde d'ouverture créances clients</label>
+                                    <input type="number" id="fin-creances-solde-ouverture" min="0" step="1" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Date d'ouverture</label>
+                                    <input type="date" id="fin-creances-date-ouverture" class="form-control form-control-sm">
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-sm btn-outline-primary" id="fin-creances-ouverture-save">Enregistrer</button>
+                                </div>
+                                <div class="col-md-12">
+                                    <small class="text-muted">
+                                        Point de départ du suivi : aucun remboursement client n'existait avant.
+                                        À poser une fois, avec le montant réellement dû par les clients à cette date.
+                                    </small>
+                                </div>
+                            </div>
+
+                            <h6 class="mt-3">Remboursements clients</h6>
+                            <form id="fin-creance-remb-form" class="row g-2 align-items-end mb-3">
+                                <div class="col-md-3">
+                                    <label class="form-label">Date</label>
+                                    <input type="date" name="date" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Montant (FCFA)</label>
+                                    <input type="number" name="montant" min="1" step="1" class="form-control form-control-sm" required>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Commentaire</label>
+                                    <input type="text" name="commentaire" class="form-control form-control-sm" maxlength="200">
+                                </div>
+                                <div class="col-md-2">
+                                    <button class="btn btn-sm btn-success w-100">Ajouter</button>
+                                </div>
+                            </form>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-striped" id="fin-creance-remb-list">
+                                    <thead>
+                                        <tr><th>Date</th><th class="text-end">Montant</th><th>Commentaire</th><th>Auteur</th><th></th></tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -4049,7 +4138,7 @@
         })();
     </script>
     <!-- Helpers UI partages (toast + modal de confirmation, override alert) -->
-    <script src="js/ui-helpers.js"></script>
+    <script src="js/ui-helpers.js?v=20260831-esc-partage"></script>
     <!-- La formule du parage, LA MEME qu'au serveur (window.parageLib).
          Charge avant reconciliationManager.js et script.js, qui la lisent
          au lieu d'en recopier le seuil et le calcul. -->
@@ -4067,8 +4156,9 @@
     <script src="script.js?v=20260825-hors-mata"></script>
     <!-- Module d'import OCR depuis images -->
     <script src="js/ocr-import.js"></script>
+    <script src="js/parage-rapport.js?v=20260831-fixes-review"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260829-revue-112"></script>
+    <script src="js/finance.js?v=20260831-fixes-review"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
     <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>

@@ -56,13 +56,8 @@
         const x = parseFloat(v);
         return Number.isFinite(x) ? x : 0;
     };
-    // Les GUILLEMETS aussi: sans eux, une valeur placee dans un attribut
-    // pourrait en sortir. Aucun gabarit n'en met aujourd'hui, mais les
-    // libelles rendus viennent de la base - categorie de depense, commentaire
-    // de versement - et il suffirait d'un `title="${...}"` ajoute plus tard.
-    const esc = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    // esc() vit desormais dans js/ui-helpers.js (charge avant ce fichier),
+    // partagee avec js/parage-rapport.js plutot que redefinie ici.
 
     // Construit le markup d'une carte KPI Finance.
     // tone: 'warning' | 'success' | 'danger' | 'info' | 'neutral'
@@ -123,6 +118,7 @@
                 if (target === 'pl') loadPl();
                 if (target === 'cashstock') loadCashStock();
                 if (target === 'simulation') loadSimulation();
+                if (target === 'corporate') { loadCorporateFinance(); loadCreanceRembList(); }
             });
         });
 
@@ -144,6 +140,16 @@
         if (plRefresh) plRefresh.addEventListener('click', () => loadPl(true));
         const cashStockRefresh = document.getElementById('fin-cashstock-refresh');
         if (cashStockRefresh) cashStockRefresh.addEventListener('click', () => loadCashStock(true));
+        const corporateRefresh = document.getElementById('fin-corporate-refresh');
+        if (corporateRefresh) corporateRefresh.addEventListener('click', () => loadCorporateFinance(true));
+        const creanceRembForm = document.getElementById('fin-creance-remb-form');
+        if (creanceRembForm) creanceRembForm.addEventListener('submit', onCreanceRembSubmit);
+        const creancesOuvertureSave = document.getElementById('fin-creances-ouverture-save');
+        if (creancesOuvertureSave) creancesOuvertureSave.addEventListener('click', onCreancesOuvertureSave);
+        ['fin-creances-solde-ouverture', 'fin-creances-date-ouverture'].forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', () => { el.dataset.touched = '1'; });
+        });
         const simRefresh = document.getElementById('fin-sim-refresh');
         if (simRefresh) simRefresh.addEventListener('click', () => loadSimulation(true));
         // Export Excel + snapshots du PL.
@@ -862,6 +868,345 @@
             form.reset();
             if (typeof showToast === 'function') showToast('Paiement enregistré', 'success');
             loadPaiementsFournisseur();
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    // ===== Finance corporate: tresorerie reelle, position nette, resultat =====
+    let corporateChargePour = null;
+    let corporateLastPn = null;
+    let corporateLastRes = null;
+
+    // Recalcule la Position nette sans rappel API. `pn.total` (calcule cote
+    // serveur, cf routes/finance.js computeCorporateFinance) retranche DEJA
+    // le depot par defaut - decocher la case l'ajoute simplement de retour,
+    // plutot que de reconstruire la formule entiere ici: un futur terme
+    // ajoute au calcul serveur (nouvelle dette, etc.) resterait alors
+    // automatiquement reflete, sans synchroniser deux copies de la formule.
+    //
+    // La meme case retranche AUSSI le depot du Resultat/EBIT/EBITDA affiches
+    // (demande explicite) - un mouvement de caisse qui n'entre pourtant pas
+    // dans le calcul du PL lui-meme. Rien ne change cote serveur ni dans le
+    // PL: seul l'AFFICHAGE de ces trois tuiles suit la case, comme celle de
+    // Position nette juste au-dessus.
+    function recomputeCorporatePositionNette() {
+        const pn = corporateLastPn;
+        const totalEl = document.getElementById('fin-corporate-position-totale');
+        if (!pn || !totalEl) return;
+        const toggle = document.getElementById('fin-corporate-depot-toggle');
+        const inclureDepot = !toggle || toggle.checked;
+        const depot = inclureDepot ? nb(pn.depot_mata) : 0;
+
+        const total = Math.round((nb(pn.total) + (inclureDepot ? 0 : nb(pn.depot_mata))) * 100) / 100;
+        totalEl.textContent = fmtMoney(total);
+        totalEl.className = 'h5 mb-0 ' + (total >= 0 ? 'text-success' : 'text-danger');
+
+        const res = corporateLastRes;
+        if (res) {
+            const maj = (id, valeurBrute, colorable) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const v = Math.round((nb(valeurBrute) - depot) * 100) / 100;
+                el.textContent = fmtMoney(v);
+                if (colorable) el.className = 'h5 mb-0 ' + (v >= 0 ? 'text-success' : 'text-danger');
+            };
+            maj('fin-corporate-resultat-valeur', res.resultat, true);
+            maj('fin-corporate-ebit-valeur', res.ebit, false);
+            maj('fin-corporate-ebitda-valeur', res.ebitda, false);
+        }
+    }
+
+    function ensureCorporateDefaultDates() {
+        const dateFinEl = document.getElementById('fin-corporate-date-fin');
+        const dateDebutEl = document.getElementById('fin-corporate-date-debut');
+        if (dateFinEl && !dateFinEl.value) {
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            dateFinEl.value = `${yyyy}-${mm}-${dd}`;
+        }
+        if (dateDebutEl && !dateDebutEl.value && dateFinEl && dateFinEl.value) {
+            dateDebutEl.value = dateFinEl.value.slice(0, 8) + '01';
+        }
+    }
+
+    async function loadCorporateFinance(force) {
+        const resultEl = document.getElementById('fin-corporate-result');
+        if (!resultEl) return;
+        ensureCorporateDefaultDates();
+        const dateFin = document.getElementById('fin-corporate-date-fin').value;
+        const dateDebut = document.getElementById('fin-corporate-date-debut').value;
+        const cle = dateDebut + '|' + dateFin;
+        if (!force && corporateChargePour === cle) return;
+        resultEl.innerHTML = '<div class="text-muted"><i class="bi bi-hourglass-split"></i> Calcul en cours...</div>';
+        try {
+            const qs = new URLSearchParams();
+            if (dateFin) qs.set('dateFin', dateFin);
+            if (dateDebut) qs.set('dateDebut', dateDebut);
+            const res = await fetch('/api/finance/corporate?' + qs.toString(), { credentials: 'include' });
+            const json = await res.json();
+            if (res.status === 403) {
+                resultEl.innerHTML = '<div class="alert alert-warning">Accès réservé aux administrateurs et superviseurs.</div>';
+                return;
+            }
+            if (!json.success) {
+                if (json.code === 'date_futur') {
+                    resultEl.innerHTML = '<div class="alert alert-secondary mb-0">'
+                        + '<i class="bi bi-calendar-x"></i> Pas encore de données pour cette date.</div>';
+                    return;
+                }
+                throw new Error(json.error || 'Erreur');
+            }
+            renderCorporateFinance(json.data);
+            corporateChargePour = cle;
+        } catch (e) {
+            resultEl.innerHTML = `<div class="alert alert-danger">Erreur: ${esc(e.message)}</div>`;
+        }
+    }
+
+    function tileCorporate(label, valeur, opts) {
+        const o = opts || {};
+        return `
+            <div class="col-md-${o.col || 3}">
+                <div class="card h-100">
+                    <div class="card-body text-center py-2">
+                        <div class="small text-muted">${esc(label)}</div>
+                        <div class="h5 mb-0 ${o.color ? 'text-' + o.color : ''}"${o.id ? ` id="${o.id}"` : ''}>${esc(fmtMoney(valeur))}</div>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    function renderCorporateFinance(d) {
+        const resultEl = document.getElementById('fin-corporate-result');
+        if (!resultEl) return;
+        const tr = d.tresorerie_reelle || {};
+        const pn = d.position_nette || {};
+        const cc = d.creances_clients_detail || {};
+        const res = d.resultat || {};
+        const fiab = tr.fiabilite || {};
+        // Memorisee au meme titre que pn: la case a cocher "inclure le depot
+        // Mata" retranche aussi ce depot du Resultat/EBIT/EBITDA affiches -
+        // demande explicite, meme si le depot (mouvement de caisse) ne fait
+        // pas partie du calcul du PL lui-meme. Rien n'est modifie cote
+        // serveur: seul l'AFFICHAGE de ces trois tuiles bouge avec la case.
+        corporateLastRes = res;
+        // Memorisee pour que la case a cocher "inclure le depot Mata"
+        // recalcule le total sans rappeler l'API - tout ce qu'il faut est deja
+        // dans pn (cf routes/finance.js computeCorporateFinance).
+        corporateLastPn = pn;
+
+        // Prefill des champs d'ouverture des creances clients - seulement si
+        // l'utilisateur n'est pas en train de les modifier (dataset.touched,
+        // pose par la delegation d'evenements plus bas).
+        const soldeOuvEl = document.getElementById('fin-creances-solde-ouverture');
+        const dateOuvEl = document.getElementById('fin-creances-date-ouverture');
+        if (soldeOuvEl && !soldeOuvEl.dataset.touched) {
+            soldeOuvEl.value = cc.solde_ouverture != null ? cc.solde_ouverture : '';
+        }
+        if (dateOuvEl && !dateOuvEl.dataset.touched) {
+            dateOuvEl.value = cc.date_ouverture || '';
+        }
+
+        const alerteOuverture = !cc.fiable
+            ? `<div class="alert alert-warning py-2 px-2 small mb-3">
+                <i class="bi bi-exclamation-triangle"></i> Aucune date d'ouverture des créances clients n'est
+                posée : le montant ci-dessous n'est que le flux enregistré depuis le début, pas une vraie
+                créance. Renseignez le solde d'ouverture plus bas.
+               </div>`
+            : '';
+
+        // OR et non AND: un PV qui a saisi son Wave mais pas son Orange
+        // Money (ou l'inverse) a quand meme un trou - le total le compte
+        // pour 0 sur le canal manquant, sans que rien ne le signale si on
+        // n'exigeait l'absence des DEUX pour avertir.
+        const pvSansWaveOm = (tr.par_pv || []).filter((p) => p.wave == null || p.om == null)
+            .map((p) => p.point_de_vente);
+
+        resultEl.innerHTML = `
+            ${alerteOuverture}
+            <div class="card mb-3">
+                <div class="card-header bg-light"><strong>Trésorerie réelle</strong>
+                    <span class="small text-muted ms-2">au ${esc(d.date)}</span></div>
+                <div class="card-body">
+                    <div class="row g-2 mb-2">
+                        ${tileCorporate('Cash en caisse', tr.cash)}
+                        ${tileCorporate('Wave', tr.wave)}
+                        ${tileCorporate('Orange Money', tr.om)}
+                        ${tileCorporate('Total', tr.total, { color: 'primary' })}
+                    </div>
+                    <small class="text-muted">
+                        ${esc(String(fiab.pv_avec_cloture || 0))} point(s) de vente clôturés •
+                        ${esc(String(fiab.pv_renseigne_cash || 0))} avec cash renseigné •
+                        ${esc(String(fiab.pv_renseigne_wave || 0))} avec Wave •
+                        ${esc(String(fiab.pv_renseigne_om || 0))} avec Orange Money
+                        ${pvSansWaveOm.length ? ' • Wave et/ou OM non renseignés : ' + esc(pvSansWaveOm.join(', ')) : ''}
+                    </small>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header bg-light"><strong>Position nette</strong>
+                    <span class="small text-muted ms-2">Trésorerie réelle + créances clients − dette fournisseur officiel − commission MaaS − dépôt Mata</span></div>
+                <div class="card-body">
+                    <div class="row g-2 mb-2">
+                        ${tileCorporate('Trésorerie réelle', pn.tresorerie_reelle, { col: 4 })}
+                        ${tileCorporate('+ Créances clients', pn.creances_clients, { col: 4 })}
+                        ${tileCorporate('− Dette fournisseur (officiel)', pn.dette_fournisseur_officiel, { col: 4 })}
+                    </div>
+                    <div class="row g-2 align-items-stretch">
+                        ${tileCorporate('− Commission MaaS (mois)', pn.commission_maas_mois, { col: 4 })}
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-body text-center py-2">
+                                    <div class="form-check d-inline-flex align-items-center gap-1 mb-0">
+                                        <input class="form-check-input" type="checkbox" id="fin-corporate-depot-toggle" checked>
+                                        <label class="form-check-label small text-muted" for="fin-corporate-depot-toggle">− Dépôt Mata</label>
+                                    </div>
+                                    <div class="h5 mb-0" id="fin-corporate-depot-valeur">${esc(fmtMoney(pn.depot_mata))}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-body text-center py-2">
+                                    <div class="small text-muted">= Position nette</div>
+                                    <div class="h5 mb-0" id="fin-corporate-position-totale"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    ${pn.dette_fournisseur_officiel == null
+                        ? `<small class="text-warning d-block mt-2"><i class="bi bi-exclamation-triangle"></i>
+                            Solde officiel MataBanq indisponible : seule la commission MaaS du mois est retranchée
+                            ci-dessus, pas la dette fournisseur réelle — le total est donc surestimé.</small>`
+                        : `<small class="text-muted d-block mt-2">Dette fournisseur (officiel MataBanq) et commission MaaS
+                            (mois en cours) sont deux dettes distinctes, toutes deux retranchées.
+                            Le dépôt Mata du jour est déjà compté dans le cash en caisse ci-dessus (compté avant le
+                            dépôt) mais a physiquement quitté le point de vente ; MataBanq ne le voit qu'au lendemain,
+                            donc le retrancher aujourd'hui ne fait pas double emploi avec le solde officiel — décochez
+                            la case si vous savez que ce dépôt est déjà réconcilié côté MataBanq.</small>`}
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header bg-light"><strong>Résultat</strong>
+                    <span class="small text-muted ms-2">du ${esc((res.periode || {}).debut || '')} au ${esc((res.periode || {}).fin || '')}</span></div>
+                <div class="card-body">
+                    <div class="row g-2 mb-2">
+                        ${tileCorporate('Résultat', res.resultat, { col: 4, color: nb(res.resultat) >= 0 ? 'success' : 'danger', id: 'fin-corporate-resultat-valeur' })}
+                        ${tileCorporate('EBIT', res.ebit, { col: 4, id: 'fin-corporate-ebit-valeur' })}
+                        ${tileCorporate('EBITDA', res.ebitda, { col: 4, id: 'fin-corporate-ebitda-valeur' })}
+                    </div>
+                    <small class="text-muted">${esc(res.note || '')}</small>
+                </div>
+            </div>
+        `;
+
+        recomputeCorporatePositionNette();
+        const depotToggle = document.getElementById('fin-corporate-depot-toggle');
+        if (depotToggle) depotToggle.addEventListener('change', recomputeCorporatePositionNette);
+    }
+
+    async function loadCreanceRembList() {
+        try {
+            const res = await fetch('/api/finance/creances-client-paiements', { credentials: 'include' });
+            const json = await res.json();
+            if (!json.success) throw new Error(json.error || 'Erreur');
+            renderCreanceRembList(json.data);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur remboursements: ' + e.message, 'danger');
+        }
+    }
+
+    function renderCreanceRembList(rows) {
+        const body = document.querySelector('#fin-creance-remb-list tbody');
+        if (!body) return;
+        body.innerHTML = rows.map((r) => `
+            <tr>
+                <td>${esc(r.date)}</td>
+                <td class="text-end">${esc(fmtMoney(r.montant))}</td>
+                <td>${esc(r.commentaire || '')}</td>
+                <td>${esc(r.created_by || '')}</td>
+                <td><button class="btn btn-sm btn-outline-danger" data-creance-remb-delete="${r.id}">×</button></td>
+            </tr>
+        `).join('') || '<tr><td colspan="5" class="text-muted text-center">Aucun remboursement enregistré</td></tr>';
+
+        body.querySelectorAll('[data-creance-remb-delete]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const id = btn.dataset.creanceRembDelete;
+                if (typeof showConfirmModal === 'function') {
+                    const ok = await showConfirmModal('Supprimer ce remboursement ?', {
+                        title: 'Supprimer', okLabel: 'Supprimer', okVariant: 'danger'
+                    });
+                    if (!ok) return;
+                } else if (!confirm('Supprimer ce remboursement ?')) {
+                    return;
+                }
+                const res = await fetch('/api/finance/creances-client-paiements/' + id, { method: 'DELETE', credentials: 'include' });
+                const j = await res.json();
+                if (!j.success) {
+                    if (typeof showToast === 'function') showToast('Erreur: ' + j.error, 'danger');
+                    return;
+                }
+                loadCreanceRembList();
+                loadCorporateFinance(true);
+            });
+        });
+    }
+
+    async function onCreanceRembSubmit(e) {
+        e.preventDefault();
+        const form = e.target;
+        const fd = new FormData(form);
+        try {
+            const res = await fetch('/api/finance/creances-client-paiements', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    date: fd.get('date'),
+                    montant: fd.get('montant'),
+                    commentaire: fd.get('commentaire')
+                })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            form.reset();
+            if (typeof showToast === 'function') showToast('Remboursement enregistré', 'success');
+            loadCreanceRembList();
+            loadCorporateFinance(true);
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
+        }
+    }
+
+    async function onCreancesOuvertureSave() {
+        const soldeEl = document.getElementById('fin-creances-solde-ouverture');
+        const dateEl = document.getElementById('fin-creances-date-ouverture');
+        if (!soldeEl || !dateEl) return;
+        if (soldeEl.value === '' || !dateEl.value) {
+            if (typeof showToast === 'function') showToast('Solde et date requis', 'danger');
+            return;
+        }
+        try {
+            const res = await fetch('/api/finance/config', {
+                method: 'PUT',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    creances_clients_solde_ouverture: soldeEl.value,
+                    creances_clients_date_ouverture: dateEl.value
+                })
+            });
+            const j = await res.json();
+            if (!j.success) throw new Error(j.error || 'Erreur');
+            delete soldeEl.dataset.touched;
+            delete dateEl.dataset.touched;
+            if (typeof showToast === 'function') showToast('Solde d\'ouverture enregistré', 'success');
+            loadCorporateFinance(true);
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur: ' + e.message, 'danger');
         }

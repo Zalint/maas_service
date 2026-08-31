@@ -52,6 +52,7 @@ const {
     FournisseurPrix,
     FinanceConfig,
     FournisseurPaiement,
+    CreanceClientPaiement,
     ProduitAlias,
     PrixVenteCdcHistory,
     PrixAchatHistory,
@@ -654,7 +655,32 @@ const PROMPTS_ANALYSE = {
         + '150 a 220 mots, en quatre blocs titres exactement ainsi: OU VA LE MOIS (une '
         + 'phrase, scenario central), HYPOTHESES (ce qui est pose, pas mesure), RISQUES '
         + '(ce qui ferait devier), ACTION (1-2 gestes tires du plan d\'equilibre ou des '
-        + 'recommandations).'
+        + 'recommandations).',
+    parage: 'Tu commentes le taux de parage (perte a la decoupe) d\'UNE categorie '
+        + '(boeuf/veau ou agneau) d\'une boucherie au Senegal, sur un mois, pour son '
+        + 'gerant. Le JSON fourni contient: ensemble (taux pondere et kilos du mois), '
+        + 'avec_livraison et sans_livraison (meme forme, pour les jours ayant recu de '
+        + 'la marchandise ou non), semaines (decoupage hebdomadaire, taux et kilos), '
+        + 'correlation (coefficient de Pearson entre le volume theorique du jour et son '
+        + 'taux de perte), jours_notables (les 5 journees qui ont perdu le plus de '
+        + 'kilos, avec leurs chiffres), et enjeu (kg gagnables si le mois avait tourne '
+        + 'a la cible, et leur valeur en FCFA par mois et par an). '
+        + 'REGLES STRICTES: tu ne fais AUCUN calcul nouveau - tu cites uniquement des '
+        + 'chiffres presents dans le JSON, kilos a une decimale et FCFA arrondis. Si '
+        + 'un champ vaut null (ex: pas de prix connu), tu le dis plutot que d\'inventer '
+        + 'un montant. Reponds UNIQUEMENT en JSON valide (aucun texte hors de l\'objet '
+        + 'JSON), en francais, avec EXACTEMENT ces cles: titre_01 (titre court, moins '
+        + 'de 8 mots, comparant avec_livraison et sans_livraison), texte_01 (2-3 '
+        + 'phrases chiffrees sur ce contraste), titre_02 (titre court sur ce que dit '
+        + 'la correlation), texte_02 (2-3 phrases: la correlation rend-elle la perte '
+        + 'structurelle ou ponctuelle), titre_03 (titre court sur la concentration '
+        + 'de la perte), texte_03 (2-3 phrases citant 1-2 jours_notables precis, '
+        + 'leurs kilos et leur profil), titre_04 (titre court sur la tendance des '
+        + 'semaines), texte_04 (2-3 phrases comparant la premiere et la derniere '
+        + 'semaine du tableau semaines), enjeu (1-2 phrases avec les kg et FCFA de '
+        + 'l\'objet enjeu), mesure_1 et mesure_2 (une phrase chacune, deux actions '
+        + 'concretes et distinctes tirees des constats ci-dessus, applicables cette '
+        + 'semaine).'
 };
 
 router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
@@ -667,8 +693,8 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
         // '__proto__', 'constructor' ou 'toString' tombe sur l'heritage
         // d'Object, rend une valeur TRUTHY, et partait comme prompt systeme.
         const type = String((req.body || {}).type || '');
-        if (type !== 'pl' && type !== 'projection') {
-            return res.status(400).json({ success: false, error: 'type: pl ou projection attendu' });
+        if (type !== 'pl' && type !== 'projection' && type !== 'parage') {
+            return res.status(400).json({ success: false, error: 'type: pl, projection ou parage attendu' });
         }
         const prompt = PROMPTS_ANALYSE[type];
         const payload = (req.body || {}).payload;
@@ -744,20 +770,52 @@ router.post('/analyse-ia', checkAnalyseAccess, async (req, res) => {
             params.temperature = 0.3;
             params.max_tokens = 600;
         }
+        // Le rapport de parage alimente un poster a emplacements FIXES (titres,
+        // encadre enjeu, deux mesures) - un texte libre comme pour pl/projection
+        // ne se decoupe pas fiablement en cases. On demande donc un objet JSON
+        // strict, que le SDK OpenAI applique cote modele (moins d'echecs de
+        // parsing qu'un simple rappel dans le prompt).
+        if (type === 'parage') {
+            params.response_format = { type: 'json_object' };
+        }
         const completion = await openai.chat.completions.create(params);
-        const analyse = (completion.choices && completion.choices[0]
-            && completion.choices[0].message && completion.choices[0].message.content || '')
-            // L'ecran affiche du texte brut (white-space:pre-wrap), pas du
-            // markdown: les ### et ** du modele resteraient visibles tels
-            // quels. On les retire plutot que d'embarquer un moteur markdown
-            // pour quatre titres.
-            .replace(/^#+\s*/gm, '')
-            .replace(/\*\*/g, '')
-            .trim();
-        if (!analyse) {
+        const brut = (completion.choices && completion.choices[0]
+            && completion.choices[0].message && completion.choices[0].message.content || '').trim();
+        if (!brut) {
             return res.status(502).json({ success: false, error: 'réponse vide du modèle' });
         }
-        const data = { analyse: analyse, modele: modele, cache: false };
+
+        let data;
+        if (type === 'parage') {
+            // JSON attendu, PAS du texte a nettoyer: le nettoyage markdown de
+            // pl/projection couperait a tort un '**' ou un '#' qui se trouverait
+            // dans une valeur (ex: un titre citant une variation).
+            let poster;
+            try {
+                poster = JSON.parse(brut);
+            } catch (e) {
+                console.error('POST /api/finance/analyse-ia: JSON invalide du modele:', e.message);
+                return res.status(502).json({ success: false, error: 'réponse du modèle illisible (JSON invalide)' });
+            }
+            const clesAttendues = ['titre_01', 'texte_01', 'titre_02', 'texte_02',
+                'titre_03', 'texte_03', 'titre_04', 'texte_04', 'enjeu', 'mesure_1', 'mesure_2'];
+            const manquantes = clesAttendues.filter((k) => typeof poster[k] !== 'string' || !poster[k].trim());
+            if (manquantes.length) {
+                return res.status(502).json({ success: false,
+                    error: 'réponse du modèle incomplète (manque: ' + manquantes.join(', ') + ')' });
+            }
+            data = { poster: poster, modele: modele, cache: false };
+        } else {
+            const analyse = brut
+                // L'ecran affiche du texte brut (white-space:pre-wrap), pas du
+                // markdown: les ### et ** du modele resteraient visibles tels
+                // quels. On les retire plutot que d'embarquer un moteur markdown
+                // pour quatre titres.
+                .replace(/^#+\s*/gm, '')
+                .replace(/\*\*/g, '')
+                .trim();
+            data = { analyse: analyse, modele: modele, cache: false };
+        }
         _analyseMemo.set(cle, { at: maintenant, data: data });
         res.json({ success: true, data: data });
     } catch (e) {
@@ -2202,6 +2260,24 @@ router.get('/simulation', async (req, res) => {
             });
         }
 
+        res.json({ success: true, data: await computeSimulation(dateDebut, dateFin) });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * Le corps de GET /simulation, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js): la projection de fin de mois
+ * y consomme exactement les donnees que l'ecran Simulation recoit, sans
+ * seconde requete ni seconde definition.
+ *
+ * CONTRAT: les dates arrivent DEJA validees (ISO existantes, ordonnees,
+ * periode bornee a 366 jours). Les gardes restent dans les routes - chaque
+ * appelant a son propre vocabulaire d'erreur HTTP.
+ */
+async function computeSimulation(dateDebut, dateFin) {
+    try {
         // MEME filtre de date que le PL, via le meme helper. J'avais d'abord
         // ecrit `date >= :debut AND date <= :fin`, en supposant que ventes.date
         // etait toujours en ISO. C'est vrai des tenants d'aujourd'hui - verifie,
@@ -2932,9 +3008,7 @@ router.get('/simulation', async (req, res) => {
         // qui ne somment plus.
         const totalToutesLignes = volumes.total_ca;
 
-        res.json({
-            success: true,
-            data: {
+        return {
                 periode: { dateDebut, dateFin },
                 produits,
                 // Null hors v2: le plan d'equilibre n'y existe pas.
@@ -2996,13 +3070,14 @@ router.get('/simulation', async (req, res) => {
                     boeuf_stats: (v2 && typeof resolveurPrix.statsPrixBoeuf === 'function')
                         ? resolveurPrix.statsPrixBoeuf() : null
                 }
-            }
-        });
+        };
     } catch (error) {
+        // Journalise ICI, au plus pres du contexte: la route comme la synthese
+        // ne font ensuite que traduire l'echec dans leur vocabulaire.
         console.error('Erreur simulation:', error);
-        res.status(500).json({ success: false, error: error.message });
+        throw error;
     }
-});
+}
 
 // Periode par defaut du PL: 1er du mois -> aujourd'hui (UTC). Partagee par
 // la route, le bouton "Figer le PL du jour" et le cron du soir.
@@ -4365,6 +4440,29 @@ router.get('/pl/ecart-jour', async (req, res) => {
             return res.status(400).json({ success: false,
                 error: 'la référence doit précéder la date' });
         }
+        const data = await computeEcartJour({
+            dateISO,
+            veilleISO,
+            mode: resoudreMode(req.query),
+            debut: parseDateVersISO(String(req.query.debut || '')) || null
+        });
+        res.json({ success: true, data });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * Le corps de GET /pl/ecart-jour, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js): le bloc « journee » y est
+ * exactement l'ecart que le panneau du PL explique.
+ *
+ * CONTRAT: dateISO et veilleISO sont des ISO deja validees et ordonnees
+ * (veille < jour). `debut` est le debut de cumul PREFERE (ISO ou null):
+ * la resolution complete a besoin du snapshot, elle reste donc ici.
+ */
+async function computeEcartJour({ dateISO, veilleISO, mode, debut }) {
+    try {
         const [snapJour, snapVeille] = await Promise.all([
             PlSnapshot.findByPk(dateISO, { raw: true }),
             PlSnapshot.findByPk(veilleISO, { raw: true })
@@ -4386,13 +4484,12 @@ router.get('/pl/ecart-jour', async (req, res) => {
         //   fige           - ne comparer que des photos figees, sans rien
         //                    recalculer.
         // `recalculer=0/1` reste accepte: c'est l'ancien parametre.
-        const mode = resoudreMode(req.query);
         // LE DEBUT DU CUMUL vient du client, qui sait quelle periode il
         // affiche. Sans lui, un PL du 05 au 14 aurait ete explique par des
         // cumuls partant du 1er: l'ecart de la journee serait reste juste -
         // les deux cumuls partagent leur base - mais les colonnes « veille »
         // et « jour » auraient montre des totaux etrangers a l'ecran.
-        const debutPeriode = parseDateVersISO(String(req.query.debut || ''))
+        const debutPeriode = debut
             || ((snapJour && snapJour.payload && snapJour.payload.periode) || {}).dateDebut
             || dateISO.slice(0, 8) + '01';
         let payloadJour = snapJour ? snapJour.payload : null;
@@ -4500,9 +4597,7 @@ router.get('/pl/ecart-jour', async (req, res) => {
             commandesJour.complet =
                 Math.abs(commandesJour.total_ca - attendu) <= TOLERANCE_BOUCLAGE;
         }
-        res.json({
-            success: true,
-            data: Object.assign({
+        return Object.assign({
                 commandes_jour: commandesJour,
                 date_jour: dateISO,
                 date_veille: veilleISO,
@@ -4521,13 +4616,12 @@ router.get('/pl/ecart-jour', async (req, res) => {
                     : (snapVeille ? snapVeille.source : null),
                 fige_jour: jourRecalcule ? null : (snapJour ? snapJour.updated_at : null),
                 fige_veille: veilleRecalculee ? null : (snapVeille ? snapVeille.updated_at : null)
-            }, r)
-        });
+        }, r);
     } catch (e) {
         console.error('GET /api/finance/pl/ecart-jour:', e);
-        res.status(500).json({ success: false, error: e.message });
+        throw e;
     }
-});
+}
 
 function round2(n) {
     return Math.round(n * 100) / 100;
@@ -4663,6 +4757,17 @@ router.invalidateFinanceDerivedCaches = invalidateFinanceDerivedCaches;
 // comme invalidateFinanceDerivedCaches ci-dessus.
 router.computePl = computePl;
 router.periodePlParDefaut = periodePlParDefaut;
+// La synthese externe (routes/finance-synthese.js) assemble PL, journee,
+// cash et projection a partir des MEMES calculs que les ecrans - exportes
+// ici plutot que reecrits la-bas, ou ils divergeraient.
+router.computePlMemoise = computePlMemoise;
+router.clientsPeriodeMemoise = clientsPeriodeMemoise;
+router.computeSimulation = computeSimulation;
+router.computeCashStock = computeCashStock;
+router.computeCorporateFinance = computeCorporateFinance;
+router.computeEcartJour = computeEcartJour;
+router.lireConfigPublique = lireConfigPublique;
+router.parseDateVersISO = parseDateVersISO;
 // Gardes du figeage, exposees pour etre testees sans monter HTTP ni base.
 router.resoudreCibleSnapshot = resoudreCibleSnapshot;
 router.validerCoefficient = validerCoefficient;
@@ -4931,6 +5036,92 @@ router.get('/cash-stock', async (req, res) => {
             });
         }
 
+        res.json({ success: true, data: await computeCashStock(dateD, todayISO) });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Finance corporate: tresorerie reelle (cash + Wave + Orange Money),
+// position nette (+ creances clients - dette fournisseur), et resultat /
+// EBIT / EBITDA sur la periode. Meme garde et meme tolerance de date que
+// /cash-stock, dont cette route reutilise le calcul du cash par PV.
+router.get('/corporate', async (req, res) => {
+    try {
+        const role = (req.session && req.session.user && req.session.user.role || '').toLowerCase();
+        if (!['admin', 'superviseur', 'user'].includes(role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Accès réservé aux administrateurs et superviseurs'
+            });
+        }
+
+        const today = new Date();
+        const todayISO = today.toISOString().slice(0, 10);
+        const rawDateFin = req.query.dateFin || req.query.date;
+        const dateFin = rawDateFin ? parseDateVersISO(rawDateFin) : todayISO;
+        if (rawDateFin && !dateFin) {
+            return res.status(400).json({ success: false, error: 'invalid dateFin' });
+        }
+        const dParsed = new Date(dateFin + 'T00:00:00Z');
+        if (isNaN(dParsed.getTime())) {
+            return res.status(400).json({ success: false, error: 'invalid dateFin' });
+        }
+        // Meme tolerance d'un jour que /cash-stock (fuseaux a l'est de Greenwich).
+        const todayParsed = new Date(todayISO + 'T00:00:00Z');
+        const borneHaute = new Date(todayParsed.getTime() + 24 * 3600 * 1000);
+        if (dParsed > borneHaute) {
+            return res.status(400).json({
+                success: false,
+                error: 'date ne peut pas etre dans le futur',
+                code: 'date_futur'
+            });
+        }
+
+        const rawDateDebut = req.query.dateDebut;
+        const dateDebut = rawDateDebut ? parseDateVersISO(rawDateDebut) : (dateFin.slice(0, 8) + '01');
+        if (rawDateDebut && !dateDebut) {
+            return res.status(400).json({ success: false, error: 'invalid dateDebut' });
+        }
+        if (dateDebut > dateFin) {
+            return res.status(400).json({ success: false, error: 'dateDebut doit preceder dateFin' });
+        }
+        // Meme garde que /pl et /simulation: sans elle, une periode de
+        // plusieurs annees se propage jusqu'a computePlMemoise, qui la
+        // refuse via erreurPl(400, ...) - mais le catch ci-dessous
+        // l'aurait renvoyee en 500 faute de lire statusHttp.
+        const nbJoursPeriode = Math.floor(
+            (new Date(dateFin + 'T00:00:00Z') - new Date(dateDebut + 'T00:00:00Z')) / 86400000
+        ) + 1;
+        const MAX_JOURS_CORPORATE = 366;
+        if (nbJoursPeriode > MAX_JOURS_CORPORATE) {
+            return res.status(400).json({
+                success: false,
+                error: `periode trop longue (${nbJoursPeriode} jours, max ${MAX_JOURS_CORPORATE})`
+            });
+        }
+
+        res.json({ success: true, data: await computeCorporateFinance(dateDebut, dateFin, todayISO) });
+    } catch (e) {
+        // e.statusHttp: erreur METIER (cf erreurPl) remontee par
+        // computePlMemoise a travers computeCorporateFinance - la mapper
+        // plutot que la faire passer pour un incident serveur.
+        if (!e.statusHttp) console.error('GET /api/finance/corporate:', e);
+        res.status(e.statusHttp || 500).json({ success: false, error: e.message });
+    }
+});
+
+/**
+ * Le corps de GET /cash-stock, isole de HTTP pour etre appelable par la
+ * synthese externe (routes/finance-synthese.js).
+ *
+ * CONTRAT: dateD est une ISO deja validee, au plus un jour apres todayISO
+ * (la tolerance de fuseau de la route). todayISO est passee par l'appelant
+ * pour que la fonction reste sans horloge propre - deux lectures de l'heure
+ * dans le meme calcul peuvent changer de jour entre elles.
+ */
+async function computeCashStock(dateD, todayISO) {
+    try {
         // 1) Stock soir(D) avec fallback au snapshot le plus proche <= D.
         // stocks.date est en TEXTE DD-MM-YYYY; on convertit en ISO via la
         // constante STOCKS_DATE_AS_ISO_SQL (IMMUTABLE, indexable - cf
@@ -4975,22 +5166,31 @@ router.get('/cash-stock', async (req, res) => {
         // sans la moindre erreur.
         const cashRows = await ClotureCaisse.findAll({
             where: { date: dateD, is_latest: true },
-            attributes: ['point_de_vente', 'montant_total_caisse', 'depot_mata', 'updated_at'],
+            attributes: ['point_de_vente', 'montant_total_caisse', 'depot_mata', 'montant_wave', 'montant_om', 'updated_at'],
             order: [['point_de_vente', 'ASC']]
         });
         const cashParPv = cashRows.map((c) => {
             const m = c.montant_total_caisse;
             const d = c.depot_mata;
+            const w = c.montant_wave;
+            const om = c.montant_om;
             return {
                 point_de_vente: c.point_de_vente,
                 montant: m == null ? null : round2(parseFloat(m)),
                 renseigne: m != null,
-                depot_mata: d == null ? null : round2(parseFloat(d))
+                depot_mata: d == null ? null : round2(parseFloat(d)),
+                // Wave/Orange Money: independants de "renseigne" ci-dessus (qui
+                // ne porte que sur le cash) - une PV peut avoir compte sa caisse
+                // sans avoir note ses soldes mobile money, et inversement.
+                wave: w == null ? null : round2(parseFloat(w)),
+                om: om == null ? null : round2(parseFloat(om))
             };
         });
         const cashCaisseTotal = cashParPv.reduce(
             (s, c) => s + (c.montant != null ? c.montant : 0), 0
         );
+        const waveTotal = cashParPv.reduce((s, c) => s + (c.wave != null ? c.wave : 0), 0);
+        const omTotal = cashParPv.reduce((s, c) => s + (c.om != null ? c.om : 0), 0);
         const pvSansSaisie = cashParPv.filter((c) => !c.renseigne).map((c) => c.point_de_vente);
 
         // 3 bis) Depot Mata = ce que le point de vente a verse a Mata ce
@@ -5231,9 +5431,7 @@ router.get('/cash-stock', async (req, res) => {
         const dansLaTolerance = dateD > todayISO;
         const aucuneDonnee = dansLaTolerance && cashParPv.length === 0;
 
-        res.json({
-            success: true,
-            data: {
+        return {
                 date: dateD,
                 stock: {
                     soir_brut: round2(stockSoirBrut),
@@ -5270,8 +5468,12 @@ router.get('/cash-stock', async (req, res) => {
                 depot_mata: round2(depotMataTotal),
                 cash: {
                     total: round2(cashCaisseTotal),
+                    wave_total: round2(waveTotal),
+                    om_total: round2(omTotal),
                     nb_pv_avec_cloture: cashParPv.length,
                     nb_pv_renseigne: cashParPv.filter((c) => c.renseigne).length,
+                    nb_pv_wave_renseigne: cashParPv.filter((c) => c.wave != null).length,
+                    nb_pv_om_renseigne: cashParPv.filter((c) => c.om != null).length,
                     pv_sans_saisie: pvSansSaisie,
                     par_pv: cashParPv
                 },
@@ -5284,13 +5486,162 @@ router.get('/cash-stock', async (req, res) => {
                 // cloture: l'interface affiche un message neutre plutot que ce
                 // total, qui n'est mesure sur rien.
                 aucune_donnee: aucuneDonnee
-            }
-        });
+        };
     } catch (e) {
         console.error('GET /api/finance/cash-stock:', e);
-        res.status(500).json({ success: false, error: e.message });
+        throw e;
     }
-});
+}
+
+/**
+ * Le corps de GET /corporate, isole de HTTP comme computeCashStock ci-dessus.
+ *
+ * Assemble trois blocs qui repondent chacun a une question differente:
+ *   - tresorerie_reelle : l'argent immediatement disponible (cash + Wave +
+ *     Orange Money) - reutilise le detail par PV deja calcule par
+ *     computeCashStock, sans toucher a sa Valeur (qui reste stock inclus).
+ *   - position_nette : tresorerie_reelle + creances clients - dette
+ *     fournisseur - la version SME de Tresorerie nette = FR - BFR.
+ *   - resultat : le PL de la periode, redit aussi comme EBIT/EBITDA. Les
+ *     trois valeurs sont IDENTIQUES tant qu'aucune charge financiere,
+ *     amortissement ou impot n'est isole du reste des depenses - ce n'est
+ *     pas un defaut du calcul, juste l'etat actuel des donnees.
+ */
+async function computeCorporateFinance(dateDebut, dateFin, todayISO) {
+    const cashStock = await computeCashStock(dateFin, todayISO);
+
+    const tresorerieReelle = {
+        cash: cashStock.cash.total,
+        wave: cashStock.cash.wave_total,
+        om: cashStock.cash.om_total,
+        total: round2(cashStock.cash.total + cashStock.cash.wave_total + cashStock.cash.om_total),
+        par_pv: cashStock.cash.par_pv,
+        fiabilite: {
+            pv_avec_cloture: cashStock.cash.nb_pv_avec_cloture,
+            pv_renseigne_cash: cashStock.cash.nb_pv_renseigne,
+            pv_renseigne_wave: cashStock.cash.nb_pv_wave_renseigne,
+            pv_renseigne_om: cashStock.cash.nb_pv_om_renseigne,
+            pv_sans_saisie_cash: cashStock.cash.pv_sans_saisie
+        }
+    };
+
+    // Creances clients: solde d'ouverture + flux depuis cette date (cf
+    // lib/creances-client.js - aucun historique de remboursement n'existe
+    // avant qu'on commence a le tracer).
+    const { construireCreancesClient } = require('../lib/creances-client');
+    const cfgCreances = await FinanceConfig.findAll({
+        where: { key: { [Op.in]: ['creances_clients_solde_ouverture', 'creances_clients_date_ouverture'] } },
+        raw: true
+    });
+    const cfgCreancesMap = Object.fromEntries(cfgCreances.map((r) => [r.key, r.value]));
+    const soldeOuverture = parseFloat(cfgCreancesMap.creances_clients_solde_ouverture) || 0;
+    const dateOuverture = cfgCreancesMap.creances_clients_date_ouverture || null;
+
+    let ventesCreanceFlux = [];
+    let remboursementsFlux = [];
+    if (dateOuverture) {
+        // Vente.date est un texte MIXTE (YYYY-MM-DD et DD-MM-YYYY selon
+        // l'epoque) - meme contournement que le PL: Op.in sur les deux
+        // graphies possibles, puis filtre precis en JS via parseDateVersISO.
+        const dateList = graphiesDeDatesPourPeriode(dateOuverture, dateFin);
+        const ventesRows = await Vente.findAll({
+            where: { creance: true, date: { [Op.in]: dateList } },
+            attributes: ['date', 'montant'], raw: true
+        });
+        ventesCreanceFlux = ventesRows
+            .map((v) => ({ date: parseDateVersISO(v.date), montant: parseFloat(v.montant) || 0 }))
+            .filter((v) => v.date && v.date > dateOuverture && v.date <= dateFin);
+
+        // creance_client_paiements.date est un vrai DATEONLY: comparaison
+        // native sans contournement.
+        const rembRows = await CreanceClientPaiement.findAll({
+            where: { date: { [Op.gt]: dateOuverture, [Op.lte]: dateFin } },
+            attributes: ['date', 'montant'], raw: true
+        });
+        remboursementsFlux = rembRows.map((r) => ({
+            date: String(r.date).slice(0, 10),
+            montant: parseFloat(r.montant) || 0
+        }));
+    }
+    const creancesClients = construireCreancesClient({
+        soldeOuverture,
+        dateOuverture,
+        ventesCreance: ventesCreanceFlux,
+        remboursements: remboursementsFlux
+    });
+
+    // Dette fournisseur: DEUX dettes DISTINCTES, toutes deux a payer - ce
+    // n'est pas une source qui replie sur l'autre:
+    //   - officielle (MataBanq)   : solde_final du compte partenaire - ce qui
+    //     est du au FOURNISSEUR VIANDE (avances - remboursements depuis
+    //     toujours).
+    //   - commission MaaS du mois : DEJA calculee par computeCashStock, 3%
+    //     sur les livraisons du MOIS EN COURS - ce qui est du A MATA pour
+    //     l'usage de la plateforme. Distinct du fournisseur viande, meme
+    //     s'ils transitent par le meme partenaire.
+    // Les deux se retranchent. Quand MataBanq ne repond pas, seule la
+    // commission reste retranchee - officiel vaut null et l'ecran doit le
+    // dire, pas la remplacer silencieusement par l'autre dette.
+    const { fetchCreanceCdb } = require('../lib/depenses-creance-client');
+    const cdb = await fetchCreanceCdb({ dateDebut, dateFin });
+    const detailCdb = (cdb && Array.isArray(cdb.details) && cdb.details[0]) || null;
+    const statusCdb = (detailCdb && Array.isArray(detailCdb.status) && detailCdb.status[0]) || null;
+    const soldeOfficielBrut = statusCdb ? statusCdb.solde_final
+        : (cdb && cdb.summary && cdb.summary.totals ? cdb.summary.totals.current_balance : null);
+    const soldeOfficiel = Number.isFinite(parseFloat(soldeOfficielBrut)) ? round2(soldeOfficielBrut) : null;
+    const commissionMaasMois = cashStock.solde_du_fournisseur;
+
+    // Depot Mata du jour: deja compte dans cash.total (la caisse est comptee
+    // AVANT le depot, cf computeCashStock) mais cet argent a physiquement
+    // quitte le point de vente - ce n'est plus de la tresorerie disponible.
+    // MataBanq ne le voit toutefois QUE LE LENDEMAIN (cf lib/cash-theorique.js:
+    // "les huit depots retrouves le sont TOUS au lendemain, jamais le jour
+    // meme"): le retrancher AUJOURD'HUI ne fait donc PAS double emploi avec
+    // le solde officiel ci-dessus, qui ne l'a pas encore absorbe. Ce ne
+    // redeviendrait un double compte qu'a partir de demain, une fois le
+    // depot repercute cote MataBanq - d'ou le bouton, cote UI, pour l'exclure
+    // le jour ou l'utilisateur sait que c'est deja reconcilie.
+    const depotMataJour = cashStock.depot_mata;
+
+    const positionNette = {
+        tresorerie_reelle: tresorerieReelle.total,
+        creances_clients: creancesClients.total,
+        dette_fournisseur_officiel: soldeOfficiel,
+        commission_maas_mois: commissionMaasMois,
+        depot_mata: depotMataJour,
+        // Total PAR DEFAUT: les deux dettes ET le depot du jour retranches.
+        // L'ecran peut retirer le depot du calcul (case a cocher) sans
+        // rappeler l'API - toutes les composantes necessaires sont ci-dessus.
+        total: round2(
+            tresorerieReelle.total + creancesClients.total
+            - (soldeOfficiel != null ? soldeOfficiel : 0)
+            - commissionMaasMois
+            - depotMataJour
+        )
+    };
+
+    // Resultat / EBIT / EBITDA: le meme PL, redit sous trois noms. Reutilise
+    // computePlMemoise (memoise par date, comme le fait deja finance-synthese).
+    const pl = await computePlMemoise(dateDebut, dateFin);
+    const resultat = {
+        periode: { debut: dateDebut, fin: dateFin },
+        resultat: round2(pl.pl),
+        ebit: round2(pl.pl),
+        ebitda: round2(pl.pl),
+        note: 'EBIT et EBITDA sont identiques au resultat: aucune charge '
+            + 'financiere, amortissement ou impot n\'est aujourd\'hui isole '
+            + 'des autres depenses. Ces trois valeurs divergeront '
+            + 'automatiquement des que de telles categories existeront.'
+    };
+
+    return {
+        date: dateFin,
+        tresorerie_reelle: tresorerieReelle,
+        position_nette: positionNette,
+        creances_clients_detail: creancesClients,
+        resultat: resultat
+    };
+}
 
 // =====================================================
 // CONFIG
@@ -5361,7 +5712,7 @@ router.put('/config', async (req, res) => {
         // (soir + vendu + jete - matin) mesure le dechet PRODUIT par la
         // decoupe. Configuree dans le meme ecran admin que les exclusions,
         // et stockee pareil: une liste CSV de noms, pas de table dediee.
-        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions', 'parage_dechets'];
+        const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions', 'parage_dechets', 'creances_clients_solde_ouverture', 'creances_clients_date_ouverture'];
         // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
         // parametre date a ce jour.
         const moisCible = req.body?.mois || null;
@@ -5400,6 +5751,22 @@ router.put('/config', async (req, res) => {
                     return res.status(400).json({
                         success: false,
                         error: `${key} doit etre entre 0 et 100`
+                    });
+                }
+                // Solde d'ouverture des creances clients: point de depart du
+                // suivi (cf lib/creances-client.js) - un nombre quelconque,
+                // pas forcement positif (une creance sur-estimee au demarrage
+                // peut se corriger en negatif le temps que le flux rattrape).
+                if (key === 'creances_clients_solde_ouverture' && !Number.isFinite(parseFloat(value))) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'creances_clients_solde_ouverture doit etre un nombre'
+                    });
+                }
+                if (key === 'creances_clients_date_ouverture' && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'creances_clients_date_ouverture: format YYYY-MM-DD attendu'
                     });
                 }
                 aEcrire.push({ key, value });
@@ -5652,6 +6019,72 @@ router.delete('/paiements/:id', checkAdvancedAccess, async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         console.error('DELETE /api/finance/paiements/:id:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// =====================================================
+// REMBOURSEMENTS CLIENTS (creances)
+// =====================================================
+// Meme garde que /paiements (fournisseur): checkWriteAccess pour lire et
+// ecrire (un 'user' saisit un remboursement), checkAdvancedAccess pour
+// supprimer (on ajoute, on ne retire pas ce qu'un autre a saisi).
+router.get('/creances-client-paiements', checkWriteAccess, async (req, res) => {
+    try {
+        const { Op } = require('sequelize');
+        const where = {};
+        if (req.query.dateDebut) where.date = { [Op.gte]: req.query.dateDebut };
+        if (req.query.dateFin) {
+            where.date = where.date || {};
+            where.date[Op.lte] = req.query.dateFin;
+        }
+        const rows = await CreanceClientPaiement.findAll({
+            where,
+            order: [['date', 'DESC'], ['id', 'DESC']]
+        });
+        res.json({ success: true, data: rows });
+    } catch (e) {
+        console.error('GET /api/finance/creances-client-paiements:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.post('/creances-client-paiements', checkWriteAccess, async (req, res) => {
+    try {
+        const { date, montant, commentaire } = req.body;
+        if (!date || !montant) {
+            return res.status(400).json({ success: false, error: 'date et montant requis' });
+        }
+        const mt = parseFloat(montant);
+        if (!Number.isFinite(mt) || mt <= 0) {
+            return res.status(400).json({ success: false, error: 'montant doit etre un nombre > 0' });
+        }
+        const created = await CreanceClientPaiement.create({
+            date,
+            montant: mt,
+            commentaire: commentaire || null,
+            created_by: req.session?.user?.username || null
+        });
+        res.json({ success: true, data: created });
+    } catch (e) {
+        console.error('POST /api/finance/creances-client-paiements:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+router.delete('/creances-client-paiements/:id', checkAdvancedAccess, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isInteger(id)) {
+            return res.status(400).json({ success: false, error: 'id invalide' });
+        }
+        const rows = await CreanceClientPaiement.destroy({ where: { id } });
+        if (rows === 0) {
+            return res.status(404).json({ success: false, error: 'Remboursement introuvable' });
+        }
+        res.json({ success: true });
+    } catch (e) {
+        console.error('DELETE /api/finance/creances-client-paiements/:id:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

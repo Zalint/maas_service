@@ -121,9 +121,25 @@
         });
     }
 
+    /**
+     * Echappement HTML (&, <, >, ", '). Repris ici pour ne plus vivre en
+     * double dans chaque script applicatif qui rend du HTML dynamique
+     * (js/finance.js, js/parage-rapport.js en avaient chacun leur copie -
+     * celle de finance.js echappait aussi l'apostrophe, reprise ici pour
+     * ne perdre aucune protection deja en place sur ses appels existants).
+     * @param {*} s
+     * @returns {string}
+     */
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     // Expose global
     window.showToast = showToast;
     window.showConfirmModal = showConfirmModal;
+    window.esc = esc;
 
     // Override alert(): redirige tous les appels existants vers showToast.
     // Comportement non bloquant (le code apres l'alert continue immediatement),
