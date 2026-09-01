@@ -17,12 +17,26 @@ const mockModeles = {
     FournisseurPrix: { findAll: jest.fn() },
     PrixAchatHistory: { findAll: jest.fn() },
     ProduitAlias: { findAll: jest.fn() },
-    Transfert: { findAll: jest.fn() },
-    // finance_config, ou vit le reglage « commission integree » - qui decide
-    // LEQUEL des deux prix DATA est lu pour le boeuf.
-    FinanceConfig: { findOne: jest.fn() }
+    Transfert: { findAll: jest.fn() }
 };
 jest.mock('../db/models', () => mockModeles);
+
+// Le catalogue MATA: ce que le fournisseur FACTURE, commission comprise. Il
+// l'emporte sur le prix enregistre pour les journees qu'il couvre, et c'est la
+// MEME reponse qui decide si la commission reste due
+// (cf lib/commission-integree.js). Le stub porte donc aussi depuisParNom: sans
+// date d'entree en vigueur, la vraie regle REFUSE le prix, et un stub qui
+// l'omettrait testerait un chemin que la production n'emprunte jamais.
+const PRIX_MATA_AGNEAU = 4665;
+const DEPUIS_MATA = '2026-08-01';
+jest.mock('../lib/prix-vente-maas-client', () => ({
+    getPrixVenteMaasParNom: jest.fn(async () => ({
+        disponible: true,
+        parNom: new Map([['agneau', 4665]]),
+        depuisParNom: new Map([['agneau', '2026-08-01']]),
+        commissionParNom: new Map([['agneau', true]])
+    }))
+}));
 
 // Le prix « du marche », celui que DATA renvoie pour le lot du jour. Il DOIT
 // l'emporter sur le nombre fige du catalogue: c'est la raison d'etre de la
@@ -67,13 +81,9 @@ const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
  * @param {boolean} o.dynamique  la case « Prix API (DATA) » sur la ligne Boeuf
  * @param {Array}   o.catalogue  lignes fournisseur_prix
  * @param {Array}   o.alias      lignes produit_alias
- * @param {string|undefined} o.commissionIntegree  la valeur BRUTE du reglage
- *        dans finance_config; `undefined` = aucune ligne enregistree, l'etat
- *        de sortie d'usine.
  */
 function poser({
-    dynamique = false, catalogue = [], alias = [], historique = [],
-    commissionIntegree = undefined
+    dynamique = false, catalogue = [], alias = [], historique = []
 } = {}) {
     // DECIMAL(12,2) et DECIMAL(10,4) reviennent de Postgres en CHAINES
     // ("4500.00", "0.5000"), pas en nombres. Nourrir les mocks avec des
@@ -97,13 +107,6 @@ function poser({
         }))
     );
     mockModeles.Transfert.findAll.mockResolvedValue([]);
-    // Pas de ligne en base = reglage jamais enregistre. C'est le defaut, et il
-    // vaut « tous les produits coches » - donc la source MaaS pour le boeuf.
-    mockModeles.FinanceConfig.findOne.mockResolvedValue(
-        commissionIntegree === undefined
-            ? null
-            : { key: 'commission_integree_produits', value: commissionIntegree }
-    );
     mockModeles.ProduitAlias.findAll.mockResolvedValue(
         alias.map((a) => ({
             alias_produit: a.alias_produit,
@@ -620,5 +623,33 @@ describe('les avertissements du client boeuf remontent a l ecran', () => {
             r.pourDate(d).prixAchat('Boeuf');
         }
         expect(r.avertissements.filter((a) => /aucun lot/i.test(a))).toHaveLength(1);
+    });
+});
+
+describe('le prix de reference de l ovin suit la MEME source que le calcul', () => {
+    // prixAchatDefaut.ovin sert de cout de reference a l'agneau. Il etait lu
+    // sur le seul historique pendant que prixDeBase lisait le prix MATA: la
+    // meme journee portait alors deux couts pour le meme produit, l'un
+    // commission comprise et l'autre non - le desaccord le plus difficile a
+    // reperer, puisque les deux nombres restent plausibles.
+    test('journee COUVERTE par le tarif MATA : les deux rendent ce prix', async () => {
+        poser({ catalogue: [{ produit: 'Agneau', prix_achat: 4500 }] });
+        const r = await creerResolveurPrixAchat('2026-08-15');
+        const p = r.pourDate('2026-08-15');
+        expect(p.prixAchat('Agneau')).toBe(PRIX_MATA_AGNEAU);
+        expect(p.prixAchatDefaut.ovin).toBe(PRIX_MATA_AGNEAU);
+    });
+
+    test('journee ANTERIEURE au tarif : les deux retombent sur l enregistre', async () => {
+        // Le garde de date refuse le prix MATA, et il doit le refuser AUX DEUX
+        // endroits: un cout hors commission d'un cote et commission comprise de
+        // l'autre ferait diverger le PL de sa propre valeur de reference.
+        poser({ catalogue: [{ produit: 'Agneau', prix_achat: 4500 }] });
+        const veille = '2026-07-31';
+        expect(veille < DEPUIS_MATA).toBe(true);
+        const r = await creerResolveurPrixAchat(veille);
+        const p = r.pourDate(veille);
+        expect(p.prixAchat('Agneau')).toBe(4500);
+        expect(p.prixAchatDefaut.ovin).toBe(4500);
     });
 });

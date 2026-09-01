@@ -800,6 +800,41 @@ async function computeCreances(opts = {}) {
     const totalPaiements = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
     mark('paiements');
 
+    // CALCULE AVANT LE RETOUR, et non dans le litteral: lookupPrixAchatAtDate
+    // ajoute des avertissements (un tarif MATA qui ne couvre pas la journee,
+    // par exemple), et les proprietes d'un litteral sont evaluees dans l'ordre
+    // ou elles sont ecrites. `avertissements` etant rendu plus haut dans
+    // l'objet, tout message pose ici arrivait apres la copie et disparaissait -
+    // silencieusement, et d'autant plus surement qu'une periode sans vente
+    // Centre de Decoupe n'appelle lookupPrixAchatAtDate QUE d'ici.
+    const detailParDateSortie = Array.from(detailParDate.values())
+        .map((d) => {
+            const prixAchatEff = lookupPrixAchatAtDate(d.produit, d.date);
+            const prixAchatNum =
+                prixAchatEff == null ? null : parseFloat(prixAchatEff);
+            // Quantite arrondie pour l'affichage: on calcule montant_achat
+            // a partir de cette meme valeur arrondie pour que, dans la vue
+            // d'audit, (Qte affichee) × (Prix affiche) = (Montant affiche).
+            const quantiteAff = round2(d.quantite);
+            return {
+                date: d.date,
+                produit: d.produit,
+                quantite: quantiteAff,
+                prix_achat:
+                    prixAchatNum == null || isNaN(prixAchatNum)
+                        ? null
+                        : round2(prixAchatNum),
+                montant_achat:
+                    prixAchatNum == null || isNaN(prixAchatNum)
+                        ? null
+                        : round2(quantiteAff * prixAchatNum),
+                dette: round2(d.dette)
+            };
+        })
+        .sort((a, b) =>
+            a.date < b.date ? 1 : a.date > b.date ? -1 : b.dette - a.dette
+        );
+
     return {
         periode: { dateDebut, dateFin },
         commission_pct: commissionPct,
@@ -863,33 +898,7 @@ async function computeCreances(opts = {}) {
         // eligible, prix_achat fournisseur (point-in-time a la date), montant_achat
         // (= quantite × prix_achat, info) et dette (Je dois 3%, inchange).
         // Trie par date desc (jours recents en haut), puis dette desc a date egale.
-        detail_par_date: Array.from(detailParDate.values())
-            .map((d) => {
-                const prixAchatEff = lookupPrixAchatAtDate(d.produit, d.date);
-                const prixAchatNum =
-                    prixAchatEff == null ? null : parseFloat(prixAchatEff);
-                // Quantite arrondie pour l'affichage: on calcule montant_achat
-                // a partir de cette meme valeur arrondie pour que, dans la vue
-                // d'audit, (Qte affichee) × (Prix affiche) = (Montant affiche).
-                const quantiteAff = round2(d.quantite);
-                return {
-                    date: d.date,
-                    produit: d.produit,
-                    quantite: quantiteAff,
-                    prix_achat:
-                        prixAchatNum == null || isNaN(prixAchatNum)
-                            ? null
-                            : round2(prixAchatNum),
-                    montant_achat:
-                        prixAchatNum == null || isNaN(prixAchatNum)
-                            ? null
-                            : round2(quantiteAff * prixAchatNum),
-                    dette: round2(d.dette)
-                };
-            })
-            .sort((a, b) =>
-                a.date < b.date ? 1 : a.date > b.date ? -1 : b.dette - a.dette
-            ),
+        detail_par_date: detailParDateSortie,
         // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
         // Chaque entree: { centre, total_recevable, total_quantite,
         //                   detail: [{ produit, quantite_cdc, prix_achat,

@@ -2112,6 +2112,16 @@
                     ? 'Prix achat lu depuis DATA. Décochez pour utiliser la valeur saisie.'
                     : 'Valeur saisie utilisée. Cochez pour lire le prix depuis DATA.';
                 if (!inA) return;
+                // CHAMP VERROUILLE SUR MAAS (DATA): ne pas y toucher. Le bloc
+                // de verrouillage ci-dessus a pose l'italique, l'infobulle et
+                // le cadenas pour dire d'ou vient la valeur AFFICHEE; cette
+                // case, elle, ne parle que de la valeur STOCKEE. Sans ce
+                // garde, syncAchat s'executant apres lui, une ligne bœuf
+                // verrouillee mais a case decochee perdait son italique et se
+                // voyait annoncer « Prix achat fournisseur utilisé pour le
+                // calcul » a cote d'un cadenas - deux messages contraires sur
+                // le meme champ.
+                if (prixAchatMaas != null) return;
                 inA.classList.toggle('fst-italic', chk.checked);
                 inA.title = chk.checked
                     ? 'Prix API actif — cette valeur ne sert que de repli si DATA est indisponible.'
