@@ -17,7 +17,10 @@ const mockModeles = {
     FournisseurPrix: { findAll: jest.fn() },
     PrixAchatHistory: { findAll: jest.fn() },
     ProduitAlias: { findAll: jest.fn() },
-    Transfert: { findAll: jest.fn() }
+    Transfert: { findAll: jest.fn() },
+    // finance_config, ou vit le reglage « commission integree » - qui decide
+    // LEQUEL des deux prix DATA est lu pour le boeuf.
+    FinanceConfig: { findOne: jest.fn() }
 };
 jest.mock('../db/models', () => mockModeles);
 
@@ -34,22 +37,44 @@ const PRIX_LOT = 4057;
 //
 // La table est ECRITE DANS la fabrique: jest.mock est hisse au-dessus des
 // declarations du fichier, donc une constante externe y serait undefined.
+//
+// Le stub rend TOUT ce que le vrai resolveur rend - `source` et
+// `avertissements` compris. Un stub muet sur ces deux champs laissait passer
+// l'oubli le plus couteux du module: demander la mauvaise source (la
+// commission comptee deux fois, ou jamais), et perdre en route l'avertissement
+// qui explique a l'ecran pourquoi le PL est retombe sur le catalogue.
 jest.mock('../lib/achats-boeuf-client', () => ({
-    getBoeufPrixAchatResolver: jest.fn(async () => ({
-        atDate: (d) => ({ '2026-08-11': 3990, '2026-08-12': 4100, '2026-08-13': 4057 }[d] ?? null),
-        count: 3
-    }))
+    getBoeufPrixAchatResolver: jest.fn(async (opts) => {
+        const source = (opts && opts.source) || 'maas';
+        const atDate = (d) => (
+            { '2026-08-11': 3990, '2026-08-12': 4100, '2026-08-13': 4057 }[d] ?? null
+        );
+        return {
+            atDate,
+            count: 3,
+            source,
+            commissionIncluseAuPrix: (d) => source === 'maas' && atDate(d) != null,
+            avertissements: []
+        };
+    })
 }));
 
 const { creerResolveurPrixAchat } = require('../lib/prix-achat-date');
+const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
 
 /**
  * @param {object} o
  * @param {boolean} o.dynamique  la case « Prix API (DATA) » sur la ligne Boeuf
  * @param {Array}   o.catalogue  lignes fournisseur_prix
  * @param {Array}   o.alias      lignes produit_alias
+ * @param {string|undefined} o.commissionIntegree  la valeur BRUTE du reglage
+ *        dans finance_config; `undefined` = aucune ligne enregistree, l'etat
+ *        de sortie d'usine.
  */
-function poser({ dynamique = false, catalogue = [], alias = [], historique = [] } = {}) {
+function poser({
+    dynamique = false, catalogue = [], alias = [], historique = [],
+    commissionIntegree = undefined
+} = {}) {
     // DECIMAL(12,2) et DECIMAL(10,4) reviennent de Postgres en CHAINES
     // ("4500.00", "0.5000"), pas en nombres. Nourrir les mocks avec des
     // nombres rendait six parseFloat() du code supprimables sans qu'aucun test
@@ -72,6 +97,13 @@ function poser({ dynamique = false, catalogue = [], alias = [], historique = [] 
         }))
     );
     mockModeles.Transfert.findAll.mockResolvedValue([]);
+    // Pas de ligne en base = reglage jamais enregistre. C'est le defaut, et il
+    // vaut « tous les produits coches » - donc la source MaaS pour le boeuf.
+    mockModeles.FinanceConfig.findOne.mockResolvedValue(
+        commissionIntegree === undefined
+            ? null
+            : { key: 'commission_integree_produits', value: commissionIntegree }
+    );
     mockModeles.ProduitAlias.findAll.mockResolvedValue(
         alias.map((a) => ({
             alias_produit: a.alias_produit,
@@ -489,5 +521,104 @@ describe('le prix du boeuf suit la RECEPTION, pas le calendrier', () => {
         const r = await creerResolveurPrixAchat('2026-08-13');
         expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4057);
         expect(r.avertissements.join(' ')).toMatch(/Transferts illisibles/);
+    });
+});
+
+describe('la SOURCE lue chez DATA: toujours le prix facture', () => {
+    // DATA expose DEUX prix par date pour la meme journee: le prix de revient
+    // du lot, et ce meme revient majore de la commission MaaS. Ce qui valorise
+    // une carcasse cote Maas est le prix que le fournisseur FACTURE, donc le
+    // second - et c'est la meme valeur qui sert de base a la dette
+    // fournisseur. Les deux ne peuvent pas diverger sans facturer la
+    // commission deux fois, ou pas du tout.
+    //
+    // Ce n'est deliberement PAS un reglage local: DATA dit lui-meme, produit
+    // par produit, si son prix porte deja la commission (`commissionAppliquee`).
+    // Le module ne calcule rien de tout cela, il passe la source - et c'est ce
+    // passage que ce bloc verrouille, parce qu'il est invisible dans les
+    // chiffres: les deux sources rendent des nombres egalement plausibles.
+
+    const sourceDemandee = () => {
+        expect(getBoeufPrixAchatResolver).toHaveBeenCalledTimes(1);
+        return (getBoeufPrixAchatResolver.mock.calls[0][0] || {}).source;
+    };
+
+    test('le prix MaaS, commission comprise', async () => {
+        await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(sourceDemandee()).toBe('maas');
+    });
+
+    test("l'origine NOMME la source, parce que les deux ne se valent pas", async () => {
+        // « achats-boeuf (DATA) » tout court ne dit pas si le cout affiche
+        // porte deja la commission. Le meme nombre veut dire deux choses
+        // differentes selon la source, et l'ecran doit trancher.
+        const maas = await resoudre({ dynamique: true, catalogue: CATALOGUE });
+        expect(maas.origineBoeuf).toBe('achats-boeuf (DATA), prix MaaS, commission comprise');
+    });
+
+    test('le RESUME affiche a l ecran nomme la meme source', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        r.pourDate('2026-08-13').prixAchat('Boeuf');
+        expect(r.resumePrixBoeuf().join(' ')).toMatch(/commission comprise/);
+    });
+
+    test('prix NON dynamique : DATA n est pas appele', async () => {
+        // La case « Prix API (DATA) » decochee sur la ligne Boeuf: le catalogue
+        // est la source normale, et rien ne justifie une requete de plus.
+        poser({ dynamique: false, catalogue: CATALOGUE });
+        await creerResolveurPrixAchat('2026-08-13');
+        expect(getBoeufPrixAchatResolver).not.toHaveBeenCalled();
+    });
+});
+
+describe('les avertissements du client boeuf remontent a l ecran', () => {
+    // routes/finance.js concatene resolveurPrix.avertissements pour les
+    // afficher: c'est le SEUL canal. Un avertissement que le client produit et
+    // que ce module laisse tomber donne un PL valorise au catalogue, presente
+    // comme s'il venait de MATA - l'ecart le plus difficile a voir, puisque le
+    // chiffre reste plausible.
+
+    const AVERT_DATA = "Prix d'achat du bœuf : l'API DATA ne renvoie pas "
+        + '« parDateBoeufMaas » — le prix du catalogue Prix fournisseur est '
+        + 'utilisé à la place. La commission MaaS reste donc facturée sur les '
+        + 'livraisons de bœuf.';
+
+    test('une source vide chez DATA est dite, et le prix retombe au catalogue', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        getBoeufPrixAchatResolver.mockResolvedValueOnce({
+            atDate: () => null,
+            count: 0,
+            source: 'maas',
+            commissionIncluseAuPrix: () => false,
+            avertissements: [AVERT_DATA]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.avertissements).toContain(AVERT_DATA);
+        expect(r.pourDate('2026-08-13').prixAchat('Boeuf')).toBe(4500);
+    });
+
+    test('le meme avertissement n apparait QU UNE fois', async () => {
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        getBoeufPrixAchatResolver.mockResolvedValueOnce({
+            atDate: () => null,
+            count: 0,
+            source: 'maas',
+            commissionIncluseAuPrix: () => false,
+            avertissements: [AVERT_DATA, AVERT_DATA]
+        });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        expect(r.avertissements.filter((a) => a === AVERT_DATA)).toHaveLength(1);
+    });
+
+    test("l'avertissement « aucun lot » ne se repete pas sur tout le mois", async () => {
+        // pourDate est appele une fois par journee: sans dedoublonnage, la
+        // meme phrase s'affichait trente et une fois et noyait les autres.
+        poser({ dynamique: true, catalogue: CATALOGUE });
+        const r = await creerResolveurPrixAchat('2026-08-13');
+        for (const d of ['2026-08-01', '2026-08-02', '2026-08-03']) {
+            r.pourDate(d).prixAchat('Boeuf');
+        }
+        expect(r.avertissements.filter((a) => /aucun lot/i.test(a))).toHaveLength(1);
     });
 });

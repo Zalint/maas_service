@@ -535,6 +535,20 @@
             boeuf: { matin: qBoeuf(stock.matin_detail), soir: qBoeuf(stock.soir_detail) },
             commission: nb(pl.commission_maas),
             commissionPct: nb(cfg.commission_pct) || 3,
+            // QUELS PRODUITS PORTENT DEJA LA COMMISSION DANS LEUR PRIX. Le
+            // serveur ne facture plus les 3 % sur leurs livraisons; cet ecran
+            // les REDERIVE par produit, a partir du prix catalogue, et doit
+            // donc s'aligner - sans quoi la simulation et le PL affichent deux
+            // verites sur le meme mois.
+            //
+            // Pris sur `pl`, la meme reponse que le montant de commission
+            // ci-dessus: c'est elle qui l'explique. C'est DATA qui tranche,
+            // produit par produit, et le cas du bœuf depend en plus de la
+            // DATE - quand DATA n'a rien publie ce jour-la, le prix utilise
+            // est celui du catalogue, qui ne porte pas la commission et la
+            // laisse donc due. Seul le serveur, qui interroge DATA, sait
+            // laquelle des deux situations vaut; il rend sa reponse resolue.
+            commissionIntegree: pl.commission_integree || null,
             // Prix de VENTE catalogue des carcasses: l'assiette de la
             // commission MaaS. Le moteur en a besoin pour faire suivre la
             // commission aux achats que les leviers induisent.
@@ -1480,24 +1494,6 @@
     }
 
     /**
-     * La marge d'une unite vendue EN PLUS, nette de la commission qu'elle
-     * declenche.
-     *
-     * Le plan d'equilibre chiffrait son apport a la marge nette de parage
-     * seule. Or le moteur du meme ecran facture aussi la COMMISSION INDUITE:
-     * vendre une unite de plus fait livrer 1/(1-parage) unite de carcasse,
-     * commissionnee au prix catalogue fournisseur (hypothese 2 du moteur).
-     * Les deux moities de l'ecran se contredisaient donc: le plan promettait
-     * de combler 2 500 000 F la ou le moteur n'en rendait que 2 100 000.
-     *
-     *     commission par unite = taux x prix catalogue / (1 - parage espece)
-     *
-     * Quand le prix catalogue de l'espece est inconnu, on ne peut pas chiffrer
-     * la ponction: on rend la marge brute de parage plutot que d'inventer un
-     * cout, et le plan reste alors optimiste - comme le reste de l'ecran, qui
-     * signale deja cette part non chiffree.
-     */
-    /**
      * Le prix de vente retenu pour les jours qui RESTENT.
      *
      * Le prix moyen explique le passe: il melange les tarifs successifs et les
@@ -1607,30 +1603,12 @@
 
     /**
      * L'ASSIETTE de la commission pour un produit: son prix de vente au
-     * catalogue fournisseur.
-     *
-     * Son propre prix d'abord, la carcasse de son espece ensuite, rien du
-     * tout en dernier. L'ancienne regle disait « bovin, sinon ovin, sinon
-     * VOLAILLE » - un `else` qui rangeait d'office dans le poulet tout ce
-     * qu'elle ne reconnaissait pas. Le Laxass, vendu 200 F, se voyait ainsi
-     * commissionne sur les 3 500 F de la carcasse de poulet: 105 F l'unite,
-     * de quoi le faire ressortir a -62 F de marge nette quand il en gagne 43.
-     * Un produit declare a perte, c'est un produit qu'on arrete.
-     *
-     * Les noms de decoupe (« Boeuf en detail ») n'ont pas de ligne au
-     * catalogue: c'est la carcasse qui porte le prix, d'ou le repli par
-     * espece. Les produits qui ont leur PROPRE ligne - Laxass, Foie, Cuisse
-     * de poulet - sont desormais servis par elle.
+     * catalogue fournisseur. La regle - prix propre, puis carcasse de
+     * l'espece, puis rien - vit dans le moteur, avec la marge qui s'en sert:
+     * l'ecran et l'API externe en portaient chacun une copie mot pour mot.
      */
     function prixCatalogueDe(p) {
-        var c = etat.contexte || {};
-        var pv = c.pv || {};
-        var propre = (pv.par_produit || {})[M.normaliserNom(p && p.nom)];
-        if (nb(propre) > 0) return nb(propre);
-        if (M.estBoeuf(p)) return pv.bovin;
-        if (M.estOvin(p)) return pv.ovin;
-        if (M.estVolaille(p)) return pv.volaille;
-        return null;
+        return M.assietteCommission(p, etat.contexte).prix;
     }
 
     /**
@@ -1679,26 +1657,11 @@
             + '. Ce n\'est pas une estimation manquante — c\'est zéro.</div>';
     }
 
+    // La formule (marge nette de parage moins la commission par unite, sauf
+    // sur les produits dont le prix d'achat la porte deja) est celle du
+    // moteur: cet ecran n'en garde que le branchement sur son contexte.
     function margeApresCommission(p) {
-        var m = margeBase(p);
-        if (m === null) return null;
-        var c = etat.contexte || {};
-        var pv = c.pv || {};
-        var taux = nb(c.commissionPct) / 100;
-        if (!taux) return m;
-        var prixCatalogue = prixCatalogueDe(p);
-        // Prix catalogue inconnu: on rend la marge BRUTE de parage plutot que
-        // d'inventer un cout. C'est la regle deja suivie ailleurs pour les
-        // prix manquants, et l'ecran signale cette part non chiffree.
-        if (!prixCatalogue) return m;
-        // Meme diviseur de parage que la marge elle-meme: le taux MESURE de
-        // l'espece, pas le parametre. Deux diviseurs differents dans le meme
-        // ecran feraient diverger la marge et la commission qu'elle induit.
-        var parage = M.estBoeuf(p) ? nb(c.parageBovin)
-            : (M.estOvin(p) ? nb(c.parageOvin) : 0);
-        var d = 1 - parage / 100;
-        if (!(d > 0)) return m;
-        return m - taux * nb(prixCatalogue) / d;
+        return M.margeApresCommission(p, etat.contexte);
     }
 
     /**
@@ -4013,6 +3976,11 @@
                 parage_ovin_pct: c.parageOvin,
                 parage_base_pct: c.parageBase,
                 commission_pct: c.commissionPct,
+                // Sans quoi « les marges sont NETTES ... commission MaaS
+                // induite deduite » se lit comme une regle uniforme, alors
+                // qu'elle saute les produits dont le prix d'achat la porte
+                // deja. Un lecteur qui refait le calcul doit savoir lesquels.
+                commission_integree: c.commissionIntegree,
                 prix_boeuf_teste: etat.proj.prixBoeufTeste,
                 parage_boeuf_teste: etat.proj.parageBoeufTeste,
                 ecart_parage_scenarios_pts: etat.proj.ecartParage

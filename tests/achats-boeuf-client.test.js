@@ -1,140 +1,197 @@
 /**
  * @jest-environment node
  *
- * lib/achats-boeuf-client.js: le prix de revient du boeuf (avec abats et
- * frais d'abattage, pondere au kg), en priorite depuis data.parDateBoeuf
- * (calcule cote DATA), avec repli sur un calcul local depuis les achats
- * bruts si DATA ne l'expose pas encore (deploiement non synchronise).
+ * lib/achats-boeuf-client.js: le prix d'achat du boeuf lu chez DATA, depuis
+ * l'UNE des deux sources - parDateBoeufMaas (prix facture au MaaS, commission
+ * comprise) ou parDateBoeuf (prix de revient seul) - sans repli de l'une sur
+ * l'autre, et avec un avertissement quand la source demandee ne donne rien.
  */
 
-const { _internals } = require('../lib/achats-boeuf-client');
-const { _atDate, _rowsDepuisParDate, _rowsDepuisAchatsBruts } = _internals;
+const {
+    normaliserSource, SOURCE_MAAS, SOURCE_REVIENT, _internals
+} = require('../lib/achats-boeuf-client');
+const { _atDate, _rowsDepuisListe } = _internals;
 
-describe('_rowsDepuisParDate (chemin rapide: DATA a deja calcule)', () => {
-    test('reforme parDateBoeuf en {date, prix, n}, triees croissant', () => {
-        const rows = _rowsDepuisParDate([
-            { date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4, poids_total_kg: 557 },
-            { date: '2026-08-17', prix_revient_kg: 4500, nb_betes: 5, poids_total_kg: 727 }
-        ]);
+describe('normaliserSource', () => {
+    test('maas est le defaut: tout ce qui n est pas "revient" y retombe', () => {
+        expect(normaliserSource(undefined)).toBe(SOURCE_MAAS);
+        expect(normaliserSource('')).toBe(SOURCE_MAAS);
+        expect(normaliserSource('maas')).toBe(SOURCE_MAAS);
+        expect(normaliserSource('n importe quoi')).toBe(SOURCE_MAAS);
+    });
+
+    test('revient est reconnu, casse et espaces compris', () => {
+        expect(normaliserSource('revient')).toBe(SOURCE_REVIENT);
+        expect(normaliserSource('  REVIENT  ')).toBe(SOURCE_REVIENT);
+    });
+});
+
+describe('_rowsDepuisListe', () => {
+    test('lit le champ demande et trie croissant', () => {
+        const rows = _rowsDepuisListe([
+            { date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 },
+            { date: '2026-08-17', prix_maas_kg: 4665, nb_betes: 5 }
+        ], 'prix_maas_kg');
         expect(rows).toEqual([
-            { date: '2026-08-17', prix: 4500, n: 5 },
-            { date: '2026-08-29', prix: 4475, n: 4 }
+            { date: '2026-08-17', prix: 4665, n: 5 },
+            { date: '2026-08-29', prix: 4640, n: 4 }
         ]);
+    });
+
+    test('le champ de l AUTRE source n est pas lu par accident', () => {
+        // Une entree qui ne porte que prix_revient_kg ne doit RIEN donner quand
+        // on demande prix_maas_kg: les deux valeurs ne veulent pas dire la meme
+        // chose (commission comprise ou non).
+        expect(_rowsDepuisListe(
+            [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }],
+            'prix_maas_kg'
+        )).toEqual([]);
     });
 
     test('arrondit par exces au multiple de 5 meme si DATA ne l a pas fait', () => {
-        // Ne fait pas confiance a DATA pour l'arrondi: garde le MEME invariant
-        // que le repli _rowsDepuisAchatsBruts, au cas ou DATA renverrait un
-        // prix_revient_kg non arrondi (ou arrondi differemment).
-        const rows = _rowsDepuisParDate([
-            { date: '2026-08-29', prix_revient_kg: 4470.38, nb_betes: 4 }
-        ]);
-        expect(rows).toEqual([{ date: '2026-08-29', prix: 4475, n: 4 }]);
+        expect(_rowsDepuisListe(
+            [{ date: '2026-08-29', prix_revient_kg: 4470.38, nb_betes: 4 }],
+            'prix_revient_kg'
+        )).toEqual([{ date: '2026-08-29', prix: 4475, n: 4 }]);
     });
 
-    test('ecarte une date illisible ou un prix a zero/negatif', () => {
-        const rows = _rowsDepuisParDate([
-            { date: 'pas-une-date', prix_revient_kg: 4500, nb_betes: 1 },
-            { date: '2026-08-29', prix_revient_kg: 0, nb_betes: 1 },
-            { date: '2026-08-30', prix_revient_kg: 4500, nb_betes: 1 }
-        ]);
-        expect(rows).toEqual([{ date: '2026-08-30', prix: 4500, n: 1 }]);
+    test('un prix null (DATA sans catalogue ni commission a cette date) est ecarte', () => {
+        // Cote DATA, prix_maas_kg vaut null avec un `motif` quand le prix
+        // catalogue du boeuf ou le taux manquent: pas de prix ce jour-la,
+        // surtout pas un prix a 0.
+        const rows = _rowsDepuisListe([
+            { date: '2026-08-29', prix_maas_kg: null, motif: 'aucune commission a cette date' },
+            { date: '2026-08-30', prix_maas_kg: 4640, nb_betes: 1 }
+        ], 'prix_maas_kg');
+        expect(rows).toEqual([{ date: '2026-08-30', prix: 4640, n: 1 }]);
     });
 
-    test('un element mal forme ne fait pas lever', () => {
-        expect(_rowsDepuisParDate([null, {}, { date: '2026-08-29', prix_revient_kg: 4500, nb_betes: 1 }]))
-            .toEqual([{ date: '2026-08-29', prix: 4500, n: 1 }]);
-    });
-});
-
-describe('_rowsDepuisAchatsBruts (repli: DATA sans parDateBoeuf)', () => {
-    const boeuf = (date, prix, abats, frais, kg) => ({ bete: 'Boeuf', date, prix, abats, frais_abattage: frais, nbr_kg: kg });
-
-    test('cout = prix - abats + frais, pondere par les kg, arrondi par exces a 5F', () => {
-        // Meme lot que le 2026-08-29 reel: 2 490 000 F / 557 kg = 4470,38 -> 4475.
-        const rows = _rowsDepuisAchatsBruts([
-            boeuf('2026-08-29', 651000, 35000, 10000, 140),
-            boeuf('2026-08-29', 651000, 35000, 10000, 140),
-            boeuf('2026-08-29', 616000, 35000, 10000, 131),
-            boeuf('2026-08-29', 672000, 35000, 10000, 146)
-        ]);
-        expect(rows).toEqual([{ date: '2026-08-29', prix: 4475, n: 4 }]);
-    });
-
-    test('le veau et les autres especes ne comptent pas dans le lot boeuf', () => {
-        const rows = _rowsDepuisAchatsBruts([
-            boeuf('2026-08-29', 500000, 0, 0, 100),
-            { bete: 'Veau', date: '2026-08-29', prix: 999999, abats: 0, frais_abattage: 0, nbr_kg: 50 }
-        ]);
-        expect(rows).toEqual([{ date: '2026-08-29', prix: 5000, n: 1 }]);
-    });
-
-    test('une bete sans prix (pas encore valorisee) est ignoree, meme avec des frais', () => {
-        // prix=0 mais frais_abattage>0 donnerait un cout>0 sans cette garde -
-        // et ferait BAISSER a tort le prix de revient du lot.
-        const rows = _rowsDepuisAchatsBruts([
-            boeuf('2026-08-29', 0, 0, 10000, 140),
-            boeuf('2026-08-29', 500000, 0, 0, 100)
-        ]);
-        expect(rows).toEqual([{ date: '2026-08-29', prix: 5000, n: 1 }]);
-    });
-
-    test('plusieurs dates restent separees et triees croissant', () => {
-        const rows = _rowsDepuisAchatsBruts([
-            boeuf('2026-08-29', 500000, 0, 0, 100),
-            boeuf('2026-08-17', 450000, 0, 0, 100)
-        ]);
-        expect(rows.map((r) => r.date)).toEqual(['2026-08-17', '2026-08-29']);
+    test('date illisible, prix negatif, element malforme ou liste absente: pas d erreur', () => {
+        expect(_rowsDepuisListe([
+            { date: 'pas-une-date', prix_maas_kg: 4640 },
+            { date: '2026-08-29', prix_maas_kg: -10 },
+            null,
+            {}
+        ], 'prix_maas_kg')).toEqual([]);
+        expect(_rowsDepuisListe(undefined, 'prix_maas_kg')).toEqual([]);
     });
 });
 
-describe('getBoeufPrixAchatResolver: selection du chemin parDateBoeuf vs achats bruts', () => {
+describe('getBoeufPrixAchatResolver: choix de la source, sans repli', () => {
     const envAvant = { ...process.env };
+    const reponse = (data) => ({ ok: true, json: async () => ({ success: true, data }) });
+    const charger = () => {
+        process.env.DATA_API_BASE_URL = 'http://localhost:3007';
+        process.env.WEB_ORDERS_API_KEY = 'test-key';
+        return require('../lib/achats-boeuf-client');
+    };
+
     beforeEach(() => { jest.resetModules(); });
     afterEach(() => { process.env = { ...envAvant }; });
 
-    test('parDateBoeuf VIDE (mais present) ne doit pas empecher le repli sur achats bruts', async () => {
-        // Regression: un tableau vide est truthy en JS - le traiter comme
-        // "DATA a le champ" sans verifier sa taille ferait ignorer des achats
-        // bruts pourtant exploitables (deploiement partiel cote DATA, ou
-        // fenetre de calcul de DATA qui ne couvre pas encore cette date).
-        process.env.DATA_API_BASE_URL = 'http://localhost:3007';
-        process.env.WEB_ORDERS_API_KEY = 'test-key';
-        global.fetch = jest.fn().mockResolvedValue({
-            ok: true,
-            json: async () => ({
-                success: true,
-                data: {
-                    parDateBoeuf: [],
-                    achats: [
-                        { bete: 'Boeuf', date: '2026-08-29', prix: 500000, abats: 0, frais_abattage: 0, nbr_kg: 100 }
-                    ]
-                }
-            })
-        });
-        const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
-        const r = await getBoeufPrixAchatResolver();
-        expect(r.atDate('2026-08-29')).toBe(5000);
+    test('source maas: lit parDateBoeufMaas, et la commission est dite incluse', async () => {
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeufMaas: [{ date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 }],
+            parDateBoeuf: [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }]
+        }));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.atDate('2026-08-29')).toBe(4640);
+        expect(r.commissionIncluseAuPrix('2026-08-29')).toBe(true);
+        expect(r.avertissements).toEqual([]);
     });
 
-    test('parDateBoeuf non vide est prefere aux achats bruts', async () => {
-        process.env.DATA_API_BASE_URL = 'http://localhost:3007';
-        process.env.WEB_ORDERS_API_KEY = 'test-key';
-        global.fetch = jest.fn().mockResolvedValue({
-            ok: true,
-            json: async () => ({
-                success: true,
-                data: {
-                    parDateBoeuf: [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }],
-                    achats: [
-                        { bete: 'Boeuf', date: '2026-08-29', prix: 999999, abats: 0, frais_abattage: 0, nbr_kg: 1 }
-                    ]
-                }
-            })
-        });
-        const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
-        const r = await getBoeufPrixAchatResolver();
+    test('source revient: lit parDateBoeuf, et la commission N EST PAS incluse', async () => {
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeufMaas: [{ date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 }],
+            parDateBoeuf: [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }]
+        }));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'revient' });
         expect(r.atDate('2026-08-29')).toBe(4475);
+        expect(r.commissionIncluseAuPrix('2026-08-29')).toBe(false);
+    });
+
+    test('parDateBoeufMaas absent: PAS de repli sur parDateBoeuf, un avertissement', async () => {
+        // Le coeur de la regle: un prix de revient (hors commission) presente
+        // comme un prix MaaS fausserait la marge sans que personne ne le voie.
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeuf: [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }],
+            achats: [{ bete: 'Boeuf', date: '2026-08-29', prix: 500000, abats: 0, frais_abattage: 0, nbr_kg: 100 }]
+        }));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.atDate('2026-08-29')).toBeNull();
+        expect(r.count).toBe(0);
+        expect(r.avertissements).toHaveLength(1);
+        expect(r.avertissements[0]).toContain('parDateBoeufMaas');
+        expect(r.avertissements[0]).toContain('catalogue');
+    });
+
+    test('parDateBoeufMaas vide: meme traitement, un avertissement', async () => {
+        global.fetch = jest.fn().mockResolvedValue(reponse({ parDateBoeufMaas: [] }));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.count).toBe(0);
+        expect(r.avertissements).toHaveLength(1);
+    });
+
+    test('sans prix pour la date demandee, la commission reste due ce jour-la', async () => {
+        // DATA n'a des prix MaaS qu'a partir du 29: une livraison du 12 est
+        // valorisee au catalogue, elle doit donc continuer de payer ses 3%.
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeufMaas: [{ date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 }]
+        }));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.commissionIncluseAuPrix('2026-08-12')).toBe(false);
+        expect(r.commissionIncluseAuPrix('2026-08-29')).toBe(true);
+    });
+
+    test('DATA non configure: liste vide et avertissement, sans appel reseau', async () => {
+        jest.resetModules();
+        delete process.env.DATA_API_BASE_URL;
+        delete process.env.WEB_ORDERS_API_KEY;
+        delete process.env.DATA_API_KEY;
+        delete process.env.EXTERNAL_API_KEY;
+        global.fetch = jest.fn();
+        const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
+        const r = await getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.count).toBe(0);
+        expect(r.avertissements[0]).toContain('pas configurée');
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('DATA injoignable: liste vide et avertissement, sans lever', async () => {
+        global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.count).toBe(0);
+        expect(r.avertissements[0]).toContain('injoignable');
+    });
+
+    test('HTTP non-ok: liste vide et avertissement, sans lever', async () => {
+        global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 500 });
+        const r = await charger().getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(r.count).toBe(0);
+        expect(r.avertissements[0]).toContain('500');
+    });
+
+    test('les deux sources sont mises en cache separement', async () => {
+        const mod = charger();
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeufMaas: [{ date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 }],
+            parDateBoeuf: [{ date: '2026-08-29', prix_revient_kg: 4475, nb_betes: 4 }]
+        }));
+        const maas = await mod.getBoeufPrixAchatResolver({ source: 'maas' });
+        const revient = await mod.getBoeufPrixAchatResolver({ source: 'revient' });
+        expect(maas.atDate('2026-08-29')).toBe(4640);
+        expect(revient.atDate('2026-08-29')).toBe(4475);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('la meme source en cache ne redeclenche pas d appel reseau', async () => {
+        const mod = charger();
+        global.fetch = jest.fn().mockResolvedValue(reponse({
+            parDateBoeufMaas: [{ date: '2026-08-29', prix_maas_kg: 4640, nb_betes: 4 }]
+        }));
+        await mod.getBoeufPrixAchatResolver({ source: 'maas' });
+        await mod.getBoeufPrixAchatResolver({ source: 'maas' });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 });
 

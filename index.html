@@ -1988,7 +1988,7 @@
                                                 <th>Produit</th>
                                                 <th>Impact (+/-)</th>
                                                 <th class="text-center" title="Sortie sans recette : pesée du déchet jeté. Compte dans le bilan déchet, jamais comme un transfert de marchandise.">Jeté</th>
-                                                <th class="text-center" title="Marchandise qui ne vient pas de MATA : achat local, dépannage entre points de vente, autre fournisseur. Cochée, la ligne n'entre pas dans le calcul de la commission 3%.">Hors Mata</th>
+                                                <th class="text-center" title="Marchandise qui ne vient pas de MATA : achat local, dépannage entre points de vente, autre fournisseur. Cochée, la ligne n'entre pas dans le calcul de la commission MaaS.">Hors Mata</th>
                                                 <th>Quantité</th>
                                                 <th>Détails (calibres)</th>
                                                 <th>Prix Unitaire</th>
@@ -2755,6 +2755,10 @@
                                     <button class="btn btn-sm btn-primary" id="fin-creances-refresh">Calculer</button>
                                 </div>
                             </div>
+                            <!-- Avertissements du calcul (prix d'achat que DATA n'a pas fourni,
+                                 par exemple). Hors accordeon: ils expliquent les montants de
+                                 sections repliees par defaut, que personne n'ouvrirait pour les lire. -->
+                            <div id="fin-creances-avertissements"></div>
                             <!-- ===== Accordeon: 3 sections pliables ===== -->
                             <div class="accordion" id="fin-creances-accordion">
                                 <!-- Section 1: Créance Partenaire (MataBanq) -->
@@ -2790,31 +2794,34 @@
                                     </div>
                                 </div>
 
-                                <!-- Section 2: Calcul Maas (commission 3%) -->
+                                <!-- Section 2: Calcul Maas (commission due) -->
                                 <div class="accordion-item">
                                     <h2 class="accordion-header">
                                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#fin-cre-acc-maas" aria-expanded="false" aria-controls="fin-cre-acc-maas">
                                             <i class="bi bi-calculator me-2"></i>
                                             <strong>Calcul Maas</strong>
-                                            <span class="text-muted ms-2 small">(commission 3% basée sur les livraisons reçues — transferts entrants)</span>
+                                            <!-- Le taux n'est plus annonce ici : il se regle par tenant, et les
+                                                 produits dont MAAS (DATA) dit que le prix porte deja la
+                                                 commission n'en portent aucune. -->
+                                            <span class="text-muted ms-2 small" title="Commission MaaS due sur les livraisons reçues. Les produits dont le prix d'achat contient déjà la commission d'après MAAS (DATA) n'en portent pas : le détail est rappelé sur la carte « Je dois ».">(commission basée sur les livraisons reçues — transferts entrants)</span>
                                             <span class="fin-pill fin-pill--warning ms-2" id="fin-cre-acc-maas-total"></span>
                                         </button>
                                     </h2>
                                     <div id="fin-cre-acc-maas" class="accordion-collapse collapse">
                                         <div class="accordion-body">
                                             <div class="row g-2 mb-3" id="fin-creances-cards"></div>
-                                            <h6 class="mt-2">Détail par produit (commission 3%)</h6>
+                                            <h6 class="mt-2">Détail par produit (commission due)</h6>
                                             <div class="table-responsive mb-3">
                                                 <table class="table table-sm table-striped mb-0" id="fin-creances-detail">
                                                     <thead>
-                                                        <tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Je dois (3%)</th></tr>
+                                                        <tr><th>Produit</th><th class="text-end">Quantité</th><th class="text-end">Je dois</th></tr>
                                                     </thead>
                                                     <tbody></tbody>
                                                 </table>
                                             </div>
 
                                             <div class="d-flex justify-content-between align-items-center mt-3">
-                                                <h6 class="mb-0">Détail par date (commission 3%)</h6>
+                                                <h6 class="mb-0">Détail par date (commission due)</h6>
                                                 <div class="d-flex gap-3 align-items-center">
                                                     <div class="form-check form-switch mb-0">
                                                         <input class="form-check-input" type="checkbox" id="fin-detail-date-group" checked>
@@ -2826,7 +2833,7 @@
                                             <div class="table-responsive mb-0">
                                                 <table class="table table-sm table-striped mb-0" id="fin-creances-detail-date">
                                                     <thead>
-                                                        <tr><th>Date</th><th>Produit</th><th class="text-end">Quantité éligible</th><th class="text-end">Prix achat fournisseur (FCFA)</th><th class="text-end">Qté × Prix achat</th><th class="text-end">Avance partenaire</th><th class="text-end">Je dois (3%)</th></tr>
+                                                        <tr><th>Date</th><th>Produit</th><th class="text-end">Quantité éligible</th><th class="text-end">Prix achat fournisseur (FCFA)</th><th class="text-end">Qté × Prix achat</th><th class="text-end">Avance partenaire</th><th class="text-end">Je dois</th></tr>
                                                     </thead>
                                                     <tbody></tbody>
                                                     <tfoot id="fin-creances-detail-date-foot" style="display:none;">
@@ -3073,7 +3080,7 @@
                             <div class="table-responsive">
                                 <table class="table table-sm" id="fin-prix-table">
                                     <thead>
-                                        <tr><th>Produit</th><th>Prix vente fournisseur (FCFA)</th><th>Prix achat fournisseur (FCFA)</th><th class="text-center" style="width:110px" title="Coché : le prix achat est lu automatiquement depuis DATA (moyenne des achats du jour) au lieu de la valeur saisie.">Prix API (DATA)</th><th class="text-center" style="width:100px" title="Coché : produit acheté hors circuit Mata — ses livraisons ne génèrent aucune commission fournisseur. Son prix d'achat continue de valoriser le stock.">Hors Mata</th><th style="width:60px"></th></tr>
+                                        <tr><th>Produit</th><th title="Ce que MaaS paie réellement au fournisseur. Verrouillé et lu depuis MAAS (DATA) pour les produits du circuit Mata : leur prix y est fixé, commission comprise. Les autres restent saisis à la main.">Prix achat fournisseur (FCFA)</th><th class="text-center" style="width:110px" title="Coché : le prix achat est lu automatiquement depuis DATA (moyenne des achats du jour) au lieu de la valeur saisie.">Prix API (DATA)</th><th class="text-center" style="width:100px" title="Coché : produit acheté hors circuit Mata — ses livraisons ne génèrent aucune commission fournisseur. Son prix d'achat continue de valoriser le stock.">Hors Mata</th><th style="width:60px"></th></tr>
                                     </thead>
                                     <tbody></tbody>
                                 </table>
@@ -4158,12 +4165,12 @@
     <script src="js/ocr-import.js"></script>
     <script src="js/parage-rapport.js?v=20260831-fixes-review"></script>
     <script src="cash-payment.js"></script>
-    <script src="js/finance.js?v=20260901-review-fixes"></script>
+    <script src="js/finance.js?v=20260901-prix-achat-maas"></script>
     <!-- Le moteur AVANT l'ecran: sans lui, l'ecran ne s'injecte pas et la
          version actuelle reste seule. -->
-    <script src="js/simulation-v2-moteur.js?v=20260815-ordre2"></script>
+    <script src="js/simulation-v2-moteur.js?v=20260901-commission-integree"></script>
     <script src="js/simulation-v2-projection.js?v=20260829-analyse-niveaux"></script>
-    <script src="js/simulation-v2.js?v=20260829-revue-112"></script>
+    <script src="js/simulation-v2.js?v=20260901-commission-integree"></script>
     <script src="transfert.js"></script>
     <script src="public/js/suiviAchatBoeuf.js"></script>
     <script src="public/js/estimation.js"></script>
