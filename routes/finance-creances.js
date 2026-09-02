@@ -16,6 +16,10 @@
  * "Ce que je dois au fournisseur":
  *   Sigma (commission_pct% × prix_vente_fournisseur × quantite)
  *   sur les ventes dont categorie est dans `categories_eligibles`.
+ *   SAUF sur les produits dont le prix d'achat porte DEJA la commission, ce
+ *   que DATA declare ligne par ligne (cf lib/commission-integree.js): la
+ *   facturer en plus la compterait deux fois — une fois dans le cout d'achat,
+ *   une fois en dette fournisseur.
  *
  * "Ce qu'il me doit":
  *   Sigma ((mon_prix_vente − prix_achat_fournisseur) × quantite)
@@ -43,6 +47,14 @@ const {
 const { parseCentres } = require('./decoupe-helpers');
 const { resolveProduit, buildResolverMaps } = require('../lib/produit-resolver');
 const financeCache = require('../lib/finance-cache');
+const {
+    SOURCE_BOEUF,
+    depuisCatalogueData,
+    aucun: aucuneCommissionIntegree,
+    estCommissionIntegree,
+    prixMataApplicable,
+    estProduitApi
+} = require('../lib/commission-integree');
 
 /**
  * Construit un lookup point-in-time generique pour les history tables
@@ -179,6 +191,60 @@ async function computeCreances(opts = {}) {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+    // Les produits dont le prix porte DEJA la commission MaaS. Ce n'est pas un
+    // reglage: c'est DATA qui le dit, ligne par ligne (`commissionAppliquee`).
+    // Cf lib/commission-integree.js.
+    //
+    // Resolu UNE fois pour la date de FIN de periode, et non par journee: le
+    // booleen ne bascule que si le produit n'etait pas encore tarife ou si le
+    // taux n'existait pas a cette date - un cas de mise en service, pas de
+    // fonctionnement courant. Le resoudre par jour couterait un appel HTTP par
+    // journee de la periode (30 sur un mois) pour un booleen quasi constant.
+    let commissionIntegree = aucuneCommissionIntegree();
+    // Le prix FACTURE par MATA, par produit, avec sa date d'entree en vigueur.
+    // Sert au cout d'achat (marge CDC) ET a la commission, par la meme
+    // fonction que lib/prix-achat-date.js qui valorise le PL: un seul juge
+    // pour les deux questions, sinon elles se contredisent.
+    let prixMata = { parNom: new Map(), depuisParNom: new Map() };
+    // Les avertissements A AFFICHER. Un calcul degrade qui ne se dit pas se lit
+    // comme un calcul normal - et ici l'ecart porte sur toute la dette du mois.
+    const avertissements = [];
+    /**
+     * Un avertissement, et une seule fois.
+     *
+     * Le refus d'un prix MATA est constate par PRODUIT et par JOURNEE: sans ce
+     * filtre, un produit non couvert sur trois semaines produirait vingt fois
+     * la meme phrase, ce qui la rend illisible et noie les autres.
+     */
+    const avertir = (message) => {
+        if (message && avertissements.indexOf(message) < 0) avertissements.push(message);
+    };
+    try {
+        const { getPrixVenteMaasParNom } = require('../lib/prix-vente-maas-client');
+        const pvm = await getPrixVenteMaasParNom(dateFin);
+        commissionIntegree = depuisCatalogueData(pvm.commissionParNom, pvm.disponible);
+        if (pvm.disponible) {
+            prixMata = {
+                parNom: pvm.parNom || new Map(),
+                depuisParNom: pvm.depuisParNom || new Map()
+            };
+        }
+        if (!commissionIntegree.disponible) {
+            avertissements.push(
+                'Commission : le catalogue MAAS (DATA) n’a pas pu être consulté — impossible '
+                + 'de savoir quels prix portent déjà la commission, elle est donc facturée sur '
+                + 'toutes les livraisons éligibles.'
+            );
+        }
+    } catch (e) {
+        // DATA muet: on ne sait pas, donc la commission reste due. L'inverse
+        // l'effacerait en silence sur toutes les livraisons.
+        console.warn('⚠️  prix-vente-maas indisponible pour la commission:', e.message);
+        avertissements.push(
+            `Commission : le catalogue MAAS (DATA) est injoignable (${e.message}) — la `
+            + 'commission est facturée sur toutes les livraisons éligibles.'
+        );
+    }
 
     // 2. Lire catalogue + aliases depuis le cache memoire (TTL 60s).
     //    Invalidation automatique sur toute mutation cote routes/finance.js.
@@ -217,16 +283,39 @@ async function computeCreances(opts = {}) {
     // « Prix API (DATA) » est cochee sur la ligne Boeuf du catalogue
     // (Finance > Prix fournisseur). Decochee -> aucun appel HTTP, on garde
     // le prix achat saisi.
+    //
+    // LA SOURCE LUE CHEZ DATA est toujours le prix FACTURE (parDateBoeufMaas,
+    // revient + commission), jamais le revient nu: c'est ce que MaaS paie, et
+    // c'est la valeur qui sert aussi a decider si la commission reste due. Les
+    // deux ne peuvent pas diverger sans produire un chiffre faux
+    // (cf lib/commission-integree.js).
     const boeufDynEnabled = prixRows.some((p) =>
         String(p.produit || '').trim().toLowerCase() === 'boeuf'
         && p.prix_achat_dynamique === true);
-    let _boeufMarket = { atDate: () => null, count: 0 };
+    let _boeufMarket = {
+        atDate: () => null,
+        count: 0,
+        // Repli neutre: aucun prix DATA n'est retenu, donc le prix qui sert
+        // reellement est celui du CATALOGUE, qui ne porte pas la commission.
+        // `false` la laisse donc facturee. L'inverse l'effacerait en silence
+        // sur toutes les livraisons de bœuf des que DATA tousse.
+        commissionIncluseAuPrix: () => false,
+        avertissements: []
+    };
     if (boeufDynEnabled) {
         try {
             const { getBoeufPrixAchatResolver } = require('../lib/achats-boeuf-client');
-            _boeufMarket = await getBoeufPrixAchatResolver();
+            _boeufMarket = await getBoeufPrixAchatResolver({ source: SOURCE_BOEUF });
         } catch (e) {
             console.warn('⚠️  achats-boeuf resolver indisponible:', e.message);
+            // Le resolveur n'a meme pas rendu son propre avertissement: on
+            // porte le message a sa place, sinon l'ecran afficherait un prix
+            // de catalogue sans jamais dire que le prix DATA a ete demande.
+            _boeufMarket.avertissements = [
+                "Prix d'achat du bœuf : le service DATA n'a pas pu être "
+                + `interrogé (${e.message}) — le prix du catalogue Prix `
+                + 'fournisseur est utilisé à la place.'
+            ];
         }
     }
     mark('boeuf');
@@ -251,11 +340,59 @@ async function computeCreances(opts = {}) {
         if (r.resolved.toLowerCase() === 'boeuf') {
             const dyn = _boeufMarket.atDate(venteDateISO);
             if (dyn != null) return dyn;
+        } else {
+            // Les AUTRES produits du circuit MATA: le prix facture, commission
+            // comprise. MEME fonction que lib/prix-achat-date.js, qui valorise
+            // le PL, et que commissionDejaDansLePrix juste en dessous: trois
+            // chemins qui resolvent le cout d'un meme produit doivent rendre le
+            // meme nombre, sinon la marge du Centre de Decoupe, celle du PL et
+            // la dette divergent sur la meme journee.
+            const mata = prixMataApplicable(r.resolved, venteDateISO, prixMata, avertir);
+            if (mata != null) return mata;
         }
         const fromHistory = prixAchatAtDate(r.resolved.toLowerCase(), venteDateISO);
         if (fromHistory != null) return fromHistory;
         return r.value ? r.value.prix_achat : null;
     };
+    /**
+     * Le prix EFFECTIVEMENT retenu pour ce produit A CETTE DATE porte-t-il
+     * deja la commission MaaS ? Si oui, la facturer en dette fournisseur la
+     * compterait une seconde fois (cf lib/commission-integree.js).
+     *
+     * C'est DATA qui repond, jamais un reglage local — mais par deux canaux
+     * distincts, parce qu'il calcule les deux prix separement:
+     *
+     *   - le BŒUF: son prix facture vient des ACHATS (parDateBoeufMaas), pas du
+     *     catalogue, dont la ligne ne sert qu'a fixer l'assiette de la
+     *     commission. La reponse depend donc de la DATE: DATA ne publie ce prix
+     *     que pour les journees d'achat: les autres retombent sur le prix du
+     *     CATALOGUE Maas, qui ne contient pas la commission et doit continuer a
+     *     la payer. Sans cette distinction, une periode ou DATA n'a rien publie
+     *     sortirait sans commission du tout, et l'ecart ne dirait rien d'autre
+     *     qu'une panne (l'avertissement remonte dans `avertissements`
+     *     l'explique a l'ecran). Le repli neutre de _boeufMarket repond false,
+     *     ce qui couvre aussi la case « Prix API (DATA) » decochee.
+     *
+     *   - LES AUTRES: le booleen commissionAppliquee de leur ligne de catalogue.
+     *
+     * La question se pose sur le nom du CATALOGUE, pas sur le libelle livre:
+     * « Boeuf en detail » se resout sur l'entree « Boeuf ».
+     */
+    const commissionDejaDansLePrix = (produitNom, dateISO) => {
+        const r = resolveProduit(produitNom, resolverMaps);
+        const produitCatalogue = r.resolved || produitNom;
+        if (estProduitApi(produitCatalogue)) {
+            return _boeufMarket.commissionIncluseAuPrix(dateISO);
+        }
+        // LA MEME FONCTION que le cout ci-dessus, garde de date compris: la
+        // commission n'est annulee que si le prix MATA a REELLEMENT ete retenu
+        // ce jour-la. Se contenter du booleen de DATA annulerait la commission
+        // sur des journees valorisees au prix enregistre, qui ne la porte pas -
+        // et la difference ne serait comptee nulle part.
+        if (prixMataApplicable(produitCatalogue, dateISO, prixMata) == null) return false;
+        return estCommissionIntegree(produitCatalogue, commissionIntegree);
+    };
+
     /** Resout le prix_vente (catalogue) effectif pour la commission 3%. */
     const lookupPrixVenteAtDate = (produitVenteNom, venteDateISO) => {
         const r = resolveProduit(produitVenteNom, resolverMaps);
@@ -374,7 +511,17 @@ async function computeCreances(opts = {}) {
         // Prix vente fournisseur effectif a la date du transfert (point-in-time).
         // Fallback sur le prix courant catalogue si pas d'historique avant cette date.
         const prixVenteEff = lookupPrixVenteAtDate(t.produit, tDateISO) ?? prix.prix_vente;
-        const detteLigne = (commissionPct / 100) * prixVenteEff * qte;
+        // Commission facturee SEULEMENT si le prix retenu ne la porte pas deja.
+        //
+        // ET SURTOUT: on annule la dette, on ne saute pas la ligne. La meme
+        // boucle alimente detailParDate, que routes/finance.js confronte aux
+        // avances du partenaire (rapprocherAvances) pour le PL: un `continue`
+        // retirerait la valorisation du produit de sa journee, deplacerait les
+        // avances provisoires et donc le PL — un effet comptable a l'autre bout
+        // de l'application pour une ligne qu'on croyait juste ne pas facturer.
+        const detteLigne = commissionDejaDansLePrix(t.produit, tDateISO)
+            ? 0
+            : (commissionPct / 100) * prixVenteEff * qte;
         totalDette += detteLigne;
 
         // Agreger par produit (cle = nom inventaire, ex: 'Boeuf' pas 'Boeuf en detail')
@@ -653,10 +800,78 @@ async function computeCreances(opts = {}) {
     const totalPaiements = paiements.reduce((s, p) => s + (parseFloat(p.montant) || 0), 0);
     mark('paiements');
 
+    // CALCULE AVANT LE RETOUR, et non dans le litteral: lookupPrixAchatAtDate
+    // ajoute des avertissements (un tarif MATA qui ne couvre pas la journee,
+    // par exemple), et les proprietes d'un litteral sont evaluees dans l'ordre
+    // ou elles sont ecrites. `avertissements` etant rendu plus haut dans
+    // l'objet, tout message pose ici arrivait apres la copie et disparaissait -
+    // silencieusement, et d'autant plus surement qu'une periode sans vente
+    // Centre de Decoupe n'appelle lookupPrixAchatAtDate QUE d'ici.
+    const detailParDateSortie = Array.from(detailParDate.values())
+        .map((d) => {
+            const prixAchatEff = lookupPrixAchatAtDate(d.produit, d.date);
+            const prixAchatNum =
+                prixAchatEff == null ? null : parseFloat(prixAchatEff);
+            // Quantite arrondie pour l'affichage: on calcule montant_achat
+            // a partir de cette meme valeur arrondie pour que, dans la vue
+            // d'audit, (Qte affichee) × (Prix affiche) = (Montant affiche).
+            const quantiteAff = round2(d.quantite);
+            return {
+                date: d.date,
+                produit: d.produit,
+                quantite: quantiteAff,
+                prix_achat:
+                    prixAchatNum == null || isNaN(prixAchatNum)
+                        ? null
+                        : round2(prixAchatNum),
+                montant_achat:
+                    prixAchatNum == null || isNaN(prixAchatNum)
+                        ? null
+                        : round2(quantiteAff * prixAchatNum),
+                dette: round2(d.dette)
+            };
+        })
+        .sort((a, b) =>
+            a.date < b.date ? 1 : a.date > b.date ? -1 : b.dette - a.dette
+        );
+
     return {
         periode: { dateDebut, dateFin },
         commission_pct: commissionPct,
         categories_eligibles: categoriesEligibles,
+        // Produits dont le prix porte deja la commission d'apres DATA: elle
+        // n'est pas refacturee sur leurs livraisons.
+        //   disponible - false si DATA n'a pas repondu. Dans ce cas la liste
+        //                est vide ET la commission reste facturee partout: il
+        //                faut pouvoir distinguer « aucun produit concerne » de
+        //                « on n'a pas pu savoir », qui ne se lisent pas pareil.
+        //   produits   - les entrees du catalogue exemptes sur TOUTE la periode,
+        //                avec leur casse d'origine.
+        //
+        // Filtrees sur le PREMIER jour, pas le dernier, et par la MEME fonction
+        // que le calcul. Un tarif MATA entre en vigueur le 15 n'exempte que la
+        // seconde moitie du mois: l'annoncer exempte tout court ferait deduire
+        // a la Simulation 2.0 - qui reprend cette liste telle quelle et
+        // raisonne sur la periode entiere - une commission que le serveur a
+        // bel et bien facturee du 1er au 14. Les deux moities de l'ecran
+        // afficheraient alors deux resultats pour le meme mois. Sur une
+        // periode mixte on prefere donc ne rien annoncer: la simulation garde
+        // son defaut prudent et deduit la commission, comme le serveur l'a
+        // fait pour les journees non couvertes.
+        commission_integree: {
+            disponible: commissionIntegree.disponible,
+            produits: prixRows
+                .map((p) => String(p.produit || '').trim())
+                .filter((nom) => nom
+                    && commissionDejaDansLePrix(nom, dateDebut)
+                    && commissionDejaDansLePrix(nom, dateFin))
+                .sort((a, b) => a.localeCompare(b, 'fr'))
+        },
+        // Avertissements A AFFICHER: catalogue MAAS muet (on ne sait plus quels
+        // prix portent la commission) et prix bœuf DATA indisponible (donc
+        // valorisation au catalogue). Ils ne bloquent pas le calcul, mais un
+        // chiffre degrade qui ne se dit pas se lit comme un chiffre normal.
+        avertissements: avertissements.concat(_boeufMarket.avertissements || []),
         // Cote A: ce que je dois au fournisseur (commission sur ventes elligibles)
         ce_que_je_dois: round2(totalDette),
         // Cote B: ce qu'il me doit (margin sur ventes Centre de Decoupe)
@@ -683,33 +898,7 @@ async function computeCreances(opts = {}) {
         // eligible, prix_achat fournisseur (point-in-time a la date), montant_achat
         // (= quantite × prix_achat, info) et dette (Je dois 3%, inchange).
         // Trie par date desc (jours recents en haut), puis dette desc a date egale.
-        detail_par_date: Array.from(detailParDate.values())
-            .map((d) => {
-                const prixAchatEff = lookupPrixAchatAtDate(d.produit, d.date);
-                const prixAchatNum =
-                    prixAchatEff == null ? null : parseFloat(prixAchatEff);
-                // Quantite arrondie pour l'affichage: on calcule montant_achat
-                // a partir de cette meme valeur arrondie pour que, dans la vue
-                // d'audit, (Qte affichee) × (Prix affiche) = (Montant affiche).
-                const quantiteAff = round2(d.quantite);
-                return {
-                    date: d.date,
-                    produit: d.produit,
-                    quantite: quantiteAff,
-                    prix_achat:
-                        prixAchatNum == null || isNaN(prixAchatNum)
-                            ? null
-                            : round2(prixAchatNum),
-                    montant_achat:
-                        prixAchatNum == null || isNaN(prixAchatNum)
-                            ? null
-                            : round2(quantiteAff * prixAchatNum),
-                    dette: round2(d.dette)
-                };
-            })
-            .sort((a, b) =>
-                a.date < b.date ? 1 : a.date > b.date ? -1 : b.dette - a.dette
-            ),
+        detail_par_date: detailParDateSortie,
         // Detail par (centre, produit) pour l'onglet "Centre de Decoupe".
         // Chaque entree: { centre, total_recevable, total_quantite,
         //                   detail: [{ produit, quantite_cdc, prix_achat,

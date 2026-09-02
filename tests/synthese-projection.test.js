@@ -16,7 +16,7 @@
  */
 
 const {
-    calculerProjection, parageRetenu, auPrixDeLaSuite
+    calculerProjection, parageRetenu, auPrixDeLaSuite, construireContexte
 } = require('../lib/synthese-projection');
 
 /** ca_par_jour d'aout 2026 jusqu'au 20: 120 000 en P1, 100 000 en P2. */
@@ -267,5 +267,77 @@ describe('la sortie complete', () => {
         const noms = r.volumes_et_prix.lignes.map((l) => l.nom);
         expect(noms).toContain('Boeuf en détail');
         expect(noms).not.toContain('Agneau');
+    });
+});
+
+describe('commission integree: l API dit la meme chose que le serveur', () => {
+    // Le serveur cesse de facturer la commission sur les produits dont le
+    // prix d'achat la porte deja; cette projection, qui la REDERIVE par
+    // produit a partir du prix catalogue, doit cesser avec lui. Sans quoi la
+    // synthese externe et le PL du meme mois se contredisent.
+    //
+    // Les marges attendues sont recalculees ici: bovin a 4 % de parage mesure
+    // (10 journees, assise atteinte), prix de la SUITE 5 600 / 4 300, prix
+    // catalogue 4 500, taux 3 %.
+    const margeParage = 5600 - 4300 / 0.96;          // 1 120,83
+    const ponction = 0.03 * 4500 / 0.96;             // 140,63
+
+    test('le contexte porte le reglage, et null quand le payload est muet', () => {
+        const reponseData = { disponible: true, produits: ['Boeuf'] };
+        expect(construireContexte(
+            simDeBase(), plDeBase({ commission_integree: reponseData }), 3
+        ).commissionIntegree).toEqual(reponseData);
+        // Payload d'une version anterieure: rien, et le moteur retombe alors
+        // sur son defaut prudent (personne n'est integre).
+        expect(construireContexte(simDeBase(), plDeBase(), 3).commissionIntegree).toBeNull();
+    });
+
+    test('sans reponse de DATA: la commission est deduite, comportement d avant', () => {
+        const r = calculerProjection({ sim: simDeBase(), pl: plDeBase(), commissionPct: 3 });
+        expect(r.volumes_et_prix.lignes[0].marge).toBeCloseTo(margeParage - ponction, 6);
+    });
+
+    test('bœuf integre: la marge remonte d exactement une commission', () => {
+        const r = calculerProjection({
+            sim: simDeBase(),
+            pl: plDeBase({ commission_integree: { disponible: true, produits: ['Boeuf'] } }),
+            commissionPct: 3
+        });
+        expect(r.volumes_et_prix.lignes[0].marge).toBeCloseTo(margeParage, 6);
+        // Et le volume a vendre pour tenir la cible bouge avec elle: une marge
+        // sous-estimee faisait viser plus haut que necessaire.
+        expect(Math.abs(r.volumes_et_prix.deltaTotal)).toBeLessThan(216);
+    });
+
+    test('L EXCEPTION BŒUF: DATA muet, le prix vient du catalogue, elle est due', () => {
+        // Le serveur n'inscrit PAS le boeuf, alors que les autres produits y
+        // sont. C'est la seule facon de distinguer « achete commission
+        // comprise » de « achete au catalogue parce que DATA n'a rien publie ».
+        const r = calculerProjection({
+            sim: simDeBase(),
+            pl: plDeBase({ commission_integree: { disponible: true, produits: ['Agneau'] } }),
+            commissionPct: 3
+        });
+        expect(r.volumes_et_prix.lignes[0].marge).toBeCloseTo(margeParage - ponction, 6);
+    });
+
+    test('la reponse de DATA est REDITE dans les hypotheses', () => {
+        // « Les marges sont nettes de commission » n'est pas une regle
+        // uniforme: un lecteur qui refait le calcul doit savoir qui en est
+        // exempte, sinon il ne retrouve pas le chiffre.
+        const reponseData = { disponible: true, produits: ['Agneau'] };
+        const r = calculerProjection({
+            sim: simDeBase(),
+            pl: plDeBase({ commission_integree: reponseData }),
+            commissionPct: 3
+        });
+        // Compare a un LITTERAL, pas a reponseData: le moteur recevant l'objet
+        // lui-meme, toute cle qu'il y ajouterait (un index memoise, par
+        // exemple) serait presente des deux cotes et l'assertion passerait sans
+        // rien prouver. Ce champ part dans la reponse publique de l'API de
+        // synthese, il ne doit porter que ce qu'on y a mis.
+        expect(r.hypotheses.commission_integree).toEqual({
+            disponible: true, produits: ['Agneau']
+        });
     });
 });

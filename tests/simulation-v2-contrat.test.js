@@ -84,6 +84,13 @@ const CLES = [
     'pv_boeuf',
     'pv_agneau',
     'pv_poulet',
+    // QUELS PRODUITS PORTENT DEJA LA COMMISSION dans leur prix d'achat. Le
+    // serveur cesse de la facturer sur leurs livraisons; l'ecran, qui la
+    // REDERIVE par produit a partir du prix catalogue, doit cesser avec lui.
+    // Sans cette cle, l'ecran retombe sur son defaut prudent - il la deduit -
+    // et affiche des marges qui ne sont plus celles du PL, en silence. C'est
+    // precisement le genre de divergence que ce fichier existe pour rompre.
+    'commission_integree',
     // projection fin de mois
     'ca_par_jour',
     'historique',

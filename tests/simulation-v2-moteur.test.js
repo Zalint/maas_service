@@ -444,6 +444,26 @@ describe('la volaille se NOMME, elle n est pas le reste du monde', () => {
         }
     });
 
+    test('l assiette rend le prix ET la ligne de catalogue qui le porte', () => {
+        // Les deux ensemble, parce que c'est sur CETTE ligne que se pose la
+        // question « son prix contient-il deja la commission ? ». Les resoudre
+        // separement laisserait le montant venir d'une ligne et la reponse
+        // d'une autre.
+        const ctx = { pv: { bovin: 4800, ovin: 5300, volaille: 3500, par_produit: { laxass: 200 } } };
+        expect(M.assietteCommission({ nom: 'Boeuf en détail' }, ctx))
+            .toEqual({ prix: 4800, cle: 'boeuf' });
+        expect(M.assietteCommission({ nom: 'Agneau' }, ctx))
+            .toEqual({ prix: 5300, cle: 'agneau' });
+        expect(M.assietteCommission({ nom: 'Poulet en gros' }, ctx))
+            .toEqual({ prix: 3500, cle: 'poulet' });
+        // Sa PROPRE ligne prime sur la carcasse de l'espece.
+        expect(M.assietteCommission({ nom: 'Laxass' }, ctx))
+            .toEqual({ prix: 200, cle: 'laxass' });
+        // Hors catalogue: rien, et surtout pas le repli volaille d'autrefois.
+        expect(M.assietteCommission({ nom: 'Dorade' }, ctx))
+            .toEqual({ prix: null, cle: null });
+    });
+
     test('normaliserNom est expose et accorde avec le serveur', () => {
         // Le client cherche le prix catalogue par nom normalise; une
         // normalisation divergente ferait echouer le lookup en silence et
@@ -452,5 +472,168 @@ describe('la volaille se NOMME, elle n est pas le reste du monde', () => {
         for (const nom of ['Laxass', 'Déchet 400', 'Cuisse de poulet', 'Boeuf']) {
             expect(M.normaliserNom(nom)).toBe(normaliserNom(nom));
         }
+    });
+});
+
+describe('commission integree: le prix d achat la porte deja', () => {
+    // Le reglage « commission integree » (lib/commission-integree.js) dit
+    // quels produits sont ACHETES commission comprise. Le serveur cesse alors
+    // de la facturer sur leurs livraisons; ce moteur, qui la REDERIVE par
+    // produit a partir du prix catalogue, doit cesser aussi - sinon la
+    // simulation et le PL disent deux choses du meme mois.
+    // Les taux PAR ESPECE, comme preparer() et construireContexte() les
+    // posent toujours: c'est le contexte reel, et le seul ou la commission
+    // par unite se divise par le meme parage que la marge.
+    const CTX = Object.assign({}, CONTEXTE, { parageBovin: 5, parageOvin: 5 });
+    const CI = (ci) => Object.assign({}, CTX, { commissionIntegree: ci });
+    const BOEUF = PRODUITS[0];
+    // Les entrees du catalogue reellement en jeu dans ce bloc. Il n'y a plus
+    // de « tous »: DATA nomme les produits dont le prix porte la commission,
+    // et un produit absent de la liste la paie.
+    const TOUT_INTEGRE = { disponible: true, produits: ['Boeuf', 'Boeuf en détail', 'Agneau'] };
+    const SAUF_BOEUF = { disponible: true, produits: ['Agneau'] };
+    const parageNet = PM_DETAIL - 3835 / 0.95;      // marge nette de parage
+    const ponction = 0.03 * 4800 / 0.95;            // commission par unite
+
+    describe('la reponse, entree de catalogue par entree de catalogue', () => {
+        test('contexte muet: PERSONNE n est integre, comportement inchange', () => {
+            // Un champ absent veut dire « payload d'avant », pas « tout est
+            // integre »: supposer l'inverse effacerait la commission de toutes
+            // les marges d'un coup, sur la foi d'une absence.
+            expect(M.commissionIntegree('boeuf', {})).toBe(false);
+            expect(M.commissionIntegree('boeuf', { commissionIntegree: null })).toBe(false);
+            expect(M.commissionIntegree('boeuf', undefined)).toBe(false);
+        });
+        test('DATA muet (disponible faux): personne n est integre', () => {
+            // On ne sait pas, et le serveur a facture partout dans ce cas-la:
+            // la simulation doit deduire la commission comme lui.
+            const c = { commissionIntegree: { disponible: false, produits: ['Boeuf'] } };
+            expect(M.commissionIntegree('boeuf', c)).toBe(false);
+        });
+        test('liste explicite: seules les entrees citees', () => {
+            const c = { commissionIntegree: { disponible: true, produits: ['Boeuf'] } };
+            expect(M.commissionIntegree('boeuf', c)).toBe(true);
+            expect(M.commissionIntegree('agneau', c)).toBe(false);
+        });
+        test('la comparaison ignore accents et casse, comme le serveur', () => {
+            const c = { commissionIntegree: { disponible: true, produits: ['Viande Hachée'] } };
+            expect(M.commissionIntegree('viande hachee', c)).toBe(true);
+        });
+        test('L EXCEPTION BŒUF: absent de la liste, il PAIE', () => {
+            // Case « Prix API (DATA) » cochee mais DATA muet pour la periode:
+            // le prix reellement utilise est celui du CATALOGUE, qui ne porte
+            // pas la commission - elle reste donc due. C'est le serveur qui
+            // tranche, et il l'ecrit en n'inscrivant pas le boeuf ici.
+            const c = { commissionIntegree: { disponible: true, produits: ['Agneau'] } };
+            expect(M.commissionIntegree('boeuf', c)).toBe(false);
+            expect(M.commissionIntegree('agneau', c)).toBe(true);
+        });
+    });
+
+    describe('marge apres commission', () => {
+        test('non integre: la ponction est deduite, au diviseur de l espece', () => {
+            expect(M.margeApresCommission(BOEUF, CTX)).toBeCloseTo(parageNet - ponction, 6);
+        });
+        test('integre: la marge nette de parage, SANS seconde ponction', () => {
+            const m = M.margeApresCommission(BOEUF, CI(TOUT_INTEGRE));
+            expect(m).toBeCloseTo(parageNet, 6);
+            // L'ecart vaut exactement la commission qu'on ne compte plus.
+            expect(m - M.margeApresCommission(BOEUF, CTX)).toBeCloseTo(ponction, 6);
+        });
+        test('l exception bœuf remet la ponction, et sur le bœuf seul', () => {
+            const c = CI(SAUF_BOEUF);
+            expect(M.margeApresCommission(BOEUF, c)).toBeCloseTo(parageNet - ponction, 6);
+            // L'agneau, lui, reste integre: pas de ponction sur sa marge.
+            const agneau = { nom: 'Agneau', prix_moyen: 5300, prix_achat: 4500 };
+            expect(M.margeApresCommission(agneau, c)).toBeCloseTo(5300 - 4500 / 0.95, 6);
+        });
+        test('marge inconnue et prix catalogue inconnu: inchanges', () => {
+            expect(M.margeApresCommission(PRODUITS[4], CONTEXTE)).toBeNull();
+            const sansPv = Object.assign({}, CTX, { pv: {} });
+            expect(M.margeApresCommission(BOEUF, sansPv)).toBeCloseTo(parageNet, 6);
+        });
+        test('SANS scenario: le panneau des leviers ne deplace pas ces marges', () => {
+            // Recommandations et plan d'equilibre decrivent la realite du
+            // moment, pas l'hypothese en cours de test. La fonction ne prend
+            // donc pas de scenario: le verrouiller ici dit que c'est un choix.
+            expect(M.margeApresCommission.length).toBe(2);
+        });
+    });
+
+    describe('commission INDUITE par un levier', () => {
+        test('bovin integre: un levier volume bœuf n induit plus rien', () => {
+            const s = S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } });
+            const d = { produits: PRODUITS, contexte: CI(TOUT_INTEGRE) };
+            const g = M.effetsGlobaux(d, s);
+            expect(g.det.addB).toBeCloseTo(50 / 0.95, 6);  // la livraison a bien lieu
+            expect(g.det.assiette).toBe(0);                // mais elle est deja payee
+            expect(g.det.coInduite).toBe(0);
+            expect(g.det.famillesIntegrees).toEqual(['bovin']);
+            // Zero DIT, pas zero confondu avec un prix catalogue manquant.
+            expect(g.det.pvManquants).toEqual([]);
+            // Et l'effet total tombe a la marge nette de parage, sans ponction.
+            expect(M.effetTotal(d, s)).toBeCloseTo(parageNet * 50, 6);
+        });
+        test('l exception bœuf: le levier redevient commissionne', () => {
+            const s = S({ 'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 } });
+            const d = { produits: PRODUITS, contexte: CI(SAUF_BOEUF) };
+            const g = M.effetsGlobaux(d, s);
+            expect(g.det.coInduite).toBeCloseTo(-0.03 * 4800 * (50 / 0.95), 4);
+            expect(g.det.famillesIntegrees).toEqual([]);
+        });
+        test('un levier de PARAGE bovin n induit plus de commission non plus', () => {
+            // Parer plus fait livrer plus de carcasse; si cette carcasse est
+            // achetee commission comprise, il n'y a rien a refacturer dessus.
+            const d = { produits: PRODUITS, contexte: CI(TOUT_INTEGRE) };
+            const g = M.effetsGlobaux(d, S({}, { parBov: 10 }));
+            expect(g.det.addB).toBeCloseTo(QB * (1 / 0.90 - 1 / 0.95), 6);
+            expect(g.det.coInduite).toBe(0);
+            // Le cout des ventes du parage, lui, ne bouge pas: il vit dans le
+            // prix d'achat, pas dans la commission.
+            expect(g.det.cvParageB).toBeCloseTo(-(QB * (3835 / 0.90 - 3835 / 0.95)), 4);
+        });
+        test('le levier de TAUX de commission reste intact', () => {
+            // coTaux part de commission_maas, deja corrige par le serveur:
+            // le rederiver ici le corrigerait une seconde fois.
+            const d = { produits: PRODUITS, contexte: CI(TOUT_INTEGRE) };
+            const g = M.effetsGlobaux(d, S({}, { com: 4 }));
+            expect(g.det.coTaux).toBeCloseTo(-(194138.55 * (4 / 3 - 1)), 6);
+        });
+        test('familles MELANGEES: chacune suit SA ligne de catalogue', () => {
+            const AGNEAU = { nom: 'Agneau', quantite: 200, ca: 1060000, prix_moyen: 5300, prix_achat: 4500 };
+            const d = {
+                produits: PRODUITS.map((p) => (p.nom === 'Agneau' ? AGNEAU : p)),
+                contexte: CI({ disponible: true, produits: ['Boeuf'] })
+            };
+            const s = S({
+                'Boeuf en détail': { prix: 0, unite: 'F', vol: 50 },
+                'Agneau': { prix: 0, unite: 'F', vol: 10 }
+            });
+            const g = M.effetsGlobaux(d, s);
+            // Seul l'ovin alimente l'assiette.
+            expect(g.det.assiette).toBeCloseTo(5300 * (10 / 0.95), 6);
+            expect(g.det.famillesIntegrees).toEqual(['bovin']);
+        });
+    });
+
+    describe('expliquer: le zero est DIT', () => {
+        const d = { produits: PRODUITS, contexte: CI(TOUT_INTEGRE) };
+        const s = S({ 'Boeuf en détail': { prix: 120, unite: 'F', vol: 50 } }, { parBov: 8, dPa: -250 });
+
+        test('une ligne nomme les familles deja commissionnees a l achat', () => {
+            const ex = M.expliquer(d, s);
+            const l = ex.lignes.filter((x) => /déjà dans le prix/.test(x.libelle))[0];
+            expect(l).toBeDefined();
+            expect(l.formule).toMatch(/bovin/);
+            expect(l.valeur).toBe(0);
+            // Et surtout PAS la ligne « part non chiffrée »: les deux zeros ne
+            // se lisent pas pareil, l'un est un renoncement, l'autre un fait.
+            expect(ex.lignes.filter((x) => /part non chiffrée/.test(x.libelle))).toHaveLength(0);
+        });
+        test('le bouclage tient: la ligne informative vaut zero', () => {
+            const ex = M.expliquer(d, s);
+            expect(ex.controle.ok).toBe(true);
+            expect(ex.total).toBeCloseTo(M.effetTotal(d, s), 9);
+        });
     });
 });

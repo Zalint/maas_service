@@ -886,9 +886,31 @@ router.get('/prix', async (req, res) => {
         });
 
         const dateParam = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+        // Prix d'ACHAT MaaS (DATA): ce que MaaS paie reellement au fournisseur,
+        // commission comprise (prixAchat + taux% x prix catalogue). Meme date
+        // que celle affichee - aujourd'hui en edition, la date choisie en
+        // as-of: "le prix en vigueur a cette date" vaut pour cette source
+        // aussi. N'AJOUTE qu'un champ indicatif (prix_achat_maas): prix_achat
+        // reste la valeur stockee, inchangee - c'est l'ecran qui decide
+        // d'afficher l'un ou l'autre, et la sauvegarde ne doit jamais ecraser
+        // le repli par un instantane DATA.
+        const { getPrixVenteMaasParNom } = require('../lib/prix-vente-maas-client');
+        const dateEffective = /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+            ? dateParam
+            : new Date().toISOString().slice(0, 10);
+        // Lance l'appel DATA sans l'attendre tout de suite: il ne depend
+        // d'aucune des requetes DB ci-dessous, donc on le fait chevaucher
+        // avec elles (Promise.all plus bas) plutot que de payer son delai
+        // (jusqu'a REQUEST_TIMEOUT_MS sur un cache froid) en plus du reste.
+        const prixVenteMaasPromise = getPrixVenteMaasParNom(dateEffective);
+
         // Mode normal (edition): valeurs courantes du catalogue.
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-            return res.json({ success: true, data: rows });
+            const { parNom: prixVenteMaasParNom } = await prixVenteMaasPromise;
+            const data = rows.map((r) => Object.assign({}, r, {
+                prix_achat_maas: prixVenteMaasParNom.get(normaliserNomProduit(r.produit)) ?? null
+            }));
+            return res.json({ success: true, data });
         }
 
         // Mode "as-of": prix effectifs a la date choisie (point-in-time).
@@ -897,7 +919,8 @@ router.get('/prix', async (req, res) => {
         // <= fin de journee, trie ASC, et la derniere ecriture par produit
         // gagne (= la plus recente <= date).
         const borne = new Date(dateParam + 'T23:59:59.999Z');
-        const [venteHist, achatHist] = await Promise.all([
+        const [{ parNom: prixVenteMaasParNom }, venteHist, achatHist] = await Promise.all([
+            prixVenteMaasPromise,
             PrixVenteHistory.findAll({
                 where: { created_at: { [Op.lte]: borne } },
                 order: [['created_at', 'ASC']],
@@ -925,6 +948,7 @@ router.get('/prix', async (req, res) => {
                 // config, pas des prix. Affiches en lecture seule en mode as-of.
                 prix_achat_dynamique: r.prix_achat_dynamique === true,
                 hors_mata: r.hors_mata === true,
+                prix_achat_maas: prixVenteMaasParNom.get(normaliserNomProduit(r.produit)) ?? null,
                 updated_at: r.updated_at,
                 as_of: dateParam,
                 // Aucune donnee historique <= date: produit pas encore au
@@ -957,8 +981,22 @@ router.put('/prix', async (req, res) => {
         for (const item of items) {
             const produit = String(item.produit || '').trim();
             if (!produit) continue;
-            const prixVente = parseFloat(item.prix_vente);
-            if (!Number.isFinite(prixVente) || prixVente < 0) {
+            // prix_vente ABSENT = « laisse la valeur en place », comme
+            // prix_achat_dynamique et hors_mata plus bas. L'ecran Prix
+            // fournisseur ne porte plus cette colonne (le prix d'achat MaaS
+            // l'a remplacee); elle reste editable depuis Centre de Decoupe,
+            // qui l'envoie toujours.
+            //
+            // SURTOUT PAS un defaut a 0: la colonne est NOT NULL DEFAULT 0, et
+            // toute sauvegarde du catalogue remettrait alors chaque produit a
+            // zero en y ajoutant une ligne d'historique - ce qui annulerait la
+            // commission a partir de cet instant, y compris pour toute periode
+            // recalculee plus tard. Une valeur absente n'est pas une valeur
+            // nulle.
+            const prixVenteFourni = item.prix_vente !== undefined && item.prix_vente !== null
+                && item.prix_vente !== '';
+            const prixVente = prixVenteFourni ? parseFloat(item.prix_vente) : null;
+            if (prixVenteFourni && (!Number.isFinite(prixVente) || prixVente < 0)) {
                 return res.status(400).json({
                     success: false,
                     error: `prix_vente invalide pour ${produit}`
@@ -1005,9 +1043,16 @@ router.put('/prix', async (req, res) => {
                     ? parseFloat(existing.prix_achat)
                     : null;
 
+                // prix_vente absent: on reporte l'existant. Un produit CREE
+                // sans prix de vente part a 0, comme le fait deja la creation
+                // automatique par alias - la colonne est NOT NULL.
+                const prixVenteEffectif = prixVenteFourni
+                    ? prixVente
+                    : (oldPrixVente == null ? 0 : oldPrixVente);
+
                 const payload = {
                     produit,
-                    prix_vente: prixVente,
+                    prix_vente: prixVenteEffectif,
                     prix_achat: prixAchat,
                     updated_at: now
                 };
@@ -1020,10 +1065,10 @@ router.put('/prix', async (req, res) => {
                 await FournisseurPrix.upsert(payload, { transaction: t });
 
                 // History prix_vente: seulement si change (ou si nouveau produit).
-                if (oldPrixVente == null || Math.abs(oldPrixVente - prixVente) > 0.001) {
+                if (oldPrixVente == null || Math.abs(oldPrixVente - prixVenteEffectif) > 0.001) {
                     await PrixVenteHistory.create({
                         produit,
-                        prix_vente: prixVente,
+                        prix_vente: prixVenteEffectif,
                         changed_by: username
                     }, { transaction: t });
                 }
@@ -4028,6 +4073,13 @@ async function computePl(dateDebut, dateFin) {
                 avances_provisoires: round2(avancesProvisoires),
                 avances_provisoires_detail: avancesProvisoiresDetail,
                 commission_maas: round2(commission),
+                // Repris tels quels de computeCreances, qui vient de les
+                // calculer: l'ecran PL doit pouvoir annoncer le TAUX applique
+                // et QUELS produits ne sont plus refactures, sans relire une
+                // seconde source qui pourrait repondre autre chose que le
+                // chiffre affiche juste a cote.
+                commission_pct: creances.commission_pct,
+                commission_integree: creances.commission_integree,
                 marge_cdc: round2(margeCdc),
                 depenses_periode: round2(totalDepenses),
                 // La part HORS BOUCHERIE des deux postes d'achat, pour que
@@ -5712,6 +5764,11 @@ router.put('/config', async (req, res) => {
         // (soir + vendu + jete - matin) mesure le dechet PRODUIT par la
         // decoupe. Configuree dans le meme ecran admin que les exclusions,
         // et stockee pareil: une liste CSV de noms, pas de table dediee.
+        // « Commission integree » n'a PAS de cle ici, et c'est deliberé: c'est
+        // DATA qui dit, produit par produit, si son prix porte deja la
+        // commission (cf lib/commission-integree.js). Un reglage local serait
+        // une seconde verite, a re-regler a chaque evolution du catalogue et
+        // fausse des qu'elle decrocherait de celle de DATA.
         const allowedKeys = ['commission_pct', 'categories_eligibles', 'stock_pertes_decoupe_pct', 'parage_exclusions', 'parage_dechets', 'creances_clients_solde_ouverture', 'creances_clients_date_ouverture'];
         // Mois optionnel: ne s'applique qu'a stock_pertes_decoupe_pct, seul
         // parametre date a ce jour.

@@ -241,7 +241,7 @@
         if (prixSave) prixSave.addEventListener('click', onPrixSave);
 
         const prixAdd = document.getElementById('fin-prix-add');
-        if (prixAdd) prixAdd.addEventListener('click', () => addPrixRow('', '', ''));
+        if (prixAdd) prixAdd.addEventListener('click', () => addPrixRow('', ''));
 
         // Sélecteur de date "voir les prix au ..." : recharge le catalogue en
         // mode as-of (lecture seule) quand une date est choisie, ou en mode
@@ -257,7 +257,7 @@
         const configSave = document.getElementById('fin-config-save');
         if (configSave) configSave.addEventListener('click', onConfigSave);
 
-        // Export Excel du tableau "Detail par date (commission 3%)"
+        // Export Excel du tableau "Detail par date (commission due)"
         const detailDateExport = document.getElementById('fin-detail-date-export');
         if (detailDateExport) detailDateExport.addEventListener('click', exportDetailParDateExcel);
 
@@ -301,6 +301,56 @@
         });
     }
 
+    // ===== « Commission intégrée » : ce que les libellés ne doivent plus taire
+    //
+    // Certains produits portent DEJA la commission MaaS dans leur prix
+    // (cf lib/commission-integree.js): elle ne leur est donc pas refacturee.
+    // Les libelles qui annoncaient « 3 % sur les livraisons » decrivaient un
+    // calcul qui n'existe plus des qu'un produit est concerne.
+    //
+    // L'information n'est PAS relue ici: elle accompagne le chiffre, dans la
+    // reponse qui vient de le calculer (`commission_integree` de /creances et
+    // du /pl). C'est DATA qui en decide, produit par produit, et une seconde
+    // lecture pourrait repondre autre chose que le montant affiche juste a
+    // cote. Tant qu'aucun ecran n'en a rapporte, la mention est simplement
+    // absente - un libelle n'a pas a faire tomber un tableau de chiffres.
+    let _ciEtat = null;      // null = aucune reponse ne l'a encore porte
+
+    /**
+     * Memorise l'etat porte par une reponse serveur (creances ou PL).
+     *
+     * Un payload SANS ce champ remet l'etat a null au lieu de le laisser en
+     * place: c'est le cas d'un PL fige avant ce changement, et garder la liste
+     * de l'ecran precedent ferait annoncer, sur une periode passee, une
+     * exemption qui n'existait pas alors - un libelle qui contredit le montant
+     * affiche juste a cote.
+     */
+    function majCommissionIntegree(payload) {
+        _ciEtat = (payload && Array.isArray(payload.produits)) ? payload : null;
+    }
+
+    /**
+     * La mention a accrocher a un libelle de commission, ou null quand il n'y
+     * a rien a dire: information pas encore recue, DATA muet, ou aucun produit
+     * concerne - un libelle deja exact n'a pas a s'alourdir d'une precision
+     * vide.
+     */
+    function noteCommissionIntegree() {
+        // DATA n'a pas repondu: la commission a ete facturee partout, le
+        // libelle d'origine est donc exact. Ne rien ajouter.
+        if (!_ciEtat || !_ciEtat.disponible) return null;
+        const liste = _ciEtat.produits || [];
+        if (!liste.length) return null;
+        return {
+            court: `hors ${liste.length} produit(s) à commission intégrée`,
+            titre: 'Ces produits ne sont pas refacturés : leur prix porte déjà la commission '
+                 + 'MaaS d\'après MAAS (DATA) — ' + liste.slice(0, 12).join(', ')
+                 + (liste.length > 12 ? '…' : '')
+                 + '. Le bœuf fait exception les journées où DATA n\'a pas fourni de prix : '
+                 + 'le prix du catalogue prend le relais et, lui, ne la contient pas.'
+        };
+    }
+
     // ===== Créances =====
 
     async function loadCreances() {
@@ -322,6 +372,8 @@
             // recevant que `local`, il faut le garder a part - sinon la
             // colonne « Avance partenaire » resterait vide en permanence.
             _lastRapprochement = json.data.rapprochement_avances || null;
+            // Porte par le calcul lui-meme: les cartes le lisent juste apres.
+            majCommissionIntegree(json.data.local && json.data.local.commission_integree);
             renderLocal(json.data.local);
         } catch (e) {
             if (typeof showToast === 'function') showToast('Erreur creances: ' + e.message, 'danger');
@@ -460,7 +512,7 @@
         }).join('') || '<tr><td colspan="5" class="text-muted text-center">Aucune opération sur la période</td></tr>';
     }
 
-    // ===== Bloc 2: Calcul Maas local (commission 3%) =====
+    // ===== Bloc 2: Calcul Maas local (commission due) =====
     // Solde theorique recalcul cote UI sans la marge CDC pour matcher la
     // semantique du nouvel onglet separe (Solde = Je dois - Paiements).
     // Dernier payload local (Calcul Maas) rendu — sert a l'export Excel du
@@ -468,7 +520,7 @@
     let _lastLocalData = null;
     let _lastRapprochement = null;
 
-    // Export Excel (.xlsx) du tableau "Detail par date (commission 3%)".
+    // Export Excel (.xlsx) du tableau "Detail par date (commission due)".
     // Exporte exactement les lignes affichees (dette > 0) + une ligne TOTAL.
     // Reutilise la lib SheetJS (XLSX) deja chargee globalement.
     function exportDetailParDateExcel() {
@@ -518,7 +570,7 @@
             // tableau oblige a refaire le rapprochement a la main.
             'Avance partenaire': avanceExport(d.date),
             'Écart vs avance': ecartExport(d.date),
-            'Je dois (3%)': d.dette
+            'Je dois (commission)': d.dette
         }));
         // Ligne TOTAL (memes sommes que le pied de tableau a l'ecran).
         const totAchat = src.reduce((s, d) => s + (d.montant_achat || 0), 0);
@@ -532,7 +584,7 @@
             'Avance partenaire': Array.from(new Set(src.map((d) => String(d.date || '').slice(0, 10))))
                 .reduce((t, dt) => t + ((parDateExp[dt] || {}).avance || 0), 0),
             'Écart vs avance': '',
-            'Je dois (3%)': totDette
+            'Je dois (commission)': totDette
         });
         const ws = XLSX.utils.json_to_sheet(rows);
         const wb = XLSX.utils.book_new();
@@ -544,7 +596,7 @@
         if (typeof showToast === 'function') showToast('Export Excel réussi', 'success');
     }
 
-    // Rendu du tableau "Detail par date (commission 3%)".
+    // Rendu du tableau "Detail par date (commission due)".
     // 2 modes selon la case "Grouper par date":
     //  - plat: une ligne par (date, produit) (defaut).
     //  - groupe: une ligne-resume repliable par date (total du jour) +
@@ -667,7 +719,7 @@
         }
 
         // Ligne de total (dates choisies): somme de "Qté × Prix achat" et
-        // "Je dois (3%)" sur les lignes affichees (identique dans les 2 modes).
+        // "Je dois" sur les lignes affichees (identique dans les 2 modes).
         // Le total "Je dois" egale le KPI ce_que_je_dois. Cache si aucune ligne.
         const foot = document.getElementById('fin-creances-detail-date-foot');
         if (foot) {
@@ -756,6 +808,19 @@
         const cards = document.getElementById('fin-creances-cards');
         const soldeCommission = (data.ce_que_je_dois || 0) - (data.paiements_effectues || 0);
 
+        // LES AVERTISSEMENTS DU CALCUL (prix d'achat du bœuf que DATA n'a pas
+        // fourni, par exemple). Ils expliquent pourquoi un montant vaut ce
+        // qu'il vaut: ils s'affichent EN HAUT de l'ecran, hors accordeon - au
+        // fond d'une section repliee par defaut, personne ne les lirait.
+        const elAvert = document.getElementById('fin-creances-avertissements');
+        if (elAvert) {
+            const avertissements = data.avertissements || [];
+            elAvert.innerHTML = avertissements.length
+                ? `<div class="alert alert-warning py-2 small mb-3"><i class="bi bi-exclamation-triangle"></i>
+                   ${avertissements.map((a) => esc(a)).join('<br>')}</div>`
+                : '';
+        }
+
         // Badge total dans le header d'accordeon (visible meme replie).
         const maasBadge = document.getElementById('fin-cre-acc-maas-total');
         if (maasBadge) maasBadge.textContent = 'Je dois ' + fmtMoney(data.ce_que_je_dois || 0);
@@ -766,8 +831,16 @@
         // d'ajout ont demenage dans leur propre onglet (Paiement fournisseur).
         const card3 = (tone, icon, label, valueHtml) => kpiCard(tone, icon, label, valueHtml)
             .replace('col-md-3', 'col-md-4');
+        // « X % sur livraisons Boeuf/Agneau » etait vrai tant que la commission
+        // portait sur toutes les livraisons. Depuis la commission integree, la
+        // carte doit dire sur QUOI elle ne porte plus - en une ligne grise, le
+        // detail dans l'infobulle.
+        const noteCi = noteCommissionIntegree();
+        const mentionCi = noteCi
+            ? ` <span class="d-block small text-muted" title="${esc(noteCi.titre)}">${esc(noteCi.court)}</span>`
+            : '';
         cards.innerHTML = [
-            card3('warning', 'percent',    `Je dois (${data.commission_pct}% sur livraisons ${data.categories_eligibles.join('/')})`, fmtAmount(data.ce_que_je_dois)),
+            card3('warning', 'percent',    `Je dois (${esc(String(data.commission_pct))}% sur livraisons ${esc(data.categories_eligibles.join('/'))})${mentionCi}`, fmtAmount(data.ce_que_je_dois)),
             card3('info',    'wallet2',    'Paiements locaux saisis',     fmtAmount(data.paiements_effectues)),
             card3('neutral', 'calculator', 'Solde commission (Je dois − Paiements)', fmtAmount(soldeCommission))
         ].join('');
@@ -782,7 +855,7 @@
             </tr>
         `).join('') || '<tr><td colspan="3" class="text-muted text-center">Aucune livraison éligible sur la période</td></tr>';
 
-        // Detail par date : meme semantique (commission 3% sur ventes eligibles),
+        // Detail par date : meme semantique (commission due sur ventes eligibles),
         // tri par date desc (jours recents en haut). Date format YYYY-MM-DD du
         // backend converti en DD/MM/YYYY pour lisibilite FR. Filtre dette>0
         // pour ne pas montrer les jours sans vente eligible.
@@ -1323,7 +1396,7 @@
                         ${catalogHint}
                     </td>
                     <td class="text-end">${esc(d.quantite_cdc)}</td>
-                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (commission 3%) — édite l\'entrée catalogue ' + produitCatalog)}
+                    ${editablePrixCell('prix_vente', d.prix_vente_courant, d.prix_vente_moyen, 'Prix vente fournisseur (base de la commission MaaS) — édite l\'entrée catalogue ' + produitCatalog)}
                     ${editablePrixCell('prix_achat', d.prix_achat_courant, d.prix_achat, 'Prix achat fournisseur — édite l\'entrée catalogue ' + produitCatalog)}
                     ${editablePrixCell('prix_vente_cdc', d.prix_vente_cdc_courant, d.prix_vente_cdc, 'Prix vente CDC (négocié B2B) — édite l\'entrée catalogue ' + produitCatalog)}
                     <td class="text-end">${esc(fmtMoney(d.marge_unitaire))}</td>
@@ -1920,11 +1993,11 @@
             for (const row of prixJson.data) {
                 addPrixRow(
                     row.produit,
-                    row.prix_vente == null ? '' : row.prix_vente,
                     row.prix_achat == null ? '' : row.prix_achat,
                     readOnly,
                     row.prix_achat_dynamique === true,
-                    row.hors_mata === true
+                    row.hors_mata === true,
+                    row.prix_achat_maas
                 );
             }
         } catch (e) {
@@ -1932,7 +2005,7 @@
         }
     }
 
-    function addPrixRow(produit, prixVente, prixAchat, readOnly, prixAchatDyn, horsMata) {
+    function addPrixRow(produit, prixAchat, readOnly, prixAchatDyn, horsMata, prixAchatMaas) {
         const tbody = document.querySelector('#fin-prix-table tbody');
         const tr = document.createElement('tr');
 
@@ -1980,8 +2053,41 @@
             td.appendChild(grp);
             return td;
         };
-        const tdV = makePrixCell('prix_vente', prixVente, 'prix-vente-fournisseur', 'Prix vente fournisseur', 'prix_vente');
         const tdA = makePrixCell('prix_achat', prixAchat, 'prix-achat', 'Prix achat fournisseur', 'prix_achat');
+        // PRIX D'ACHAT VERROUILLE: DATA connait ce produit, et son prix fait
+        // foi - c'est ce que MaaS paie reellement, commission comprise
+        // (prixAchat + taux% x prix catalogue, cf lib/prix-vente-maas-client).
+        // Pas un reglage admin comme la case "Prix API (DATA)" du bœuf, mais
+        // une consequence automatique de ce que DATA renvoie: un produit hors
+        // circuit Mata reste saisi a la main, avec sa valeur stockee.
+        //
+        // dataset.original garde cette valeur stockee de cote: onPrixSave doit
+        // la renvoyer telle quelle, jamais celle affichee ici, sinon le repli
+        // en cas d'indisponibilite de DATA disparaitrait - remplace par un
+        // instantane qui deviendrait faux des le prochain changement de tarif.
+        if (prixAchatMaas != null) {
+            const inA = tdA.querySelector('input');
+            if (inA) {
+                inA.dataset.original = prixAchat == null ? '' : String(prixAchat);
+                inA.value = prixAchatMaas;
+                inA.disabled = true;
+                inA.classList.add('fst-italic');
+                inA.title = "Prix d'achat verrouillé — lu depuis MAAS (DATA), commission comprise, "
+                    + 'non modifiable manuellement.';
+                // grp existe toujours ici: makePrixCell ne l'omet que pour un
+                // produit vide, et aucun appelant ne fournit prixAchatMaas
+                // pour une ligne sans produit (cf le bouton "ajouter une
+                // ligne", qui appelle addPrixRow sans ce parametre).
+                const grp = tdA.querySelector('.input-group');
+                if (grp) {
+                    const lock = document.createElement('span');
+                    lock.className = 'input-group-text';
+                    lock.innerHTML = '<i class="bi bi-lock-fill"></i>';
+                    lock.title = inA.title;
+                    grp.insertBefore(lock, grp.querySelector('button'));
+                }
+            }
+        }
 
         // Colonne "Prix API (DATA)": bascule le prix achat de ce produit sur
         // l'API DATA (moyenne des achats du jour) au lieu de la valeur saisie
@@ -2006,6 +2112,16 @@
                     ? 'Prix achat lu depuis DATA. Décochez pour utiliser la valeur saisie.'
                     : 'Valeur saisie utilisée. Cochez pour lire le prix depuis DATA.';
                 if (!inA) return;
+                // CHAMP VERROUILLE SUR MAAS (DATA): ne pas y toucher. Le bloc
+                // de verrouillage ci-dessus a pose l'italique, l'infobulle et
+                // le cadenas pour dire d'ou vient la valeur AFFICHEE; cette
+                // case, elle, ne parle que de la valeur STOCKEE. Sans ce
+                // garde, syncAchat s'executant apres lui, une ligne bœuf
+                // verrouillee mais a case decochee perdait son italique et se
+                // voyait annoncer « Prix achat fournisseur utilisé pour le
+                // calcul » a cote d'un cadenas - deux messages contraires sur
+                // le meme champ.
+                if (prixAchatMaas != null) return;
                 inA.classList.toggle('fst-italic', chk.checked);
                 inA.title = chk.checked
                     ? 'Prix API actif — cette valeur ne sert que de repli si DATA est indisponible.'
@@ -2101,7 +2217,7 @@
         tdDel.appendChild(btnDel);
         }
 
-        tr.append(tdP, tdV, tdA, tdDyn, tdHors, tdDel);
+        tr.append(tdP, tdA, tdDyn, tdHors, tdDel);
         tbody.appendChild(tr);
     }
 
@@ -2114,7 +2230,19 @@
                 inputs.forEach((inp) => {
                     // Le toggle "Prix API (DATA)" est une case a cocher: on
                     // envoie un booleen, pas la value ("on") du DOM.
-                    obj[inp.dataset.col] = inp.type === 'checkbox' ? inp.checked : inp.value;
+                    //
+                    // Un prix d'achat VERROUILLE (dataset.original pose par
+                    // addPrixRow quand DATA connait ce produit) affiche la
+                    // valeur DATA, pas la valeur stockee - la renvoyer telle
+                    // quelle ecraserait le repli en base par un instantane
+                    // DATA qui deviendrait faux des que DATA change d'avis.
+                    // Restreint a prix_achat explicitement: dataset.original
+                    // n'a de sens que pour ce verrouillage-la, pas un contrat
+                    // generique sur "n'importe quel input avec cet attribut".
+                    const original = inp.dataset.col === 'prix_achat' ? inp.dataset.original : undefined;
+                    obj[inp.dataset.col] = inp.type === 'checkbox'
+                        ? inp.checked
+                        : (original !== undefined ? original : inp.value);
                 });
                 if (obj.produit && obj.produit.trim()) items.push(obj);
             });
@@ -4585,6 +4713,19 @@
             : variationSimulee;
         const stockCouleur = variationRetenue >= 0 ? 'success' : 'danger';
 
+        // Le poste de commission affichait « (3%) » en dur, sur toutes les
+        // livraisons: deux affirmations fausses des lors qu'un tenant regle un
+        // autre taux, ou qu'un produit porte deja la commission dans son prix.
+        // Les deux viennent donc du payload qui porte le montant affiche.
+        majCommissionIntegree(d.commission_integree);
+        const notePlCi = noteCommissionIntegree();
+        const pctPl = parseFloat(d.commission_pct);
+        const libelleCommission = '<i class="bi bi-percent text-warning"></i> Commission MaaS'
+            + (Number.isFinite(pctPl) ? ` (${esc(String(pctPl))} %)` : '')
+            + (notePlCi
+                ? ` <span class="badge bg-light text-dark border ms-1" title="${esc(notePlCi.titre)}">${esc(notePlCi.court)}</span>`
+                : '');
+
         const postes = [
             { cle: 'ventes', signe: 1, montant: ventesRetenues, couleur: 'primary', neutralisable: false,
               libelle: '<i class="bi bi-cash-stack text-primary"></i> Montant Total des Ventes'
@@ -4614,7 +4755,7 @@
                         esc(String((d.avances_provisoires_detail || []).length))} date(s)</span>`
             }] : []),
             { cle: 'commission', signe: -1, montant: d.commission_maas || 0, couleur: 'warning', neutralisable: true,
-              libelle: '<i class="bi bi-percent text-warning"></i> Commission MaaS (3%)' },
+              libelle: libelleCommission },
             { cle: 'marge_cdc', signe: 1, montant: d.marge_cdc || 0, couleur: 'success', neutralisable: true,
               libelle: '<i class="bi bi-coin text-success"></i> Marge CDC (Il me doit)' },
             { cle: 'charges', signe: -1, montant: ch.total_prorata || 0, couleur: 'danger', neutralisable: true,

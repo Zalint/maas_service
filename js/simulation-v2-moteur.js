@@ -21,6 +21,9 @@
  *     livrees au prix catalogue fournisseur (3 % x prix catalogue x livre):
  *     un levier qui fait vendre ou parer plus fait livrer plus, donc
  *     commissionne plus. L'oublier surestimait le levier volume de ~20 %.
+ *     SAUF sur les produits dont le prix d'achat porte DEJA la commission
+ *     (reglage « commission integree », cf lib/commission-integree.js): elle
+ *     est alors dans le cout, la refacturer la compterait deux fois.
  *
  *  3. Le changement de prix d'achat est un NIVEAU, pas un a-coup: il vaut
  *     pour tous les achats de la periode, y compris les unites qui ont
@@ -43,7 +46,8 @@
  *   donnees  = { produits: [{nom, quantite, ca, prix_moyen, prix_achat}...],
  *                contexte: { varBovin, varOvin, parageBase, boeuf:{matin,soir},
  *                            commission, commissionPct,
- *                            pv: {bovin, ovin, volaille} } }
+ *                            pv: {bovin, ovin, volaille, par_produit},
+ *                            commissionIntegree: {disponible, produits} } }
  *   scenario = { leviers: { [nom]: {prix, unite, vol} },
  *                globaux: { charges, dep, com, parBov, parOvi, dPa } }
  */
@@ -90,6 +94,92 @@
     // sur les 3 500 F de la carcasse de poulet.
     function estVolaille(p) { return /^(poulet|volaille|poule|dinde)/.test(norm(p && p.nom)); }
 
+    // Les ENTREES DE CATALOGUE qui portent le prix des carcasses. Le repli par
+    // espece de l'assiette pointe vers elles (pv.bovin est le prix de la ligne
+    // « Boeuf »), et c'est sur ces memes lignes que l'administrateur coche
+    // « commission integree ». Les nommer une fois evite que le prix vienne
+    // d'une ligne et la reponse d'une autre.
+    var CLE_BOVIN = 'boeuf', CLE_OVIN = 'agneau', CLE_VOLAILLE = 'poulet';
+
+    /**
+     * L'ASSIETTE de la commission MaaS pour un produit: le prix de vente
+     * catalogue retenu, ET l'entree de catalogue d'ou il sort.
+     *
+     * Les deux sont rendus ENSEMBLE parce qu'une seule ligne de catalogue
+     * repond aux deux questions posees ici: quel prix sert d'assiette, et ce
+     * prix porte-t-il deja la commission. Les resoudre separement laisserait
+     * le montant venir d'une ligne et la reponse d'une autre - l'ecart qui
+     * fait facturer deux fois, ou pas du tout.
+     *
+     * Son propre prix d'abord, la carcasse de son espece ensuite, rien du tout
+     * en dernier. L'ancienne regle disait « bovin, sinon ovin, sinon VOLAILLE »
+     * - un `else` qui rangeait d'office dans le poulet tout ce qu'il ne
+     * reconnaissait pas: le Laxass, vendu 200 F, se voyait commissionne sur
+     * les 3 500 F de la carcasse de poulet, 105 F l'unite, et ressortait a
+     * -62 F de marge nette quand il en gagne 43. Un produit declare a perte,
+     * c'est un produit qu'on arrete.
+     *
+     * Les noms de decoupe (« Boeuf en detail ») n'ont pas de ligne au
+     * catalogue: c'est la carcasse qui porte le prix, d'ou le repli par espece.
+     */
+    function assietteCommission(p, contexte) {
+        var pv = (contexte || {}).pv || {};
+        var cle = norm(p && p.nom);
+        var propre = (pv.par_produit || {})[cle];
+        if (nb(propre) > 0) return { prix: nb(propre), cle: cle };
+        if (estBoeuf(p)) return { prix: pv.bovin, cle: CLE_BOVIN };
+        if (estOvin(p)) return { prix: pv.ovin, cle: CLE_OVIN };
+        if (estVolaille(p)) return { prix: pv.volaille, cle: CLE_VOLAILLE };
+        return { prix: null, cle: null };
+    }
+
+    /**
+     * Le prix d'achat de cette entree de catalogue porte-t-il DEJA la
+     * commission MaaS ? Si oui, rien n'est a refacturer sur ses livraisons.
+     *
+     * La reponse arrive tout resolue du SERVEUR, dans
+     * contexte.commissionIntegree = { disponible, produits: [noms] }. C'est
+     * DATA qui en decide, produit par produit (`commissionAppliquee`), et ce
+     * module n'a ni base ni acces reseau pour le redemander. Il ne pourrait de
+     * toute facon pas trancher le cas du bœuf: son prix ne vient de DATA -
+     * commission comprise - que les journees ou DATA en publie un; les autres
+     * retombent sur le catalogue, qui ne la porte pas.
+     *
+     * DEFAUT PRUDENT quand le contexte ne porte rien (payload d'une version
+     * anterieure, snapshot en cache) ou quand DATA n'a pas repondu
+     * (`disponible` faux): AUCUN produit n'est integre, donc la commission
+     * continue d'etre deduite exactement comme avant - et c'est bien ce que le
+     * serveur a facture dans ce cas-la. Se tromper en deduisant une commission
+     * qui n'est plus facturee sous-estime la marge et fait viser un peu haut;
+     * se tromper dans l'autre sens la surestime et fait recommander de vendre
+     * MOINS que necessaire - une erreur qu'on ne voit qu'a la cloture.
+     */
+    // Index normalise des produits integres, memoise HORS de l'objet recu.
+    // Ecrire le cache sur cet objet le ferait ressortir dans la reponse de
+    // l'API de synthese, qui republie contexte.commissionIntegree tel quel
+    // (lib/synthese-projection.js): un champ interne deviendrait alors une
+    // donnee du contrat public. Une WeakMap n'empeche pas le contexte d'etre
+    // collecte quand la simulation est terminee.
+    var _indexIntegres = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+    function commissionIntegree(cle, contexte) {
+        var ci = (contexte || {}).commissionIntegree;
+        if (!ci || !ci.disponible || !ci.produits || !ci.produits.length) return false;
+        if (!cle) return false;
+        // La question est posee par produit ET par scenario: renormaliser toute
+        // la liste a chaque appel se paie sur des simulations a plusieurs
+        // dizaines de produits.
+        var index = _indexIntegres && _indexIntegres.get(ci);
+        if (!index) {
+            index = {};
+            for (var i = 0; i < ci.produits.length; i++) {
+                index[norm(ci.produits[i])] = true;
+            }
+            if (_indexIntegres) _indexIntegres.set(ci, index);
+        }
+        return index[norm(cle)] === true;
+    }
+
     function levierDe(scenario, nom) {
         var l = scenario && scenario.leviers && scenario.leviers[nom];
         return l || { prix: 0, unite: 'F', vol: 0 };
@@ -132,6 +222,53 @@
         if (d === null) return null;
         var paEff = nb(p.prix_achat) + (estBoeuf(p) ? nb(globauxDe(scenario).dPa) : 0);
         return nb(p.prix_moyen) - paEff / d;
+    }
+
+    /**
+     * La marge d'une unite vendue EN PLUS, nette de parage ET de la commission
+     * que sa livraison declenche.
+     *
+     *     commission par unite = taux x prix catalogue / (1 - parage espece)
+     *
+     * Vendre une unite de plus fait livrer 1/(1-parage) unite de carcasse,
+     * commissionnee au prix catalogue fournisseur (hypothese 2). Le plan
+     * d'equilibre chiffrait son apport a la marge nette de parage SEULE: les
+     * deux moities du meme ecran se contredisaient, le plan promettant de
+     * combler 2 500 000 F la ou le moteur n'en rendait que 2 100 000.
+     *
+     * SANS SCENARIO, et c'est voulu: recommandations, plan d'equilibre et
+     * volumes projetes decrivent la realite du moment, pas l'hypothese en
+     * cours de test dans le panneau des leviers.
+     *
+     * RIEN N'EST DEDUIT quand le prix d'achat porte deja la commission
+     * (« commission integree »): elle est alors DANS prix_achat, que la marge
+     * vient de soustraire. La retirer une seconde fois ferait diverger cette
+     * marge de la commission que le serveur facture reellement - deux verites
+     * sur le meme mois, ce que cette page existe pour eviter.
+     *
+     * Prix catalogue inconnu: marge brute de commission plutot qu'un cout
+     * invente - meme regle que la commission induite, qui laisse la part non
+     * chiffree et la nomme.
+     */
+    function margeApresCommission(p, contexte) {
+        var m = margeAvec(p, { leviers: {}, globaux: {} }, contexte);
+        if (m === null) return null;
+        var c = contexte || {};
+        var taux = nb(c.commissionPct) / 100;
+        if (!taux) return m;
+        var a = assietteCommission(p, c);
+        if (!a.prix) return m;
+        if (commissionIntegree(a.cle, c)) return m;
+        // LE diviseur de parage de la marge, pas une seconde lecture des
+        // memes champs: les appelants le derivaient a part
+        // (`estBoeuf ? parageBovin : ...`), ce qui donnait un diviseur de 1 la
+        // ou la marge, elle, retombait sur parageBase - deux taux de parage
+        // dans le meme chiffre. Le cas ne se produit que sur un contexte sans
+        // taux par espece, mais c'est exactement le contexte degrade sur
+        // lequel personne ne regarde.
+        var d = diviseurParage(p, { leviers: {}, globaux: {} }, c);
+        if (!(d > 0)) return m;
+        return m - taux * nb(a.prix) / d;
     }
 
     /**
@@ -259,10 +396,25 @@
         var addO = (dO > 0 && d0O > 0) ? (volO / dO + qO * (1 / dO - 1 / d0O)) : 0;
         var addV = volV;
         var pvManquants = [];
+        // Les familles dont la livraison induite ne porte AUCUNE commission a
+        // refacturer, parce que leur prix d'achat la contient deja. A tenir
+        // separe de pvManquants: ce n'est pas une part qu'on renonce a
+        // chiffrer, c'est zero, et les deux ne se lisent pas pareil.
+        var famillesIntegrees = [];
         var assiette = 0;
-        if (addB) { if (pv.bovin) assiette += nb(pv.bovin) * addB; else pvManquants.push('bovin'); }
-        if (addO) { if (pv.ovin) assiette += nb(pv.ovin) * addO; else pvManquants.push('ovin'); }
-        if (addV) { if (pv.volaille) assiette += nb(pv.volaille) * addV; else pvManquants.push('volaille'); }
+        // Une seule regle pour les trois familles: chacune est commissionnee
+        // au prix de SA ligne de catalogue, et c'est cette meme ligne qui
+        // porte la case « commission integree ». Les traiter separement avait
+        // deja laisse diverger deux des trois branches.
+        var cumuler = function (add, prix, cleCatalogue, famille) {
+            if (!add) return;
+            if (commissionIntegree(cleCatalogue, c)) { famillesIntegrees.push(famille); return; }
+            if (prix) assiette += nb(prix) * add;
+            else pvManquants.push(famille);
+        };
+        cumuler(addB, pv.bovin, CLE_BOVIN, 'bovin');
+        cumuler(addO, pv.ovin, CLE_OVIN, 'ovin');
+        cumuler(addV, pv.volaille, CLE_VOLAILLE, 'volaille');
         var coInduite = -(com / 100) * assiette;
 
         // -0 est un zero: JavaScript les distingue (Object.is), et -(x - x)
@@ -284,6 +436,7 @@
                 coTaux: z(coTaux), coInduite: z(coInduite),
                 addB: z(addB), addO: z(addO), addV: z(addV),
                 assiette: z(assiette), pvManquants: pvManquants,
+                famillesIntegrees: famillesIntegrees,
                 // Le taux NORMALISE, pas g.com brut: expliquer() l'imprimait
                 // tel quel et affichait « undefined » quand le scenario
                 // l'omettait.
@@ -374,6 +527,16 @@
             formule: 'prix catalogue inconnu (' + d.pvManquants.join(', ') + ') : part non chiffrée',
             valeur: 0
         });
+        // Zero DIT, pas zero tu. Une famille dont le prix d'achat porte deja
+        // la commission ne contribue pas a l'assiette, exactement comme une
+        // famille sans prix catalogue - mais pour une raison opposee. Laisser
+        // les deux silencieuses les rendait indiscernables a l'ecran.
+        if (d.famillesIntegrees.length) lignes.push({
+            libelle: 'Commission · achats induits (déjà dans le prix d\'achat)',
+            formule: d.famillesIntegrees.join(', ') + ' : la commission est comprise '
+                + 'dans le prix d\'achat — rien à refacturer sur ces livraisons',
+            valeur: 0
+        });
 
         // Les formules du parage sont ecrites avec leurs ETAPES, pas en
         // notation compacte: "1/(1-p)" a du etre explique a l'utilisateur.
@@ -445,6 +608,13 @@
         // seconde definition.
         diviseurParage: diviseurParage,
         margeAvec: margeAvec,
+        // L'assiette de la commission ET la marge qui la deduit vivent ICI, et
+        // plus dans chaque appelant: l'ecran et l'API externe en portaient deux
+        // copies mot pour mot, qu'une correction pouvait desynchroniser en
+        // silence - le defaut precis que ce module existe pour empecher.
+        assietteCommission: assietteCommission,
+        commissionIntegree: commissionIntegree,
+        margeApresCommission: margeApresCommission,
         effetProduit: effetProduit,
         effetsGlobaux: effetsGlobaux,
         effetTotal: effetTotal,
