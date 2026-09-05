@@ -2324,7 +2324,12 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
                 numeroClient: vente.numeroClient,
                 adresseClient: vente.adresseClient,
                 creance: vente.creance,
-                gros_client: vente.grosClient === true
+                gros_client: vente.grosClient === true,
+                // Numero de commande: renseigne par le POS, qui le genere au
+                // moment de l'encaissement pour regrouper les lignes d'un meme
+                // ticket. Vide pour tout ce qui vient d'ailleurs - saisie
+                // manuelle, imports, historique anterieur au POS.
+                commande_id: vente.commandeId || null
             }));
 
             console.log('Nombre de ventes filtrées:', formattedVentes.length);
@@ -2400,7 +2405,13 @@ app.get('/api/ventes', checkAuth, checkReadAccess, async (req, res) => {
             nomClient: vente.nomClient,
             numeroClient: vente.numeroClient,
             adresseClient: vente.adresseClient,
-            creance: vente.creance
+            creance: vente.creance,
+            // Les deux memes champs que la branche datee ci-dessus. gros_client
+            // y manquait: charger l'ecran SANS dates affichait donc « Non »
+            // pour tout le monde, y compris les ventes marquees gros client au
+            // POS - la colonne mentait selon le filtre choisi.
+            gros_client: vente.grosClient === true,
+            commande_id: vente.commandeId || null
         }));
 
         console.log('Nombre de ventes filtrées:', formattedVentes.length);
