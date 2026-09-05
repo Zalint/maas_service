@@ -4287,7 +4287,7 @@ async function chargerVentes() {
         console.error('Erreur lors du chargement des ventes:', error);
         const tbody = document.querySelector('#tableau-ventes tbody');
         if (tbody) {
-            tbody.innerHTML = `<tr><td colspan="15" class="text-center text-danger">Erreur lors du chargement des ventes: ${error.message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="16" class="text-center text-danger">Erreur lors du chargement des ventes: ${error.message}</td></tr>`;
         }
         // Réinitialiser le montant total en cas d'erreur si l'élément existe
         const montantTotalElement = document.getElementById('montant-total');
@@ -4377,6 +4377,7 @@ function afficherPageVentes(page) {
                 <td>${vente.adresseClient || ''}</td>
                 <td>${vente.creance ? 'Oui' : 'Non'}</td>
                 <td>${estGrosClient(vente) ? '⭐ Oui' : 'Non'}</td>
+                <td>${String(vente.commande_id || '').replace(/[<>&"]/g, '')}</td>
         `;
         tbody.appendChild(tr);
     });
@@ -5775,6 +5776,10 @@ function formaterDonneesVentes(ventes) {
             adresseClient: v.adresseClient || '',
             creance: v.creance === true || v.creance === 'true',
             gros_client: v.gros_client === true || v.grosClient === true,
+            // Numero de commande du POS. Cette fonction est une LISTE BLANCHE:
+            // un champ absent d'ici n'atteint jamais le tableau, meme si le
+            // serveur le renvoie.
+            commande_id: v.commande_id || v.commandeId || '',
             // Marqueur source preserve (server append les commandes envoyees
             // au CDC en tant que virtual ventes avec _source: 'decoupe').
             // Indispensable pour eviter de double-compter la portion CDC
@@ -11523,7 +11528,10 @@ async function exportVisualisationToExcel() {
             'Numéro Client': vente.numeroClient || '',
             'Adresse Client': vente.adresseClient || '',
             'Créance': vente.creance ? 'Oui' : 'Non',
-            'Gros client': estGrosClient(vente) ? 'Oui' : 'Non'
+            'Gros client': estGrosClient(vente) ? 'Oui' : 'Non',
+            // Lit la reponse BRUTE de /api/ventes: cet export ne passe pas par
+            // formaterDonneesVentes, contrairement au tableau affiche.
+            'N° commande': vente.commande_id || ''
         }));
 
         if (exportData.length === 0) {
