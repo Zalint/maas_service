@@ -542,6 +542,10 @@
                         '<i class="bi bi-chevron-down" style="font-size:11px;opacity:0.55;margin-left:4px"></i>' +
                     '</a>' +
                     '<div class="mm-user-menu" id="mm-user-menu" role="menu">' +
+                        '<a class="mm-user-menu-item" id="mm-change-password-btn" href="#" role="menuitem">' +
+                            '<i class="bi bi-key"></i>' +
+                            '<span>Changer le mot de passe</span>' +
+                        '</a>' +
                         '<a class="mm-user-menu-item" id="mm-logout-btn" href="#" role="menuitem">' +
                             '<i class="bi bi-box-arrow-right"></i>' +
                             '<span>Se deconnecter</span>' +
@@ -586,6 +590,44 @@
                 }
             });
         }
+        // CHANGER LE MOT DE PASSE. Meme relais que la deconnexion ci-dessous.
+        //
+        // Cette barre REMPLACE le menu utilisateur des pages, et c'est la que
+        // vivait le seul lien vers la modale (#change-password-btn dans
+        // index.html et admin.html). La modale et son endpoint existaient
+        // toujours, mais plus rien n'y menait: la fonction etait devenue
+        // inatteignable autrement que par la console, sur tous les tenants.
+        //
+        // La cible est resolue AU CLIC et non a la construction: la modale est
+        // injectee par js/change-password.js au DOMContentLoaded, et l'ordre
+        // des scripts entre les deux n'est pas garanti selon les pages.
+        var mmPwdBtn = document.getElementById('mm-change-password-btn');
+        if (mmPwdBtn) {
+            mmPwdBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                // Referme le menu: la modale s'ouvre par-dessus, et le menu
+                // reste sinon affiche derriere elle.
+                if (mmUserMenu) mmUserMenu.style.display = 'none';
+                if (mmUserChip) mmUserChip.setAttribute('aria-expanded', 'false');
+                // 1. Le lien d'origine s'il est encore dans le DOM: il porte
+                //    data-bs-toggle et declenche le chemin Bootstrap normal.
+                var origPwd = document.getElementById('change-password-btn');
+                if (origPwd) { origPwd.click(); return; }
+                // 2. Sinon la modale directement.
+                var modalEl = document.getElementById('changePasswordModal');
+                if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+                    window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+                    return;
+                }
+                // 3. Ni l'un ni l'autre: la page ne charge pas
+                //    js/change-password.js. On le DIT plutot que de laisser un
+                //    clic sans effet, qui se lit comme une panne.
+                console.warn('[modern-ui] js/change-password.js absent de cette page');
+                alert('Changement de mot de passe indisponible sur cet écran.\n'
+                    + 'Ouvrez Gestion ou Administration pour le faire.');
+            });
+        }
+
         // Logout : utilise le bouton original si dispo (declenche les handlers
         // existants comme nettoyage de cache), sinon appel direct /api/logout.
         var mmLogoutBtn = document.getElementById('mm-logout-btn');
